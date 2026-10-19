@@ -1,0 +1,44 @@
+"""模型接入层：类型、供应商抽象、配置解析与具体 provider。"""
+from boss_harness.models.provider import (
+    DEFAULT_MODEL,
+    ModelConfig,
+    Provider,
+    build_provider,
+    resolve_config,
+)
+from boss_harness.models.types import (
+    AssistantMessage,
+    ContentBlock,
+    ModelRequest,
+    StopReason,
+    StreamEvent,
+    TextBlock,
+    ThinkingBlock,
+    ToolCallBlock,
+    ToolResultItem,
+    ToolResultsMessage,
+    ToolSpec,
+    Usage,
+    UserMessage,
+)
+
+__all__ = [
+    "DEFAULT_MODEL",
+    "AssistantMessage",
+    "ContentBlock",
+    "ModelConfig",
+    "ModelRequest",
+    "Provider",
+    "StopReason",
+    "StreamEvent",
+    "TextBlock",
+    "ThinkingBlock",
+    "ToolCallBlock",
+    "ToolResultItem",
+    "ToolResultsMessage",
+    "ToolSpec",
+    "Usage",
+    "UserMessage",
+    "build_provider",
+    "resolve_config",
+]
