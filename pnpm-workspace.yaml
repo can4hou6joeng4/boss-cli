@@ -1,0 +1,6 @@
+# BOSS-CLI 单仓结构
+# 骨架参照 Codex 桌面的仓库组织：一个 Electron app 包 + 若干共享 TS 包 + 独立后端内核。
+# 说明：Codex 使用 pnpm，本仓库先用 npm workspaces（本机已就绪），后续可切换。
+workspaces:
+  - "apps/*"
+  - "packages/*"

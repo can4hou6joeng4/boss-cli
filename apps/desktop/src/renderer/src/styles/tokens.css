@@ -1,0 +1,50 @@
+/** Measured from ChatGPT.app 26.1013.40934; semantic aliases for BOSS-CLI components. */
+:root {
+  color-scheme: dark;
+  --spacing: 4px;
+  --height-titlebar: 44px;
+  --sidebar-width: 275px;
+  --rail-width: 52px;
+  --statsbar-height: 36px;
+  --composer-max-width: 768px;
+  --thread-content-max-width: 768px;
+  --radius-xs: 2px; --radius-sm: 4px; --radius-md: 6px; --radius-lg: 8px;
+  --radius-xl: 12px; --radius-2xl: 16px; --radius-3xl: 28px; --radius-full: 9999px;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.2s cubic-bezier(.4,0,.2,1);
+  --bg-app: #282828; --bg-window: #191919; --bg-sidebar: #202020;
+  --panel-bg: #2c2c2c; --panel-bg-hover: #353535; --panel-glass: rgba(44,44,44,.97);
+  --border-color: #ffffff12; --border-subtle: #ffffff09; --border-active: #ffffff36;
+  --text-main: #ededed; --text-muted: #aaa; --text-faint: #757575;
+  --btn-primary-bg: #ededed; --btn-primary-text: #171717; --btn-primary-hover: #fff;
+  --btn-secondary-bg: #2c2c2c; --btn-secondary-text: #ededed; --btn-secondary-hover: #363636;
+  --btn-ghost-hover: #ffffff0d;
+  --accent-color: #ededed; --accent-green: #04b84c; --accent-cyan: #66a9ff;
+  --accent-warning: #f58a4b; --accent-error: #fa423e;
+  --user-bubble-bg: #193d70; --user-bubble-border: transparent; --user-bubble-text: #e0ebff;
+  --composer-bg: #303030; --composer-border: #ffffff06;
+  --composer-pill-bg: transparent; --composer-pill-hover: #ffffff0d;
+  --elevation-composer: 0 0 0 1px #00000005, 0 2px 8px #0000000a;
+  --shadow-popup: 0 8px 32px #0005, 0 0 0 1px #ffffff0d;
+  --scrollbar-thumb: #ffffff24; --scrollbar-thumb-hover: #ffffff40;
+}
+html:not(.dark) {
+  color-scheme: light;
+  --bg-app: #ededed; --bg-window: #fff; --bg-sidebar: #f7f7f7;
+  --panel-bg: #f2f2f2; --panel-bg-hover: #e9e9e9; --panel-glass: rgba(255,255,255,.98);
+  --border-color: #00000012; --border-subtle: #00000008; --border-active: #00000032;
+  --text-main: #262626; --text-muted: #737373; --text-faint: #929292;
+  --btn-primary-bg: #0d0d0d; --btn-primary-text: #fff; --btn-primary-hover: #303030;
+  --btn-secondary-bg: #efefef; --btn-secondary-text: #262626; --btn-secondary-hover: #e5e5e5;
+  --btn-ghost-hover: #00000009;
+  --accent-color: #262626; --accent-green: #008635; --accent-cyan: #006ce0;
+  --accent-warning: #be570c; --accent-error: #d93025;
+  --user-bubble-bg: #e8f1ff; --user-bubble-text: #153b68; --user-bubble-border: transparent;
+  --composer-bg: #f4f4f4; --composer-border: #00000004;
+  --composer-pill-bg: transparent; --composer-pill-hover: #00000008;
+  --elevation-composer: 0 0 0 1px #00000006, 0 2px 8px #00000006;
+  --shadow-popup: 0 8px 32px #0002, 0 0 0 1px #0000000c;
+  --scrollbar-thumb: #00000022; --scrollbar-thumb-hover: #00000040;
+}

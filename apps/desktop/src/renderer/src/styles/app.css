@@ -1,0 +1,1943 @@
+@import "./tokens.css";
+
+/* 全局重置与平滑渲染 */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  background-color: var(--bg-app);
+  color: var(--text-main);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  user-select: none;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: var(--radius-full);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
+/* 主窗口容器 */
+.app-container {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  background: var(--bg-window);
+  overflow: hidden;
+  position: relative;
+}
+
+/* 顶栏 TitleBar (ChatGPT.app 极简沉稳顶栏) */
+.titlebar {
+  height: var(--height-titlebar);
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+  z-index: 50;
+  -webkit-app-region: drag;
+}
+
+.titlebar-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  -webkit-app-region: no-drag;
+}
+
+.traffic-light-spacer {
+  width: 70px;
+  height: 100%;
+}
+
+.titlebar-breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.titlebar-breadcrumbs .crumb-current {
+  color: var(--text-main);
+  font-weight: 500;
+}
+.titlebar-breadcrumbs .crumb-sep {
+  opacity: 0.4;
+  font-size: 11px;
+}
+
+.titlebar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.titlebar-btn:hover {
+  background: var(--btn-ghost-hover);
+  color: var(--text-main);
+}
+.titlebar-btn:active {
+  transform: scale(0.93);
+}
+.titlebar-btn.active {
+  background: var(--btn-ghost-hover);
+  color: var(--text-main);
+}
+
+/* 顶栏模型下拉切换器 (ChatGPT.app 官方顶部模型胶囊) */
+.titlebar-model-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+}
+.titlebar-model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  background: var(--composer-pill-bg);
+  border: 1px solid var(--border-color);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-main);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  user-select: none;
+}
+.titlebar-model-btn:hover {
+  background: var(--composer-pill-hover);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.titlebar-model-name {
+  font-weight: 500;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.titlebar-model-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 250px;
+  background: var(--bg-window);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popup);
+  padding: 6px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: fadeIn 0.12s ease-out;
+}
+.titlebar-center {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.titlebar-session-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-muted);
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dropdown-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  padding: 4px 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.dropdown-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  user-select: none;
+}
+.dropdown-menu-item:hover {
+  background: var(--panel-bg-hover);
+}
+.dropdown-menu-item.selected {
+  background: rgba(255, 255, 255, 0.08);
+}
+.model-badge {
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  background: rgba(16, 163, 127, 0.15);
+  color: var(--accent-green);
+  font-weight: 600;
+}
+
+/* 主工作区（侧边栏 + 内容区） */
+.workspace-layout {
+  display: flex;
+  flex: 1;
+  height: calc(100vh - var(--height-titlebar));
+  overflow: hidden;
+  position: relative;
+}
+
+/* 左侧栏 (Sidebar - ChatGPT.app 经典黑灰结构) */
+.boss-sidebar {
+  width: var(--sidebar-width);
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  z-index: 20;
+  transition: width var(--transition-normal);
+  overflow: hidden;
+}
+.boss-sidebar.collapsed {
+  width: 0;
+  border-right: none;
+}
+
+.sidebar-header {
+  padding: 12px 14px 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+  cursor: pointer;
+}
+.sidebar-brand-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  font-weight: 500;
+  border: 1px solid var(--border-color);
+}
+
+/* 侧栏主导航列表 */
+.sidebar-nav {
+  padding: 0 10px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.nav-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  text-align: left;
+}
+.nav-action-btn:hover {
+  background: var(--btn-ghost-hover);
+  color: var(--text-main);
+}
+.nav-action-btn:active {
+  transform: scale(0.98);
+}
+/* 新建任务按钮：对齐 ChatGPT.app 的简洁边框次主按钮 */
+.nav-action-btn.primary {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+.nav-action-btn.primary:hover {
+  background: var(--btn-ghost-hover);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.nav-action-btn.active {
+  background: var(--panel-bg);
+  color: var(--text-main);
+  font-weight: 500;
+}
+.nav-item-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.badge-count {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: #dc2626;
+  color: #fff;
+  font-weight: 600;
+}
+.shortcut-kbd {
+  font-size: 10px;
+  opacity: 0.5;
+  font-family: var(--font-mono);
+}
+
+/* 侧栏搜索框 */
+.sidebar-search-box {
+  padding: 0 10px 8px;
+}
+.search-input-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-color);
+}
+.search-input-wrapper input {
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 12px;
+  color: var(--text-main);
+  width: 100%;
+}
+.search-input-wrapper input::placeholder {
+  color: var(--text-faint);
+}
+
+/* 分组项目与会话列表 */
+.sidebar-project-tree {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 8px;
+}
+.tree-group-title {
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 8px 8px 4px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.project-group {
+  margin-bottom: 8px;
+}
+.project-folder-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.project-folder-header:hover {
+  color: var(--text-main);
+  background: var(--btn-ghost-hover);
+}
+
+.session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px 6px 22px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  margin-top: 2px;
+  position: relative;
+}
+.session-row:hover {
+  background: var(--btn-ghost-hover);
+  color: var(--text-main);
+}
+.session-row.active {
+  background: var(--panel-bg);
+  color: var(--text-main);
+  font-weight: 500;
+  border: 1px solid var(--border-color);
+}
+.session-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+.session-spinner {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-green);
+  flex-shrink: 0;
+  margin-left: 6px;
+}
+.session-more-btn {
+  opacity: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-xs);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+  margin-left: 4px;
+}
+.session-row:hover .session-more-btn {
+  opacity: 0.8;
+}
+.session-more-btn:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-main);
+}
+
+/* 侧栏底部用户信息 */
+.sidebar-footer {
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: rgba(0, 0, 0, 0.1);
+}
+.profile-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.profile-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--btn-secondary-bg);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.profile-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-main);
+}
+.profile-badge {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* 主内容画布 (Main Workspace) */
+.main-canvas {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  height: 100%;
+}
+
+/* ========================================================
+   HOME 视图 (ChatGPT.app 纯净克制的大居中画布)
+   ======================================================== */
+.home-workspace {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 20px 60px;
+  position: relative;
+  overflow-y: auto;
+  background: var(--bg-window);
+}
+
+.home-center-container {
+  width: 100%;
+  max-width: var(--composer-max-width);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+  position: relative;
+  z-index: 2;
+}
+
+.home-greeting-title {
+  font-size: 26px;
+  font-weight: 600;
+  color: var(--text-main);
+  letter-spacing: -0.01em;
+  text-align: center;
+}
+
+/* 居中 Composer Card (ChatGPT 经典大圆角卡片) */
+.zcode-composer-card {
+  width: 100%;
+  background: var(--composer-bg);
+  border: 1px solid var(--composer-border);
+  border-radius: var(--radius-3xl);
+  padding: 14px 18px 12px;
+  box-shadow: var(--elevation-composer);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative;
+  transition: border-color var(--transition-fast);
+}
+.zcode-composer-card:focus-within {
+  border-color: var(--border-active);
+}
+
+.composer-pills-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 药丸按钮：极简中性胶囊 */
+.composer-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  background: var(--composer-pill-bg);
+  border: 1px solid var(--border-color);
+  font-size: 12px;
+  color: var(--text-muted);
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+  transition: all var(--transition-fast);
+}
+.composer-pill:hover {
+  background: var(--composer-pill-hover);
+  color: var(--text-main);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.composer-pill.active {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: var(--text-main);
+}
+
+.zcode-textarea {
+  width: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-main);
+  font-size: 14px;
+  resize: none;
+  font-family: inherit;
+  line-height: 1.6;
+  min-height: 60px;
+}
+.zcode-textarea::placeholder {
+  color: var(--text-faint);
+}
+
+.composer-bottom-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+.composer-left-actions, .composer-right-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.composer-circle-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.composer-circle-btn:hover {
+  background: var(--btn-ghost-hover);
+  color: var(--text-main);
+}
+.composer-circle-btn:active {
+  transform: scale(0.93);
+}
+
+/* 发送按钮：对齐 ChatGPT.app 经典的黑白极简反差圆钮 */
+.send-arrow-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-weight: 700;
+  transition: all var(--transition-fast);
+}
+.send-arrow-btn:hover {
+  background: var(--btn-primary-hover);
+  transform: scale(1.02);
+}
+.send-arrow-btn:active {
+  transform: scale(0.93);
+}
+.send-arrow-btn:disabled {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-faint);
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* 提示词卡片网格 (对齐 ChatGPT.app 沉稳卡片风格) */
+.home-suggestions-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  width: 100%;
+  max-width: var(--composer-max-width);
+}
+.home-suggestion-card {
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: all var(--transition-fast);
+  text-align: left;
+}
+.home-suggestion-card:hover {
+  background: var(--panel-bg-hover);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}
+.home-suggestion-card:active {
+  transform: scale(0.99);
+}
+.home-suggestion-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-main);
+}
+.home-suggestion-desc {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* 4 大场景快捷 Chips (ChatGPT.app 沉稳卡片风格) */
+.home-chips-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  max-width: 700px;
+}
+.home-chip-item {
+  padding: 7px 14px;
+  border-radius: var(--radius-full);
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all var(--transition-fast);
+  font-weight: 500;
+  user-select: none;
+}
+.home-chip-item:hover, .home-chip-item.active {
+  background: var(--panel-bg-hover);
+  color: var(--text-main);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+.home-chip-item:active {
+  transform: scale(0.96);
+}
+
+.home-hints-footer {
+  font-size: 11px;
+  color: var(--text-faint);
+  display: flex;
+  gap: 16px;
+  margin-top: 6px;
+}
+.home-hints-footer kbd {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-color);
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+/* ========================================================
+   会话执行视图 (Active Thread View)
+   ======================================================== */
+.thread-workspace {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  position: relative;
+}
+
+/* 极简顶栏 (ThreadHeaderBar - 对齐 ChatGPT.app 干净的 thread 标题与分段切换) */
+.thread-header-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+  height: var(--statsbar-height);
+  background: var(--bg-window);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  z-index: 10;
+}
+.thread-header-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  color: var(--text-main);
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mode-segmented-control {
+  display: flex;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+.mode-segment-btn {
+  padding: 2px 10px;
+  font-size: 11px;
+  border-radius: var(--radius-xs);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.mode-segment-btn:hover {
+  color: var(--text-main);
+}
+.mode-segment-btn.active {
+  background: var(--panel-bg);
+  color: var(--text-main);
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* 座舱统计条 (StatsBar - 极简低调) */
+.statsbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  height: var(--statsbar-height);
+  background: var(--bg-sidebar);
+  border-bottom: 1px solid var(--border-color);
+  font-size: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  z-index: 10;
+}
+.statsbar-left, .statsbar-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.statsbar-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ctx-bar {
+  width: 56px;
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  display: inline-block;
+}
+.ctx-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--accent-green);
+  transition: width 0.3s ease;
+}
+.ctx-fill.warning { background: var(--accent-warning); }
+.ctx-fill.critical { background: var(--accent-error); }
+
+/* iOS/macOS 风格极简分段选择器 (Segmented Control) */
+.mode-badge-group {
+  display: flex;
+  gap: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+}
+.mode-toggle-btn {
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: var(--radius-xs);
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.mode-toggle-btn.active {
+  background: var(--panel-bg);
+  color: var(--text-main);
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* 自主跨轮长目标条 (GoalBar) */
+.goal-bar {
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 8px 14px;
+  margin: 0 auto 10px;
+  max-width: var(--composer-max-width);
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-main);
+}
+.goal-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.goal-badge {
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-main);
+  font-size: 11px;
+  font-weight: 500;
+}
+.goal-actions {
+  display: flex;
+  gap: 6px;
+}
+.goal-btn {
+  padding: 3px 8px;
+  border-radius: var(--radius-xs);
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.goal-btn:hover {
+  background: var(--btn-ghost-hover);
+  color: var(--text-main);
+}
+
+/* 消息流区域 */
+.messages-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.messages-inner {
+  width: 100%;
+  max-width: var(--thread-content-max-width);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* 用户气泡 (ChatGPT.app 经典圆角右对齐) */
+.msg-row-user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.user-bubble {
+  max-width: 75%;
+  background: var(--user-bubble-bg);
+  border: 1px solid var(--user-bubble-border);
+  color: var(--user-bubble-text);
+  padding: 10px 14px;
+  border-radius: var(--radius-xl);
+  font-size: 14px;
+  line-height: 1.55;
+}
+.user-msg-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.rewind-point-btn {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 4px;
+  border-radius: var(--radius-xs);
+  transition: all var(--transition-fast);
+}
+.rewind-point-btn:hover {
+  color: var(--text-main);
+  background: var(--btn-ghost-hover);
+}
+
+/* 智能体消息块 */
+.msg-row-agent {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+/* 思考过程计时器 */
+.thinking-block {
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.thinking-summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+.thinking-summary:hover {
+  color: var(--text-main);
+}
+.thinking-content {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  font-family: var(--font-mono);
+}
+
+/* 工具调用块 */
+.tool-block {
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.tool-summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tool-code-preview {
+  margin-top: 6px;
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow-x: auto;
+}
+
+/* 结构化卡片：审批卡 ApprovalCard (克制的中性灰底卡) */
+.approval-card {
+  border: 1px solid var(--border-color);
+  background: var(--panel-bg);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.approval-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+.approval-payload {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-main);
+  max-height: 140px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+}
+.approval-edit-textarea {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-main);
+  resize: vertical;
+}
+.approval-remember-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.approval-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* 按钮规范对齐 ChatGPT：主按钮反白，次按钮幽灵/边框，支持触感 micro-interaction */
+.approval-btn {
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  cursor: pointer;
+  border: none;
+  font-weight: 500;
+  transition: all var(--transition-fast);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  user-select: none;
+}
+.approval-btn:active {
+  transform: scale(0.97);
+}
+.approval-btn.approve {
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+.approval-btn.approve:hover {
+  background: var(--btn-primary-hover);
+}
+.approval-btn.approve:active {
+  transform: scale(0.97);
+}
+.approval-btn.secondary {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+}
+.approval-btn.secondary:hover {
+  background: var(--btn-ghost-hover);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.approval-btn.secondary:active {
+  transform: scale(0.97);
+  background: rgba(255, 255, 255, 0.12);
+}
+.approval-btn.deny {
+  background: transparent;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  color: var(--accent-error);
+}
+.approval-btn.deny:hover {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: rgba(239, 68, 68, 0.45);
+}
+.approval-btn.deny:active {
+  transform: scale(0.97);
+}
+
+/* 结构化卡片：计划卡 PlanCard */
+.plan-card {
+  border: 1px solid var(--border-color);
+  background: var(--panel-bg);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.plan-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.plan-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+.plan-status-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: var(--radius-xs);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+}
+.plan-options-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.plan-option-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border-color);
+  cursor: pointer;
+  font-size: 12px;
+}
+.plan-option-label.active {
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+/* 结构化卡片：提问卡 QuestionCard */
+.question-card {
+  border: 1px solid var(--border-color);
+  background: var(--panel-bg);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.question-prompt {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.question-options-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.question-opt-btn {
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.question-opt-btn:hover {
+  background: var(--btn-ghost-hover);
+  color: var(--text-main);
+}
+.question-opt-btn.picked {
+  background: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
+  font-weight: 600;
+  border-color: var(--btn-primary-bg);
+}
+
+/* 智能体文本 Markdown 排版 (对齐 ChatGPT.app 文本、代码块与超链接排版规范) */
+.agent-markdown {
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--text-main);
+  user-select: text;
+}
+.agent-markdown p {
+  margin-bottom: 8px;
+}
+.chat-heading-3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-main);
+  margin: 12px 0 6px;
+}
+.chat-blockquote {
+  border-left: 3px solid rgba(255, 255, 255, 0.25);
+  padding: 4px 12px;
+  margin: 8px 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-style: italic;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+html:not(.dark) .chat-blockquote {
+  border-left-color: rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.02);
+}
+.chat-list-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 5px;
+  line-height: 1.6;
+}
+.chat-list-bullet {
+  color: var(--text-muted);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.chat-list-num {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  flex-shrink: 0;
+  min-width: 14px;
+}
+.chat-inline-code {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  padding: 2px 5px;
+  border-radius: var(--radius-xs);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-main);
+}
+html:not(.dark) .chat-inline-code {
+  background: rgba(0, 0, 0, 0.06);
+  border-color: rgba(0, 0, 0, 0.06);
+}
+
+/* 超链接 (ChatGPT.app 规范：下划线偏移行内链接) */
+.chat-inline-link {
+  color: var(--text-main);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(255, 255, 255, 0.35);
+  transition: color var(--transition-fast), text-decoration-color var(--transition-fast);
+  cursor: pointer;
+  font-weight: 500;
+}
+.chat-inline-link:hover {
+  color: #ffffff;
+  text-decoration-color: #ffffff;
+}
+html:not(.dark) .chat-inline-link {
+  text-decoration-color: rgba(0, 0, 0, 0.3);
+}
+html:not(.dark) .chat-inline-link:hover {
+  color: #000000;
+  text-decoration-color: #000000;
+}
+
+/* 来源引文药丸 / Citation Pill (ChatGPT.app 沉稳胶囊引文) */
+.chat-citation-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--border-color);
+  font-size: 11px;
+  color: var(--text-muted);
+  text-decoration: none;
+  vertical-align: middle;
+  transition: all var(--transition-fast);
+  margin: 0 3px;
+  user-select: none;
+  line-height: 1.5;
+}
+.chat-citation-pill:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-main);
+  border-color: rgba(255, 255, 255, 0.25);
+  transform: translateY(-1px);
+}
+.chat-citation-pill:active {
+  transform: translateY(0);
+}
+html:not(.dark) .chat-citation-pill {
+  background: rgba(0, 0, 0, 0.04);
+}
+html:not(.dark) .chat-citation-pill:hover {
+  background: rgba(0, 0, 0, 0.08);
+}
+
+/* 关联实体 / Mention 药丸 */
+.chat-mention-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 500;
+  text-decoration: none;
+  margin: 0 2px;
+  transition: all var(--transition-fast);
+  user-select: none;
+}
+.chat-mention-pill:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+/* 代码块容器与顶栏复制按钮 (ChatGPT.app 代码块规范) */
+.code-block-wrapper {
+  margin: 10px 0;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: #141414;
+  overflow: hidden;
+}
+html:not(.dark) .code-block-wrapper {
+  background: #f8f8f8;
+}
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  user-select: none;
+}
+html:not(.dark) .code-block-header {
+  background: rgba(0, 0, 0, 0.03);
+}
+.code-block-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 3px 8px;
+  border-radius: var(--radius-xs);
+  transition: all var(--transition-fast);
+}
+.code-block-copy-btn:hover {
+  background: var(--btn-ghost-hover);
+  color: var(--text-main);
+}
+.code-block-copy-btn:active {
+  transform: scale(0.96);
+}
+.code-block-pre {
+  margin: 0;
+  padding: 10px 14px;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-main);
+}
+
+/* 回到底部悬浮按钮 (ChatGPT.app 浮动圆钮) */
+.scroll-to-bottom-btn {
+  position: absolute;
+  bottom: 84px;
+  right: calc(50% - 370px);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  transition: all var(--transition-fast);
+  z-index: 25;
+}
+.scroll-to-bottom-btn:hover {
+  background: var(--panel-bg-hover);
+  color: var(--text-main);
+  border-color: rgba(255, 255, 255, 0.25);
+  transform: translateY(-2px);
+}
+.scroll-to-bottom-btn:active {
+  transform: translateY(0) scale(0.94);
+}
+
+/* 消息块底部操作条 (ChatGPT.app 纯图标紧凑微交互) */
+.msg-action-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: 6px;
+  opacity: 0.85;
+  transition: opacity var(--transition-fast);
+}
+.msg-row-agent:hover .msg-action-toolbar {
+  opacity: 1;
+}
+.msg-action-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+  padding: 0;
+}
+.msg-action-btn:hover {
+  background: var(--btn-ghost-hover);
+  color: var(--text-main);
+}
+.user-msg-action-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--transition-fast);
+  padding: 0;
+}
+.user-msg-action-btn:hover {
+  background: var(--btn-ghost-hover);
+  color: var(--text-main);
+}
+
+/* 会话视图底部的 Composer */
+.thread-composer-wrapper {
+  padding: 12px 24px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+  z-index: 20;
+}
+.thread-composer-inner {
+  width: 100%;
+  max-width: var(--thread-content-max-width);
+}
+
+/* 模态浮层通用结构 (ChatGPT 纯净深灰卡片) */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.modal-content-card {
+  background: var(--bg-window);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-popup);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  max-height: 85vh;
+  animation: popIn 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes popIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* 驾驶舱 (Cockpit) 专属布局 */
+.cockpit-modal {
+  width: 880px;
+  height: 600px;
+}
+.cockpit-tabs-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 16px;
+  background: rgba(0, 0, 0, 0.15);
+  border-bottom: 1px solid var(--border-color);
+  overflow-x: auto;
+}
+.cockpit-tab-btn {
+  padding: 10px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  cursor: pointer;
+  position: relative;
+  white-space: nowrap;
+}
+.cockpit-tab-btn.active {
+  color: var(--text-main);
+  font-weight: 600;
+}
+.cockpit-tab-btn.active::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 12px;
+  right: 12px;
+  height: 2px;
+  background: var(--btn-primary-bg);
+}
+.cockpit-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+}
+
+/* 旁路提问 (SideChat) 专属轻量浮窗 */
+.sidechat-floating-window {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  width: 380px;
+  height: 480px;
+  background: var(--bg-window);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-popup);
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.sidechat-header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+}
+.sidechat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sidechat-composer {
+  padding: 10px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  gap: 8px;
+}
+.sidechat-composer input {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+  color: var(--text-main);
+  font-size: 13px;
+  outline: none;
+}
+
+/* ========================================================
+   Codex Diff Card (ChatGPT / Codex 风格代码变更卡片)
+   ======================================================== */
+.codex-diff-card {
+  background: var(--panel-bg);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  margin: 6px 0;
+}
+.codex-diff-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid var(--border-subtle);
+}
+.codex-diff-card__header-left {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.codex-diff-card__title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-main);
+}
+.codex-diff-card__stats-row {
+  display: flex;
+  gap: 6px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+}
+.codex-diff-stat--add {
+  color: var(--accent-green);
+  font-weight: 600;
+}
+.codex-diff-stat--del {
+  color: var(--accent-error);
+  font-weight: 600;
+}
+.codex-diff-card__header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.codex-diff-card__btn {
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all var(--transition-fast);
+}
+.codex-diff-card__btn:hover {
+  background: var(--btn-ghost-hover);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.codex-diff-card__btn:active {
+  transform: scale(0.96);
+}
+.codex-diff-card__file-list {
+  display: flex;
+  flex-direction: column;
+}
+.codex-diff-card__file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 12px;
+  transition: background var(--transition-fast);
+}
+.codex-diff-card__file-row:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+.codex-diff-card__file-name {
+  color: var(--text-main);
+  font-family: var(--font-mono);
+}
+.codex-diff-card__file-stats {
+  display: flex;
+  gap: 6px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.codex-diff-card__footer {
+  padding: 6px 14px;
+  text-align: center;
+  background: rgba(255, 255, 255, 0.01);
+}
+.codex-diff-card__more-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: all var(--transition-fast);
+}
+.codex-diff-card__more-btn:hover {
+  color: var(--text-main);
+}
+.codex-diff-card__more-btn:active {
+  transform: scale(0.96);
+}
+
+/* -------------------------------------------------------------
+ * 快捷命令与提及浮层 (/ 与 @ 菜单)
+ * ------------------------------------------------------------- */
+.popup-command-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 12px;
+  right: 12px;
+  max-width: 480px;
+  background: var(--bg-window);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-popup);
+  z-index: 200;
+  overflow: hidden;
+  backdrop-filter: blur(20px);
+  animation: popIn 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.popup-command-header {
+  padding: 8px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-faint);
+  border-bottom: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.02);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.popup-command-list {
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.popup-command-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.popup-command-item:hover,
+.popup-command-item.selected {
+  background: var(--btn-ghost-hover);
+}
+
+.popup-command-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.popup-command-icon {
+  font-size: 15px;
+  margin-top: 1px;
+  flex-shrink: 0;
+}
+
+.popup-command-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.3;
+}
+
+.popup-command-name {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.popup-command-label {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.popup-command-desc {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+
+.popup-command-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--accent-green);
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.popup-command-empty {
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* -------------------------------------------------------------
+ * 对话内快速操作提示栏 (Quick Actions)
+ * ------------------------------------------------------------- */
+.quick-actions-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+
+.quick-action-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.quick-action-chip:hover {
+  background: var(--btn-ghost-hover);
+  color: var(--text-main);
+  border-color: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.quick-action-chip:active {
+  transform: translateY(0);
+}
