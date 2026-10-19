@@ -5,7 +5,6 @@
  * 内核崩了也不会拖垮界面。
  */
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { createInterface, type Interface } from "node:readline";
 import type {
   JsonRpcId,
   JsonRpcMessage,
@@ -21,24 +20,30 @@ export interface HarnessClientOptions {
   args: string[];
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  requestTimeoutMs?: number;
 }
 
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (reason: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
 };
 
 export class HarnessClient {
   #child: ChildProcessWithoutNullStreams | null = null;
-  #reader: Interface | null = null;
   #pending = new Map<JsonRpcId, Pending>();
   #listeners = new Set<(n: JsonRpcNotification) => void>();
   #nextId = 1;
   #exited = false;
+  #failure: Error | null = null;
+  #buffer = "";
 
-  constructor(private readonly options: HarnessClientOptions) {}
+  private readonly options: HarnessClientOptions;
+
+  constructor(options: HarnessClientOptions) { this.options = options; }
 
   start(): this {
+    if (this.#child || this.#exited) throw new Error("harness client cannot be started twice");
     const child = spawn(this.options.command, this.options.args, {
       cwd: this.options.cwd,
       env: { ...process.env, ...this.options.env },
@@ -46,18 +51,23 @@ export class HarnessClient {
     });
     this.#child = child;
 
-    this.#reader = createInterface({ input: child.stdout });
-    this.#reader.on("line", (line) => this.#onLine(line));
+    child.stdout.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      this.#buffer += chunk;
+      let end: number;
+      while ((end = this.#buffer.indexOf("\n")) >= 0) {
+        const line = this.#buffer.slice(0, end);
+        this.#buffer = this.#buffer.slice(end + 1);
+        this.#onLine(line);
+      }
+    });
 
     child.stderr.on("data", (chunk: Buffer) => {
       process.stderr.write(`[harness] ${chunk.toString()}`);
     });
-    child.on("exit", (code, signal) => {
-      this.#exited = true;
-      const reason = new Error(`harness exited (code=${code}, signal=${signal})`);
-      for (const pending of this.#pending.values()) pending.reject(reason);
-      this.#pending.clear();
-    });
+    child.on("error", () => this.#fail(new Error("harness failed to start; check Python and dependencies")));
+    child.stdin.on("error", () => this.#fail(new Error("harness input pipe closed")));
+    child.on("close", (code, signal) => this.#fail(new Error(`harness exited (code=${code}, signal=${signal})`)));
 
     return this;
   }
@@ -68,17 +78,27 @@ export class HarnessClient {
 
   request<T>(method: string, params?: unknown): Promise<T> {
     const child = this.#child;
-    if (!child || !child.stdin.writable) {
-      return Promise.reject(new Error("harness is not running"));
+    if (this.#failure || !child || !child.stdin.writable) {
+      return Promise.reject(this.#failure ?? new Error("harness is not running"));
     }
     const id = this.#nextId++;
     const payload: JsonRpcMessage = { jsonrpc: "2.0", id, method, params };
     return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#pending.delete(id);
+        reject(new Error(`harness request timed out: ${method}; outcome unknown, do not retry automatically`));
+      }, this.options.requestTimeoutMs ?? 30_000);
+      timer.unref();
       this.#pending.set(id, {
         resolve: (value) => resolve(value as T),
         reject,
+        timer,
       });
-      child.stdin.write(`${JSON.stringify(payload)}\n`);
+      try {
+        child.stdin.write(`${JSON.stringify(payload)}\n`);
+      } catch (error) {
+        clearTimeout(timer); this.#pending.delete(id); reject(error);
+      }
     });
   }
 
@@ -100,9 +120,29 @@ export class HarnessClient {
   }
 
   dispose(): void {
-    this.#reader?.close();
+    this.#fail(new Error("harness client disposed"));
+    this.#child?.stdin.end();
     this.#child?.kill();
     this.#child = null;
+  }
+
+  #fail(reason: Error): void {
+    if (this.#failure) return;
+    this.#failure = reason;
+    this.#exited = true;
+    for (const pending of this.#pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(reason);
+    }
+    this.#pending.clear();
+    this.#emit({ jsonrpc: "2.0", method: "harness/disconnected", params: { message: reason.message } });
+  }
+
+  #emit(notification: JsonRpcNotification): void {
+    for (const listener of this.#listeners) {
+      try { listener(notification); }
+      catch { process.stderr.write("[harness] notification listener failed\n"); }
+    }
   }
 
   #onLine(line: string): void {
@@ -112,20 +152,22 @@ export class HarnessClient {
     try {
       message = JSON.parse(text) as JsonRpcMessage;
     } catch {
-      process.stderr.write(`[harness] unparsable line: ${text.slice(0, 200)}\n`);
+      process.stderr.write("[harness] invalid protocol frame\n");
       return;
     }
+    if (!message || typeof message !== "object" || message.jsonrpc !== "2.0") return;
     if ("id" in message && ("result" in message || "error" in message)) {
       const response = message as JsonRpcResponse;
       const pending = this.#pending.get(response.id);
       if (!pending) return;
       this.#pending.delete(response.id);
+      clearTimeout(pending.timer);
       if (response.error) pending.reject(new Error(response.error.message));
       else pending.resolve(response.result);
       return;
     }
     if (!("id" in message)) {
-      for (const listener of this.#listeners) listener(message as JsonRpcNotification);
+      this.#emit(message as JsonRpcNotification);
     }
   }
 }

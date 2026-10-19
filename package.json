@@ -3,6 +3,9 @@
   "private": true,
   "version": "0.1.0",
   "description": "BOSS-CLI：面向招聘任务的 Agent Harness（桌面端）",
+  "engines": {
+    "node": ">=24"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"

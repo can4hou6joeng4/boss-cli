@@ -65,6 +65,9 @@ export interface InitializeResponse {
   serverName: string;
   serverVersion: string;
   protocolVersion: string;
+  toolBridge: ToolBridgeStatus;
+  modelBridge: { provider: string; model: string; driven: boolean };
+  approval: { requiredTools: string[]; timeoutSeconds: number };
 }
 
 /* ---------- 客户端请求方法 ---------- */
@@ -95,6 +98,7 @@ export const ServerNotifications = {
   approvalRequested: "approval/requested",
   threadUpdated: "thread/updated",
   sessionError: "session/error",
+  harnessDisconnected: "harness/disconnected",
 } as const;
 
 export type ServerNotification =
@@ -109,6 +113,7 @@ export interface ThreadSummary {
   title: string;
   createdAt: string;
   updatedAt: string;
+  lastTurn?: { turnId: string; status: TurnStatus } | null;
 }
 
 export interface ThreadItem {
@@ -117,8 +122,14 @@ export interface ThreadItem {
   kind: ItemKind;
   text?: string;
   toolName?: string;
+  toolCallId?: string;
+  toolBatchId?: string;
   toolArguments?: Record<string, unknown>;
   status?: "running" | "completed" | "failed";
+  thinking?: string;
+  resultSummary?: string;
+  errorCode?: string;
+  recoveryAction?: string;
   /** 需要用户批准的工具调用会带这个字段；界面据此渲染审批卡。 */
   approval?: ApprovalState;
 }
@@ -156,11 +167,13 @@ export interface ThreadReadResponse {
   items: ThreadItem[];
 }
 
-/** 内核当前暴露给模型的工具（首版仅只读）。 */
+/** 内核允许清单中的工具；写操作需要逐次批准。 */
 export interface ToolDescriptor {
   name: string;
   description: string;
   readOnly: boolean;
+  requiresApproval: boolean;
+  inputSchema: Record<string, unknown>;
 }
 
 export interface ToolListResponse {
@@ -185,6 +198,14 @@ export interface TurnStartResponse {
   turnId: string;
 }
 
+export type TurnStatus = "running" | "completed" | "interrupted" | "blocked" | "error";
+
+export interface ThreadUpdatedParams {
+  threadId: string;
+  turnId: string;
+  status: Exclude<TurnStatus, "running">;
+}
+
 export interface TurnInterruptParams {
   threadId: string;
 }
@@ -198,6 +219,7 @@ export interface TurnInterruptResponse {
 export interface ApprovalRequestedParams {
   approvalId: string;
   threadId: string;
+  itemId: string;
   toolName: string;
   summary: string;
   /** 待执行的操作参数；用户得先看到自己在批准什么。 */
