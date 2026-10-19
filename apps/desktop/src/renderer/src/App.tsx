@@ -8,13 +8,8 @@ import { RevertConfirmModal } from "./components/RevertConfirmModal";
 import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
-import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, interruptTurn, isHarnessUp, listThreads, readThreadMessages, respondApproval, sendTurn, startThread } from "./data/harnessBridge";
-
-interface HarnessEvent {
-  method: string;
-  params?: { threadId?: string; itemId?: string; kind?: string; text?: string; delta?: string; message?: string;
-    approvalId?: string; toolName?: string; summary?: string; params?: Record<string, unknown>; consequential?: boolean; };
-}
+import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, harnessStatus, interruptTurn, listThreads, readThreadMessages, respondApproval, sendTurn, startThread } from "./data/harnessBridge";
+import { reduceHarnessEvent, type HarnessEvent } from "./data/harnessEvents";
 export function App(): JSX.Element {
   const [isDark, setIsDark] = useState(() => {
     try { const saved = localStorage.getItem("boss-cli.ui.theme"); if (saved) return saved === "dark"; } catch {}
@@ -32,6 +27,8 @@ export function App(): JSX.Element {
   const [error, setError] = useState("");
   const activeRef = useRef<SessionItem | null>(null);
   const runningRef = useRef<string | null>(null);
+  const turnIds = useRef(new Map<string, string>());
+  const lifecycleVersion = useRef(0);
   const startingRef = useRef(false);
   const [startingSession, setStartingSession] = useState(false);
   const cache = useRef(new Map<string, MessageItem[]>());
@@ -67,57 +64,52 @@ export function App(): JSX.Element {
   useEffect(() => {
     let cancelled = false;
     void (async () => {
-      const up = await isHarnessUp(); if (cancelled) return; setHarnessUp(up);
-      if (!up) return;
+      const status = await harnessStatus(); if (cancelled) return; setHarnessUp(status?.running ?? false);
+      if (!status?.running) { if (window.boss) setError(status?.error ?? "本地内核未连接，请检查配置并重启应用。"); return; }
+      if (status.modelBridge) setActiveModelId(status.modelBridge.model);
+      const version = lifecycleVersion.current;
       const sessions = await listThreads(); if (cancelled) return;
+      if (version === lifecycleVersion.current) {
+        const active = sessions.find(session => session.status === "running");
+        if (active) { if (active.turnId) turnIds.current.set(active.id, active.turnId); markRunning(active.id, true); }
+      }
+      for (const session of sessions) session.status = runningRef.current === session.id ? "running" : "idle";
       setFolders(previous => [{ id: HARNESS_PROJECT_ID, name: HARNESS_PROJECT_NAME, sessions }, ...previous.filter(folder => folder.id !== HARNESS_PROJECT_ID)]);
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [markRunning]);
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
   useEffect(() => {
-    if (!harnessUp || !window.boss) return;
+    if (!window.boss) return;
     return window.boss.onNotification(raw => {
       const event = raw as HarnessEvent, params = event.params ?? {}, id = params.threadId;
+      if (event.method === "harness/disconnected") {
+        setHarnessUp(false); setError("本地内核已断开，请检查配置并重启应用；未确认的对外操作请先核对平台状态。");
+        if (runningRef.current) markRunning(runningRef.current, false);
+        return;
+      }
       if (!id) return;
-      if (event.method === "turn/started") { markRunning(id, true); return; }
-      if (event.method === "agentMessage/delta" || (event.method === "item/completed" && params.kind === "agentMessage")) {
-        const messageId = params.itemId ?? "stream-" + id;
-        updateThread(id, previous => {
-          const index = previous.findIndex(message => message.id === messageId);
-          const before = index >= 0 ? previous[index] : undefined;
-          const text = event.method === "agentMessage/delta" ? (before?.paragraphs?.join("") ?? "") + (params.delta ?? "") : params.text ?? "";
-          const message: MessageItem = { id: messageId, role: "agent", paragraphs: [text] };
-          return index >= 0 ? previous.map((item, i) => i === index ? message : item) : [...previous, message];
-        }); return;
-      }
-      if (event.method === "agentThinking/delta") {
-        const messageId = "thinking-" + id;
-        updateThread(id, previous => {
-          const before = previous.find(message => message.id === messageId);
-          const item: MessageItem = { id: messageId, role: "agent", thinkingTime: "正在思考", thinkingContent: (before?.thinkingContent ?? "") + (params.delta ?? "") };
-          return before ? previous.map(message => message.id === messageId ? item : message) : [...previous, item];
-        }); return;
-      }
+      if (event.method === "turn/started") { lifecycleVersion.current += 1; if (params.turnId) turnIds.current.set(id, params.turnId); markRunning(id, true); return; }
+      if (params.turnId && turnIds.current.has(id) && turnIds.current.get(id) !== params.turnId) return;
       if (event.method === "approval/requested" && params.approvalId) {
         if (!params.consequential && params.toolName && rememberedApprovals.current.get(id)?.has(params.toolName)) { void respondApproval(params.approvalId, true); return; }
-        const item: MessageItem = { id: "approval-" + params.approvalId, role: "agent", paragraphs: [], approval: { approvalId: params.approvalId, toolName: params.toolName ?? "tool", description: params.summary ?? "该操作需要你的批准", params: params.params ?? {}, consequential: params.consequential ?? true } };
-        updateThread(id, previous => [...previous.filter(message => message.id !== item.id), item]); return;
       }
       if (event.method === "session/error") {
-        const message: MessageItem = { id: "error-" + Date.now(), role: "agent", paragraphs: [params.message ?? "任务遇到错误，请重试。"] };
-        updateThread(id, previous => [...previous, message]); markRunning(id, false); return;
+        setError(params.message ?? "任务遇到错误，请检查后重试。"); return;
       }
       if (event.method === "thread/updated") {
+        lifecycleVersion.current += 1;
         markRunning(id, false);
         const version = versions.current.get(id);
         void readThreadMessages(id).then(real => {
           if (real === null || versions.current.get(id) !== version) return;
-          updateThread(id, previous => [...real, ...previous.filter(message => message.id.startsWith("error-"))]);
+          updateThread(id, () => real);
         });
+        return;
       }
+      updateThread(id, previous => reduceHarnessEvent(previous, event));
     });
-  }, [harnessUp, updateThread, markRunning]);
+  }, [updateThread, markRunning]);
   const handleSelectSession = useCallback((session: SessionItem) => {
     const requestVersion = ++selectionVersion.current;
     activeRef.current = session; setActiveSession(session); setIsHomeView(false); setError("");
@@ -148,6 +140,7 @@ export function App(): JSX.Element {
     }, 1300);
   }, [markRunning, updateThread]);
   const send = useCallback(async (id: string, text: string, real: boolean) => {
+    if (real && !harnessUp) { setError("本地内核未连接，请重启应用后再发起任务。"); return; }
     if (runningRef.current) { setError("已有任务正在运行，请等待结束或停止后再发送。"); return; }
     updateThread(id, previous => [...previous, { id: "user-" + Date.now(), role: "user", content: text }]);
     if (!real) { simulate(id); return; }
@@ -156,9 +149,10 @@ export function App(): JSX.Element {
       markRunning(id, false);
       updateThread(id, previous => [...previous, { id: "error-" + Date.now(), role: "agent", paragraphs: ["发送失败，请检查本地内核连接并重试。"] }]);
     }
-  }, [updateThread, markRunning, simulate]);
+  }, [harnessUp, updateThread, markRunning, simulate]);
   const handleStartSessionWithPrompt = useCallback((prompt: string, _domain: string, modelId: string) => {
     void (async () => {
+      if (window.boss && !harnessUp) { setError("本地内核未连接，请检查启动配置并重启应用。"); return; }
       if (runningRef.current || startingRef.current) { setError("已有任务正在创建或运行，请等待结束或停止后再创建。"); return; }
       startingRef.current = true; setStartingSession(true);
       try {

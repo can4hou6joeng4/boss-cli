@@ -64,6 +64,8 @@ export const MODEL_OPTIONS: ModelOption[] = [
 ];
 
 export interface SessionItem {
+  /** 内核回报的当前/最近回合，用于界面重载后恢复停止控制。 */
+  turnId?: string;
   id: string;
   title: string;
   timeAgo: string;

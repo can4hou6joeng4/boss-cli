@@ -20,8 +20,20 @@ export const HARNESS_PROJECT_NAME = "本机会话（内核）";
 
 interface HarnessBridge {
   request<T>(method: string, params?: unknown): Promise<T>;
-  status(): Promise<{ running: boolean; repoRoot: string }>;
+  status(): Promise<HarnessStatus>;
   onNotification(listener: (notification: unknown) => void): () => void;
+}
+
+export interface HarnessStatus {
+  running: boolean;
+  repoRoot: string;
+  modelBridge?: { provider: string; model: string; driven: boolean };
+  error?: string;
+}
+
+export async function harnessStatus(): Promise<HarnessStatus | null> {
+  try { return await bridge()?.status() ?? null; }
+  catch { return { running: false, repoRoot: "", error: "无法连接本地内核" }; }
 }
 
 function bridge(): HarnessBridge | null {
@@ -50,7 +62,8 @@ export async function listThreads(): Promise<SessionItem[]> {
       id: thread.id,
       title: thread.title,
       timeAgo: formatRelativeTime(thread.updatedAt),
-      status: "idle" as const,
+      status: thread.lastTurn?.status === "running" ? "running" as const : "idle" as const,
+      turnId: thread.lastTurn?.turnId,
       projectId: HARNESS_PROJECT_ID,
     }));
   } catch {
@@ -113,29 +126,24 @@ export async function respondApproval(approvalId: string, approved: boolean): Pr
   }
 }
 
-function toMessage(item: ThreadItem): MessageItem | null {
+export function toMessage(item: ThreadItem): MessageItem | null {
   switch (item.kind) {
     case "userMessage":
       return { id: item.id, role: "user", content: item.text ?? "" };
     case "agentMessage":
-      return { id: item.id, role: "agent", paragraphs: item.text ? [item.text] : [] };
+      return { id: item.id, role: "agent", paragraphs: item.text ? [item.text] : [],
+        ...(item.thinking ? { thinkingTime: "思考过程", thinkingContent: item.thinking } : {}) };
     case "toolCall": {
       const approval = item.approval ? toApproval(item.approval) : undefined;
-      // 结束态的调用渲染一行工具结果；正在等审批的调用必须留下，否则审批卡会消失。
-      if (item.status === "running" && !approval) return null;
       return {
         id: item.id,
         role: "agent",
         paragraphs: [],
-        ...(item.status === "running"
-          ? {}
-          : {
               toolUse: {
                 name: item.toolName ?? "tool",
                 input: JSON.stringify(item.toolArguments ?? {}, null, 2),
-                result: item.status ?? "",
+                result: item.resultSummary ?? (item.status === "running" ? "正在执行" : item.status ?? ""),
               },
-            }),
         ...(approval ? { approval } : {}),
       };
     }

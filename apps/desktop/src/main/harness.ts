@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { app, ipcMain, type BrowserWindow } from "electron";
 import { HarnessClient } from "@boss-cli/app-client";
+import type { InitializeResponse } from "@boss-cli/protocol";
 
 /** 从当前目录向上找到仓库根，以 pnpm-workspace.yaml 为标记。 */
 function findRepoRoot(start: string): string {
@@ -22,8 +23,12 @@ function findRepoRoot(start: string): string {
  * JSON-RPC 收发。渲染层再经 IPC 走这两条通道。
  */
 let client: HarnessClient | null = null;
+let attachedWindow: BrowserWindow | null = null;
+let initialization: Promise<InitializeResponse> | null = null;
+let connectionError: string | undefined;
 
 export function attachHarness(window: BrowserWindow): void {
+  attachedWindow = window;
   if (client) return;
 
   const repoRoot = findRepoRoot(app.getAppPath());
@@ -44,30 +49,33 @@ export function attachHarness(window: BrowserWindow): void {
     },
   }).start();
 
-  void client
-    .request("initialize", {
+  initialization = client.request<InitializeResponse>("initialize", {
       clientInfo: { name: "boss-cli-desktop", version: app.getVersion() },
       capabilities: { experimentalApi: false },
-    })
-    .catch((error: unknown) => {
+    });
+  void initialization.catch((error: unknown) => {
+      connectionError = String(error);
       process.stderr.write(`[desktop] harness initialize failed: ${String(error)}\n`);
     });
 
   client.onNotification((notification) => {
-    if (!window.isDestroyed()) {
-      window.webContents.send("harness:notification", notification);
+    if (attachedWindow && !attachedWindow.isDestroyed()) {
+      attachedWindow.webContents.send("harness:notification", notification);
     }
   });
 
   ipcMain.handle("harness:request", async (_event, payload: { method: string; params?: unknown }) => {
     if (!client) throw new Error("harness is not attached");
+    await initialization;
     return client.request(payload.method, payload.params);
   });
 
-  ipcMain.handle("harness:status", () => ({
-    running: client !== null && !client.exited,
-    repoRoot,
-  }));
+  ipcMain.handle("harness:status", async () => {
+    let info: InitializeResponse | undefined;
+    try { info = await initialization ?? undefined; } catch {}
+    return { running: Boolean(info && client && !client.exited), repoRoot,
+      modelBridge: info?.modelBridge, error: connectionError };
+  });
 
   app.on("before-quit", () => {
     client?.dispose();

@@ -7,7 +7,7 @@ app.whenReady().then(() => {
   attachHarness(window);
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
+    if (BrowserWindow.getAllWindows().length === 0) attachHarness(createMainWindow());
   });
 });
 
