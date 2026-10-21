@@ -1,3 +1,5 @@
+/// <reference types="vite/client" />
+
 import type { JsonRpcNotification } from "@boss-cli/protocol";
 
 declare global {

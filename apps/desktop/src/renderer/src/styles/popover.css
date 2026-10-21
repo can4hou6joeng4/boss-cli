@@ -1,0 +1,35 @@
+/* Extra specificity keeps legacy .above / .align-right rules from re-anchoring portals. */
+.ui-popover.ui-popover-portal[data-popover] {
+  position: fixed;
+  inset: auto;
+  min-width: min(210px, calc(100vw - 16px));
+  max-width: min(320px, calc(100vw - 16px));
+  overflow: auto;
+  overscroll-behavior: contain;
+  z-index: 1600;
+  font-family: var(--font-sans);
+  outline: none;
+  -webkit-app-region: no-drag;
+  animation: popover-enter 110ms ease-out;
+}
+
+.ui-popover.ui-popover-portal [role^="menuitem"]:focus-visible {
+  outline: none;
+  background: var(--btn-ghost-hover);
+}
+
+.ui-popover.ui-popover-portal [aria-disabled="true"] {
+  opacity: .35;
+  cursor: default;
+}
+
+@keyframes popover-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-popover.ui-popover-portal[data-popover] { animation: none; }
+}
+
+html[data-motion="reduced"] .ui-popover.ui-popover-portal[data-popover] { animation: none; }

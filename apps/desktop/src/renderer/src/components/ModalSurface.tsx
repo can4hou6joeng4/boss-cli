@@ -4,15 +4,17 @@ import { IconClose } from "./Icons";
 export function ModalSurface({ title, onClose, children, className = "" }: { title: string; onClose: () => void; children: ReactNode; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const backdropRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null);
   const close = useRef(onClose); close.current = onClose;
   useLayoutEffect(() => {
-    const trigger = document.activeElement as HTMLElement | null;
+    const trigger = triggerRef.current;
     const siblings = Array.from(document.body.children).filter((el): el is HTMLElement => el instanceof HTMLElement && el !== backdropRef.current).map(el => ({ el, inert: el.inert }));
     siblings.forEach(({ el }) => { el.inert = true; });
-    const focusable = () => [...(ref.current?.querySelectorAll<HTMLElement>("input,button,textarea,select,a[href],[tabindex='0']") ?? [])].filter(el => !el.hasAttribute("disabled") && el.getClientRects().length > 0);
+    const focusable = () => [...(ref.current?.querySelectorAll<HTMLElement>("input,button,textarea,select,a[href],[tabindex]") ?? [])].filter(el => el.tabIndex >= 0 && !el.matches(":disabled,[aria-disabled='true']") && !el.closest("[inert]") && el.getClientRects().length > 0);
     const focusFirst = () => (focusable().find(el => el.tagName === "INPUT") ?? focusable()[0] ?? ref.current)?.focus();
     focusFirst();
     const handle = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
       if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); close.current(); }
       if (event.key === "Tab") {
         const items = focusable(), first = items[0], last = items[items.length - 1];
@@ -23,7 +25,7 @@ export function ModalSurface({ title, onClose, children, className = "" }: { tit
     };
     const focus = (event: FocusEvent) => { if (event.target instanceof Node && !ref.current?.contains(event.target)) focusFirst(); };
     document.addEventListener("keydown", handle, true); document.addEventListener("focusin", focus);
-    return () => { document.removeEventListener("keydown", handle, true); document.removeEventListener("focusin", focus); siblings.forEach(({ el, inert }) => { el.inert = inert; }); if (trigger?.isConnected) trigger.focus(); };
+    return () => { document.removeEventListener("keydown", handle, true); document.removeEventListener("focusin", focus); siblings.forEach(({ el, inert }) => { el.inert = inert; }); if (trigger?.isConnected && !trigger.closest("[inert]")) trigger.focus({ preventScroll: true }); };
   }, []);
   return createPortal(<div className="surface-backdrop" ref={backdropRef} onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }}>
     <div className={`surface-dialog ${className}`} ref={ref} role="dialog" aria-modal="true" aria-label={title} tabIndex={-1}>

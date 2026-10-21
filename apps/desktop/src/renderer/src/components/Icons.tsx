@@ -4,6 +4,24 @@ export interface IconProps extends React.SVGProps<SVGSVGElement> {
   size?: number;
 }
 
+export const IconPin: React.FC<IconProps> = ({ size = 16, ...props }) => (
+  <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+    <path d="m7 3 10 10-3 1-3-3-2 2-2-2 2-2-3-3 1-3Z" /><path d="m8 12-5 5" />
+  </svg>
+);
+
+export const IconSliders: React.FC<IconProps> = ({ size = 16, ...props }) => (
+  <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden="true" {...props}>
+    <path d="M3 5h3m4 0h7M3 10h8m4 0h2M3 15h3m4 0h7" /><path d="M6 3v4m5 1v4m-5 1v4" />
+  </svg>
+);
+
+export const IconGrip: React.FC<IconProps> = ({ size = 16, ...props }) => (
+  <svg width={size} height={size} viewBox="0 0 20 20" fill="currentColor" aria-hidden="true" {...props}>
+    {[5, 10, 15].flatMap(y => [7, 13].map(x => <circle key={`${x}-${y}`} cx={x} cy={y} r="1" />))}
+  </svg>
+);
+
 export const IconPanel: React.FC<IconProps> = ({ size = 16, ...props }) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" {...props}>
     <rect x="2" y="2.5" width="12" height="11" rx="1.5" />
