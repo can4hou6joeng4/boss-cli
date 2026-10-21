@@ -3,10 +3,10 @@
  *
  * 形状参照 Codex 的 app-server 协议：JSON-RPC 2.0 帧 + 方法名用斜杠分层
  * （thread/start、turn/start、item/started 等），请求/响应按 id 关联，
- * 事件单向推送。
+ * 通知与客户端/服务端请求分开关联。此协议独立实现，不宣称兼容 Codex 私有字段。
  */
 
-export const PROTOCOL_VERSION = "0.1.0";
+export const PROTOCOL_VERSION = "0.2.0";
 
 /* ---------- JSON-RPC 2.0 帧 ---------- */
 
@@ -48,6 +48,7 @@ export interface ClientInfo {
 }
 
 export interface InitializeCapabilities {
+  bidirectionalRequests?: boolean;
   /** 声明接收实验性 API 与字段。 */
   experimentalApi?: boolean;
   /** 按名屏蔽的通知方法，例如 "turn/completed"。 */
@@ -57,6 +58,7 @@ export interface InitializeCapabilities {
 }
 
 export interface InitializeParams {
+  protocolVersion?: string;
   clientInfo: ClientInfo;
   capabilities: InitializeCapabilities | null;
 }
@@ -68,19 +70,44 @@ export interface InitializeResponse {
   toolBridge: ToolBridgeStatus;
   modelBridge: { provider: string; model: string; driven: boolean };
   approval: { requiredTools: string[]; timeoutSeconds: number };
+  capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean; parallelThreads: boolean };
+  eventCursor?: string;
 }
 
 /* ---------- 客户端请求方法 ---------- */
 
 export const ClientMethods = {
   initialize: "initialize",
+  initialized: "initialized",
   threadStart: "thread/start",
   threadList: "thread/list",
   threadRead: "thread/read",
+  threadResume: "thread/resume",
+  threadFork: "thread/fork",
+  threadArchive: "thread/archive",
+  threadUnarchive: "thread/unarchive",
+  threadNameSet: "thread/name/set",
+  threadTurnsList: "thread/turns/list",
+  threadItemsList: "thread/items/list",
   toolList: "tool/list",
   turnStart: "turn/start",
   turnInterrupt: "turn/interrupt",
+  turnSteer: "turn/steer",
+  turnRead: "turn/read",
   approvalRespond: "approval/respond",
+  eventList: "event/list",
+  queueAdd: "queue/add",
+  queueList: "queue/list",
+  queueRemove: "queue/remove",
+  modelList: "model/list",
+  configRead: "config/read",
+  connectionRead: "connection/read",
+  connectionCheck: "connection/check",
+  skillsList: "skills/list",
+  attachmentAdd: "attachment/add",
+  attachmentRead: "attachment/read",
+  contextRead: "context/read",
+  contextCompact: "context/compact",
 } as const;
 
 export type ClientMethod = (typeof ClientMethods)[keyof typeof ClientMethods];
@@ -89,6 +116,7 @@ export type ClientMethod = (typeof ClientMethods)[keyof typeof ClientMethods];
 
 export const ServerNotifications = {
   turnStarted: "turn/started",
+  turnCompleted: "turn/completed",
   agentMessageDelta: "agentMessage/delta",
   agentThinkingDelta: "agentThinking/delta",
   itemStarted: "item/started",
@@ -99,6 +127,12 @@ export const ServerNotifications = {
   threadUpdated: "thread/updated",
   sessionError: "session/error",
   harnessDisconnected: "harness/disconnected",
+  connectionStatus: "harness/connectionStatus",
+  threadCreated: "thread/created",
+  threadArchived: "thread/archived",
+  threadUnarchived: "thread/unarchived",
+  threadRenamed: "thread/renamed",
+  queueUpdated: "queue/updated",
 } as const;
 
 export type ServerNotification =
@@ -109,16 +143,27 @@ export type ServerNotification =
 export type ItemKind = "userMessage" | "agentMessage" | "toolCall" | "system";
 
 export interface ThreadSummary {
+  toolPolicy?: "readOnly" | "approval";
   id: string;
   title: string;
   createdAt: string;
   updatedAt: string;
   lastTurn?: { turnId: string; status: TurnStatus } | null;
+  sessionId?: string;
+  projectId?: string | null;
+  model?: string;
+  cwd?: string;
+  archived?: boolean;
+  forkedFromId?: string;
+  forkedFromTurnId?: string;
 }
 
 export interface ThreadItem {
   id: string;
   threadId: string;
+  turnId?: string;
+  clientUserMessageId?: string;
+  queueId?: string;
   kind: ItemKind;
   text?: string;
   toolName?: string;
@@ -128,8 +173,11 @@ export interface ThreadItem {
   status?: "running" | "completed" | "failed";
   thinking?: string;
   resultSummary?: string;
+  source?: { ref: string; tool: string; queriedAt: string };
   errorCode?: string;
   recoveryAction?: string;
+  executionState?: "queued" | "pending_approval" | "approved" | "not_approved" | "executing" | "completed" | "failed" | "not_executed" | "outcome_unknown";
+  result?: { ok: boolean; command: string; data: unknown; error: unknown; hints: unknown };
   /** 需要用户批准的工具调用会带这个字段；界面据此渲染审批卡。 */
   approval?: ApprovalState;
 }
@@ -144,10 +192,14 @@ export interface ApprovalState {
   /** 出站操作必须显式批准；只读操作可为 false。 */
   consequential: boolean;
   decision?: "approve" | "deny" | "expired";
+  deadline?: number;
 }
 
 export interface ThreadStartParams {
+  toolPolicy?: "readOnly" | "approval";
   title?: string;
+  projectId?: string;
+  model?: string;
 }
 
 export interface ThreadStartResponse {
@@ -156,15 +208,24 @@ export interface ThreadStartResponse {
 
 export interface ThreadListResponse {
   threads: ThreadSummary[];
+  nextCursor?: string | null;
 }
 
 export interface ThreadReadParams {
   threadId: string;
+  excludeTurns?: boolean;
+  snapshot?: boolean;
 }
 
 export interface ThreadReadResponse {
   thread: ThreadSummary;
   items: ThreadItem[];
+  turns?: TurnSummary[] | null;
+  activeTurnId?: string | null;
+  eventCursor?: string;
+  queue?: QueueItem[];
+  snapshotId?: string;
+  itemCount?: number;
 }
 
 /** 内核允许清单中的工具；写操作需要逐次批准。 */
@@ -192,10 +253,17 @@ export interface ToolBridgeStatus {
 export interface TurnStartParams {
   threadId: string;
   input: string;
+  /** A client-created identity supports reconciliation after an unknown outcome. */
+  clientUserMessageId?: string;
+  model?: string;
+  attachmentIds?: string[];
+  skillIds?: string[];
 }
 
 export interface TurnStartResponse {
   turnId: string;
+  clientUserMessageId?: string;
+  deduplicated?: boolean;
 }
 
 export type TurnStatus = "running" | "completed" | "interrupted" | "blocked" | "error";
@@ -219,6 +287,7 @@ export interface TurnInterruptResponse {
 export interface ApprovalRequestedParams {
   approvalId: string;
   threadId: string;
+  turnId?: string;
   itemId: string;
   toolName: string;
   summary: string;
@@ -226,9 +295,71 @@ export interface ApprovalRequestedParams {
   params?: Record<string, unknown>;
   /** 出站操作必须显式批准；只读操作可为 false。 */
   consequential: boolean;
+  deadline?: number;
 }
 
 export interface ApprovalRespondParams {
   approvalId: string;
   approved: boolean;
 }
+
+export const ServerRequests = { toolRequestApproval: "item/tool/requestApproval" } as const;
+
+export interface ToolApprovalResponse { approved: boolean }
+
+export interface PageParams { cursor?: string | null; limit?: number }
+export interface ThreadListParams extends PageParams { archived?: boolean; projectId?: string }
+export interface TurnSummary { turnId: string; threadId: string; status: TurnStatus; model?: string; startedAt?: string; updatedAt?: string }
+export interface TurnListResponse { turns: TurnSummary[]; nextCursor: string | null }
+export interface ItemListResponse { items: ThreadItem[]; nextCursor: string | null }
+
+export interface DurableEvent {
+  method: string;
+  params: Record<string, unknown> & { eventCursor: string; eventId: string; threadId?: string; turnId?: string };
+}
+export interface EventListResponse { events: DurableEvent[]; nextCursor: string; hasMore: boolean }
+
+export interface QueueItem {
+  id: string;
+  kind: "steering" | "followUp";
+  input: string;
+  status: "queued" | "delivering" | "delivered" | "paused" | "cancelled";
+  expectedTurnId?: string | null;
+  clientUserMessageId?: string | null;
+}
+
+export interface ModelDescriptor { id: string; provider: string; configured: boolean; available: boolean }
+export interface ModelListResponse { models: ModelDescriptor[]; source: "local-config" }
+export type ConnectionTarget = "local" | "model" | "platform";
+export interface ConnectionCheck {
+  state: "unchecked" | "checking" | "ready" | "failed" | "blocked" | "disabled";
+  summary: string;
+  checkedAt?: string | null;
+  code?: string | null;
+  provider?: string;
+  model?: string;
+  authState?: string;
+  binarySource?: string;
+}
+export interface ConnectionReport { cli: ConnectionCheck; model: ConnectionCheck; platform: ConnectionCheck }
+/** Login control contains no credentials; cookie transport is private to the host. */
+export interface PlatformLoginStatus {
+  state: "idle" | "opening" | "waiting" | "saving" | "succeeded" | "failed" | "blocked" | "cancelled";
+  summary: string;
+  code?: string | null;
+  phase?: "scan" | "confirm" | "credentials" | "verify";
+  identity?: "jobSeeker" | "recruiter" | "unknown";
+  /** Desktop-only context; never contains platform credentials or page text. */
+  threadId?: string;
+  browserId?: string;
+  browser?: { available: boolean; loading: boolean; canGoBack: boolean; canGoForward: boolean };
+}
+export type PlatformLoginAction = "open" | "status" | "cancel" | "layout" | "back" | "forward" | "reload";
+export interface PlatformLoginContext {
+  threadId: string;
+  browserId?: string;
+  visible?: boolean;
+  bounds?: { x: number; y: number; width: number; height: number };
+}
+export interface SkillDescriptor { id: string; name: string; description: string; digest: string; bytes: number }
+export interface AttachmentDescriptor { id: string; name: string; digest: string; bytes: number; mediaType: string }
