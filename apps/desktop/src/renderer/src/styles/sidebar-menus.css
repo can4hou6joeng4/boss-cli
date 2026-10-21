@@ -1,0 +1,15 @@
+.sidebar-project-row { display: flex; align-items: center; border-radius: 6px; }
+.sidebar-project-row:hover, .sidebar-project-row:focus-within { background: var(--btn-ghost-hover); }
+.sidebar-project-row .sidebar-folder { flex: 1; min-width: 0; width: auto; }
+.sidebar-project-row .sidebar-folder:hover { background: transparent; }
+.sidebar-project-row .sidebar-folder > span:nth-last-child(2) { flex: 1; }
+.sidebar-project-row .project-overflow { width: 23px; height: 23px; margin-right: 3px; opacity: 0; }
+.sidebar-project-row:hover .project-overflow, .sidebar-project-row:focus-within .project-overflow, .project-overflow[aria-expanded="true"] { opacity: 1; }
+.sidebar-section-actions { display: flex; align-items: center; gap: 2px; }
+.sidebar-section-heading:focus-within .titlebar-btn, .sidebar-section-heading .titlebar-btn[aria-expanded="true"] { opacity: 1; }
+.sidebar-session > .session-overflow { flex: none; }
+.ui-popover.sidebar-context-menu { min-width: 226px; max-width: min(300px, calc(100vw - 20px)); }
+.ui-popover.sidebar-context-menu .menu-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-popover.sidebar-context-menu > button > span:not(.menu-shortcut) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-recent-section .sidebar-recents { margin: 3px 8px 6px; }
+.sidebar-feedback { position: absolute; bottom: 15px; margin: 0 8px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--panel-glass); box-shadow: var(--shadow-popup); color: var(--text-main); font-size: 11px; z-index: 300; }

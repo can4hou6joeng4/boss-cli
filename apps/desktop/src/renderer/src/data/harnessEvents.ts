@@ -9,8 +9,11 @@ export interface HarnessEvent {
     text?: string; delta?: string; message?: string; thinking?: string;
     status?: string; toolName?: string; arguments?: Record<string, unknown>;
     resultSummary?: string; error?: { code?: string; message?: string };
+    source?: ThreadItem["source"];
     approvalId?: string; summary?: string; params?: Record<string, unknown>;
     consequential?: boolean; approval?: ApprovalState;
+    eventCursor?: string; eventId?: string; clientUserMessageId?: string;
+    state?: string; generation?: number; running?: boolean;
   };
 }
 
@@ -19,9 +22,9 @@ export function reduceHarnessEvent(previous: MessageItem[], event: HarnessEvent)
   const params = event.params ?? {};
   const id = params.itemId ?? (params.approvalId ? `approval-${params.approvalId}` : undefined);
   if (!id) return previous;
-  const index = previous.findIndex(item => item.id === id || (params.approvalId && item.approval?.approvalId === params.approvalId));
+  const index = previous.findIndex(item => item.id === id || item.id === params.clientUserMessageId || (params.approvalId && item.approval?.approvalId === params.approvalId));
   const before = index >= 0 ? previous[index] : undefined;
-  let item: MessageItem = before ?? { id, role: "agent", paragraphs: [] };
+  let item: MessageItem = before ?? { id, turnId: params.turnId, role: "agent", paragraphs: [] };
   switch (event.method) {
     case "agentMessage/delta":
       item = { ...item, paragraphs: [(item.paragraphs?.join("") ?? "") + (params.delta ?? "")] };
@@ -30,16 +33,20 @@ export function reduceHarnessEvent(previous: MessageItem[], event: HarnessEvent)
       item = { ...item, thinkingTime: "思考过程", thinkingContent: (item.thinkingContent ?? "") + (params.delta ?? "") };
       break;
     case "item/completed": {
-      if (params.kind !== "agentMessage") return previous;
-      const message = toMessage({ id, threadId: params.threadId ?? "", kind: "agentMessage", text: params.text, thinking: params.thinking });
+      if (params.kind !== "agentMessage" && params.kind !== "userMessage") return previous;
+      const message = toMessage({ id, threadId: params.threadId ?? "", turnId: params.turnId, kind: params.kind, text: params.text, thinking: params.thinking });
       item = { ...item, ...message };
       break;
     }
+    case "approval/decided":
+      if (!params.approval) return previous;
+      item = { ...item, approval: params.approval };
+      break;
     case "toolCall/started":
       item = { ...item, toolUse: { name: params.toolName ?? "tool", input: JSON.stringify(params.arguments ?? {}, null, 2), result: "正在执行" } };
       break;
     case "toolCall/completed":
-      item = { ...item, toolUse: { name: params.toolName ?? item.toolUse?.name ?? "tool", input: item.toolUse?.input ?? "{}", result: params.resultSummary ?? params.error?.message ?? params.status ?? "已结束" },
+      item = { ...item, toolUse: { ...item.toolUse, source: params.source ?? item.toolUse?.source, name: params.toolName ?? item.toolUse?.name ?? "tool", input: item.toolUse?.input ?? "{}", result: params.resultSummary ?? params.error?.message ?? params.status ?? "已结束" },
         ...(params.approval ? { approval: params.approval } : {}) };
       break;
     case "approval/requested":

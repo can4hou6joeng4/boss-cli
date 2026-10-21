@@ -1,10 +1,10 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { app, ipcMain, type BrowserWindow } from "electron";
-import { HarnessClient } from "@boss-cli/app-client";
-import type { InitializeResponse } from "@boss-cli/protocol";
+import { app, ipcMain, BrowserWindow, type IpcMainInvokeEvent } from "electron";
+import { HarnessHostManager, type HarnessHostConnection } from "@boss-cli/app-client";
+import type { JsonRpcNotification } from "@boss-cli/protocol";
+import { isTrustedRendererUrl, validateHarnessRequest } from "./security";
 
-/** 从当前目录向上找到仓库根，以 pnpm-workspace.yaml 为标记。 */
 function findRepoRoot(start: string): string {
   let current = resolve(start);
   for (let depth = 0; depth < 6; depth += 1) {
@@ -16,69 +16,79 @@ function findRepoRoot(start: string): string {
   return resolve(start, "..", "..");
 }
 
-/**
- * 主进程与内核之间的桥。
- *
- * 外壳不 import 内核代码：只把 Python 内核当子进程启动，通过 stdio 上的
- * JSON-RPC 收发。渲染层再经 IPC 走这两条通道。
- */
-let client: HarnessClient | null = null;
-let attachedWindow: BrowserWindow | null = null;
-let initialization: Promise<InitializeResponse> | null = null;
-let connectionError: string | undefined;
+const manager = new HarnessHostManager();
+const windows = new Set<BrowserWindow>();
+let host: HarnessHostConnection | null = null;
+let repoRoot = "";
+let ipcRegistered = false;
+/** A window, its current main frame and its entry URL must all match. */
+function trustedSender(event: IpcMainInvokeEvent): void {
+  const window = [...windows].find((candidate) => !candidate.isDestroyed() && candidate.webContents === event.sender);
+  if (!window || !event.senderFrame || event.senderFrame !== event.sender.mainFrame) {
+    throw new Error("untrusted harness IPC sender");
+  }
+  if (!isTrustedRendererUrl(event.senderFrame.url, resolve(__dirname, "../renderer/index.html"), process.env.ELECTRON_RENDERER_URL)) {
+    throw new Error("untrusted harness IPC origin");
+  }
+}
 
-export function attachHarness(window: BrowserWindow): void {
-  attachedWindow = window;
-  if (client) return;
+function send(window: BrowserWindow, notification: JsonRpcNotification): void {
+  if (window.isDestroyed() || window.webContents.isDestroyed()) return;
+  try { window.webContents.send("harness:notification", notification); } catch {}
+}
 
-  const repoRoot = findRepoRoot(app.getAppPath());
-  const harnessSrc = resolve(repoRoot, "harness", "src");
-
-  // 内核要求 Python 3.10+；优先用仓库内的虚拟环境，回退到 PATH 上的 python3。
+function createHost(): HarnessHostConnection {
+  repoRoot = findRepoRoot(app.getAppPath());
   const venvPython = resolve(repoRoot, ".venv", "bin", "python");
   const python = process.env.BOSS_HARNESS_PYTHON ?? (existsSync(venvPython) ? venvPython : "python3");
-
-  client = new HarnessClient({
-    command: python,
-    args: ["-m", "boss_harness", "--listen", "stdio://"],
-    cwd: repoRoot,
-    env: {
-      PYTHONPATH: harnessSrc,
-      PYTHONUNBUFFERED: "1",
-      BOSS_HARNESS_PROVIDER: process.env.BOSS_HARNESS_PROVIDER ?? "openai",
+  const connection = manager.add({
+    hostId: "local",
+    clientInfo: { name: "boss-cli-desktop", version: app.getVersion() },
+    supportsReconnect: true,
+    // Explicit user recovery is also exposed; this small retry budget covers process crashes.
+    autoReconnect: { maxAttempts: 3, initialDelayMs: 500, maxDelayMs: 5_000 },
+    client: {
+      command: python, args: ["-m", "boss_harness", "--listen", "stdio://"], cwd: repoRoot,
+      env: {
+        PYTHONPATH: resolve(repoRoot, "harness", "src"), PYTHONUNBUFFERED: "1",
+        BOSS_HARNESS_PROVIDER: process.env.BOSS_HARNESS_PROVIDER ?? "openai",
+      },
     },
-  }).start();
-
-  initialization = client.request<InitializeResponse>("initialize", {
-      clientInfo: { name: "boss-cli-desktop", version: app.getVersion() },
-      capabilities: { experimentalApi: false },
-    });
-  void initialization.catch((error: unknown) => {
-      connectionError = String(error);
-      process.stderr.write(`[desktop] harness initialize failed: ${String(error)}\n`);
-    });
-
-  client.onNotification((notification) => {
-    if (attachedWindow && !attachedWindow.isDestroyed()) {
-      attachedWindow.webContents.send("harness:notification", notification);
-    }
   });
+  connection.onNotification((notification) => { for (const window of windows) send(window, notification); });
+  return connection;
+}
 
-  ipcMain.handle("harness:request", async (_event, payload: { method: string; params?: unknown }) => {
-    if (!client) throw new Error("harness is not attached");
-    await initialization;
-    return client.request(payload.method, payload.params);
+function registerIPC(): void {
+  if (ipcRegistered) return;
+  ipcRegistered = true;
+  ipcMain.handle("harness:request", async (event, payload: unknown) => {
+    trustedSender(event);
+    const request = validateHarnessRequest(payload);
+    if (!host) throw new Error("harness host is not attached");
+    return host.request(request.method, request.params);
   });
+  ipcMain.handle("harness:status", (event) => {
+    trustedSender(event);
+    return { ...manager.get().status(), repoRoot };
+  });
+  ipcMain.handle("harness:reconnect", async (event) => {
+    trustedSender(event);
+    await manager.get().reconnect();
+    return { ...manager.get().status(), repoRoot };
+  });
+  app.once("before-quit", () => { manager.dispose(); host = null; windows.clear(); });
+}
 
-  ipcMain.handle("harness:status", async () => {
-    let info: InitializeResponse | undefined;
-    try { info = await initialization ?? undefined; } catch {}
-    return { running: Boolean(info && client && !client.exited), repoRoot,
-      modelBridge: info?.modelBridge, error: connectionError };
+/** Windows subscribe to the host registry; closing one window cannot stop the backend. */
+export function attachHarness(window: BrowserWindow): void {
+  if (windows.has(window)) return;
+  windows.add(window);
+  window.once("closed", () => { windows.delete(window); });
+  host ??= createHost();
+  registerIPC();
+  window.webContents.on("did-finish-load", () => {
+    if (host) send(window, { jsonrpc: "2.0", method: "harness/connectionStatus", params: host.status() });
   });
-
-  app.on("before-quit", () => {
-    client?.dispose();
-    client = null;
-  });
+  void host.ensureReady().catch(() => { /* Host status conveys initialization and reconnect failures. */ });
 }

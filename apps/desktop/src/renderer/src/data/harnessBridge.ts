@@ -11,6 +11,10 @@ import {
   type ThreadListResponse,
   type ThreadReadResponse,
   type TurnInterruptResponse,
+  type TurnStartResponse,
+  type ModelListResponse,
+  type ConnectionReport,
+  type ConnectionTarget,
 } from "@boss-cli/protocol";
 import { formatRelativeTime } from "@boss-cli/shared";
 import type { MessageItem, SessionItem } from "./mockData";
@@ -29,6 +33,8 @@ export interface HarnessStatus {
   repoRoot: string;
   modelBridge?: { provider: string; model: string; driven: boolean };
   error?: string;
+  state?: string;
+  generation?: number;
 }
 
 export async function harnessStatus(): Promise<HarnessStatus | null> {
@@ -57,13 +63,21 @@ export async function listThreads(): Promise<SessionItem[]> {
   const api = bridge();
   if (!api) return [];
   try {
-    const response = await api.request<ThreadListResponse>(ClientMethods.threadList);
-    return response.threads.map((thread) => ({
+    const threads: ThreadListResponse["threads"] = [];
+    let cursor: string | null = null;
+    do {
+      const response: ThreadListResponse = await api.request(ClientMethods.threadList, { cursor, limit: 200 });
+      threads.push(...response.threads);
+      cursor = response.nextCursor ?? null;
+    } while (cursor);
+    return threads.map((thread) => ({
       id: thread.id,
       title: thread.title,
       timeAgo: formatRelativeTime(thread.updatedAt),
+      updatedAt: thread.updatedAt,
       status: thread.lastTurn?.status === "running" ? "running" as const : "idle" as const,
       turnId: thread.lastTurn?.turnId,
+      toolPolicy: thread.toolPolicy ?? "approval",
       projectId: HARNESS_PROJECT_ID,
     }));
   } catch {
@@ -71,18 +85,20 @@ export async function listThreads(): Promise<SessionItem[]> {
   }
 }
 
-export async function startThread(title: string): Promise<SessionItem | null> {
+export async function startThread(title: string, model?: string): Promise<SessionItem | null> {
   const api = bridge();
   if (!api) return null;
   try {
-    const response = await api.request<{ thread: { id: string; title: string; updatedAt: string } }>(
+    const response = await api.request<{ thread: { id: string; title: string; updatedAt: string; toolPolicy: "readOnly" | "approval" } }>(
       ClientMethods.threadStart,
-      { title },
+      { title, model, toolPolicy: "readOnly" },
     );
     return {
       id: response.thread.id,
       title: response.thread.title,
       timeAgo: formatRelativeTime(response.thread.updatedAt),
+      updatedAt: response.thread.updatedAt,
+      toolPolicy: response.thread.toolPolicy,
       status: "idle",
       projectId: HARNESS_PROJECT_ID,
     };
@@ -91,14 +107,13 @@ export async function startThread(title: string): Promise<SessionItem | null> {
   }
 }
 
-export async function sendTurn(threadId: string, input: string): Promise<boolean> {
+export async function sendTurn(threadId: string, input: string, clientUserMessageId: string, model?: string): Promise<TurnStartResponse | null> {
   const api = bridge();
-  if (!api) return false;
+  if (!api) return null;
   try {
-    await api.request(ClientMethods.turnStart, { threadId, input });
-    return true;
+    return await api.request(ClientMethods.turnStart, { threadId, input, clientUserMessageId, model });
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -129,18 +144,21 @@ export async function respondApproval(approvalId: string, approved: boolean): Pr
 export function toMessage(item: ThreadItem): MessageItem | null {
   switch (item.kind) {
     case "userMessage":
-      return { id: item.id, role: "user", content: item.text ?? "" };
+      return { id: item.id, turnId: item.turnId, role: "user", content: item.text ?? "" };
     case "agentMessage":
-      return { id: item.id, role: "agent", paragraphs: item.text ? [item.text] : [],
+      return { id: item.id, turnId: item.turnId, role: "agent", paragraphs: item.text ? [item.text] : [],
         ...(item.thinking ? { thinkingTime: "思考过程", thinkingContent: item.thinking } : {}) };
     case "toolCall": {
       const approval = item.approval ? toApproval(item.approval) : undefined;
       return {
         id: item.id,
+        turnId: item.turnId,
         role: "agent",
         paragraphs: [],
               toolUse: {
                 name: item.toolName ?? "tool",
+                source: item.source,
+                output: item.result ? JSON.stringify(item.result, null, 2) : undefined,
                 input: JSON.stringify(item.toolArguments ?? {}, null, 2),
                 result: item.resultSummary ?? (item.status === "running" ? "正在执行" : item.status ?? ""),
               },
@@ -150,6 +168,30 @@ export function toMessage(item: ThreadItem): MessageItem | null {
     default:
       return null;
   }
+}
+
+export async function configuredModels(): Promise<ModelListResponse["models"]> {
+  try { return (await bridge()?.request<ModelListResponse>(ClientMethods.modelList))?.models ?? []; }
+  catch { return []; }
+}
+
+export async function connectionReport(target?: ConnectionTarget): Promise<ConnectionReport> {
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  return api.request(target ? ClientMethods.connectionCheck : ClientMethods.connectionRead, target ? { target } : {});
+}
+
+export async function reconnectHarness(): Promise<boolean> {
+  try { return (await window.boss.reconnect()).running; }
+  catch { return false; }
+}
+
+export async function forkThread(threadId: string, turnId: string): Promise<SessionItem | null> {
+  try {
+    const response = await bridge()?.request<ThreadReadResponse>(ClientMethods.threadFork, { threadId, turnId });
+    if (!response) return null;
+    return { id: response.thread.id, title: response.thread.title, timeAgo: "刚刚", status: "idle", projectId: HARNESS_PROJECT_ID, toolPolicy: response.thread.toolPolicy ?? "approval" };
+  } catch { return null; }
 }
 
 function toApproval(state: ApprovalState): NonNullable<MessageItem["approval"]> {

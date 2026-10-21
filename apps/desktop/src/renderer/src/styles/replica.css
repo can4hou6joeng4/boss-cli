@@ -186,6 +186,8 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .search-field { display: flex; gap: 10px; align-items: center; margin: 4px 20px 10px; padding: 11px 0; border-bottom: 1px solid var(--border-color); color: var(--text-faint); }
 .search-field input { background: transparent; border: 0; color: var(--text-main); font-size: 15px; min-width: 0; width: 100%; outline: none; }
 .search-field input:focus-visible { outline: none; }
+.search-clear { display: grid; place-items: center; flex: none; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--text-faint); cursor: pointer; }
+.search-clear:hover { background: var(--btn-ghost-hover); color: var(--text-main); }
 .search-results { padding: 4px 10px 10px; overflow: auto; max-height: 48vh; }
 .search-results>p { color: var(--text-faint); font-size: 10px; padding: 5px 12px 10px; }
 .search-result { display: flex; align-items: center; width: 100%; gap: 12px; text-align: left; background: transparent; border: 0; border-radius: 9px; padding: 11px 12px; color: var(--text-muted); cursor: pointer; }
@@ -333,3 +335,8 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .chat-heading-2 { font-size: 19px; }
 .chat-heading-3 { font-size: 16px; }
 .chat-heading-4, .chat-heading-5, .chat-heading-6 { font-size: 14px; }
+.tool-source-reference { display: flex; flex-wrap: wrap; gap: 6px 12px; margin: 10px 8px 6px; font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+.tool-source-reference code { user-select: text; }
+.tool-source-output { margin: 10px 8px; font-size: 12px; color: var(--text-secondary); }
+.tool-source-output summary { cursor: pointer; padding: 4px 0; }
+.tool-source-output pre { max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; padding: 10px; border-radius: 8px; background: var(--bg-tertiary); user-select: text; }

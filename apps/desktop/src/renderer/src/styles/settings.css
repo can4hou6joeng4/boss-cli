@@ -619,3 +619,13 @@ html[data-motion="reduced"] *::after {
   .settings-content { padding-right: 14px; padding-left: 14px; }
   .settings-footer { padding-right: 14px; padding-left: 14px; }
 }
+.connection-check-row { align-items: flex-start; gap: 16px; }
+.connection-check-controls { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; min-width: 150px; padding-top: 2px; }
+.connection-check-time { font-size: 11px; color: var(--text-muted); margin: 6px 0 0; }
+.connection-check-error { color: var(--text-secondary); font-size: 12px; display: flex; align-items: center; gap: 12px; }
+.connection-login-status { color: var(--text-main); font-size: 13px; font-weight: 550; line-height: 1.6; margin: 10px 0 0; }
+.connection-account-notice { margin-top: 12px; padding: 11px 13px; border: 1px solid var(--border-color, #c5d8d1); border-left: 3px solid #258575; border-radius: 8px; background: var(--bg-hover, #f0f7f4); font-size: 12px; line-height: 1.65; color: var(--text-secondary); }
+.connection-account-notice strong { color: var(--text-main); font-size: 13px; }
+.connection-account-notice p { margin: 4px 0 0; }
+.connection-check-controls .settings-button.is-primary { background: var(--text-main, #1f2927); color: var(--bg-window, #fff); border-color: transparent; }
+.connection-check-controls .settings-button.is-primary:disabled { opacity: .45; }

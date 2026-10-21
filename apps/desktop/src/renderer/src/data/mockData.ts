@@ -64,11 +64,13 @@ export const MODEL_OPTIONS: ModelOption[] = [
 ];
 
 export interface SessionItem {
+  toolPolicy?: "readOnly" | "approval";
   /** 内核回报的当前/最近回合，用于界面重载后恢复停止控制。 */
   turnId?: string;
   id: string;
   title: string;
   timeAgo: string;
+  updatedAt?: string;
   status: "idle" | "running" | "completed";
   projectId: string;
 }
@@ -120,6 +122,7 @@ export interface ApprovalData {
   params: Record<string, unknown>;
   /** `expired` 是内核在等待超时后给的结论：按未批准处理。 */
   decision?: "approve" | "deny" | "expired";
+  submitted?: boolean;
   remember?: boolean;
   /** 内核给出的审批 id；仿真数据没有它，因此仿真卡片不会真的发给内核。 */
   approvalId?: string;
@@ -145,6 +148,7 @@ export interface QuestionData {
 
 export interface MessageItem {
   id: string;
+  turnId?: string;
   role: "user" | "agent";
   content?: string;
   paragraphs?: string[];
@@ -155,6 +159,8 @@ export interface MessageItem {
     name: string;
     input: string;
     result?: string;
+    source?: { ref: string; tool: string; queriedAt: string };
+    output?: string;
   };
   approval?: ApprovalData;
   plan?: PlanData;

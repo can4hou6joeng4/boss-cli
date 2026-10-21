@@ -14,6 +14,7 @@ import {
   IconTerminal,
 } from "./Icons";
 import "../styles/settings.css";
+import { ConnectionSettings } from "./ConnectionSettings";
 
 export interface SettingsDialogProps {
   isOpen: boolean;
@@ -22,9 +23,11 @@ export interface SettingsDialogProps {
   onToggleTheme: () => void;
   onOpenShortcuts: () => void;
   harnessUp: boolean;
+  initialSection?: SettingsSection;
+  onLogin?: () => void;
 }
 
-type SettingsSection = "general" | "appearance" | "notifications" | "connections" | "data" | "keyboard" | "about";
+export type SettingsSection = "general" | "appearance" | "notifications" | "connections" | "data" | "keyboard" | "about";
 type Density = "compact" | "comfortable";
 type Motion = "reduced" | "full";
 
@@ -106,7 +109,7 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: () =
 }
 
 /** Keep mounted with isOpen=false so saved interface preferences apply at startup. */
-export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenShortcuts, harnessUp }: SettingsDialogProps): JSX.Element | null {
+export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenShortcuts, harnessUp, initialSection, onLogin }: SettingsDialogProps): JSX.Element | null {
   const [section, setSection] = useState<SettingsSection>("general");
   const [preferences, setPreferences] = useState<UIPreferences>(readPreferences);
   const [status, setStatus] = useState("");
@@ -115,6 +118,10 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
   const closeRef = useRef(onClose);
   const titleId = useId();
   closeRef.current = onClose;
+
+  useLayoutEffect(() => {
+    if (isOpen && initialSection) { setSection(initialSection); setStatus(""); }
+  }, [isOpen, initialSection]);
 
   useEffect(() => {
     applyPreferences(preferences);
@@ -144,9 +151,10 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
     const focusables = (): HTMLElement[] => Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE))
       .filter((element) => element.getClientRects().length > 0 && !element.closest("[inert]"));
     const focusFirst = (): void => {
-      (dialog.querySelector<HTMLElement>("[aria-current='page']") ?? focusables()[0] ?? dialog).focus({ preventScroll: true });
+      (dialog.querySelector<HTMLElement>(`[data-settings-section='${initialSection ?? section}']`) ?? dialog.querySelector<HTMLElement>("[aria-current='page']") ?? focusables()[0] ?? dialog).focus({ preventScroll: true });
     };
     const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -242,7 +250,7 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
           <div className="settings-sidebar-heading">设置</div>
           <nav className="settings-navigation" aria-label="设置分类">
             {SECTIONS.map((item) => (
-              <button key={item.id} type="button" className={`settings-navigation-item${section === item.id ? " is-active" : ""}`} aria-current={section === item.id ? "page" : undefined} onClick={() => { setSection(item.id); setStatus(""); }}>
+              <button key={item.id} data-settings-section={item.id} type="button" className={`settings-navigation-item${section === item.id ? " is-active" : ""}`} aria-current={section === item.id ? "page" : undefined} onClick={() => { setSection(item.id); setStatus(""); }}>
                 <span aria-hidden="true">{item.icon}</span>
                 <span>{item.title}</span>
               </button>
@@ -289,12 +297,7 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
             )}
 
             {section === "connections" && (
-              <>
-                <SettingRow title="招聘 Harness" description="当前桌面进程提供的本机运行状态"><span className={`settings-badge${harnessUp ? " is-connected" : ""}`}><span className="settings-status-dot" />{harnessUp ? "运行中" : "未连接"}</span></SettingRow>
-                <SettingRow title="模型服务" description="由本机 Harness 的供应商配置决定"><span className="settings-static-value">未在界面检测</span></SettingRow>
-                <SettingRow title="平台连接" description="招聘平台的登录与认证状态"><span className="settings-badge">未在界面检测</span></SettingRow>
-                <div className="settings-note"><IconTerminal size={17} /><div><h3>模型配置</h3><p>在项目的 <code>docs/model-integration.md</code> 中查看供应商配置方式。更改本机配置后重新启动桌面端。</p><p>Harness 运行状态不代表模型或招聘平台已经连通。</p></div></div>
-              </>
+              <ConnectionSettings harnessUp={harnessUp} onLogin={onLogin} />
             )}
 
             {section === "data" && (

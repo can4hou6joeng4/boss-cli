@@ -4,21 +4,29 @@ import { DiffCard } from "./DiffCard";
 import { Composer } from "./Composer";
 import { RichMarkdown } from "../components/RichMarkdown";
 import { type MessageItem, type ConversationMode } from "../data/mockData";
+import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
 
 export interface ConversationAreaProps {
   messages: MessageItem[]; currentMode: ConversationMode; onModeChange: (mode: ConversationMode) => void;
-  onSendMessage: (text: string) => void; simulateLocal?: boolean; running?: boolean; taskBlocked?: boolean;
+  onSendMessage: ComposerSend;
+  draft?: ComposerDraft; onDraftChange?: UpdateComposerDraft; simulateLocal?: boolean; running?: boolean; taskBlocked?: boolean;
   activeModelId?: string; onSelectModel?: (id: string) => void; onOpenSettings?: () => void; onInterrupt?: () => void;
+  configuredModelLabel?: string; readOnly?: boolean;
+  loginGuide?: React.ReactNode; onLogin?: () => void;
   onApprovalDecision?: (approvalId: string, approved: boolean, toolName: string, remember: boolean) => void | boolean | Promise<boolean>;
   onReviewDiff?: () => void; onRevertDiff?: () => void; onOpenRewind?: () => void; onOpenCockpit?: () => void;
 }
 export const ConversationArea: React.FC<ConversationAreaProps> = ({
-  messages: initialMessages, currentMode, onModeChange, onSendMessage, simulateLocal = true,
-  running = false, taskBlocked = false, activeModelId, onSelectModel, onOpenSettings,
-  onInterrupt, onApprovalDecision, onReviewDiff, onRevertDiff, onOpenRewind,
+  messages: initialMessages, readOnly = false, currentMode, onModeChange, onSendMessage, simulateLocal = true,
+  running = false, taskBlocked = false, draft, onDraftChange, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings,
+  onInterrupt, onApprovalDecision, onReviewDiff, onRevertDiff, onOpenRewind, loginGuide, onLogin,
 }) => {
   const [messages, setMessages] = useState<MessageItem[]>(initialMessages);
-  const [inputText, setInputText] = useState("");
+  const [localDraft, setLocalDraft] = useState(createComposerDraft);
+  const composerDraft = draft ?? localDraft;
+  const updateDraft = onDraftChange ?? setLocalDraft;
+  const inputText = composerDraft.text;
+  const setInputText = (text: string) => updateDraft(previous => withDraftText(previous, text));
   const [approvalDrafts, setApprovalDrafts] = useState<Record<string, string>>({});
   const [approvalEditing, setApprovalEditing] = useState<Record<string, boolean>>({});
   const [rememberChoices, setRememberChoices] = useState<Record<string, boolean>>({});
@@ -56,6 +64,11 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
       const accepted = await onApprovalDecision?.(approval.approvalId, decision === "approve", approval.toolName, remember);
       setPendingApproval(null);
       if (accepted !== true) { setApprovalError("审批未被受理，请检查连接或等待状态刷新后重试。"); return; }
+      if (!simulateLocal) {
+        setMessages(previous => previous.map(message => message.id === msgId && message.approval
+          ? { ...message, approval: { ...message.approval, submitted: true } } : message));
+        return;
+      }
     }
     setMessages(previous => previous.map(message => message.id === msgId && message.approval
       ? { ...message, approval: { ...message.approval, decision, remember } } : message));
@@ -212,6 +225,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                       <span>调用工具: <strong>{item.toolUse.name}</strong></span>
                     </summary>
                     <div className="tool-code-preview">{item.toolUse.input}</div>
+                    {item.toolUse.source && <div className="tool-source-reference"><span>来源编号</span><code>{item.toolUse.source.ref}</code><span>查询于 {new Date(item.toolUse.source.queriedAt).toLocaleString()}</span></div>}
                     {item.toolUse.result && (
                       <div
                         style={{
@@ -226,6 +240,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                         {item.toolUse.result}
                       </div>
                     )}
+                    {item.toolUse.output && <details className="tool-source-output"><summary>查看结构化结果</summary><pre>{item.toolUse.output}</pre></details>}
                   </details>
                 )}
 
@@ -398,10 +413,10 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                             <>
                               <button
                                 className="approval-btn approve"
-                                disabled={pendingApproval === item.id}
+                                disabled={pendingApproval === item.id || item.approval.submitted}
                                 onClick={() => void handleApproval(item.id, "approve")}
                               >
-                                批准
+                                {item.approval.submitted ? "已提交，等待确认" : "批准"}
                               </button>
                               <button
                                 className="approval-btn secondary"
@@ -418,6 +433,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                               </button>
                               <button
                                 className="approval-btn deny"
+                                disabled={pendingApproval === item.id || item.approval.submitted}
                                 onClick={() => handleApproval(item.id, "deny")}
                               >
                                 拒绝
@@ -529,11 +545,12 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
 
       <div className="thread-composer-wrapper">
         <div className="thread-composer-inner">
+          {loginGuide}
           {approvalError && <div className="composer-notice" role="alert">{approvalError}</div>}
-          <Composer ref={textareaRef} value={inputText} onChange={setInputText} onSend={onSendMessage}
-            isRunning={running} blocked={taskBlocked} onInterrupt={onInterrupt} preview={simulateLocal}
-            currentMode={currentMode} onModeChange={onModeChange} activeModelId={activeModelId}
-            onSelectModel={onSelectModel} onOpenSettings={onOpenSettings} />
+          <div className="thread-composer-input"><Composer ref={textareaRef} value={inputText} onChange={setInputText} onSend={onSendMessage} draft={composerDraft} onDraftChange={updateDraft}
+            readOnly={readOnly} isRunning={running} blocked={taskBlocked} onInterrupt={onInterrupt} preview={simulateLocal}
+            currentMode={currentMode} onModeChange={onModeChange} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel}
+            onSelectModel={onSelectModel} onOpenSettings={onOpenSettings} onLogin={onLogin} /></div>
         </div>
       </div>
     </div>

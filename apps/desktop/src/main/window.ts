@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { BrowserWindow, shell } from "electron";
+import { isAllowedExternalUrl, isTrustedRendererUrl } from "./security";
 
 /**
  * 主窗口配置照搬 Codex 实测值：
@@ -23,22 +24,35 @@ export function createMainWindow(): BrowserWindow {
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       contextIsolation: true,
-      sandbox: false,
+      sandbox: true,
+      nodeIntegration: false,
+      nodeIntegrationInSubFrames: false,
+      webviewTag: false,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
     },
   });
 
   window.once("ready-to-show", () => window.show());
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    if (isAllowedExternalUrl(url)) void shell.openExternal(url).catch(() => {});
     return { action: "deny" };
   });
 
   const devUrl = process.env.ELECTRON_RENDERER_URL;
+  const entryFile = join(__dirname, "../renderer/index.html");
+  window.webContents.on("will-navigate", (event, url) => {
+    if (!isTrustedRendererUrl(url, entryFile, devUrl)) event.preventDefault();
+  });
+  window.webContents.on("will-frame-navigate", (event) => {
+    if (!event.isMainFrame || !isTrustedRendererUrl(event.url, entryFile, devUrl)) event.preventDefault();
+  });
+  window.webContents.on("will-attach-webview", (event) => event.preventDefault());
   if (devUrl) {
     void window.loadURL(devUrl);
   } else {
-    void window.loadFile(join(__dirname, "../renderer/index.html"));
+    void window.loadFile(entryFile);
   }
 
   return window;
