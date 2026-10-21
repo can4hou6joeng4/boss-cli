@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" fill="none">
+<title>BOSS-CLI · 交汇</title>
+<desc>青蓝与珊瑚橙的立体双环交织，表达人才、机会与智能工具之间的协作连接。</desc>
+<defs>
+<path id="tile" d="M302 100H722C862 100 924 162 924 302V722C924 862 862 924 722 924H302C162 924 100 862 100 722V302C100 162 162 100 302 100Z"/>
+<path id="ring" fill-rule="evenodd" d="M0-198C75-198 136-137 136-62V62C136 137 75 198 0 198C-75 198-136 137-136 62V-62C-136-137-75-198 0-198ZM0-108C-27-108-48-87-48-60V60C-48 87-27 108 0 108C27 108 48 87 48 60V-60C48-87 27-108 0-108Z"/>
+<clipPath id="tile-clip"><use href="#tile"/></clipPath>
+<clipPath id="ring-clip"><use href="#ring"/></clipPath>
+<clipPath id="front-weave"><path d="M-155-220H0V220H-155Z"/></clipPath>
+<linearGradient id="base" x1="212" y1="113" x2="833" y2="912" gradientUnits="userSpaceOnUse">
+<stop stop-color="#253451"/><stop offset=".48" stop-color="#121D39"/><stop offset="1" stop-color="#1A1839"/>
+</linearGradient>
+<radialGradient id="ambient-cyan" cx="0" cy="0" r="1" gradientTransform="translate(213 290) rotate(30) scale(576 674)" gradientUnits="userSpaceOnUse">
+<stop stop-color="#25BFD5" stop-opacity=".38"/><stop offset="1" stop-color="#25BFD5" stop-opacity="0"/>
+</radialGradient>
+<radialGradient id="ambient-coral" cx="0" cy="0" r="1" gradientTransform="translate(808 732) rotate(-143) scale(630 620)" gradientUnits="userSpaceOnUse">
+<stop stop-color="#C8558B" stop-opacity=".3"/><stop offset="1" stop-color="#C8558B" stop-opacity="0"/>
+</radialGradient>
+<linearGradient id="rim" x1="271" y1="103" x2="751" y2="924" gradientUnits="userSpaceOnUse">
+<stop stop-color="#C2F2FF" stop-opacity=".55"/><stop offset=".46" stop-color="#8DB8E5" stop-opacity=".07"/><stop offset="1" stop-color="#A39AD9" stop-opacity=".23"/>
+</linearGradient>
+<filter id="tile-shadow" x="35" y="60" width="954" height="946" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feDropShadow dx="0" dy="22" stdDeviation="19" flood-color="#090E27" flood-opacity=".3"/>
+<feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#060C22" flood-opacity=".18"/>
+</filter>
+<filter id="ring-shadow" x="-210" y="-254" width="434" height="548" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+<feDropShadow dx="0" dy="18" stdDeviation="14" flood-color="#050C29" flood-opacity=".6"/>
+<feDropShadow dx="0" dy="5" stdDeviation="3" flood-color="#040A24" flood-opacity=".38"/>
+</filter>
+<filter id="bloom" x="-50%" y="-50%" width="200%" height="200%" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="36"/></filter>
+<filter id="soften" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB"><feGaussianBlur stdDeviation="7"/></filter>
+<linearGradient id="cyan" x1="-121" y1="-193" x2="147" y2="192" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#D5FFFF"/>
+<stop offset="0.18" stop-color="#7AF9F5"/>
+<stop offset="0.4" stop-color="#2BE0ED"/>
+<stop offset="0.7" stop-color="#0B9BD6"/>
+<stop offset="1" stop-color="#365BD2"/>
+</linearGradient>
+<linearGradient id="cyan-edge" x1="-97" y1="-196" x2="138" y2="201" gradientUnits="userSpaceOnUse"><stop stop-color="#67CCDF"/><stop offset=".6" stop-color="#086C9F"/><stop offset="1" stop-color="#24448D"/></linearGradient>
+<linearGradient id="cyan-rim" x1="-90" y1="-198" x2="97" y2="192" gradientUnits="userSpaceOnUse"><stop stop-color="#F3FFFF" stop-opacity=".95"/><stop offset=".52" stop-color="#C7FFFF" stop-opacity=".36"/><stop offset="1" stop-color="#5298E7" stop-opacity=".4"/></linearGradient>
+<g id="cyan-face">
+<use href="#ring" fill="url(#cyan)" stroke="url(#cyan-rim)" stroke-width="2.5"/>
+<g clip-path="url(#ring-clip)">
+<path d="M-102 72V-60C-102-120-57-164 0-164C18-164 36-160 53-152" stroke="#F2FFFF" stroke-opacity=".6" stroke-width="23" stroke-linecap="round" filter="url(#soften)"/>
+<path d="M111-28V60C111 123 63 175 3 175" stroke="#123A9F" stroke-opacity=".26" stroke-width="23" stroke-linecap="round" filter="url(#soften)"/>
+</g>
+<path d="M-116-61C-116-125-65-177-1-177C15-177 31-174 46-167" stroke="#FFFFFF" stroke-opacity=".6" stroke-width="3" stroke-linecap="round"/>
+<path d="M-48 49V-59C-48-86-26-108 0-108C13-108 25-104 34-96" stroke="#215F9D" stroke-opacity=".37" stroke-width="3" stroke-linecap="round"/>
+<path d="M49-42V61C49 88 27 110 1 110" stroke="#C2FBFF" stroke-opacity=".57" stroke-width="3" stroke-linecap="round"/>
+</g>
+<linearGradient id="coral" x1="-121" y1="-193" x2="147" y2="192" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#FFF8DB"/>
+<stop offset="0.18" stop-color="#FFDA9D"/>
+<stop offset="0.4" stop-color="#FFAA75"/>
+<stop offset="0.7" stop-color="#FF7C89"/>
+<stop offset="1" stop-color="#C74F87"/>
+</linearGradient>
+<linearGradient id="coral-edge" x1="-97" y1="-196" x2="138" y2="201" gradientUnits="userSpaceOnUse"><stop stop-color="#F2B985"/><stop offset=".6" stop-color="#BE5767"/><stop offset="1" stop-color="#7D386A"/></linearGradient>
+<linearGradient id="coral-rim" x1="-90" y1="-198" x2="97" y2="192" gradientUnits="userSpaceOnUse"><stop stop-color="#FFFFF3" stop-opacity=".95"/><stop offset=".52" stop-color="#FFE3CF" stop-opacity=".36"/><stop offset="1" stop-color="#E783AC" stop-opacity=".4"/></linearGradient>
+<g id="coral-face">
+<use href="#ring" fill="url(#coral)" stroke="url(#coral-rim)" stroke-width="2.5"/>
+<g clip-path="url(#ring-clip)">
+<path d="M-102 72V-60C-102-120-57-164 0-164C18-164 36-160 53-152" stroke="#FFFCE5" stroke-opacity=".6" stroke-width="23" stroke-linecap="round" filter="url(#soften)"/>
+<path d="M111-28V60C111 123 63 175 3 175" stroke="#9F315F" stroke-opacity=".26" stroke-width="23" stroke-linecap="round" filter="url(#soften)"/>
+</g>
+<path d="M-116-61C-116-125-65-177-1-177C15-177 31-174 46-167" stroke="#FFFFFF" stroke-opacity=".6" stroke-width="3" stroke-linecap="round"/>
+<path d="M-48 49V-59C-48-86-26-108 0-108C13-108 25-104 34-96" stroke="#99485F" stroke-opacity=".37" stroke-width="3" stroke-linecap="round"/>
+<path d="M49-42V61C49 88 27 110 1 110" stroke="#FFF1D0" stroke-opacity=".57" stroke-width="3" stroke-linecap="round"/>
+</g>
+</defs>
+<use href="#tile" fill="url(#base)" filter="url(#tile-shadow)"/>
+<g clip-path="url(#tile-clip)">
+<use href="#tile" fill="url(#ambient-cyan)"/>
+<use href="#tile" fill="url(#ambient-coral)"/>
+<ellipse cx="496" cy="782" rx="231" ry="35" fill="#080A24" opacity=".56" filter="url(#bloom)"/>
+<ellipse cx="345" cy="374" rx="109" ry="150" fill="#39CDE4" opacity=".12" transform="rotate(-38 345 374)" filter="url(#bloom)"/>
+<ellipse cx="687" cy="675" rx="101" ry="147" fill="#F47B98" opacity=".13" transform="rotate(-38 687 675)" filter="url(#bloom)"/>
+<g transform="translate(512 512) scale(1.1) translate(-512 -512)">
+<g transform="translate(450 433) rotate(-38)"><g filter="url(#ring-shadow)">
+<use href="#ring" transform="translate(0 9)" fill="url(#cyan-edge)"/><use href="#cyan-face"/>
+</g></g>
+<g transform="translate(574 591) rotate(-38)"><g filter="url(#ring-shadow)">
+<use href="#ring" transform="translate(0 9)" fill="url(#coral-edge)"/><use href="#coral-face"/>
+</g></g>
+<g transform="translate(450 433) rotate(-38)"><g clip-path="url(#front-weave)">
+<use href="#ring" stroke="#081D48" stroke-width="4" stroke-opacity=".3"/><use href="#cyan-face"/>
+</g></g>
+</g>
+<use href="#tile" stroke="url(#rim)" stroke-width="3"/>
+</g>
+</svg>

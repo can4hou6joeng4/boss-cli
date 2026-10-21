@@ -8,6 +8,8 @@ import { BrowserWindow, shell } from "electron";
  */
 export function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
+    title: "BOSS-CLI",
+    icon: join(__dirname, "../../resources/icon.png"),
     width: 1440,
     height: 900,
     minWidth: 240,

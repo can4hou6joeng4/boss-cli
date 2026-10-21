@@ -114,16 +114,10 @@
 }
 
 .settings-brand-mark {
-  display: grid;
-  place-items: center;
-  width: 29px;
-  height: 29px;
-  border: 1px solid var(--border-color);
-  border-radius: 9px;
-  background: var(--panel-bg);
-  color: var(--text-main);
-  font-size: 15px;
-  font-weight: 600;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  object-fit: contain;
 }
 
 .settings-sidebar-version {
@@ -503,17 +497,10 @@
 }
 
 .settings-about-logo {
-  display: grid;
-  place-items: center;
-  width: 58px;
-  height: 58px;
-  margin-bottom: 15px;
-  border: 1px solid var(--border-color);
-  border-radius: 17px;
-  background: var(--panel-bg);
-  color: var(--text-main);
-  font-size: 29px;
-  font-weight: 600;
+  width: 80px;
+  height: 80px;
+  margin-bottom: 12px;
+  object-fit: contain;
 }
 
 .settings-about-brand h3 {
@@ -627,7 +614,7 @@ html[data-motion="reduced"] *::after {
   .settings-navigation-item { gap: 6px; font-size: 11px; }
   .settings-navigation-item svg { width: 14px; height: 14px; }
   .settings-sidebar-footer { gap: 6px; font-size: 10px; }
-  .settings-brand-mark { width: 23px; height: 23px; font-size: 12px; }
+  .settings-brand-mark { width: 30px; height: 30px; }
   .settings-header { padding-left: 14px; }
   .settings-content { padding-right: 14px; padding-left: 14px; }
   .settings-footer { padding-right: 14px; padding-left: 14px; }

@@ -1,5 +1,6 @@
 {
   "name": "boss-cli-desktop",
+  "productName": "BOSS-CLI",
   "version": "0.1.0",
   "private": true,
   "description": "BOSS-CLI 桌面端外壳（Electron + React）",
