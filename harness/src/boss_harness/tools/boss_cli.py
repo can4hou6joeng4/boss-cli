@@ -79,7 +79,7 @@ class BossCliTool:
     def available(self) -> bool:
         return (Path(self.binary).is_file() and os.access(self.binary, os.X_OK)) if "/" in self.binary else which(self.binary) is not None
 
-    def call(self, *args: str, timeout: int = DEFAULT_TIMEOUT_SECONDS) -> ToolResult:
+    def call(self, *args: str, timeout: int = DEFAULT_TIMEOUT_SECONDS, stdin: str | None = None) -> ToolResult:
         argv = [self.binary, "--json"]
         if self.data_dir:
             argv += ["--data-dir", self.data_dir]
@@ -90,22 +90,36 @@ class BossCliTool:
         if self.cancel_event is not None and self.cancel_event.is_set():
             return failure("CANCELLED", "操作已停止，未启动 CLI")
         try:
-            proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            proc = subprocess.Popen(argv, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                     start_new_session=os.name == "posix")
         except OSError:
             return failure("CLI_ERROR", "上游 CLI 不可执行，请检查 BOSS_CLI_BIN")
         deadline = time.monotonic() + timeout
-        while True:
+        completed = threading.Event()
+        output: list[tuple[str, str]] = []
+        def communicate() -> None:
+            try:
+                # One I/O exchange handles pipe backpressure. Retrying communicate
+                # with an empty input can strand a partially written credential.
+                output.append(proc.communicate(input=stdin))
+            except (OSError, ValueError):
+                pass
+            finally:
+                completed.set()
+        io_worker = threading.Thread(target=communicate, daemon=True, name="boss-cli-stdio")
+        io_worker.start()
+        while not completed.is_set():
             cancelled = self.cancel_event is not None and self.cancel_event.is_set()
             if cancelled or time.monotonic() >= deadline:
                 self._terminate(proc)
+                io_worker.join(1)
                 code = "CANCELLED" if cancelled else "TOOL_TIMEOUT"
                 return failure(code, "CLI 已停止；已发出的操作可能生效，请先核对平台状态，不要直接重试。")
-            try:
-                stdout, stderr = proc.communicate(timeout=min(0.1, max(0.001, deadline - time.monotonic())))
-                break
-            except subprocess.TimeoutExpired:
-                continue
+            completed.wait(min(0.1, max(0.001, deadline - time.monotonic())))
+        if not output:
+            return failure("CLI_ERROR", "CLI 输入输出未能完成")
+        stdout, stderr = output[0]
 
         stdout = stdout.strip()
         if not stdout:
@@ -149,16 +163,19 @@ class BossCliTool:
             try:
                 if os.name == "posix":
                     os.killpg(proc.pid, sig)
-                else:
+                elif proc.poll() is None:
                     proc.kill()
             except ProcessLookupError:
                 pass
         stop(signal.SIGTERM)
         try:
-            proc.communicate(timeout=0.5)
+            proc.wait(timeout=0.5)
         except subprocess.TimeoutExpired:
-            stop(signal.SIGKILL)
-            proc.communicate()
+            pass
+        # A child can exit before descendants close inherited pipes. The sole
+        # I/O worker drains them after the process group has been retired.
+        stop(signal.SIGKILL)
+        proc.wait()
 
     # ---------- 能力发现 ----------
 

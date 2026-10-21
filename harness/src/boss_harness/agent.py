@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from boss_harness.models import (
@@ -77,6 +77,9 @@ class TurnRunner:
         system_prompt: str = "根据用户任务调用已注册工具，尊重中断与审批裁决。",
         validate_arguments: Callable[[str, dict[str, Any]], None] | None = None,
         pause_on_result: Callable[[ToolResult], bool] | None = None,
+        history_provider: Callable[[str], tuple[ChatMessage, ...]] | None = None,
+        context_check: Callable[[list[ChatMessage], str], None] | None = None,
+        drain_steering: Callable[[], list[UserMessage]] | None = None,
     ) -> None:
         self.sessions = sessions
         self.tool_bridge = tool_bridge
@@ -96,6 +99,10 @@ class TurnRunner:
         #: 当前回合的取消信号；由 run() 创建，interrupt() 置位。
         self._cancel: threading.Event | None = None
         self._blocked: ToolResult | None = None
+        self.turn_id: str | None = None
+        self.history_provider = history_provider
+        self.context_check = context_check
+        self.drain_steering = drain_steering
 
     @property
     def tool_names(self) -> list[str]:
@@ -130,6 +137,13 @@ class TurnRunner:
             wait.event.set()
             return True
 
+    def expire_approval(self, approval_id: str) -> None:
+        with self._approval_lock:
+            wait = self._pending_approvals.get(approval_id)
+            if wait is not None and wait.decision is None:
+                wait.decision = "expired"
+                wait.event.set()
+
     def _await_approval(self, approval_id: str) -> str:
         """等一次审批；超时或回合被取消都返回未批准。"""
         wait = self._pending_approvals[approval_id]
@@ -148,13 +162,13 @@ class TurnRunner:
 
     # ---------- 落库 ----------
 
-    def append_user(self, thread_id: str, text: str) -> Entry:
+    def append_user(self, thread_id: str, text: str, **metadata: Any) -> Entry:
         return self.sessions.append(
             thread_id,
             Entry(
                 type="item",
                 parent_id=self.sessions.last_entry_id(thread_id),
-                payload={"kind": "userMessage", "text": text},
+                payload={"kind": "userMessage", "text": text, "turnId": self.turn_id, **metadata},
             ),
         )
 
@@ -164,7 +178,7 @@ class TurnRunner:
             Entry(
                 type="item",
                 parent_id=self.sessions.last_entry_id(thread_id),
-                payload={"kind": "agentMessage", "text": text},
+                payload={"kind": "agentMessage", "text": text, "turnId": self.turn_id},
             ),
         )
         if emit:
@@ -195,6 +209,8 @@ class TurnRunner:
             "toolName": name,
             "toolArguments": arguments,
             "status": "running",
+            "turnId": self.turn_id,
+            "executionState": "pending_approval" if approval else "queued",
         }
         if call_id:
             payload["toolCallId"] = call_id
@@ -219,6 +235,15 @@ class TurnRunner:
         )
         return entry
 
+    def _tool_phase(self, thread_id: str, entry: Entry, phase: str,
+                    approval: dict | None = None) -> None:
+        payload = {**(entry.payload or {}), "revises": entry.id, "executionState": phase}
+        if approval is not None:
+            payload["approval"] = dict(approval)
+        self.sessions.append(thread_id, Entry(type="item", payload=payload))
+        if approval is not None and phase in {"approved", "not_approved"}:
+            self.notify("approval/decided", {"threadId": thread_id, "itemId": entry.id, "approval": dict(approval)})
+
     def finish_tool_call(
         self,
         thread_id: str,
@@ -227,9 +252,11 @@ class TurnRunner:
         result: ToolResult,
         call_id: str | None = None,
         approval: dict[str, Any] | None = None,
+        execution_state: str | None = None,
     ) -> None:
         status = "completed" if result.ok else "failed"
         arguments = dict((entry.payload or {}).get("toolArguments") or {})
+        source = tool_source(thread_id, entry, name)
         payload: dict[str, Any] = {
             "kind": "toolCall",
             "toolName": name,
@@ -240,6 +267,12 @@ class TurnRunner:
             "revises": entry.id,
             "errorCode": (result.error or {}).get("code"),
             "recoveryAction": (result.error or {}).get("recovery_action"),
+            "turnId": self.turn_id,
+            "executionState": execution_state or status,
+            "result": {"ok": result.ok, "command": result.command, "data": result.data,
+                       "error": result.error, "hints": result.hints},
+            "source": source,
+            "modelResult": model_result(result, source=source),
         }
         if approval is not None:
             payload["approval"] = approval
@@ -257,6 +290,7 @@ class TurnRunner:
                 "ok": result.ok,
                 "error": result.error,
                 "resultSummary": payload["resultSummary"],
+                "source": source,
                 "approval": approval,
             },
         )
@@ -279,11 +313,12 @@ class TurnRunner:
             invalid = ToolResult(ok=False, command=name, error={"code": "INVALID_PARAM", "message": str(exc)})
         if invalid is None and not self.cancelled() and name in self.approval_required:
             approval = {
-                "approvalId": uuid.uuid4().hex[:8],
+                "approvalId": uuid.uuid4().hex,
                 "toolName": name,
                 "description": f"需要你批准后才会执行：{name}",
                 "params": arguments,
                 "consequential": True,
+                "deadline": time.time() + self.approval_timeout,
             }
             with self._approval_lock:
                 self._pending_approvals[approval["approvalId"]] = _ApprovalWait(
@@ -302,12 +337,15 @@ class TurnRunner:
                     "summary": approval["description"],
                     "params": arguments,
                     "consequential": True,
+                    "deadline": approval["deadline"],
                 },
             )
             decision = self._await_approval(approval["approvalId"])
             with self._approval_lock:
                 self._pending_approvals.pop(approval["approvalId"], None)
             approval["decision"] = decision
+            # Persist consent before any side effect. A restart never consumes it again.
+            self._tool_phase(thread_id, entry, "approved" if decision == "approve" else "not_approved", approval)
             if decision != "approve":
                 message = "用户拒绝了这个操作" if decision == "deny" else "审批超时，按未批准处理"
                 denied = ToolResult(
@@ -316,11 +354,12 @@ class TurnRunner:
                 self.finish_tool_call(thread_id, entry, name, denied, call_id, approval)
                 return ToolResultItem(
                     tool_call_id=call_id or entry.id,
-                    content=summarize_result(denied),
+                    content=model_result(denied, source=tool_source(thread_id, entry, name)),
                     is_error=True,
                 )
 
         handler = self.handlers.get(name)
+        dispatched = False
         if self.cancelled():
             result = ToolResult(ok=False, command=name, error={"code": "CANCELLED", "message": "操作已取消，未执行工具"})
         elif invalid is not None:
@@ -329,16 +368,23 @@ class TurnRunner:
             result = ToolResult(ok=False, command=name, error={"code": "NOT_SUPPORTED", "message": f"未知工具 {name}"})
         else:
             try:
+                self._tool_phase(thread_id, entry, "executing", approval)
+                dispatched = True
                 result = handler(self.tool_bridge, arguments)
             except Exception as exc:
                 result = ToolResult(ok=False, command=name, error={"code": "TOOL_ERROR", "message": self.safe_error(exc)})
         if not result.ok and ((self.pause_on_result is not None and self.pause_on_result(result))
                               or (name in self.approval_required and (result.error or {}).get("code") not in {"INVALID_PARAM", "CANCELLED"})):
             self._blocked = result
-        self.finish_tool_call(thread_id, entry, name, result, call_id, approval)
+        unknown = (dispatched and name in self.approval_required and not result.ok
+                   and (result.error or {}).get("code") in {
+                       "CANCELLED", "TOOL_TIMEOUT", "TOOL_ERROR", "CLI_ERROR", "CLI_CONTRACT_ERROR", "INVALID_ENVELOPE",
+                       "GREET_RESULT_UNKNOWN", "ACTION_UNCONFIRMED"})
+        self.finish_tool_call(thread_id, entry, name, result, call_id, approval,
+                              "outcome_unknown" if unknown else None)
         return ToolResultItem(
             tool_call_id=call_id or entry.id,
-            content=summarize_result(result),
+            content=model_result(result, source=tool_source(thread_id, entry, name)),
             is_error=not result.ok,
         )
 
@@ -350,6 +396,8 @@ class TurnRunner:
         工具调用按「assistant(tool_use) + user(tool_result)」成对回放；
         `status=running` 的条目说明该轮未收尾，跳过。
         """
+        if self.history_provider is not None:
+            return self.history_provider(thread_id)
         messages: list[ChatMessage] = []
         pending: list[tuple[str, dict[str, Any]]] = []
         pending_batch: str | None = None
@@ -385,7 +433,7 @@ class TurnRunner:
                         {
                             "name": str(payload.get("toolName", "")),
                             "arguments": dict(payload.get("toolArguments") or {}),
-                            "summary": str(payload.get("resultSummary", "")),
+                            "summary": str(payload.get("modelResult") or payload.get("resultSummary", "")),
                             "is_error": payload.get("status") == "failed",
                         },
                     )
@@ -417,6 +465,11 @@ class TurnRunner:
                 if self.cancelled():
                     return "interrupted"
 
+                if self.drain_steering is not None:
+                    messages.extend(self.drain_steering())
+                if self.context_check is not None:
+                    self.context_check(messages, self.system_prompt)
+
                 request = ModelRequest(
                     model=self.config.model,
                     system=self.system_prompt,
@@ -441,24 +494,32 @@ class TurnRunner:
 
                 calls = assistant.tool_calls()
                 if not calls:
+                    steering = self.drain_steering() if self.drain_steering is not None else []
+                    if steering:
+                        messages.append(assistant)
+                        messages.extend(steering)
+                        continue
                     return "completed"
 
                 messages.append(assistant)
                 results: list[ToolResultItem] = []
                 batch_id = uuid.uuid4().hex[:12]
-                for call in calls:
+                for index, call in enumerate(calls):
                     if self.cancelled():
+                        self._skip_calls(thread_id, calls[index:], batch_id)
                         return "interrupted"
                     results.append(
                         self.execute_tool(thread_id, call.name, dict(call.arguments), call.id, batch_id)
                     )
                     if self._blocked is not None:
+                        self._skip_calls(thread_id, calls[index + 1:], batch_id)
                         result = self._blocked
                         code = (result.error or {}).get("code", "UNKNOWN")
                         recovery = (result.error or {}).get("recovery_action") or "请核对操作结果，处理后再明确发起下一步；不要自动重试。"
                         self.append_agent(thread_id, f"操作已暂停（{code}）：{summarize_result(result)}\n\n恢复提示：{recovery}")
                         return "blocked"
                     if self.cancelled():
+                        self._skip_calls(thread_id, calls[index + 1:], batch_id)
                         return "interrupted"
                 messages.append(ToolResultsMessage(results=tuple(results)))
 
@@ -472,6 +533,13 @@ class TurnRunner:
             self._cancel = None
             self.tool_bridge.cancel_event = None
             self.notify(N_THREAD_UPDATED, {"threadId": thread_id})
+
+    def _skip_calls(self, thread_id: str, calls: tuple[ToolCallBlock, ...], batch_id: str) -> None:
+        for call in calls:
+            entry = self.start_tool_call(thread_id, call.name, dict(call.arguments), call.id, batch_id=batch_id)
+            result = ToolResult(ok=False, command=call.name, error={"code": "NOT_EXECUTED",
+                                "message": "回合中断或平台暂停，该工具未执行"})
+            self.finish_tool_call(thread_id, entry, call.name, result, call.id, execution_state="not_executed")
 
     def _stream_round(
         self, thread_id: str, request: ModelRequest
@@ -495,7 +563,7 @@ class TurnRunner:
             if entry is None:
                 entry = self.sessions.append(thread_id, Entry(type="item",
                     parent_id=self.sessions.last_entry_id(thread_id),
-                    payload={"kind": "agentMessage", "text": "", "status": "running"}))
+                    payload={"kind": "agentMessage", "text": "", "status": "running", "turnId": self.turn_id}))
                 self.notify(N_ITEM_STARTED, {"threadId": thread_id, "itemId": entry.id, "kind": "agentMessage"})
             return entry
 
@@ -556,10 +624,16 @@ class TurnRunner:
             error = "模型流未返回完成事件，请重试"
         if assistant is not None and assistant.stop_reason == "error" and error is None:
             error = "模型返回失败状态"
+        if assistant is not None:
+            self.sessions.append(thread_id, Entry(type="model_usage", payload={
+                "turnId": self.turn_id, "model": request.model, "provider": self.config.provider,
+                "stopReason": assistant.stop_reason,
+                "usage": asdict(assistant.usage) if assistant.usage is not None else None}))
         if entry is not None:
             text = "".join(chunks)
             payload = {"kind": "agentMessage", "text": text, "thinking": "".join(thinking),
-                       "revises": entry.id, "status": "failed" if interrupted or error else "completed"}
+                       "revises": entry.id, "status": "failed" if interrupted or error else "completed",
+                       "turnId": self.turn_id}
             self.sessions.append(thread_id, Entry(type="item",
                 parent_id=self.sessions.last_entry_id(thread_id), payload=payload))
             self.notify(N_ITEM_COMPLETED, {"threadId": thread_id, "itemId": entry.id, **payload})
@@ -579,3 +653,14 @@ def summarize_result(result: ToolResult, limit: int = 4000) -> str:
     message = (result.error or {}).get("message", "")
     recovery = (result.error or {}).get("recovery_action") or ""
     return redact_secrets(f"ok=false command={result.command} code={code} message={message} recovery={recovery}")[:limit]
+
+
+def tool_source(thread_id: str, entry: Entry, name: str) -> dict:
+    return {"ref": f"tool:{thread_id}:{entry.id}", "tool": name, "queriedAt": entry.timestamp}
+
+
+def model_result(result: ToolResult, *, source: dict | None = None) -> str:
+    """Keep the structured envelope for context; the UI summary is a separate field."""
+    return json.dumps({"ok": result.ok, "command": result.command, "data": result.data,
+                       "error": result.error, "hints": result.hints,
+                       **({"source": source} if source else {})}, ensure_ascii=False, allow_nan=False)
