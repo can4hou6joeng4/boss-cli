@@ -5,6 +5,9 @@ import { ProjectSidebar, type SidebarPreferences } from "./ProjectSidebar";
 import { HomeView } from "./HomeView";
 import { ConversationArea } from "./ConversationArea";
 import { RightPanel } from "./RightPanel";
+import { LoginBrowserPanel } from "./LoginBrowserPanel";
+import { LoginChoice } from "../components/LoginChoice";
+import { usePlatformLogin } from "../data/usePlatformLogin";
 import { WorkspacePages } from "./WorkspacePages";
 import { SettingsDialog, type SettingsSection } from "../components/SettingsDialog";
 import { SearchDialog } from "../components/SearchDialog";
@@ -13,6 +16,7 @@ import { IconNotification, IconCheck } from "../components/Icons";
 import { type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "../data/mockData";
 import { ClientMethods, type ToolDescriptor, type ToolListResponse } from "@boss-cli/protocol";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
+import "../styles/login-sidebar.css";
 
 export interface AppShellProps {
   isDark: boolean; onToggleTheme: () => void; isSidebarOpen: boolean; onToggleSidebar: () => void;
@@ -27,12 +31,15 @@ export interface AppShellProps {
   configuredModelLabel?: string;
   onOpenCockpit: () => void; onOpenSideChat: () => void; onOpenRewind: () => void; onOpenShortcuts: () => void;
   onReviewDiff: () => void; onRevertDiff: () => void;
+  onCreateConnectionSession: () => Promise<SessionItem | null>;
 }
 function preference<T>(key: string, initial: T): T {
   try { return JSON.parse(localStorage.getItem("boss-cli.ui." + key) ?? "null") as T ?? initial; } catch { return initial; }
 }
 interface Route { page: WorkspacePage; sessionId?: string; }
 export function AppShell(props: AppShellProps) {
+  const login = usePlatformLogin();
+  const loginEntryFlight = useRef(false);
   const [page, setPage] = useState<WorkspacePage>("home");
   const [settings, setSettings] = useState(false), [search, setSearch] = useState(false), [notifications, setNotifications] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
@@ -69,6 +76,9 @@ export function AppShell(props: AppShellProps) {
   const cursorRef = useRef(cursor); cursorRef.current = cursor;
   const historyRef = useRef(history); historyRef.current = history;
   const hasConversation = page === "home" && !props.isHomeView && Boolean(props.activeSession);
+  const loginThreadId = props.activeSession?.id ?? "";
+  const browserOpen = hasConversation && login.panelThreadId === loginThreadId;
+  const loginStatus = login.status.threadId === loginThreadId ? login.status : undefined;
   const baseFolders = [...props.folders, ...groups.filter(group => !props.folders.some(folder => folder.id === group.id))];
   const sessions = [...new Map(baseFolders.flatMap(folder => folder.sessions).map(session => [session.id, session])).values()];
   const allFolders = baseFolders.map(folder => ({ ...folder, name: projectAliases[folder.id] || folder.name,
@@ -103,6 +113,20 @@ export function AppShell(props: AppShellProps) {
     return Boolean(session);
   };
   const select = (session: SessionItem) => openRoute({ page: "home", sessionId: session.id });
+  const loginEntry = async (direct = false) => {
+    if (!window.boss || loginEntryFlight.current) return;
+    loginEntryFlight.current = true;
+    try {
+      const owner = ["opening", "waiting", "saving"].includes(login.status.state)
+        ? sessions.find(session => session.id === login.status.threadId) : undefined;
+      const target = owner ?? (!props.isHomeView ? props.activeSession : null) ?? await props.onCreateConnectionSession();
+      if (!target) return;
+      setSettings(false); setPage("home");
+      pushRoute({ page: "home", sessionId: target.id });
+      props.onSelectSession(target);
+      if (direct) void login.open(target.id); else login.show(target.id);
+    } finally { loginEntryFlight.current = false; }
+  };
   const go = (delta: number) => { const next = cursorRef.current + delta; if (historyRef.current[next]) { cursorRef.current = next; setCursor(next); openRoute(historyRef.current[next]!, false); } };
   useEffect(() => {
     const media = window.matchMedia("(min-width: 1200px)");
@@ -143,8 +167,8 @@ export function AppShell(props: AppShellProps) {
     const link = document.createElement("a"); link.href = url; link.download = title.replace(/[\\/:*?"<>|]/g, "_") + ".md"; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   return <>
-    <div className={`app-container ${window.boss ? "native-window" : "browser-window"} ${summaryOpen && hasConversation ? "with-summary" : ""}`}>
-      <TitleBar summaryAvailable={summaryAvailable} hasConversation={hasConversation} title={title} isSidebarOpen={props.isSidebarOpen} isSummaryOpen={summaryOpen} canGoBack={cursor > 0} canGoForward={cursor < history.length - 1} onBack={() => go(-1)} onForward={() => go(1)} onToggleSidebar={props.onToggleSidebar} onToggleSummary={() => setSummaryOpen(!summaryOpen)} onNewTask={newTask} onOpenSettings={() => openSettings()} onOpenRewind={props.onOpenRewind} onRename={() => { if (props.activeSession) { setRename(props.activeSession); setName(title); } }} onPin={() => { const id = props.activeSession?.id; if (id) setPinned(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]); }} isPinned={pinned.includes(props.activeSession?.id ?? "")} onExport={exportChat} />
+    <div className={`app-container ${window.boss ? "native-window" : "browser-window"} ${browserOpen ? `with-browser${login.expanded ? " browser-expanded" : ""}` : summaryOpen && hasConversation ? "with-summary" : ""}`}>
+      <TitleBar summaryAvailable={summaryAvailable && !browserOpen} hasConversation={hasConversation} title={title} isSidebarOpen={props.isSidebarOpen} isSummaryOpen={summaryOpen && !browserOpen} canGoBack={cursor > 0} canGoForward={cursor < history.length - 1} onBack={() => go(-1)} onForward={() => go(1)} onToggleSidebar={props.onToggleSidebar} onToggleSummary={() => setSummaryOpen(!summaryOpen)} onNewTask={newTask} onOpenSettings={() => openSettings()} onOpenRewind={props.onOpenRewind} onRename={() => { if (props.activeSession) { setRename(props.activeSession); setName(title); } }} onPin={() => { const id = props.activeSession?.id; if (id) setPinned(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]); }} isPinned={pinned.includes(props.activeSession?.id ?? "")} onExport={exportChat} browserOpen={browserOpen} onOpenBrowser={window.boss ? () => { if (browserOpen) login.closePanel(); else void loginEntry(); } : undefined} />
       <div className="workspace-layout">
         <NavigationRail page={page} isDark={props.isDark} harnessUp={props.harnessUp ?? false} onToggleTheme={props.onToggleTheme} onOpenShortcuts={props.onOpenShortcuts} onNavigate={next => next === "home" ? newTask() : openRoute({ page: next })} onOpenSettings={openSettings} onOpenCockpit={props.onOpenCockpit} onOpenSideChat={props.onOpenSideChat} />
         <div className="workspace-surface">
@@ -157,15 +181,17 @@ export function AppShell(props: AppShellProps) {
               <div className="conversation-pane">
                 {props.simulateLocal && <div className="conversation-preview-badge">示例会话 · 交互预览</div>}
                 <ConversationArea readOnly={props.activeSession?.toolPolicy === "readOnly"} key={props.activeSession?.id ?? "conversation"} draft={sessionDraft} onDraftChange={updateSessionDraft} messages={props.messages} currentMode={props.currentMode} onModeChange={props.onModeChange} onSendMessage={props.onSendMessage} simulateLocal={props.simulateLocal} running={props.running} taskBlocked={props.taskBlocked} activeModelId={props.activeModelId} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} onOpenSettings={() => openSettings("connections")} onInterrupt={props.onInterrupt} onApprovalDecision={props.onApprovalDecision} onReviewDiff={props.onReviewDiff} onRevertDiff={props.onRevertDiff} onOpenRewind={props.onOpenRewind} onOpenCockpit={props.onOpenCockpit}
-                  />
-                <RightPanel isOpen={summaryOpen} projectName={currentProject?.name ?? "本地招聘项目"} messages={props.messages} preview={props.simulateLocal ?? true} onReviewChanges={props.onReviewDiff} onOpenSettings={() => openSettings("connections")} />
+                  onLogin={window.boss ? () => { void loginEntry(); } : undefined}
+                  loginGuide={login.visibleIn(loginThreadId) ? <LoginChoice status={loginStatus} pending={login.choiceThreadId === loginThreadId} busy={login.busy} panelOpen={browserOpen} error={login.error?.threadId === loginThreadId ? login.error.message : undefined} onOpen={() => { void login.open(loginThreadId); }} onHide={login.hideForLater} onCancel={() => { void login.cancel(loginThreadId); }} onDismiss={() => login.dismiss(loginThreadId)} onSettings={() => openSettings("connections")} /> : undefined} />
+                <RightPanel isOpen={summaryOpen && !browserOpen} projectName={currentProject?.name ?? "本地招聘项目"} messages={props.messages} preview={props.simulateLocal ?? true} onReviewChanges={props.onReviewDiff} onOpenSettings={() => openSettings("connections")} />
               </div>
+              {browserOpen && <LoginBrowserPanel key={loginThreadId} threadId={loginThreadId} status={loginStatus} expanded={login.expanded} onToggleExpanded={login.toggleExpanded} onClose={login.closePanel} onRetry={() => { void login.open(loginThreadId); }} />}
             </>}
           </main>
         </div>
       </div>
     </div>
-    <SettingsDialog isOpen={settings} initialSection={settingsSection} onClose={() => setSettings(false)} isDark={props.isDark} onToggleTheme={props.onToggleTheme} onOpenShortcuts={() => { setSettings(false); props.onOpenShortcuts(); }} harnessUp={props.harnessUp ?? false} />
+    <SettingsDialog isOpen={settings} initialSection={settingsSection} onClose={() => setSettings(false)} isDark={props.isDark} onToggleTheme={props.onToggleTheme} onOpenShortcuts={() => { setSettings(false); props.onOpenShortcuts(); }} harnessUp={props.harnessUp ?? false} onLogin={() => { void loginEntry(true); }} />
     {search && <SearchDialog folders={allFolders} onSelect={select} onClose={() => setSearch(false)} />}
     {notifications && <ModalSurface title="通知" onClose={() => setNotifications(false)}><div className="notification-empty"><IconNotification size={32} /><h3>目前没有新通知</h3><p>需要你确认的操作会在聊天中显示。</p><span><IconCheck size={13} />当前工作区</span></div></ModalSurface>}
     {newProject && <ModalSurface title="新建项目" onClose={() => setNewProject(false)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!projectName.trim()) return; const id = "group-" + crypto.randomUUID(); setGroups(prev => [...prev, { id, name: projectName.trim(), sessions: [] }]); setDraftProjectId(id); resetDraft(); openRoute({ page: "home" }); setProjectName(""); setNewProject(false); }}><label>项目名称<input autoFocus maxLength={60} value={projectName} onChange={event => setProjectName(event.target.value)} placeholder="例如：核心产研团队招聘" /></label><p>创建一个保存在此设备上的项目分组。</p><button className="solid-button" disabled={!projectName.trim()}>创建项目</button></form></ModalSurface>}

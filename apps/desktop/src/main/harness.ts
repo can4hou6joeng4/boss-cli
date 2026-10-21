@@ -3,7 +3,8 @@ import { resolve } from "node:path";
 import { app, ipcMain, BrowserWindow, type IpcMainInvokeEvent } from "electron";
 import { HarnessHostManager, type HarnessHostConnection } from "@boss-cli/app-client";
 import type { JsonRpcNotification } from "@boss-cli/protocol";
-import { isTrustedRendererUrl, validateHarnessRequest } from "./security";
+import { isTrustedRendererUrl, validateHarnessRequest, validateLoginContext } from "./security";
+import { PlatformLogin } from "./platformLogin";
 
 function findRepoRoot(start: string): string {
   let current = resolve(start);
@@ -21,6 +22,15 @@ const windows = new Set<BrowserWindow>();
 let host: HarnessHostConnection | null = null;
 let repoRoot = "";
 let ipcRegistered = false;
+const platformLogin = new PlatformLogin((method, params) => {
+  if (!host) return Promise.reject(new Error("harness host is not attached"));
+  return host.request(method, params);
+}, status => {
+  for (const window of windows) {
+    if (!window.isDestroyed()) window.webContents.send("platform-login:status", status);
+  }
+});
+
 /** A window, its current main frame and its entry URL must all match. */
 function trustedSender(event: IpcMainInvokeEvent): void {
   const window = [...windows].find((candidate) => !candidate.isDestroyed() && candidate.webContents === event.sender);
@@ -62,6 +72,22 @@ function createHost(): HarnessHostConnection {
 function registerIPC(): void {
   if (ipcRegistered) return;
   ipcRegistered = true;
+  ipcMain.handle("platform-login:action", async (event, action: unknown, payload: unknown) => {
+    trustedSender(event);
+    if (action === "status") return platformLogin.read();
+    const context = validateLoginContext(payload);
+    const parent = BrowserWindow.fromWebContents(event.sender)!;
+    if (action === "open") {
+      if (!host) throw new Error("harness host is not attached");
+      await host.request("thread/read", { threadId: context.threadId });
+      if (parent.isDestroyed()) throw new Error("login parent was closed");
+      return platformLogin.open(parent, context.threadId);
+    }
+    if (["layout", "back", "forward", "reload", "cancel"].includes(action as string)) {
+      return platformLogin.control(parent, action as "layout" | "back" | "forward" | "reload" | "cancel", context);
+    }
+    throw new Error("invalid platform login action");
+  });
   ipcMain.handle("harness:request", async (event, payload: unknown) => {
     trustedSender(event);
     const request = validateHarnessRequest(payload);
@@ -77,14 +103,14 @@ function registerIPC(): void {
     await manager.get().reconnect();
     return { ...manager.get().status(), repoRoot };
   });
-  app.once("before-quit", () => { manager.dispose(); host = null; windows.clear(); });
+  app.once("before-quit", () => { platformLogin.cancel(); manager.dispose(); host = null; windows.clear(); });
 }
 
 /** Windows subscribe to the host registry; closing one window cannot stop the backend. */
 export function attachHarness(window: BrowserWindow): void {
   if (windows.has(window)) return;
   windows.add(window);
-  window.once("closed", () => { windows.delete(window); });
+  window.once("closed", () => { windows.delete(window); if (!windows.size) platformLogin.cancel(); });
   host ??= createHost();
   registerIPC();
   window.webContents.on("did-finish-load", () => {

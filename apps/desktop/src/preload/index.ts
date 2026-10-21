@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import type { JsonRpcNotification } from "@boss-cli/protocol";
+import type { JsonRpcNotification, PlatformLoginStatus, PlatformLoginAction, PlatformLoginContext } from "@boss-cli/protocol";
 
 interface HarnessStatus {
   running: boolean;
@@ -26,6 +26,14 @@ const api = {
   },
   reconnect(): Promise<HarnessStatus> {
     return ipcRenderer.invoke("harness:reconnect") as Promise<HarnessStatus>;
+  },
+  platformLogin(action: PlatformLoginAction, context?: PlatformLoginContext): Promise<PlatformLoginStatus> {
+    return ipcRenderer.invoke("platform-login:action", action, context) as Promise<PlatformLoginStatus>;
+  },
+  onPlatformLogin(listener: (status: PlatformLoginStatus) => void): () => void {
+    const handler = (_event: IpcRendererEvent, status: PlatformLoginStatus): void => listener(status);
+    ipcRenderer.on("platform-login:status", handler);
+    return () => ipcRenderer.removeListener("platform-login:status", handler);
   },
   onNotification(listener: (notification: JsonRpcNotification) => void): () => void {
     const handler = (_event: IpcRendererEvent, notification: JsonRpcNotification): void =>

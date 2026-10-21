@@ -163,6 +163,16 @@ export function App(): JSX.Element {
   const handleNewTask = useCallback(() => {
     ++selectionVersion.current; activeRef.current = null; setActiveSession(null); setMessages([]); setIsHomeView(true); setError("");
   }, []);
+  const createConnectionSession = async (): Promise<SessionItem | null> => {
+    if (!window.boss || !harnessUp || startingRef.current) return null;
+    startingRef.current = true; setStartingSession(true);
+    try {
+      const session = await startThread("BOSS 直聘账号连接", activeModelId);
+      if (session) { insertSession(session); handleSelectSession(session); }
+      return session;
+    } catch { setError("连接会话尚未创建，请检查本机连接后重试。"); return null; }
+    finally { startingRef.current = false; setStartingSession(false); }
+  };
   const simulate = useCallback((id: string) => {
     markRunning(id, true);
     timers.current.set(id, setTimeout(() => {
@@ -264,6 +274,7 @@ export function App(): JSX.Element {
     <AppShell isDark={isDark} onToggleTheme={() => setIsDark(previous => !previous)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => setIsSidebarOpen(previous => !previous)}
       folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} currentMode={currentMode} onModeChange={setCurrentMode}
       onSelectSession={handleSelectSession} onNewTask={handleNewTask} onSendMessage={handleSendMessage} simulateLocal={preview} harnessUp={harnessUp}
+      onCreateConnectionSession={createConnectionSession}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession}
       onInterrupt={handleInterrupt} onApprovalDecision={handleApproval} onStartSessionWithPrompt={handleStartSessionWithPrompt} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel} onSelectModel={setActiveModelId}
       onOpenCockpit={() => setIsCockpitOpen(true)} onOpenSideChat={() => setIsSideChatOpen(previous => !previous)} onOpenRewind={openRewind}
