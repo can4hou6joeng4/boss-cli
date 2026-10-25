@@ -25,7 +25,7 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on("second-instance", () => { void app.whenReady().then(showMainWindow); });
   void app.whenReady().then(() => {
-    if (process.platform === "darwin") app.dock.setIcon(join(__dirname, "../../resources/icon.png"));
+    if (process.platform === "darwin") app.dock?.setIcon(join(__dirname, "../../resources/icon.png"));
     showMainWindow();
     app.on("activate", showMainWindow);
   });
