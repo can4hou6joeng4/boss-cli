@@ -177,7 +177,7 @@ export interface ThreadItem {
   errorCode?: string;
   recoveryAction?: string;
   executionState?: "queued" | "pending_approval" | "approved" | "not_approved" | "executing" | "completed" | "failed" | "not_executed" | "outcome_unknown";
-  result?: { ok: boolean; command: string; data: unknown; error: unknown; hints: unknown };
+  result?: { ok: boolean; command: string; data: unknown; pagination?: Record<string, unknown> | null; error: unknown; hints: unknown };
   /** 需要用户批准的工具调用会带这个字段；界面据此渲染审批卡。 */
   approval?: ApprovalState;
 }
