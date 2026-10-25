@@ -252,6 +252,11 @@ class BossCliTool:
                 options.append(f"--{key}={label}")
         return self.call("search", *options, "--", keyword)
 
+    def chat(self, *, page: int = 1) -> ToolResult:
+        """读取求职者沟通列表的指定逻辑页，不补消息或导出。"""
+        validate_arguments("boss_chat", {"page": page})
+        return self.call("chat", f"--page={page}")
+
 
 #: 暴露给模型的工具表：只读工具与需要审批的写操作。
 #: `input_schema` 一律 `additionalProperties: false`，必填字段用 `required` 显式声明。
@@ -309,6 +314,21 @@ TOOLS: tuple[dict[str, Any], ...] = (
         },
         "requires_approval": False,
         "handler": lambda tool, args: tool.call("recommend", *([f"--page={args['page']}"] if args.get("page") else [])),
+    },
+    {
+        "name": "boss_chat",
+        "description": "求职者模式：读取当前配置业务上下文的指定页沟通概览（只读），不补消息、回复、导出或自动翻页；分页及阅读状态可能未知，网络尝试与认证维护沿用业务 CLI",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "page": {"type": "integer", "minimum": 1, "default": 1,
+                         "description": "只读取指定逻辑页，从 1 开始；未返回分页信息时后续页仍未知"},
+            },
+            "required": [],
+            "additionalProperties": False,
+        },
+        "requires_approval": False,
+        "handler": lambda tool, args: tool.chat(**args),
     },
     {
         "name": "boss_status",
