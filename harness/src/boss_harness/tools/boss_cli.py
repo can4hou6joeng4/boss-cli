@@ -176,11 +176,28 @@ class BossCliTool:
                     or not isinstance(envelope["error"].get("message"), str)))):
             return failure("CLI_CONTRACT_ERROR", "上游输出不符合 v1 七键信封或退出码契约，请核对上游版本")
 
+        ok = envelope["ok"]
+        error = envelope["error"]
+        # This business command reports list success even if summary enrichment
+        # hits a platform stop. Project only its explicit metadata; candidate
+        # content, free-form errors and other commands cannot trigger this rule.
+        if ok and args[:2] == ("hr", "chat") and envelope["command"] == "recruiter-chat":
+            hints = envelope["hints"]
+            summaries = hints.get("summary_sources") if type(hints) is dict else None
+            code = summaries.get("last_messages_error_code") if type(summaries) is dict else None
+            if type(code) is str and code in PAUSE_CODES:
+                ok = False
+                error = {
+                    "code": code,
+                    "message": "已保留本页沟通列表的部分结果；最近消息补取未完成，平台要求暂停。",
+                    "recovery_action": "请先核对已取得结果，处理平台登录、验证或访问限制后，再明确发起后续任务；不要自动重试。",
+                }
+
         return ToolResult(
-            ok=bool(envelope.get("ok")),
+            ok=ok,
             command=str(envelope.get("command", " ".join(args))),
             data=envelope.get("data"),
-            error=envelope.get("error"),
+            error=error,
             hints=envelope.get("hints"),
             raw=stdout,
             pagination=envelope.get("pagination"),
@@ -376,7 +393,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "boss_hr_chat",
-        "description": "招聘者模式：查看候选人沟通列表与未读数（只读）",
+        "description": "招聘者模式：查看候选人沟通列表与未读数（只读）；上游可能补取最近消息，遇平台停止信号保留部分列表并暂停，不保证摘要完整",
         "input_schema": {
             "type": "object",
             "properties": {
