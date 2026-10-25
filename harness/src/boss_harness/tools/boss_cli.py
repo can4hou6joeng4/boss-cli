@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -20,6 +21,21 @@ from boss_harness.models.secret import redact_secrets
 from boss_harness.toolkit import ToolResult
 
 DEFAULT_TIMEOUT_SECONDS = 120
+
+# Public CLI labels, checked against boss-agent-cli@bdc7034df563f1ea458d3af5bb4b40e8ea4603a8
+# src/boss_agent_cli/api/boss.yaml and search_filters.py. This adapter accepts
+# one label per field, not upstream raw codes, comma lists or arbitrary flags.
+SEARCH_FILTER_VALUES: dict[str, tuple[str, ...]] = {
+    "city": (
+        "北京", "上海", "广州", "深圳", "杭州", "成都", "南京", "武汉", "西安", "苏州",
+        "长沙", "郑州", "重庆", "天津", "合肥", "厦门", "济南", "青岛", "大连", "宁波",
+        "福州", "东莞", "珠海", "佛山", "昆明", "贵阳", "太原", "南昌", "南宁", "石家庄",
+        "哈尔滨", "长春", "沈阳", "海口", "兰州", "乌鲁木齐", "无锡", "常州", "温州", "惠州",
+    ),
+    "salary": ("3K以下", "3-5K", "5-10K", "10-15K", "10-20K", "20-50K", "50K以上"),
+    "experience": ("应届", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"),
+    "education": ("大专", "本科", "硕士", "博士"),
+}
 
 # 来自上游 schema/error_codes.py；命中后必须交回用户，不能继续自动调用。
 PAUSE_CODES = frozenset({
@@ -186,8 +202,21 @@ class BossCliTool:
 
     # ---------- 首版用到的只读工具 ----------
 
-    def search(self, keyword: str) -> ToolResult:
-        return self.call("search", "--", keyword)
+    def search(
+        self, keyword: str, *, page: int | None = None, city: str | None = None,
+        salary: str | None = None, experience: str | None = None,
+        education: str | None = None,
+    ) -> ToolResult:
+        """读取指定条件的一页列表；不翻页、补详情或去掉条件重试。"""
+        filters = {"city": city, "salary": salary, "experience": experience, "education": education}
+        arguments = {"keyword": keyword, **({"page": page} if page is not None else {}),
+                     **{key: value for key, value in filters.items() if value is not None}}
+        validate_arguments("boss_search", arguments)
+        # An omitted page keeps the original keyword-only CLI contract. Upstream
+        # search defaults to page 1; an explicit page, including 1, stays explicit.
+        options = [] if page is None else [f"--page={page}"]
+        options.extend(f"--{key}={value}" for key, value in filters.items() if value is not None)
+        return self.call("search", *options, "--", keyword)
 
 
 #: 暴露给模型的工具表：只读工具与需要审批的写操作。
@@ -199,17 +228,26 @@ class BossCliTool:
 TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "boss_search",
-        "description": "按关键词检索职位（只读，不产生任何平台写操作）",
+        "description": "按关键词和明确条件读取一页职位列表（只读）；筛选是平台标签与上游列表粗筛，不代表个人资格或完整薪资匹配，不自动翻页或补详情",
         "input_schema": {
             "type": "object",
             "properties": {
-                "keyword": {"type": "string", "description": "搜索关键词，例如岗位名或技能"},
+                "keyword": {"type": "string", "minLength": 1, "pattern": r"\S", "description": "非空搜索关键词，例如岗位名或技能；始终作为单个位置参数"},
+                "page": {"type": "integer", "minimum": 1, "default": 1, "description": "只读取此页，从 1 开始；读取下一页时须保留本次全部筛选条件"},
+                "city": {"type": "string", "enum": list(SEARCH_FILTER_VALUES["city"]),
+                         "description": "单个城市标签；未指定时沿用上游默认范围，不推断为用户所在地"},
+                "salary": {"type": "string", "enum": list(SEARCH_FILTER_VALUES["salary"]),
+                           "description": "平台薪资标签；上游本地粗筛仅排除返回薪资上限低于请求下限的职位，未知薪资可保留，不保证完整区间匹配"},
+                "experience": {"type": "string", "enum": list(SEARCH_FILTER_VALUES["experience"]),
+                               "description": "岗位经验要求标签；上游还按标签顺序粗筛，未知要求可保留，不代表求职者符合资格"},
+                "education": {"type": "string", "enum": list(SEARCH_FILTER_VALUES["education"]),
+                              "description": "岗位学历要求标签；上游还按标签顺序粗筛，未知要求可保留，不代表求职者符合资格"},
             },
             "required": ["keyword"],
             "additionalProperties": False,
         },
         "requires_approval": False,
-        "handler": lambda tool, args: tool.search(str(args.get("keyword", ""))),
+        "handler": lambda tool, args: tool.search(**args),
     },
     {
         "name": "boss_detail",
@@ -408,6 +446,11 @@ def validate_arguments(name: str, arguments: dict[str, Any]) -> None:
             raise ValueError(f"参数取值无效：{key}")
         if "minimum" in rule and value < rule["minimum"]:
             raise ValueError(f"参数小于最小值：{key}")
+        if rule["type"] == "string":
+            if "minLength" in rule and len(value) < rule["minLength"]:
+                raise ValueError(f"参数短于最小长度：{key}")
+            if "pattern" in rule and re.search(rule["pattern"], value) is None:
+                raise ValueError(f"参数格式无效：{key}")
 
 
 def tool_handlers() -> dict[str, Callable[[BossCliTool, dict[str, Any]], ToolResult]]:
