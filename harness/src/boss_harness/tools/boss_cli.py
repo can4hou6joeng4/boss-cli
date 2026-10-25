@@ -24,7 +24,7 @@ DEFAULT_TIMEOUT_SECONDS = 120
 
 # Public CLI labels, checked against boss-agent-cli@bdc7034df563f1ea458d3af5bb4b40e8ea4603a8
 # src/boss_agent_cli/api/boss.yaml and search_filters.py. This adapter accepts
-# one label per field, not upstream raw codes, comma lists or arbitrary flags.
+# enum labels only; experience/education also accept explicit label arrays.
 SEARCH_FILTER_VALUES: dict[str, tuple[str, ...]] = {
     "city": (
         "北京", "上海", "广州", "深圳", "杭州", "成都", "南京", "武汉", "西安", "苏州",
@@ -36,6 +36,18 @@ SEARCH_FILTER_VALUES: dict[str, tuple[str, ...]] = {
     "experience": ("应届", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"),
     "education": ("大专", "本科", "硕士", "博士"),
 }
+
+
+def _search_set_schema(field: str, description: str) -> dict[str, Any]:
+    labels = list(SEARCH_FILTER_VALUES[field])
+    return {
+        "anyOf": [
+            {"type": "string", "enum": labels},
+            {"type": "array", "items": {"type": "string", "enum": labels},
+             "minItems": 1, "maxItems": len(labels), "uniqueItems": True},
+        ],
+        "description": description,
+    }
 
 # 来自上游 schema/error_codes.py；命中后必须交回用户，不能继续自动调用。
 PAUSE_CODES = frozenset({
@@ -204,8 +216,8 @@ class BossCliTool:
 
     def search(
         self, keyword: str, *, page: int | None = None, city: str | None = None,
-        salary: str | None = None, experience: str | None = None,
-        education: str | None = None,
+        salary: str | None = None, experience: str | list[str] | None = None,
+        education: str | list[str] | None = None,
     ) -> ToolResult:
         """读取指定条件的一页列表；不翻页、补详情或去掉条件重试。"""
         filters = {"city": city, "salary": salary, "experience": experience, "education": education}
@@ -215,7 +227,12 @@ class BossCliTool:
         # An omitted page keeps the original keyword-only CLI contract. Upstream
         # search defaults to page 1; an explicit page, including 1, stays explicit.
         options = [] if page is None else [f"--page={page}"]
-        options.extend(f"--{key}={value}" for key, value in filters.items() if value is not None)
+        for key, value in filters.items():
+            if value is not None:
+                # Canonicalize only the CLI projection. Original structured
+                # arguments remain unchanged in tool events and session history.
+                label = ",".join(item for item in SEARCH_FILTER_VALUES[key] if item in value) if isinstance(value, list) else value
+                options.append(f"--{key}={label}")
         return self.call("search", *options, "--", keyword)
 
 
@@ -238,10 +255,8 @@ TOOLS: tuple[dict[str, Any], ...] = (
                          "description": "单个城市标签；未指定时沿用上游默认范围，不推断为用户所在地"},
                 "salary": {"type": "string", "enum": list(SEARCH_FILTER_VALUES["salary"]),
                            "description": "平台薪资标签；上游本地粗筛仅排除返回薪资上限低于请求下限的职位，未知薪资可保留，不保证完整区间匹配"},
-                "experience": {"type": "string", "enum": list(SEARCH_FILTER_VALUES["experience"]),
-                               "description": "岗位经验要求标签；上游还按标签顺序粗筛，未知要求可保留，不代表求职者符合资格"},
-                "education": {"type": "string", "enum": list(SEARCH_FILTER_VALUES["education"]),
-                              "description": "岗位学历要求标签；上游还按标签顺序粗筛，未知要求可保留，不代表求职者符合资格"},
+                "experience": _search_set_schema("experience", "单个岗位经验标签或非空无重复标签数组；数组表达任一标签，和其他维度同时提交一次指定页查询。多标签依赖平台筛选，不保证严格匹配或个人资格"),
+                "education": _search_set_schema("education", "单个岗位学历标签或非空无重复标签数组；数组表达任一标签，和其他维度同时提交一次指定页查询。多标签依赖平台筛选，不保证严格匹配或个人资格"),
             },
             "required": ["keyword"],
             "additionalProperties": False,
@@ -426,7 +441,7 @@ READ_ONLY_TOOLS = tuple(tool for tool in TOOLS if not tool.get("requires_approva
 
 
 def validate_arguments(name: str, arguments: dict[str, Any]) -> None:
-    """校验当前允许清单使用的平面 JSON Schema 子集，拒绝隐式类型转换。"""
+    """校验允许清单声明的 JSON Schema 子集，拒绝隐式类型转换。"""
     spec = next((tool for tool in TOOLS if tool["name"] == name), None)
     if spec is None:
         return  # 未知工具由执行器返回 NOT_SUPPORTED，不能落到任意 CLI 命令。
@@ -438,19 +453,38 @@ def validate_arguments(name: str, arguments: dict[str, Any]) -> None:
         if key not in arguments or (isinstance(arguments[key], str) and not arguments[key].strip()):
             raise ValueError(f"缺少有效参数：{key}")
     for key, value in arguments.items():
-        rule = properties[key]
-        expected = str if rule["type"] == "string" else int
-        if type(value) is not expected:
-            raise ValueError(f"参数类型无效：{key}")
-        if "enum" in rule and value not in rule["enum"]:
-            raise ValueError(f"参数取值无效：{key}")
-        if "minimum" in rule and value < rule["minimum"]:
-            raise ValueError(f"参数小于最小值：{key}")
-        if rule["type"] == "string":
-            if "minLength" in rule and len(value) < rule["minLength"]:
-                raise ValueError(f"参数短于最小长度：{key}")
-            if "pattern" in rule and re.search(rule["pattern"], value) is None:
-                raise ValueError(f"参数格式无效：{key}")
+        _validate_value(key, value, properties[key])
+
+
+def _validate_value(key: str, value: Any, rule: dict[str, Any]) -> None:
+    if "anyOf" in rule:
+        for branch in rule["anyOf"]:
+            try:
+                _validate_value(key, value, branch)
+            except ValueError:
+                continue
+            break
+        else:
+            raise ValueError(f"参数类型或取值无效：{key}")
+    kind = rule.get("type")
+    if kind is not None and type(value) is not {"string": str, "integer": int, "array": list}.get(kind):
+        raise ValueError(f"参数类型无效：{key}")
+    if "enum" in rule and value not in rule["enum"]:
+        raise ValueError(f"参数取值无效：{key}")
+    if "minimum" in rule and value < rule["minimum"]:
+        raise ValueError(f"参数小于最小值：{key}")
+    if kind == "string":
+        if "minLength" in rule and len(value) < rule["minLength"]:
+            raise ValueError(f"参数短于最小长度：{key}")
+        if "pattern" in rule and re.search(rule["pattern"], value) is None:
+            raise ValueError(f"参数格式无效：{key}")
+    if kind == "array":
+        if len(value) < rule.get("minItems", 0) or len(value) > rule.get("maxItems", len(value)):
+            raise ValueError(f"参数数组长度无效：{key}")
+        for index, item in enumerate(value):
+            _validate_value(f"{key}[{index}]", item, rule["items"])
+        if rule.get("uniqueItems") and any(item in value[:index] for index, item in enumerate(value)):
+            raise ValueError(f"参数数组包含重复值：{key}")
 
 
 def tool_handlers() -> dict[str, Callable[[BossCliTool, dict[str, Any]], ToolResult]]:
