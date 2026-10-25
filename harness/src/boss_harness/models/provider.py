@@ -1,6 +1,6 @@
 """模型供应商抽象与配置解析。
 
-职责边界（照搬 Pi 的 Provider/Models 两层）：provider 只管「把一次请求变成事件流」，
+职责边界参考 Pi 的 Provider/Models 划分：provider 只管「把一次请求变成事件流」，
 模型选择与凭据解析在这里完成，调用方不接触供应商 SDK。
 
 当前有两条真实线路，各自一套线协议：
@@ -110,17 +110,22 @@ def resolve_config(
 
 
 def _openai_config(env: Mapping[str, str]) -> ModelConfig:
-    """组装 openai 线路：显式环境变量 > `~/.codex/config.toml`。
+    """完整显式配置独立运行；缺项时才读取 Codex 文件补全。
 
     端点与凭据刻意不走 `ANTHROPIC_*`：那是另一条线路的地址，混用会把请求发错地方。
     """
     from boss_harness.models.codex_config import load_profile
 
-    profile = load_profile(environ=env)
-    model = (env.get("BOSS_HARNESS_MODEL") or "").strip() or (profile.model if profile else "") or DEFAULT_MODEL
-    base_url = (env.get("BOSS_HARNESS_OPENAI_BASE_URL") or "").strip() or (profile.base_url if profile else None)
+    explicit_model = (env.get("BOSS_HARNESS_MODEL") or "").strip()
+    explicit_url = (env.get("BOSS_HARNESS_OPENAI_BASE_URL") or "").strip()
+    explicit_key = (env.get("BOSS_HARNESS_OPENAI_API_KEY") or "").strip()
+    # Optional file settings must not make a fully specified route depend on
+    # unrelated local files or an interpreter's TOML parser availability.
+    profile = None if all((explicit_model, explicit_url, explicit_key)) else load_profile(environ=env, strict=True)
+    model = explicit_model or (profile.model if profile else "") or DEFAULT_MODEL
+    base_url = explicit_url or (profile.base_url if profile else None)
     file_key = profile.bearer_token.get() if profile and profile.bearer_token else ""
-    raw_key = (env.get("BOSS_HARNESS_OPENAI_API_KEY") or "").strip() or file_key
+    raw_key = explicit_key or file_key
     effort = (env.get("BOSS_HARNESS_EFFORT") or "").strip() or (profile.effort if profile else None)
 
     if not base_url:
