@@ -262,7 +262,7 @@ class BossCliTool:
 TOOLS: tuple[dict[str, Any], ...] = (
     {
         "name": "boss_search",
-        "description": "按关键词和明确条件读取一页职位列表（只读）；筛选是平台标签与上游列表粗筛，不代表个人资格或完整薪资匹配，不自动翻页或补详情",
+        "description": "按关键词和明确条件提交指定逻辑页的职位查询（只读，非总网络次数保证）；筛选是平台标签与上游列表粗筛，不代表个人资格或完整薪资匹配，不自动翻页或补详情",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -298,7 +298,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "boss_recommend",
-        "description": "基于简历获取个性化匹配职位推荐列表（只读）",
+        "description": "基于简历获取个性化匹配职位推荐列表（只读）；网络尝试与认证策略由业务 CLI 控制",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -312,7 +312,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "boss_status",
-        "description": "查看当前 BOSS 直聘登录状态与平台会话健康度（只读）",
+        "description": "读取本地登录态与健康检查（只读，不等于在线验证）；业务 CLI 可能初始化本地状态",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -324,7 +324,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "boss_stats",
-        "description": "查看投递转化漏斗统计与沟通数据看板（只读）",
+        "description": "读取本地投递转化漏斗统计与沟通数据看板（只读，不刷新平台数据）",
         "input_schema": {
             "type": "object",
             "properties": {},
@@ -336,7 +336,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "boss_hr_jobs",
-        "description": "招聘者模式：查看已发布的职位列表（只读）",
+        "description": "招聘者模式：查看已发布的职位列表（只读）；上游可在内部重试或刷新认证，不能按工具次数推算请求量",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -350,7 +350,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "boss_hr_jobs_detail",
-        "description": "招聘者模式：查看指定职位的完整详情（含岗位描述，只读）",
+        "description": "招聘者模式：查看指定职位的完整详情（含岗位描述，只读）；网络尝试与认证策略由业务 CLI 控制",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -364,7 +364,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "boss_hr_recommendations",
-        "description": "招聘者模式：读取指定职位的推荐牛人卡片列表（只读）",
+        "description": "招聘者模式：读取指定职位的推荐牛人卡片列表（只读）；逻辑页不等于总网络次数，上游控制重试及认证",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -379,7 +379,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "boss_hr_candidates",
-        "description": "招聘者模式：搜索候选人（只读）",
+        "description": "招聘者模式：搜索候选人（只读）；上游可在内部重试或刷新认证，不能按工具次数推算请求量",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -393,7 +393,7 @@ TOOLS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "boss_hr_chat",
-        "description": "招聘者模式：查看候选人沟通列表与未读数（只读）；上游可能补取最近消息，遇平台停止信号保留部分列表并暂停，不保证摘要完整",
+        "description": "招聘者模式：查看候选人沟通列表与未读数（只读）；上游管理消息补取、重试与认证；收到支持的可见停止信号后保留部分列表并暂停，不保证摘要完整或首次限制即停",
         "input_schema": {
             "type": "object",
             "properties": {
