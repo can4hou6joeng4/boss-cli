@@ -5,7 +5,6 @@ import argparse
 import os
 import json
 import sys
-from dataclasses import replace
 from pathlib import Path
 
 from boss_harness import __version__
@@ -22,12 +21,13 @@ def _build_config(args: argparse.Namespace) -> ModelConfig:
     provider 交给 `resolve_config` 一起决定，不能解析完再 `replace`：模型配置的字段会随
     provider 增加，而各线路的端点与凭据来源不同，事后替换会让 `--provider openai` 拿到
     Anthropic 的端点并丢掉 Codex 配置里的凭据。
+    `--model` 也先参与解析，使完整显式线路无需读取本地配置。
     """
     explicit = None if args.provider == "auto" else args.provider
-    config = resolve_config(provider=explicit)
+    env = dict(os.environ)
     if args.model:
-        config = replace(config, model=args.model)
-    return config
+        env["BOSS_HARNESS_MODEL"] = args.model
+    return resolve_config(environ=env, provider=explicit)
 
 
 def main(argv: list[str] | None = None) -> int:

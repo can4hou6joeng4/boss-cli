@@ -8,6 +8,7 @@
 - `bearer_token` 用 `Secret` 包装（`repr` 脱敏、不可 JSON 序列化），而不是裸字符串或只加
   `repr=False`——`dataclasses.asdict()` 会无视后者；
 - 凭据缺失或不完整时返回 None，由调用方决定报错还是退回其它 provider。
+- 配置解析确实需要文件时启用 strict，文件损坏或不可读须明确失败，错误不包含配置原文。
 
 与 Pi 的对应：Pi 把「模型目录」和「凭据存储」分开（`Models` / `CredentialStore`）。
 本项目规模还小，只做「按需读取一份本地 provider 配置」，不引入凭据存储抽象。
@@ -68,10 +69,19 @@ def config_path(
 def load_profile(
     path: str | os.PathLike[str] | None = None,
     environ: Mapping[str, str] | None = None,
+    *,
+    strict: bool = False,
 ) -> CodexModelProfile | None:
-    """读取并解析配置；文件缺失、解析失败或缺关键字段时返回 None。"""
+    """缺失/不完整配置返回 None；strict 使实际需要的文件错误明确失败。"""
     target = config_path(path, environ)
-    if not target.is_file():
+    try:
+        if not target.is_file():
+            if strict and target.exists():
+                raise ValueError("Codex 配置路径必须是普通文件")
+            return None
+    except OSError:
+        if strict:
+            raise ValueError("无法访问 Codex 配置文件，请检查路径与权限") from None
         return None
     if tomllib is None:  # pragma: no cover - 仅在 3.10 上触发
         raise RuntimeError("openai 线路需要 Python 3.11+ 才能解析 Codex 的 TOML 配置")
@@ -79,7 +89,15 @@ def load_profile(
     try:
         with target.open("rb") as handle:
             data = tomllib.load(handle)
-    except (OSError, tomllib.TOMLDecodeError):
+    except OSError:
+        if strict:
+            raise ValueError("无法读取 Codex 配置文件，请检查路径与权限") from None
+        return None
+    except tomllib.TOMLDecodeError:
+        if strict:
+            # Parser diagnostics may quote configuration content. Keep secrets
+            # out of startup errors, stderr and RPC diagnostics.
+            raise ValueError("Codex 配置 TOML 格式无效，请检查配置文件") from None
         return None
 
     return profile_from_mapping(data)

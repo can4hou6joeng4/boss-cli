@@ -35,6 +35,22 @@ Electron 运行时从官方源单独下载和校验，失败后需先恢复安�
 
 默认桌面模型为 OpenAI Responses，可由 `BOSS_HARNESS_PROVIDER` 选择 `openai`、`anthropic` 或 `none`。OpenAI 配置读取本地 Codex 配置或 `BOSS_HARNESS_OPENAI_*` 环境变量；Anthropic 使用 `ANTHROPIC_*`。真实模型请求可能联网并产生费用。不要将凭据写入仓库或公开日志。
 
+## 模型配置来源
+
+OpenAI Responses 的完整显式配置由以下三项组成，去除首尾空白后均须非空：
+
+| 配置 | 来源 |
+| --- | --- |
+| 端点 | `BOSS_HARNESS_OPENAI_BASE_URL` |
+| 凭据 | `BOSS_HARNESS_OPENAI_API_KEY` |
+| 模型 | 命令行 `--model`，其次为 `BOSS_HARNESS_MODEL` |
+
+三项齐备时不访问 Codex 配置文件，Python 3.10 也可使用这一路线；可选推理强度只取 `BOSS_HARNESS_EFFORT`，未指定则由模型服务决定，不再继承文件中的值。没有 `BOSS_HARNESS_OPENAI_MODEL` 别名。
+
+缺少任一项时才读取 `BOSS_HARNESS_CODEX_CONFIG`、`CODEX_HOME/config.toml` 或默认 `~/.codex/config.toml`，按此顺序选择文件，显式字段仍优先。读取 TOML 需要 Python 3.11+；已有文件不可读或语法损坏时明确报错，不退到其他 provider。文件不存在或缺少可用 profile 时继续检查端点与凭据，缺项会报错；未提供模型且没有可用文件模型时保留既有 `DEFAULT_MODEL`。
+
+当前文件适配要求文件自身同时提供 `model`、`model_provider` 及该 provider 的 `base_url` 才形成可用 profile；认证仅识别 `experimental_bearer_token`，尚未适配 Codex 的 `env_key`、OAuth 或任意 `wire_api`。配置解析只读本地文件，不探测真实服务。
+
 ## 明确条件搜索
 
 在模型会话中可以要求“上海 Python、20–50K、3–5 年、本科，先看第一页”，模型通过 `boss_search` 传递结构化条件：
