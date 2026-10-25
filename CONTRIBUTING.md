@@ -14,6 +14,7 @@
 
 ```sh
 npm ci
+npx install-electron --no
 npm run typecheck
 npm run build
 python3 -m pip install build
@@ -24,6 +25,8 @@ git diff --check
 变更还需完成适用的工具契约、执行状态、中断、审批、异常恢复和上游兼容验证。离线验证使用模拟工具、脱敏数据和独立临时目录，避免调用真实平台或读取真实会话。
 
 **测试材料仅保留本地**：测试用例、夹具、模拟工具、离线 provider、测试脚本和测试专用配置均不得提交，包括放在业务目录里的测试内容。本地工作区可能有额外的测试命令；Git 源码中的构建流程不依赖这些材料。PR 记录本地验证命令、结果及限制，不能把未随仓库交付的测试描述为远程 CI 已运行。
+
+桌面当前使用 Electron 43，最低 macOS 为 12。Electron 42 起不再通过 postinstall 自动下载运行时；`npx install-electron --no` 执行官方下载与校验，需要网络。源码构建 CI 不启动 Electron，执行运行验证前须确认本机二进制安装成功。
 
 桌面依赖或宿主改动还需运行实际 Electron 验证，覆盖生产 preload、renderer、IPC 拒绝边界、重连及隔离登录视图。类型检查与构建通过不能代替真实平台或安装包验收。
 
