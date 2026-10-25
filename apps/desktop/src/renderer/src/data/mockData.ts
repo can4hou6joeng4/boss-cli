@@ -2,6 +2,8 @@
  * BOSS Agent (招聘垂直领域 Agent Harness) 仿真数据
  */
 
+import type { ToolResultReference } from "@boss-cli/protocol";
+
 export type ConversationMode = "plan" | "ask" | "agent";
 export type EffortLevel = "Auto" | "Max" | "High" | "Medium" | "Low" | "Off";
 
@@ -161,6 +163,7 @@ export interface MessageItem {
     result?: string;
     source?: { ref: string; tool: string; queriedAt: string };
     output?: string;
+    resultRef?: ToolResultReference;
   };
   approval?: ApprovalData;
   plan?: PlanData;

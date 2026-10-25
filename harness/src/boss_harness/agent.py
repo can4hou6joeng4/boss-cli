@@ -31,9 +31,9 @@ from boss_harness.models.secret import redact_secrets
 from boss_harness.models.types import ChatMessage, ModelRequest, TextBlock
 from boss_harness.session import Entry, SessionStore
 from boss_harness.toolkit import ToolResult
+from boss_harness.tool_results import project_error, project_item
 
 MAX_TOOL_ROUNDS = 6
-MAX_INLINE_TOOL_RESULT_BYTES = 64 * 1024
 
 #: 审批的默认等待上限（秒）。超时按未批准处理：无法安全判定时必须 fail closed。
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
@@ -281,9 +281,9 @@ class TurnRunner:
             thread_id,
             Entry(type="item", parent_id=self.sessions.last_entry_id(thread_id), payload=payload),
         )
-        # Notifications are bounded frames. Large pages stay in the durable
-        # result; the live card still receives its pagination-bearing summary.
-        inline_result = len(payload["modelResult"].encode("utf-8")) <= MAX_INLINE_TOOL_RESULT_BYTES
+        # The model and rollout keep the complete result. Observers get a bounded
+        # projection and a content-addressed route to retrieve an omitted body.
+        transport = project_item(thread_id, {"id": entry.id, **payload})
         self.notify(
             N_TOOL_CALL_COMPLETED,
             {
@@ -292,9 +292,9 @@ class TurnRunner:
                 "toolName": name,
                 "status": status,
                 "ok": result.ok,
-                "error": result.error,
+                "error": project_error(result.error),
                 "resultSummary": payload["resultSummary"],
-                **({"result": payload["result"]} if inline_result else {"resultOmitted": True}),
+                **{key: transport[key] for key in ("result", "resultOmitted", "resultRef") if key in transport},
                 "source": source,
                 "approval": approval,
             },

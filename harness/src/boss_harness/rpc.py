@@ -25,6 +25,10 @@ class RpcError(Exception):
         self.code, self.data = code, data
 
 
+class FrameTooLargeError(ValueError):
+    """Raised before writing any bytes; callers may send a bounded error once."""
+
+
 @dataclass(frozen=True)
 class ServerRequest:
     id: str
@@ -101,10 +105,20 @@ class JsonRpcServer:
             error["data"] = data
         self._write({"jsonrpc": "2.0", "id": request_id, "error": error})
 
+    def _respond_too_large(self, request_id: Any) -> None:
+        message = "响应超过协议帧限制，请使用分页或结果分块读取"
+        data = {"code": "RESPONSE_TOO_LARGE"}
+        try:
+            self.respond_error(request_id, -32010, message, data)
+        except FrameTooLargeError:
+            # An unusually long client ID can itself fill a frame. No bytes have
+            # been sent, so the bounded protocol error must omit that invalid ID.
+            self.respond_error(None, -32010, message, data)
+
     def _write(self, frame: dict[str, Any]) -> None:
         encoded = json.dumps(frame, ensure_ascii=False, allow_nan=False) + "\n"
         if len(encoded.encode("utf-8")) > MAX_FRAME_BYTES:
-            raise ValueError("协议帧超过大小限制")
+            raise FrameTooLargeError("协议帧超过大小限制")
         with self._write_lock:
             if self._closed:
                 raise ConnectionError("连接已关闭")
@@ -179,7 +193,15 @@ class JsonRpcServer:
             print(f"[harness] {method}: {safe_message}", file=sys.stderr)
             if has_id:
                 code = exc.code if isinstance(exc, RpcError) else (-32602 if isinstance(exc, ValueError) else -32603)
-                self.respond_error(request_id, code, safe_message, exc.data if isinstance(exc, RpcError) else None)
+                try:
+                    self.respond_error(request_id, code, safe_message, exc.data if isinstance(exc, RpcError) else None)
+                except FrameTooLargeError:
+                    self._respond_too_large(request_id)
             return
         if has_id:
-            self.respond(request_id, result)
+            try:
+                self.respond(request_id, result)
+            except FrameTooLargeError:
+                # Encoding failed before stdout was touched. Never rerun the
+                # handler: it may already have performed a consequential action.
+                self._respond_too_large(request_id)

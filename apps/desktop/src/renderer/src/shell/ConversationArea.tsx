@@ -3,6 +3,7 @@ import { IconCopy, IconThumbsUp, IconThumbsDown, IconRewind, IconSparkles, IconC
 import { DiffCard } from "./DiffCard";
 import { Composer } from "./Composer";
 import { RichMarkdown } from "../components/RichMarkdown";
+import { ToolResultDetails } from "../components/ToolResultDetails";
 import { type MessageItem, type ConversationMode } from "../data/mockData";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
 
@@ -240,7 +241,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                         {item.toolUse.result}
                       </div>
                     )}
-                    {item.toolUse.output && <details className="tool-source-output"><summary>查看结构化结果</summary><pre>{item.toolUse.output}</pre></details>}
+                    <ToolResultDetails output={item.toolUse.output} resultRef={item.toolUse.resultRef} />
                   </details>
                 )}
 

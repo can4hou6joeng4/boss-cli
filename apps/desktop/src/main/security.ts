@@ -78,7 +78,7 @@ export function loginCaptureReadiness(url: string, cookies: Record<string, strin
 
 const RENDERER_METHODS = new Set([
   "thread/start", "thread/list", "thread/read", "thread/resume", "thread/fork",
-  "thread/archive", "thread/unarchive", "thread/name/set", "thread/turns/list", "thread/items/list",
+  "thread/archive", "thread/unarchive", "thread/name/set", "thread/turns/list", "thread/items/list", "thread/item/result/read",
   "turn/start", "turn/interrupt", "turn/steer", "turn/read", "queue/list", "queue/add", "queue/remove",
   "event/list", "model/list", "config/read", "skills/list", "tool/list", "attachment/add", "attachment/read",
   "context/read", "context/compact", "approval/respond",
@@ -86,7 +86,7 @@ const RENDERER_METHODS = new Set([
 ]);
 const THREAD_METHODS = new Set([
   "thread/read", "thread/resume", "thread/fork", "thread/archive", "thread/unarchive", "thread/name/set",
-  "thread/turns/list", "thread/items/list", "turn/start", "turn/interrupt", "turn/steer", "turn/read",
+  "thread/turns/list", "thread/items/list", "thread/item/result/read", "turn/start", "turn/interrupt", "turn/steer", "turn/read",
   "queue/list", "queue/add", "queue/remove", "context/read", "context/compact",
 ]);
 
@@ -117,6 +117,17 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
     (typeof params.title !== "string" || params.title.length > 500)) throw new Error("invalid thread title");
   if (payload.method === "approval/respond" && (typeof params?.approvalId !== "string" || !params.approvalId ||
     typeof params.approved !== "boolean")) throw new Error("invalid approval decision");
+  if (payload.method === "thread/item/result/read") {
+    const allowed = new Set(["threadId", "itemId", "sha256", "cursor", "limit"]);
+    if (!params || Object.keys(params).some(key => !allowed.has(key)) ||
+      ![params.threadId, params.itemId].every(value => typeof value === "string" && /^[a-zA-Z0-9_-]{1,200}$/.test(value)) ||
+      typeof params.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(params.sha256) ||
+      (params.cursor !== undefined && (typeof params.cursor !== "string" || !params.cursor.startsWith("tr1_") || params.cursor.length > 2048)) ||
+      (params.limit !== undefined && (typeof params.limit !== "number" || !Number.isSafeInteger(params.limit) || params.limit < 1 || params.limit > 32768))) {
+      throw new Error("invalid tool result read");
+    }
+    return { method: payload.method, params };
+  }
   for (const key of ["limit", "offset"]) {
     const value = params?.[key];
     if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > 10_000)) {

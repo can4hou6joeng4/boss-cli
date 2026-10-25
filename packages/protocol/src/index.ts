@@ -89,6 +89,7 @@ export const ClientMethods = {
   threadNameSet: "thread/name/set",
   threadTurnsList: "thread/turns/list",
   threadItemsList: "thread/items/list",
+  threadItemResultRead: "thread/item/result/read",
   toolList: "tool/list",
   turnStart: "turn/start",
   turnInterrupt: "turn/interrupt",
@@ -178,8 +179,37 @@ export interface ThreadItem {
   recoveryAction?: string;
   executionState?: "queued" | "pending_approval" | "approved" | "not_approved" | "executing" | "completed" | "failed" | "not_executed" | "outcome_unknown";
   result?: { ok: boolean; command: string; data: unknown; pagination?: Record<string, unknown> | null; error: unknown; hints: unknown };
+  resultOmitted?: boolean;
+  resultRef?: ToolResultReference;
   /** 需要用户批准的工具调用会带这个字段；界面据此渲染审批卡。 */
   approval?: ApprovalState;
+}
+
+/** Reference to canonical JSON in a durable tool item, independent of model text. */
+export interface ToolResultReference {
+  threadId: string;
+  itemId: string;
+  encoding: "json";
+  sha256: string;
+  byteLength: number;
+  /** Unicode code points, not UTF-16 code units. */
+  characterLength: number;
+}
+
+export interface ToolResultReadParams {
+  threadId: string;
+  itemId: string;
+  sha256: string;
+  cursor?: string;
+  /** Default 16384, maximum 32768 Unicode code points. */
+  limit?: number;
+}
+
+export interface ToolResultReadResponse {
+  text: string;
+  offset: number;
+  nextCursor: string | null;
+  resultRef: ToolResultReference;
 }
 
 /** 一次工具审批的状态。`decision` 缺席表示还在等用户决定。 */

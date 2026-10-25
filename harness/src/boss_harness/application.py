@@ -7,6 +7,7 @@ are explicit; the CLI is only a composition root.
 from __future__ import annotations
 
 import base64
+import binascii
 from dataclasses import replace
 import json
 import math
@@ -29,6 +30,7 @@ from boss_harness.resources import AttachmentStore, SkillCatalog, ToolRegistry
 from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
 from boss_harness.session import Entry, SessionStore
+from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
 from boss_harness.tools import BossCliTool, should_pause
 from boss_harness.tools.commands import offline_reply
 from boss_harness.tools.recruitment import SYSTEM_PROMPT
@@ -167,6 +169,7 @@ class ApplicationService:
             "thread/fork": self.on_thread_fork, "thread/archive": self.on_thread_archive,
             "thread/unarchive": self.on_thread_unarchive, "thread/name/set": self.on_thread_name,
             "thread/turns/list": self.on_turn_list, "thread/items/list": self.on_items_list,
+            "thread/item/result/read": self.on_tool_result_read,
             "turn/start": self.on_turn_start, "turn/interrupt": self.on_turn_interrupt,
             "turn/steer": self.on_turn_steer, "turn/read": self.on_turn_read,
             "approval/respond": self.on_approval_respond, "event/list": self.on_event_list,
@@ -273,7 +276,8 @@ class ApplicationService:
         with self.events.lock:
             thread = self.sessions.get_thread(thread_id)
             job = self.runtimes.active.get(thread_id)
-            result = {"thread": thread, "items": [] if exclude else self.events.items(thread_id),
+            items = [] if exclude and not paged else [project_item(thread_id, item) for item in self.events.items(thread_id)]
+            result = {"thread": thread, "items": [] if exclude or paged else items,
                     "turns": None if exclude else self.sessions.list_turns(thread_id)["turns"],
                     "activeTurnId": job["turnId"] if job else None,
                     "eventCursor": self.sessions.latest_event_cursor(), "queue": self.queue.list(thread_id)}
@@ -283,10 +287,16 @@ class ApplicationService:
                 if len(self._snapshot_pages) >= 16:
                     self._snapshot_pages.pop(next(iter(self._snapshot_pages)))
                 snapshot_id = uuid.uuid4().hex
-                items = self.events.items(thread_id)
                 self._snapshot_pages[snapshot_id] = (thread_id, items, time.monotonic() + 120)
                 result.update(snapshotId=snapshot_id, itemCount=len(items), items=[])
+            self._check_response_budget(result)
             return result
+
+    @staticmethod
+    def _check_response_budget(result: dict) -> None:
+        if wire_size(result) > MAX_PAGE_BYTES:
+            raise RpcError(-32010, "会话响应过大，请用 thread/resume snapshot=true 后分页读取条目",
+                           {"code": "RESPONSE_TOO_LARGE", "recoveryMethod": "thread/resume", "snapshot": True})
 
     def on_thread_read(self, params: dict | None) -> dict:
         return self._snapshot(_text(params, "threadId"), exclude=bool((params or {}).get("excludeTurns", False)),
@@ -296,7 +306,11 @@ class ApplicationService:
         return self.on_thread_read(params)
 
     def on_turn_read(self, params: dict | None) -> dict:
-        return {"turn": self.sessions.get_turn(_text(params, "threadId"), _text(params, "turnId"))}
+        thread_id = _text(params, "threadId")
+        turn = self.sessions.get_turn(thread_id, _text(params, "turnId"))
+        result = {"turn": {**turn, "items": [project_item(thread_id, item) for item in turn["items"]]}}
+        self._check_response_budget(result)
+        return result
 
     def on_turn_list(self, params: dict | None) -> dict:
         params = params or {}
@@ -314,10 +328,12 @@ class ApplicationService:
         cursor = params.get("cursor")
         if cursor is not None:
             try:
-                scope, offset = json.loads(base64.urlsafe_b64decode(cursor.encode()))
+                if not isinstance(cursor, str) or len(cursor) > 2048:
+                    raise ValueError()
+                scope, offset = json.loads(base64.b64decode(cursor.encode(), altchars=b"-_", validate=True))
                 if scope != scope_id or type(offset) is not int or offset < 0:
                     raise ValueError()
-            except (ValueError, TypeError, AttributeError):
+            except (ValueError, TypeError, AttributeError, UnicodeDecodeError, binascii.Error):
                 raise ValueError("条目分页游标无效") from None
         if snapshot_id is not None:
             snapshot = self._snapshot_pages.get(snapshot_id) if isinstance(snapshot_id, str) else None
@@ -325,10 +341,36 @@ class ApplicationService:
                 raise ValueError("会话快照已过期；请重新 resume")
             items = snapshot[1]
         else:
-            items = self.events.items(thread_id)
-        page = items[offset:offset + limit]
-        next_cursor = base64.urlsafe_b64encode(json.dumps([scope_id, offset + len(page)]).encode()).decode() if offset + len(page) < len(items) else None
-        return {"items": page, "nextCursor": next_cursor}
+            items = [project_item(thread_id, item) for item in self.events.items(thread_id)]
+        if offset > len(items):
+            raise ValueError("条目分页游标超出结果范围")
+        page = []
+        result = {"items": page, "nextCursor": None}
+        for item in items[offset:offset + limit]:
+            candidate = page + [item]
+            next_offset = offset + len(candidate)
+            next_cursor = (base64.urlsafe_b64encode(json.dumps([scope_id, next_offset]).encode()).decode()
+                           if next_offset < len(items) else None)
+            candidate_result = {"items": candidate, "nextCursor": next_cursor}
+            if wire_size(candidate_result) > MAX_PAGE_BYTES:
+                if not page:
+                    raise RpcError(-32010, "单个条目超过读取预算，无法在此页传输；原始记录仍保留",
+                                   {"code": "RESPONSE_TOO_LARGE", "itemId": item["id"]})
+                break
+            page, result = candidate, candidate_result
+        return result
+
+    def on_tool_result_read(self, params: dict | None) -> dict:
+        params = params or {}
+        if set(params) - {"threadId", "itemId", "sha256", "cursor", "limit"}:
+            raise ValueError("工具结果读取包含未知参数；不接受文件路径或自由偏移")
+        thread_id, item_id = _text(params, "threadId"), _text(params, "itemId", maximum=128)
+        self.sessions.require_thread(thread_id)
+        item = next((item for item in self.sessions.read_items(thread_id) if item["id"] == item_id), None)
+        if item is None:
+            raise ValueError("条目不属于该会话或不存在")
+        return read_result_chunk(thread_id, item, sha256=_text(params, "sha256", maximum=64),
+                                 cursor=params.get("cursor"), limit=params.get("limit", 16_384))
 
     def on_thread_fork(self, params: dict | None) -> dict:
         params = params or {}
@@ -364,7 +406,20 @@ class ApplicationService:
 
     def on_event_list(self, params: dict | None) -> dict:
         params = params or {}
-        return self.sessions.events_after(params.get("cursor"), params.get("threadId"), params.get("limit", 100))
+        source = self.sessions.events_after(params.get("cursor"), params.get("threadId"), params.get("limit", 100))
+        page = []
+        result = {"events": page, "nextCursor": params.get("cursor") or "0", "hasMore": source["hasMore"]}
+        for index, event in enumerate(source["events"]):
+            candidate = page + [event]
+            candidate_result = {"events": candidate, "nextCursor": event["params"]["eventCursor"],
+                                "hasMore": source["hasMore"] or index + 1 < len(source["events"])}
+            if wire_size(candidate_result) > MAX_PAGE_BYTES:
+                if not page:
+                    raise RpcError(-32010, "单个事件超过读取预算；请读取会话快照恢复，事件游标未前移",
+                                   {"code": "RESPONSE_TOO_LARGE", "recoveryMethod": "thread/resume", "snapshot": True})
+                break
+            page, result = candidate, candidate_result
+        return result
 
     def on_context_compact(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")

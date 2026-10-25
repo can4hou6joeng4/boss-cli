@@ -158,6 +158,7 @@ export function toMessage(item: ThreadItem): MessageItem | null {
               toolUse: {
                 name: item.toolName ?? "tool",
                 source: item.source,
+                resultRef: item.resultRef,
                 output: item.result ? JSON.stringify(item.result, null, 2) : undefined,
                 input: JSON.stringify(item.toolArguments ?? {}, null, 2),
                 result: item.resultSummary ?? (item.status === "running" ? "正在执行" : item.status ?? ""),
