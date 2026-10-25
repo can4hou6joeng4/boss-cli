@@ -340,3 +340,7 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .tool-source-output { margin: 10px 8px; font-size: 12px; color: var(--text-secondary); }
 .tool-source-output summary { cursor: pointer; padding: 4px 0; }
 .tool-source-output pre { max-height: 280px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; padding: 10px; border-radius: 8px; background: var(--bg-tertiary); user-select: text; }
+.tool-result-controls { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.tool-result-controls button { border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 8px; color: var(--text-primary); background: var(--bg-tertiary); cursor: pointer; }
+.tool-result-controls button:disabled { opacity: .45; cursor: default; }
+.tool-result-segments [role="alert"] { color: var(--accent-error); }

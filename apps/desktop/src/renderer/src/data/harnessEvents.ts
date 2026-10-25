@@ -11,6 +11,7 @@ export interface HarnessEvent {
     resultSummary?: string; error?: { code?: string; message?: string };
     result?: ThreadItem["result"];
     resultOmitted?: boolean;
+    resultRef?: ThreadItem["resultRef"];
     source?: ThreadItem["source"];
     approvalId?: string; summary?: string; params?: Record<string, unknown>;
     consequential?: boolean; approval?: ApprovalState;
@@ -50,8 +51,9 @@ export function reduceHarnessEvent(previous: MessageItem[], event: HarnessEvent)
     case "toolCall/completed":
       item = { ...item, toolUse: { ...item.toolUse, source: params.source ?? item.toolUse?.source, name: params.toolName ?? item.toolUse?.name ?? "tool", input: item.toolUse?.input ?? "{}", result: params.resultSummary ?? params.error?.message ?? params.status ?? "已结束" },
         ...(params.approval ? { approval: params.approval } : {}) };
-      if (params.result) item = { ...item, toolUse: { ...item.toolUse!, output: JSON.stringify(params.result, null, 2) } };
-      else if (params.resultOmitted) item = { ...item, toolUse: { ...item.toolUse!, output: "结果较大，实时详情已省略；完整结果已保存到会话历史。" } };
+      if (params.result) item = { ...item, toolUse: { ...item.toolUse!, resultRef: undefined, output: JSON.stringify(params.result, null, 2) } };
+      else if (params.resultRef) item = { ...item, toolUse: { ...item.toolUse!, resultRef: params.resultRef, output: undefined } };
+      else if (params.resultOmitted) item = { ...item, toolUse: { ...item.toolUse!, resultRef: undefined, output: "结果较大，实时详情已省略；完整结果已保存到会话历史。" } };
       break;
     case "approval/requested":
       if (!params.approvalId) return previous;
