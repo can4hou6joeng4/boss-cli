@@ -155,6 +155,7 @@ class BossCliTool:
             error=envelope.get("error"),
             hints=envelope.get("hints"),
             raw=stdout,
+            pagination=envelope.get("pagination"),
         )
 
     @staticmethod

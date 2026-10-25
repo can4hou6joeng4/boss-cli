@@ -33,6 +33,7 @@ from boss_harness.session import Entry, SessionStore
 from boss_harness.toolkit import ToolResult
 
 MAX_TOOL_ROUNDS = 6
+MAX_INLINE_TOOL_RESULT_BYTES = 64 * 1024
 
 #: 审批的默认等待上限（秒）。超时按未批准处理：无法安全判定时必须 fail closed。
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
@@ -270,7 +271,7 @@ class TurnRunner:
             "turnId": self.turn_id,
             "executionState": execution_state or status,
             "result": {"ok": result.ok, "command": result.command, "data": result.data,
-                       "error": result.error, "hints": result.hints},
+                       "pagination": result.pagination, "error": result.error, "hints": result.hints},
             "source": source,
             "modelResult": model_result(result, source=source),
         }
@@ -280,6 +281,9 @@ class TurnRunner:
             thread_id,
             Entry(type="item", parent_id=self.sessions.last_entry_id(thread_id), payload=payload),
         )
+        # Notifications are bounded frames. Large pages stay in the durable
+        # result; the live card still receives its pagination-bearing summary.
+        inline_result = len(payload["modelResult"].encode("utf-8")) <= MAX_INLINE_TOOL_RESULT_BYTES
         self.notify(
             N_TOOL_CALL_COMPLETED,
             {
@@ -290,6 +294,7 @@ class TurnRunner:
                 "ok": result.ok,
                 "error": result.error,
                 "resultSummary": payload["resultSummary"],
+                **({"result": payload["result"]} if inline_result else {"resultOmitted": True}),
                 "source": source,
                 "approval": approval,
             },
@@ -648,7 +653,10 @@ def summarize_result(result: ToolResult, limit: int = 4000) -> str:
             body = json.dumps(result.data, ensure_ascii=False)
         except TypeError:
             body = str(result.data)
-        return f"ok=true command={result.command} data={body}"[:limit]
+        # Put page metadata before the potentially long data preview. A truncated
+        # page must not look like the whole result set or hide an unknown total.
+        page = "" if result.pagination is None else " pagination=" + json.dumps(result.pagination, ensure_ascii=False)
+        return f"ok=true command={result.command}{page} data={body}"[:limit]
     code = (result.error or {}).get("code", "UNKNOWN")
     message = (result.error or {}).get("message", "")
     recovery = (result.error or {}).get("recovery_action") or ""
@@ -662,5 +670,5 @@ def tool_source(thread_id: str, entry: Entry, name: str) -> dict:
 def model_result(result: ToolResult, *, source: dict | None = None) -> str:
     """Keep the structured envelope for context; the UI summary is a separate field."""
     return json.dumps({"ok": result.ok, "command": result.command, "data": result.data,
-                       "error": result.error, "hints": result.hints,
+                       "pagination": result.pagination, "error": result.error, "hints": result.hints,
                        **({"source": source} if source else {})}, ensure_ascii=False, allow_nan=False)

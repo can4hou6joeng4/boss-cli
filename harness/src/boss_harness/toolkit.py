@@ -13,3 +13,4 @@ class ToolResult:
     error: dict | None = None
     hints: dict | None = None
     raw: str = ""
+    pagination: dict | None = None
