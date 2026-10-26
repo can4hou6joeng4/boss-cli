@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第二十三轮：模型连接检查关闭与任务隔离
+
+[Issue #61](https://github.com/can4hou6joeng4/boss-cli/issues/61) 来自连接诊断生命周期复现：旧 `close()` 只设取消事件，模型 worker 未收到 abort 或等待，取消又使 timeout 提前退出，报告可持续为 checking。审查还发现旧 timer 和异常路径可覆盖新检查或已经提交的取消状态。参考 Pi 固定 `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）`packages/agent/src/agent.ts` 的 active-run 取消与 `waitForIdle`，以及 `packages/ai/src/api/openai-responses.ts` 的 SDK signal 所有权；独立实现 Python 诊断任务收尾，无代码复制或新增依赖。
+
+每个模型检查使用独立身份关联 provider、worker、超时与中止，终态在同一锁内提交。关闭将 checking 转为 failed/CANCELLED，先到的 CHECK_TIMEOUT 保持不变；关闭期间工厂晚返回不进入 stream。模型迭代器由消费 worker 关闭，中止任务在锁外执行并与检查共享两秒关闭等待预算；未完全收尾前保留所有权，防止旧 abort 影响重试实例。CLI/login 沿用既有取消与 bridge 关闭顺序。同步 provider 中止及 SDK 建连仍是协作式，不宣称可以强杀任意阻塞实现。
+
+本轮再次只读核对 `jackwener/boss-cli` 开放 Issue/PR：Issue #35 的来源策略边界已有独立交付，PR #37 页码及其他招聘、认证变更未出现适合本诊断修复的新增差异；不移植不同 CLI 的认证或自动沟通代码。业务工具允许清单、审批及 JSON-RPC 0.2.0 保持既有契约；验证使用本地替身与隔离目录，测试及证据仅留本地。
+
+23 项本地专项和 12 项独立边界验证通过，含 60 轮关闭/超时竞争、工厂晚返回、旧 timer、慢 abort、stream.close 异常、线程构造/启动失败及重试；独立应用 shutdown 验证确认任务收尾后同一状态目录可以由新应用接管。原有连接/bridge/组合隔离回归继续通过，不把这些未提交的本地测试描述为远程 CI 内容。
+
 ## 第二十二轮：模型工厂实例运行所有权
 
 [Issue #58](https://github.com/can4hou6joeng4/boss-cli/issues/58) 来自嵌入式并发审查：自定义 `provider_factory` 返回同一对象时，两个回合共用实例级流/abort 状态；双 Gate 替身复现中断 A 后 A interrupted、B error。默认内建工厂创建新实例，缺口属于嵌入方工厂的准入契约。参考 Pi 固定 `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）`packages/agent/src/agent.ts` 的运行级 AbortController 和 `packages/ai/src/api/openai-responses.ts` 的 SDK signal 传递职责，独立实现 Python 实例所有权检查，无代码复制或新增依赖。
