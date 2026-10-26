@@ -108,6 +108,7 @@ export const ClientMethods = {
   attachmentAdd: "attachment/add",
   attachmentRead: "attachment/read",
   contextRead: "context/read",
+  contextCompactPlan: "context/compact/plan",
   contextCompact: "context/compact",
 } as const;
 
@@ -379,6 +380,16 @@ export interface ContextReadParams {
   input?: string;
   skillIds?: string[];
   attachmentIds?: string[];
+}
+export interface ContextCompactPlanParams { threadId: string; throughTurnId: string }
+export interface ContextCompactPlan {
+  threadId: string;
+  throughTurnId: string;
+  sourceItemIds: string[];
+  sourceDigest: string;
+  sourceItemCount: number;
+  firstItemId: string;
+  lastItemId: string;
 }
 export interface ContextBudget {
   estimatedInputTokens: number;
