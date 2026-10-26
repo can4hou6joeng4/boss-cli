@@ -684,7 +684,7 @@ class ApplicationService:
                 raise RpcError(-32005, "已达到后台摘要并发上限",
                                {"code": "COMPACTION_CONCURRENCY_LIMIT", "limit": self.runtimes.capacity})
             provider = self._compaction_provider(config)
-            if any(active["runner"].provider is provider for active in self.runtimes.active.values()) \
+            if any(job["runner"].provider is provider for job in self.runtimes.jobs.values()) \
                     or any(existing.get("provider") is provider and existing.get("status") == "running"
                            for existing in self._compaction_jobs.values()):
                 raise RpcError(-32005, "模型供应商实例正在被其他任务使用，无法安全隔离摘要请求")
@@ -964,7 +964,7 @@ class ApplicationService:
                         raise ContextCompactionFailed("CONTEXT_RECOVERY_UNAVAILABLE", "自动摘要需要独立 provider_factory")
                     return None
                 provider = self._compaction_provider(config)
-                if any(active["runner"].provider is provider for active in self.runtimes.active.values()) or any(
+                if any(job["runner"].provider is provider for job in self.runtimes.jobs.values()) or any(
                         active["status"] == "running" and active.get("provider") is provider
                         for active in self._compaction_jobs.values()):
                     raise ContextCompactionFailed("COMPACTION_PROVIDER_CONFLICT", "摘要 provider 实例正被其他任务使用")
@@ -1035,7 +1035,17 @@ class ApplicationService:
         if self.provider_factory is not None:
             bridge = self._new_bridge()
             try:
-                return self._new_runner(bridge, self.provider_factory(config), config)
+                provider = self.provider_factory(config)
+                if provider is not None:
+                    if provider is self.provider or provider is self.runner.provider:
+                        raise RpcError(-32005, "模型供应商工厂必须返回独立于应用主实例的 provider")
+                    # A released execution slot still owns its provider until the
+                    # worker finishes notifications and all lifecycle cleanup.
+                    if any(job["runner"].provider is provider for job in self.runtimes.jobs.values()) \
+                            or any(compaction.get("provider") is provider and compaction["status"] == "running"
+                                   for compaction in self._compaction_jobs.values()):
+                        raise RpcError(-32005, "模型供应商实例仍被其他任务持有；工厂必须返回独立实例")
+                return self._new_runner(bridge, provider, config)
             except Exception:
                 self.bridge_lifecycle.close(bridge)
                 raise

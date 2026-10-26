@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第二十二轮：模型工厂实例运行所有权
+
+[Issue #58](https://github.com/can4hou6joeng4/boss-cli/issues/58) 来自嵌入式并发审查：自定义 `provider_factory` 返回同一对象时，两个回合共用实例级流/abort 状态；双 Gate 替身复现中断 A 后 A interrupted、B error。默认内建工厂创建新实例，缺口属于嵌入方工厂的准入契约。参考 Pi 固定 `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）`packages/agent/src/agent.ts` 的运行级 AbortController 和 `packages/ai/src/api/openai-responses.ts` 的 SDK signal 传递职责，独立实现 Python 实例所有权检查，无代码复制或新增依赖。
+
+在运行锁内检查非空工厂返回值，拒绝应用主 provider、仍在 `runtimes.jobs` 中的 worker（含释放 active 槽位后的通知/收尾阶段）或运行摘要持有的实例。业务回合检查在 reserve、turn 记录和用户输入写入之前；只释放新建 bridge，不对已有 owner 调用 abort/close。手动与自动摘要也统一检查 jobs，避免收尾期借用同一实例。旧 worker 完全结束后的临时实例串行复用、未提供工厂的旧串行路径、返回 None 的无模型并发均保持兼容。JSON-RPC 0.2.0 和业务/审批边界不变。
+
+11 项独立离线验证覆盖主实例、活动/收尾业务 owner、摘要冲突、拒绝时无持久化/无新回合、仅新 bridge 清理，以及正常独立实例并发中断隔离；手动和自动摘要在旧 worker 收尾期均拒绝复用，旧 worker 完全结束后可正常生成摘要。测试材料仅本地保留；不调用真实模型或招聘平台。模型连接检查的关闭收尾和摘要来源修订后的历史有效性属于另行复现的后续工作，不把本轮修复描述为所有生命周期缺口已经完成。
+
 ## 第二十一轮：CLI 子进程输出预算
 
 [Issue #57](https://github.com/can4hou6joeng4/boss-cli/issues/57) 来自子进程传输入口审查：原 `communicate()` 完整缓冲 stdout/stderr 后才校验信封，后续 RPC 帧限制及结果分段不能保护内核内存。隔离基线中 17 MiB stdout、9+9 MiB 两管道及小信封加 17 MiB stderr 都被接纳，Python 分配峰值约 47–54 MB。补充问题来源为核对时 OPEN 的 [Pi Issue #11360](https://github.com/earendil-works/pi/issues/11360)；阅读固定 `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）`packages/coding-agent/src/core/exec.ts`，它也按字符串累积输出。本项目独立实现原始字节预算，不复制其代码或异常处理，不新增依赖。
