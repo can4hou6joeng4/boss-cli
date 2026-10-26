@@ -538,7 +538,8 @@ class SessionStore:
             copied: list[dict] = []
             copied_ids: set[str] = set()
             for entry in json.loads(_json(prefix)):
-                if entry["type"] == "thread_info":
+                # Queue state belongs to one thread, not its transcript forks.
+                if entry["type"] in {"thread_info", "queue"}:
                     continue
                 if entry.get("parentId") not in copied_ids:
                     entry["parentId"] = copied[-1]["id"] if copied else None
