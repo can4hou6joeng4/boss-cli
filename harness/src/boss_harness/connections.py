@@ -47,10 +47,12 @@ class ConnectionChecks:
                  provider_factory: Callable[[ModelConfig], Provider | None] = build_provider,
                  timeout: float = 25.0,
                  request_preparer: Callable[[ModelRequest], ModelRequest] | None = None,
+                 browser_source_policy: str | None = None,
                  bridge_lifecycle: BridgeLifecycle | None = None) -> None:
         self.config, self.bridge_factory = config, bridge_factory
         self.provider_factory, self.timeout = provider_factory, timeout
         self.request_preparer = request_preparer
+        self.browser_source_policy = browser_source_policy
         self.bridge_lifecycle = bridge_lifecycle or BridgeLifecycle()
         self.lock = threading.RLock()
         self.active: dict[str, tuple[threading.Thread, threading.Event]] = {}
@@ -64,6 +66,9 @@ class ConnectionChecks:
                       "model": config.model, "summary": "已配置，尚未发送请求" if real else "当前为离线运行配置"},
             "platform": {"state": "unchecked", "summary": "尚未在线验证", "authState": "unknown"},
         }
+        if browser_source_policy is not None:
+            self.report["cli"]["browserSourcePolicy"] = browser_source_policy
+            self.report["platform"]["browserSourcePolicy"] = browser_source_policy
         if bridge_factory is None:
             self.report["cli"].update(_disabled())
             self.report["platform"].update(_disabled())

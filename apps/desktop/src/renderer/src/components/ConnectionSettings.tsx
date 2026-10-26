@@ -6,6 +6,12 @@ const LABELS: Record<ConnectionCheck["state"], string> = {
   unchecked: "尚未检测", checking: "检测中", ready: "检查通过", failed: "检查失败", blocked: "需要处理", disabled: "离线配置",
 };
 const AUTH_LABELS: Record<string, string> = { complete: "完整", partial: "不完整", broken: "不可用", missing: "缺失", unknown: "未检测" };
+const BROWSER_SOURCE_LABELS: Record<NonNullable<ConnectionCheck["browserSourcePolicy"]>, string> = {
+  inherit: "继承上游 CLI 配置",
+  auto: "auto（允许上游自动选择）",
+  "existing-browser": "existing-browser（复用已有浏览器）",
+  "stored-cookie": "stored-cookie（仅使用本地凭据和指定 CDP）",
+};
 
 export function ConnectionSettings({ harnessUp, onLogin }: { harnessUp: boolean; onLogin?: () => void }): JSX.Element {
   const [report, setReport] = useState<ConnectionReport | null>(null);
@@ -60,6 +66,7 @@ export function ConnectionSettings({ harnessUp, onLogin }: { harnessUp: boolean;
     <div className="settings-row"><div className="settings-row-copy"><div className="settings-row-title">招聘 Harness</div><p className="settings-row-description">当前桌面进程提供的本机运行状态</p></div><span className={`settings-badge${harnessUp ? " is-connected" : ""}`}><span className="settings-status-dot" />{harnessUp ? "运行中" : "未连接"}</span></div>
     {rows.map(row => <div className="settings-row connection-check-row" key={row.target}>
       <div className="settings-row-copy"><div className="settings-row-title">{row.title}</div><p className="settings-row-description">{row.description}</p>
+        {row.target === "local" && row.check?.browserSourcePolicy && <p className="settings-row-description">招聘 CLI 浏览器来源：{BROWSER_SOURCE_LABELS[row.check.browserSourcePolicy]}</p>}
         <p className="settings-row-description" role="status">{row.check?.summary ?? "尚未检测"}{row.check?.code ? `（${row.check.code}）` : ""}</p>
         {row.check?.checkedAt && <p className="connection-check-time">检查于 {new Date(row.check.checkedAt).toLocaleTimeString()}</p>}
         {row.target === "platform" && <>

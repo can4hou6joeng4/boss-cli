@@ -12,6 +12,14 @@
 
 本轮只读刷新 `jackwener/boss-cli`：Issue #35 的隐式Cookie/Keychain访问及 #32/#27/#23 风控问题仍作为边界约束；PR #28 recommend分页、#29真实greet、#24简历同步均不直接进入通用内核。相关状态会变化，未采信外部自述的live-test作为本项目验收，也未调用真实招聘平台。
 
+## 第十七轮：显式传递业务 CLI 浏览器来源
+
+本项目 [Issue #49](https://github.com/can4hou6joeng4/boss-cli/issues/49) 处理招聘工具调用与上游浏览器来源策略之间缺少宿主级控制的问题。上游 `boss-agent-cli@bdc7034df563f1ea458d3af5bb4b40e8ea4603a8` 的 `status` 默认只读 TokenStore，但 `auto` 来源下的部分认证恢复会自动探测 CDP 或启动 headless。此结论只对应固定源码，不是任意 `BOSS_CLI_BIN` 的运行保证；jackwener/boss-cli Issue #35 仅提供隐式本机凭据访问的安全问题背景，两项目命令实现不同。
+
+新增可选进程变量 `BOSS_HARNESS_BROWSER_SOURCE`，允许 `auto`、`existing-browser`、`stored-cookie`，值正规化后作为全局 `--browser-source` 参数传入每次业务 CLI 子进程。未设置时完全不增加 argv，原样继承上游配置；无效值在创建工具桥时拒绝。若显式来源被较旧或自定义 CLI 拒绝，既有单次子进程协议只返回失败，不会删参后重试。连接报告暴露 `browserSourcePolicy=inherit|auto|existing-browser|stored-cookie`，桌面连接页显示所选值。
+
+这是来源策略控制，不是无重试或零副作用保证：`auto` 仍允许上游浏览器选择；`existing-browser` 可探测/复用现有 CDP；`stored-cookie` 依赖本地保存凭据及上游显式 CDP 配置，并在不可用时失败。Harness 不读取浏览器数据库、调用 Keychain 或改写共享 `config.json`。来源来自 Pi 的职责分离原则（运行配置由宿主显式组合），不复制 Pi 或上游代码，无 JSON-RPC 主版本变化；协议只新增可选诊断字段。
+
 ## 第十六轮：摘要任务资源保留上限
 
 [Issue #47](https://github.com/can4hou6joeng4/boss-cli/issues/47) 针对自动与手动摘要反复运行后进程内任务注册表无界增长。参考 Pi 固定 commit `d5b3de22d0e24a3e9c38a9410d3329b099717283` 的 coding-agent 对手动/自动摘要分别持有 AbortController、完成或失败时清除 controller 的生命周期（`agent-session.ts` 的 `_clearManualCompactionState`、`abortCompaction` 和 `_runAutoCompaction`），以及 [Pi Issue #11297](https://github.com/earendil-works/pi/issues/11297) 提出的长期压缩状态有界目标。Issue #11297 本身讨论的是 Pi 文件列表累积，本项目没有对应 fileOps 数据，因此只采用“长期状态须有界”的设计提示，不复用其业务数据方案。

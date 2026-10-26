@@ -159,6 +159,7 @@ class ApplicationService:
             self.connections = ConnectionChecks(config, request_preparer=lambda request: self.context.prepare(
                 request, self.model_catalog.resolve(config.provider, request.model), provider=config.provider)[0],
                 bridge_factory=self._new_bridge if self._business_services else None,
+                browser_source_policy=getattr(self.tools, "browser_source_policy", None),
                 bridge_lifecycle=self.bridge_lifecycle)
             self.handlers = self.registry.handlers
             self.approval_required = self.registry.approval_required
