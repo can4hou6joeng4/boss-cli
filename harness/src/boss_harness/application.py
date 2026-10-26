@@ -22,6 +22,7 @@ from typing import Any, Callable
 
 from boss_harness import __version__
 from boss_harness.agent import TurnRunner
+from boss_harness.bridge_lifecycle import BridgeLifecycle
 from boss_harness.context import ContextService
 from boss_harness.connections import ConnectionChecks
 from boss_harness.models import ModelConfig, Provider
@@ -109,6 +110,10 @@ class ApplicationService:
         self.registry = ToolRegistry(tool_bundle.tools)
         self.provider_factory = provider_factory
         self.workspace = (workspace or Path.cwd()).resolve()
+        self.bridge_lifecycle = BridgeLifecycle()
+        self._base_bridge_close_claimed = False
+        self._base_bridge_close_owner: int | None = None
+        self._base_bridge_close_done = threading.Event()
         self._owner = StateDirectoryOwner(state_dir)
         try:
             self.sessions = SessionStore(state_dir / "sessions")
@@ -125,7 +130,8 @@ class ApplicationService:
             self.tools = self._new_bridge()
             self.connections = ConnectionChecks(config, request_preparer=lambda request: self.context.prepare(
                 request, self.model_catalog.resolve(config.provider, request.model))[0],
-                bridge_factory=self._new_bridge if self._business_services else None)
+                bridge_factory=self._new_bridge if self._business_services else None,
+                bridge_lifecycle=self.bridge_lifecycle)
             self.handlers = self.registry.handlers
             self.approval_required = self.registry.approval_required
             self.approval_timeout = _approval_timeout()
@@ -141,6 +147,8 @@ class ApplicationService:
         except Exception:
             if hasattr(self, "connections"):
                 self.connections.close()
+            if hasattr(self, "tools"):
+                self.bridge_lifecycle.close(self.tools)
             if hasattr(self, "sessions"):
                 self.sessions.close()
             self._owner.close()
@@ -194,10 +202,12 @@ class ApplicationService:
             try:
                 bridge_ref = weakref.ref(bridge)
             except TypeError:
+                self.bridge_lifecycle.close(bridge)
                 raise ValueError("工具桥实例必须支持独立身份跟踪") from None
             try:
                 bridge.cancel_event = None
             except Exception:
+                self.bridge_lifecycle.close(bridge)
                 raise ValueError("工具桥须支持独立的 cancel_event") from None
             self._bridge_refs.append(bridge_ref)
             return bridge
@@ -553,13 +563,23 @@ class ApplicationService:
 
     def _runner_for(self, config: ModelConfig) -> TurnRunner:
         if self.provider_factory is not None:
-            return self._new_runner(self._new_bridge(), self.provider_factory(config), config)
+            bridge = self._new_bridge()
+            try:
+                return self._new_runner(bridge, self.provider_factory(config), config)
+            except Exception:
+                self.bridge_lifecycle.close(bridge)
+                raise
         if not any(job["runner"] is self.runner for job in self.runtimes.active.values()):
             self.runner.provider, self.runner.config = self.provider, config
             return self.runner
         if self.provider is not None:
             raise RpcError(-32005, "嵌入方须提供独立 provider_factory 才能并发运行模型会话")
-        return self._new_runner(self._new_bridge(), None, config)
+        bridge = self._new_bridge()
+        try:
+            return self._new_runner(bridge, None, config)
+        except Exception:
+            self.bridge_lifecycle.close(bridge)
+            raise
 
     def on_turn_start(self, params: dict | None, *, queue_item: dict | None = None) -> dict:
         params = params or {}
@@ -567,59 +587,70 @@ class ApplicationService:
         client_id = params.get("clientUserMessageId")
         if client_id is not None and (not isinstance(client_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", client_id)):
             raise ValueError("clientUserMessageId 格式无效")
-        with self.runtimes.lock:
-            thread = self.sessions.get_thread(thread_id)
-            if thread.get("archived"):
-                raise ValueError("请先恢复归档会话")
-            if client_id:
-                previous = next((i for i in self.sessions.read_items(thread_id) if i.get("clientUserMessageId") == client_id), None)
-                if previous:
-                    if previous.get("originalInput", previous.get("text")) != text:
-                        raise ValueError("clientUserMessageId 已用于不同输入")
-                    return {"turnId": previous["turnId"], "deduplicated": True}
-            config = self._model_config(thread, params)
-            model = config.model
-            skill_text, skills = self.skills.load(params.get("skillIds"))
-            attachment_text, attachments = self.attachments.context(thread_id, params.get("attachmentIds"))
-            runner = self._runner_for(config)
-            runner.last_preparation = None
-            read_only = thread.get("toolPolicy") == "readOnly"
-            allowed = self.registry.allowed_names(read_only=read_only)
-            runner._tools = self.registry.specs(read_only=read_only)
-            def validate(name: str, arguments: dict) -> None:
-                if read_only and name not in allowed:
-                    raise ValueError("只读会话禁止此工具；请新建需要逐次审批的会话")
-                self.registry.validate(name, arguments)
-            runner.validate_arguments = validate
-            job = self.runtimes.reserve(thread_id, text, runner)
-            runner.turn_id = job["turnId"]
-            runner._cancel = job["cancel"]
-            runner.system_prompt = self._system_prompt(read_only, skill_text)
-            runner.notify = lambda method, payload=None: self._notify_runner(job, method, payload)
-            runner.stage_steering = lambda: self._stage_steering(job)
-            job["clientUserMessageId"] = client_id
-            try:
-                self.sessions.record_turn(thread_id, job["turnId"], "running", model=model, provider=config.provider,
-                                          skillIds=[s["id"] for s in skills], toolPolicy=thread.get("toolPolicy", "approval"))
-                user = runner.append_user(thread_id, text + ("\n\n" + attachment_text if attachment_text else ""),
-                                   originalInput=text, clientUserMessageId=client_id,
-                                   queueId=queue_item["id"] if queue_item else None, attachments=attachments)
-                if queue_item:
-                    self.queue.transition(thread_id, queue_item["id"], "delivered")
-                self.events.emit("turn/started", {"threadId": thread_id, "turnId": job["turnId"],
-                                                 "clientUserMessageId": client_id})
-                self.events.emit("item/completed", {"threadId": thread_id, "turnId": job["turnId"],
-                    "itemId": user.id, "kind": "userMessage", "text": text,
-                    "clientUserMessageId": client_id})
-                worker = threading.Thread(target=self._run_turn, args=(job,), name=f"turn-{job['turnId'][:8]}", daemon=True)
-                job["worker"] = worker
-                worker.start()
-            except Exception:
-                self.sessions.record_turn(thread_id, job["turnId"], "error")
-                self.runtimes.release(job)
-                self.runtimes.finish(job)
-                raise
-        return {"turnId": job["turnId"], "clientUserMessageId": client_id}
+        runner = None
+        try:
+            with self.runtimes.lock:
+                thread = self.sessions.get_thread(thread_id)
+                if thread.get("archived"):
+                    raise ValueError("请先恢复归档会话")
+                if client_id:
+                    previous = next((i for i in self.sessions.read_items(thread_id) if i.get("clientUserMessageId") == client_id), None)
+                    if previous:
+                        if previous.get("originalInput", previous.get("text")) != text:
+                            raise ValueError("clientUserMessageId 已用于不同输入")
+                        return {"turnId": previous["turnId"], "deduplicated": True}
+                config = self._model_config(thread, params)
+                model = config.model
+                skill_text, skills = self.skills.load(params.get("skillIds"))
+                attachment_text, attachments = self.attachments.context(thread_id, params.get("attachmentIds"))
+                runner = self._runner_for(config)
+                runner.last_preparation = None
+                read_only = thread.get("toolPolicy") == "readOnly"
+                allowed = self.registry.allowed_names(read_only=read_only)
+                runner._tools = self.registry.specs(read_only=read_only)
+
+                def validate(name: str, arguments: dict) -> None:
+                    if read_only and name not in allowed:
+                        raise ValueError("只读会话禁止此工具；请新建需要逐次审批的会话")
+                    self.registry.validate(name, arguments)
+
+                runner.validate_arguments = validate
+                job = self.runtimes.reserve(thread_id, text, runner)
+                runner.turn_id = job["turnId"]
+                runner._cancel = job["cancel"]
+                runner.system_prompt = self._system_prompt(read_only, skill_text)
+                runner.notify = lambda method, payload=None: self._notify_runner(job, method, payload)
+                runner.stage_steering = lambda: self._stage_steering(job)
+                job["clientUserMessageId"] = client_id
+                try:
+                    self.sessions.record_turn(thread_id, job["turnId"], "running", model=model, provider=config.provider,
+                                              skillIds=[s["id"] for s in skills], toolPolicy=thread.get("toolPolicy", "approval"))
+                    user = runner.append_user(thread_id, text + ("\n\n" + attachment_text if attachment_text else ""),
+                                       originalInput=text, clientUserMessageId=client_id,
+                                       queueId=queue_item["id"] if queue_item else None, attachments=attachments)
+                    if queue_item:
+                        self.queue.transition(thread_id, queue_item["id"], "delivered")
+                    self.events.emit("turn/started", {"threadId": thread_id, "turnId": job["turnId"],
+                                                     "clientUserMessageId": client_id})
+                    self.events.emit("item/completed", {"threadId": thread_id, "turnId": job["turnId"],
+                        "itemId": user.id, "kind": "userMessage", "text": text,
+                        "clientUserMessageId": client_id})
+                    worker = threading.Thread(target=self._run_turn, args=(job,), name=f"turn-{job['turnId'][:8]}", daemon=True)
+                    job["worker"] = worker
+                    worker.start()
+                except Exception:
+                    try:
+                        self.sessions.record_turn(thread_id, job["turnId"], "error")
+                    finally:
+                        self.runtimes.release(job)
+                        self.runtimes.finish(job)
+                    raise
+            return {"turnId": job["turnId"], "clientUserMessageId": client_id}
+        except Exception:
+            if runner is not None and runner is not self.runner:
+                self.bridge_lifecycle.close(runner.tool_bridge)
+            self._close_application_resources_if_idle()
+            raise
 
     def _notify_runner(self, job: dict, method: str, params: dict | None = None) -> None:
         if method == "thread/updated":
@@ -651,10 +682,31 @@ class ApplicationService:
         try:
             self._execute_turn(job)
         finally:
+            if job["runner"] is not self.runner:
+                self.bridge_lifecycle.close(job["runner"].tool_bridge)
             with self.runtimes.lock:
                 self.runtimes.finish(job)
-                if self.runtimes.closed and not self.runtimes.jobs:
-                    self._owner.close()
+            self._close_application_resources_if_idle()
+
+    def _close_application_resources_if_idle(self) -> None:
+        with self.runtimes.lock:
+            if not self.runtimes.closed or self.runtimes.jobs:
+                return
+            if self._base_bridge_close_claimed:
+                wait_for_close = self._base_bridge_close_owner != threading.get_ident()
+            else:
+                self._base_bridge_close_claimed = True
+                self._base_bridge_close_owner = threading.get_ident()
+                wait_for_close = False
+        if wait_for_close:
+            self._base_bridge_close_done.wait()
+            return
+        try:
+            self.bridge_lifecycle.close(self.tools)
+            self.sessions.close()
+            self._owner.close()
+        finally:
+            self._base_bridge_close_done.set()
 
     def _execute_turn(self, job: dict) -> None:
         thread_id, runner = job["threadId"], job["runner"]
@@ -803,10 +855,7 @@ class ApplicationService:
         self._state = "stopped"
         self.connections.close()
         self.runtimes.stop()
-        self.sessions.close()
-        with self.runtimes.lock:
-            if not self.runtimes.jobs:
-                self._owner.close()
+        self._close_application_resources_if_idle()
 
     def serve_forever(self) -> None:
         try:

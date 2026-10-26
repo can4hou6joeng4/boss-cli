@@ -174,7 +174,7 @@ JSON-RPC 维持 0.2.0；终态枚举、14 个招聘工具、参数、业务 argv
 
 1. **模型能力与完整请求预算**：窗口/输出上限随模型变化，统一计入 system/技能、工具 schema、thinking 和消息；`context/read` 与实际准入保持一致。usage 校准需绑定 provider/model、system/tools 和检查点，不能沿用陈旧用量。已阅读同一 Pi commit 的 `packages/ai/src/types.ts`、`src/api/simple-options.ts` 和 `src/utils/estimate.ts`；采用能力声明与每次请求准备的职责，暂不引入 Pi 模型库。
 2. **显式工具组合接口**：统一工具定义与不可变 bundle，显式注入应用及每运行器 bridge factory；拒绝重复名或缺 schema/handler，保留只读策略与逐次审批。已阅读 coding-agent 的 `src/core/sdk.ts`、`resource-loader.ts`、`extensions/loader.ts` 及 `agent-session.ts`；参考 customTools/factory/active allowlist。技能继续仅提供显式上下文，不自动执行目录插件或扩权。
-3. **可追溯压缩与生命周期接口**：从统一投影生成保留完整工具配对、最近回合和旧摘要来源的压缩计划，再接可取消、无工具权限的摘要请求；失败不写 checkpoint、不重放业务工具。已阅读 coding-agent 的 `session-manager.ts`、`compaction/compaction.ts`、`agent-session.ts` 及 agent 的 `prepareRequest`/`finishTurn`。先完成预算与稳定边界，再引入有限自动恢复；不采用实验性的 `packages/durable` 恢复语义。
+3. **可追溯压缩与有限自动恢复**：从统一投影生成保留完整工具配对、最近回合和旧摘要来源的压缩计划，再接可取消、无工具权限的摘要请求；失败不写 checkpoint、不重放业务工具。Bridge 的同步关闭接口已由应用、运行器和连接检查按资源所有权收尾；该接口独立于 Pi 的会话压缩与扩展 shutdown 事件。已阅读 coding-agent 的 `session-manager.ts`、`compaction/compaction.ts`、`agent-session.ts` 及 agent 的 `prepareRequest`/`finishTurn`。不采用实验性的 `packages/durable` 恢复语义。
 
 ## 第九轮：模型能力与完整请求预算
 
@@ -206,7 +206,7 @@ JSON-RPC 维持 0.2.0；终态枚举、14 个招聘工具、参数、业务 argv
 
 `ApplicationService` 接受 `tool_bundle` 与显式 `bridge_factory`；所有生成的 bridge 须可弱引用并支持独立 `cancel_event`。在共享 runtime lock 下用弱引用记录仍存活 bridge 的身份，避免模型回合和 host connection check 获得同一对象并覆盖取消信号，也避免保留对象本身。自定义 bundle 无论其 id 如何命名，local/platform 检查及平台登录 RPC 均 disabled/`NOT_SUPPORTED`；模型连接探针仍走本轮预算。默认招聘 bundle 保持既有 local/platform/login 行为。初始化描述回调的返回值须是有界 JSON 且不能覆盖工具清单或 bundle id，失败可重试握手。
 
-生命周期限制：当前 `ApplicationService` 不调用自定义 bridge 的 `close`/`dispose`。Bridge 应作为轻量适配对象自行管理临时资源；持久连接、后台线程和明确关闭钩子留待后续生命周期阶段。
+Bridge 按 [Issue #30](https://github.com/can4hou6joeng4/boss-cli/issues/30) 可选实现同步且应快速返回的 `close()`；未实现时可提供同步 `dispose()`。两者并存时只调用 `close()`。每回合临时 runner、连接检查/登录流程和应用级共享实例分别由其所有者在工作结束或全部运行退出后收尾；关闭请求先取消并等待相关工作。每个实例最多调用一次关闭钩子，异常只记录类型名，不覆盖已确定的工具或回合结果。Bridge 工厂仍须为每个运行器返回独立、可弱引用且支持 `cancel_event` 的实例。
 
 工具结果在持久化/暂停策略前按严格 JSON `ToolResult` 校验。callback 异常、非法 envelope 或非法暂停策略统一成为 `TOOL_ERROR`；已派发写工具持久化为 `outcome_unknown` 并暂停后续队列，不再自动重放。只读会话 projection 和执行入口共用注册表，恶意猜测写工具名或参数不合法均不产生审批或副作用。`requires_approval` 是宿主安全分类，嵌入方必须把有副作用操作设为 `True`。
 
