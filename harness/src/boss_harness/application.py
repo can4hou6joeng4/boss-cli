@@ -1195,6 +1195,12 @@ class ApplicationService:
             self._close_application_resources_if_idle()
 
     def _close_application_resources_if_idle(self, deadline: float | None = None) -> None:
+        # Startup failure may notify idle while an outer runtime lock is held.
+        # Before shutdown there is nothing to close; avoid acquiring the
+        # connection lock in that path. closed only transitions to True, and
+        # close() checks idle again after freezing admission.
+        if not self.runtimes.closed:
+            return
         # begin_login takes connections.lock before the runtime lock while
         # creating its bridge. Check this domain before taking runtimes.lock.
         if not self.connections.is_idle():

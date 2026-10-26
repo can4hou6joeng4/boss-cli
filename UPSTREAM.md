@@ -8,7 +8,9 @@
 
 业务 job、摘要 job 与连接检查在对应 worker、abort 和终态通知都完成前保持 provider、bridge、摘要索引及状态目录所有权；重复 close 只认领一次 abort，线程构造/启动失败也不会同步执行可能阻塞的 provider hook。关闭和 idle 回调遵循登录路径的 `connections.lock → runtimes.lock` 顺序，避免反向嵌套。同步 base bridge `close()` 仍依赖嵌入方快速返回的既有约定，不能宣称任意嵌入 hook 都具备严格 wall-clock 上限。
 
-验证使用真实 `ApplicationService` worker、合成 provider/bridge 和隔离状态目录：应用验收 9/9 通过，混合任务关闭约 2.010 秒，四 worker 约 2.002 秒；Harness 全套 339 项通过、4 项跳过，专项 94/94 通过。网络、真实模型和招聘平台调用均为零；验收脚本和故障探针仅保留 ignored 本地目录。
+独立审查补充直接启动及嵌套 follow-up 的 worker 启动失败与登录并发验证：应用尚未关闭时，idle 回调提前返回，避免在调用方仍持有运行锁时获取连接锁；进入关闭后继续二次校验所有任务和资源所有权。
+
+验证使用真实 `ApplicationService` worker、合成 provider/bridge 和隔离状态目录：应用验收 9/9 通过，混合任务关闭约 2.010 秒，四 worker 约 2.002 秒；Harness 全套 339 项中 335 项通过、4 项跳过，专项 94/94 通过。网络、真实模型和招聘平台调用均为零；验收脚本和故障探针仅保留 ignored 本地目录。
 
 ## 第二十四轮：摘要来源有效性与历史投影
 
