@@ -129,7 +129,7 @@ class ApplicationService:
             self.attachments = AttachmentStore(self.sessions, state_dir / "attachments", self.workspace)
             self.tools = self._new_bridge()
             self.connections = ConnectionChecks(config, request_preparer=lambda request: self.context.prepare(
-                request, self.model_catalog.resolve(config.provider, request.model))[0],
+                request, self.model_catalog.resolve(config.provider, request.model), provider=config.provider)[0],
                 bridge_factory=self._new_bridge if self._business_services else None,
                 bridge_lifecycle=self.bridge_lifecycle)
             self.handlers = self.registry.handlers
@@ -220,7 +220,7 @@ class ApplicationService:
             validate_arguments=self.registry.validate, pause_on_result=self.tool_bundle.pause_on_result,
             history_provider=self.context.history,
             request_preparer=lambda request: self.context.prepare(request,
-                self.model_catalog.resolve(config.provider, request.model)))
+                self.model_catalog.resolve(config.provider, request.model), provider=config.provider))
 
     def _register(self) -> None:
         methods = {
@@ -543,7 +543,8 @@ class ApplicationService:
             request = ModelRequest(model=config.model, system=prompt, messages=tuple(messages), tools=tools,
                                    max_tokens=config.max_tokens, effort=config.effort, thinking=config.thinking)
             result = self.context.read(thread_id, request=request,
-                                       capabilities=self.model_catalog.resolve(config.provider, config.model))
+                                       capabilities=self.model_catalog.resolve(config.provider, config.model),
+                                       provider=config.provider)
             return {**result, "provider": config.provider, "requestSource": "active" if job else "preview" if preview else "default"}
 
     def on_context_compact(self, params: dict | None) -> dict:
@@ -604,6 +605,9 @@ class ApplicationService:
                 skill_text, skills = self.skills.load(params.get("skillIds"))
                 attachment_text, attachments = self.attachments.context(thread_id, params.get("attachmentIds"))
                 runner = self._runner_for(config)
+                runner.request_preparer = lambda request: self.context.prepare(request,
+                    self.model_catalog.resolve(config.provider, request.model),
+                    provider=config.provider, thread_id=thread_id)
                 runner.last_preparation = None
                 read_only = thread.get("toolPolicy") == "readOnly"
                 allowed = self.registry.allowed_names(read_only=read_only)

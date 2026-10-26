@@ -387,7 +387,7 @@ export interface ContextBudget {
   outputReserve: number;
   inputBudget: number;
   messageCount: number;
-  breakdown: { system: number; messages: number; tools: number; options: number };
+  breakdown: { system: number; messages: number; tools: number; options: number; usageBaseline?: number };
   requestedOutputTokens: number;
   modelMaxOutputTokens: number;
   capabilitySource: string;
@@ -395,7 +395,9 @@ export interface ContextBudget {
   withinBudget: boolean;
   model: string;
   provider: string;
-  usageApplied: false;
+  usageApplied: boolean;
+  requestFingerprint?: string | null;
+  usageAnchorTurnId?: string | null;
 }
 export interface ContextReadResponse extends ContextBudget {
   threadId: string;
