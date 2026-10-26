@@ -4,12 +4,14 @@ import { Popover } from "../components/Popover";
 import { SlashCommandList, SLASH_COMMANDS, type SlashCommandItem } from "../components/SlashCommandList";
 import { AtMentionList, filterMentions, type MentionItem } from "../components/AtMentionList";
 import { MODEL_OPTIONS, type ConversationMode } from "../data/mockData";
-import { createComposerDraft, clearTransferredDraft, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
+import { createComposerDraft, clearTransferredDraft, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type QueueIntent, type CheckQueueSubmission } from "../data/composerDraft";
 import "../styles/composer-menus.css";
 
 export interface ComposerProps {
   readOnly?: boolean;
   value: string; onChange: (text: string) => void; onSend: ComposerSend;
+  onQueue?: ComposerQueue;
+  onCheckQueueSubmission?: CheckQueueSubmission;
   draft?: ComposerDraft; onDraftChange?: UpdateComposerDraft;
   isRunning?: boolean; blocked?: boolean; onInterrupt?: () => void; preview?: boolean;
   currentMode?: ConversationMode; onModeChange?: (mode: ConversationMode) => void;
@@ -27,6 +29,7 @@ const MAX_ATTACHMENT_BYTES = 200000;
 
 export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Composer({
   value, onChange, onSend, draft, onDraftChange, isRunning = false, blocked = false, onInterrupt, preview = true, readOnly = false,
+  onQueue, onCheckQueueSubmission,
   currentMode = "agent", onModeChange, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, home = false, onLogin,
 }, forwardedRef) {
   const [menu, setMenu] = useState<"add" | "permissions" | "mode" | "model" | null>(null);
@@ -36,6 +39,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const [localDraft, setLocalDraft] = useState(createComposerDraft);
   const [dragging, setDragging] = useState(false);
   const [notice, setNotice] = useState("");
+  const [checkingQueue, setCheckingQueue] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const modelInputRef = useRef<HTMLInputElement>(null);
@@ -43,6 +47,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const readingRef = useRef(false);
   const sendingRef = useRef(false);
   const alive = useRef(true);
+  const [queueIntent, setQueueIntent] = useState<QueueIntent>("steering");
   const lastValue = useRef(value), valueVersion = useRef(0);
   if (lastValue.current !== value) { lastValue.current = value; valueVersion.current += 1; }
   const composerDraft = draft && onDraftChange ? draft : { ...localDraft, text: value, textVersion: valueVersion.current };
@@ -50,6 +55,8 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const attachments = composerDraft.attachments;
   const readingAttachments = composerDraft.pendingReads > 0;
   const submitting = composerDraft.submitting;
+  const uncertainQueue = composerDraft.queueSubmission?.uncertain ? composerDraft.queueSubmission : null;
+  const queueModeActive = isRunning || Boolean(uncertainQueue?.intent === "followUp");
   const updateDraft: UpdateComposerDraft = change => {
     if (draft && onDraftChange) onDraftChange(change);
     else if (alive.current) setLocalDraft(previous => change({ ...previous, text: lastValue.current, textVersion: valueVersion.current }));
@@ -114,14 +121,37 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   };
   const submit = async () => {
     const submitted = draftRef.current;
-    if (isRunning || blocked || readingRef.current || submitted.pendingReads > 0 || sendingRef.current || submitted.submitting || (!submitted.text.trim() && !submitted.attachments.length)) return;
+    const priorQueueSubmission = submitted.queueSubmission;
+    const queueing = Boolean(onQueue && (isRunning || (priorQueueSubmission?.uncertain && priorQueueSubmission.intent === "followUp")));
+    if ((!isRunning && blocked) || (isRunning && !queueing) || readingRef.current || submitted.pendingReads > 0 || sendingRef.current || submitted.submitting || (!submitted.text.trim() && !submitted.attachments.length)) return;
     const text = [submitted.text.trim(), ...submitted.attachments.map(file => `附件：${file.name}\n\n${file.text}`)].filter(Boolean).join("\n\n");
+    if (priorQueueSubmission?.uncertain) {
+      const sameRequest = priorQueueSubmission.text === text && priorQueueSubmission.intent === queueIntent;
+      if (!sameRequest) {
+        setNotice("上一条队列消息结果尚未确认；恢复原消息和处理方式后才能用相同请求编号重试。");
+        return;
+      }
+      if (!queueing) {
+        setNotice("转向目标回合已结束。请先核对队列，再决定是否作为新消息提交。");
+        return;
+      }
+    }
     sendingRef.current = true; setNotice("");
     updateDraft(previous => previous.id === submitted.id ? { ...previous, submitting: true } : previous);
+    let queueRequest: ComposerDraft["queueSubmission"];
     try {
-      const transferred = await onSend(text);
+      let transferred: void | boolean;
+      if (queueing && onQueue) {
+        queueRequest = priorQueueSubmission?.text === text && priorQueueSubmission.intent === queueIntent
+          ? priorQueueSubmission
+          : { text, intent: queueIntent, id: crypto.randomUUID(), uncertain: false };
+        updateDraft(previous => previous.id === submitted.id ? { ...previous, queueSubmission: queueRequest } : previous);
+        transferred = await onQueue(text, queueIntent, queueRequest.id);
+      } else {
+        transferred = await onSend(text);
+      }
       if (transferred === false) {
-        updateDraft(previous => previous.id === submitted.id ? { ...previous, submitting: false } : previous);
+        updateDraft(previous => previous.id === submitted.id ? { ...previous, submitting: false, ...(queueing ? { queueSubmission: undefined } : {}) } : previous);
         return;
       }
       if (!draft || !onDraftChange) {
@@ -131,8 +161,57 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
       if (alive.current && draftRef.current.id === submitted.id) { setSlashOpen(false); setMentionOpen(false); setMenu(null); }
     } catch {
       // 回调异常不能证明消息未转交；保留内容和提交锁，避免直接重复发送。
-      if (alive.current && draftRef.current.id === submitted.id) setNotice("提交结果尚未确认，请先核对聊天记录；不会自动重复提交。");
+      if (alive.current && draftRef.current.id === submitted.id) setNotice(queueing
+        ? "队列提交结果尚未确认；恢复原消息后再次提交会使用同一请求编号。"
+        : "提交结果尚未确认，请先核对聊天记录；不会自动重复提交。");
+      if (queueing && queueRequest) {
+        updateDraft(previous => previous.id === submitted.id
+          ? { ...previous, submitting: false, queueSubmission: { ...queueRequest!, uncertain: true } }
+          : previous);
+      }
     } finally { sendingRef.current = false; }
+  };
+  const restoreQueueSubmission = () => {
+    const pending = draftRef.current.queueSubmission;
+    if (!pending?.uncertain) return;
+    onChange(pending.text);
+    updateDraft(previous => previous.id === draftRef.current.id
+      ? { ...previous, text: pending.text, textVersion: previous.textVersion + 1, attachments: [], queueSubmission: pending }
+      : previous);
+    setQueueIntent(pending.intent);
+    setNotice("已恢复原队列消息；重试会沿用原请求编号。");
+  };
+  const checkUncertainQueueSubmission = async () => {
+    const pending = draftRef.current.queueSubmission;
+    if (!pending?.uncertain || !onCheckQueueSubmission || checkingQueue) return;
+    setCheckingQueue(true);
+    setNotice("正在核对内核队列…");
+    try {
+      const result = await onCheckQueueSubmission(pending.id);
+      if (!alive.current) return;
+      if (result.status === "unavailable") {
+        setNotice("暂时无法读取内核队列；草稿和请求编号已保留，请连接恢复后再核对。");
+        return;
+      }
+      if (result.status === "found") {
+        updateDraft(previous => {
+          if (previous.id !== draftRef.current.id) return previous;
+          const currentText = [previous.text.trim(), ...previous.attachments.map(file => `附件：${file.name}\n\n${file.text}`)].filter(Boolean).join("\n\n");
+          const matchesPending = currentText === pending.text;
+          return { ...previous, text: matchesPending ? "" : previous.text,
+            textVersion: previous.textVersion + (matchesPending && previous.text ? 1 : 0),
+            attachments: matchesPending ? [] : previous.attachments, submitting: false, queueSubmission: undefined };
+        });
+        setNotice(`已核对：原消息在队列中，状态为${result.item.status === "queued" ? "排队中" : result.item.status === "delivering" ? "正在投递" : result.item.status === "delivered" ? "已投递" : "已暂停"}；不会重复提交。`);
+        return;
+      }
+      updateDraft(previous => previous.id === draftRef.current.id ? { ...previous, submitting: false, queueSubmission: undefined } : previous);
+      setNotice(result.status === "cancelled" ? "已核对：原消息已撤回；当前输入可作为新请求提交。" : "已核对：队列中没有原消息；当前输入可作为新请求提交。");
+    } catch {
+      if (alive.current) setNotice("核对内核队列失败；草稿和请求编号已保留，请稍后重试。");
+    } finally {
+      if (alive.current) setCheckingQueue(false);
+    }
   };
   const selectModel = (id: string) => { onSelectModel?.(id); setMenu(null); focusInput(); };
 
@@ -146,7 +225,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     <SlashCommandList isOpen={slashOpen} onClose={() => setSlashOpen(false)} onSelect={selectSlash} search={slashQuery} selectedIndex={selectedIndex} />
     <AtMentionList isOpen={mentionOpen} onClose={() => setMentionOpen(false)} onSelect={selectMention} search={mentionQuery} selectedIndex={selectedIndex} />
     <textarea aria-label="消息输入" ref={element => { inputRef.current = element; if (typeof forwardedRef === "function") forwardedRef(element); else if (forwardedRef) forwardedRef.current = element; }} rows={2}
-      placeholder={isRunning ? "正在处理任务，你可以随时停止" : blocked ? "另一个任务正在运行，请等待完成" : "和 BOSS-CLI 一起工作"}
+      placeholder={isRunning ? queueIntent === "steering" ? "补充当前任务要求…" : "安排当前任务结束后的下一步…" : blocked ? "另一个任务正在运行，请等待完成" : "和 BOSS-CLI 一起工作"}
       value={value} onChange={event => change(event.target.value)}
       onPaste={event => {
         const files = [...event.clipboardData.files];
@@ -172,6 +251,10 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
         }
         if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); }
       }} />
+    {isRunning && onQueue && <div className="composer-queue-mode" role="group" aria-label="运行中消息处理方式">
+      <button type="button" aria-pressed={queueIntent === "steering"} title="当前已发出的工具调用完成后，在下一次模型请求前加入此消息。" onClick={() => setQueueIntent("steering")}>转向当前回合</button>
+      <button type="button" aria-pressed={queueIntent === "followUp"} title="等当前任务自然结束后，再以新回合处理此消息。" onClick={() => setQueueIntent("followUp")}>排到后续回合</button>
+    </div>}
     <div className="composer-controls">
       <div className="composer-control-left">
         <div className="popover-anchor">
@@ -226,10 +309,15 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
             <div className="menu-divider" /><button type="button" disabled={!onOpenSettings} onClick={() => { setMenu(null); onOpenSettings?.(); }}><IconSettings /><span>模型与连接设置</span></button>
           </Popover>
         </div>
-        <button type="button" className="composer-submit" aria-label={isRunning ? "停止任务" : "发送消息"} title={isRunning ? "停止任务" : submitting ? "正在转交消息" : "发送 · Enter"} disabled={!isRunning && (blocked || readingAttachments || submitting || (!value.trim() && !attachments.length))} onClick={isRunning ? onInterrupt : () => { void submit(); }}>{isRunning ? <IconStop size={15} /> : <IconSend size={18} />}</button>
+        <button type="button" className="composer-submit" aria-label={queueModeActive ? queueIntent === "steering" ? "转向当前回合" : "排入后续回合" : "发送消息"} title={queueModeActive ? queueIntent === "steering" ? "转向当前回合 · Enter" : "排入后续回合 · Enter" : submitting ? "正在转交消息" : "发送 · Enter"} disabled={(blocked && !isRunning) || readingAttachments || submitting || (!value.trim() && !attachments.length)} onClick={() => { void submit(); }}><IconSend size={18} /></button>
+        {isRunning && onInterrupt && <button type="button" className="composer-stop" aria-label="停止任务" title="停止当前任务" onClick={onInterrupt}><IconStop size={15} /></button>}
       </div>
     </div>
     {(notice || readingAttachments || submitting) && <div className="composer-notice" role="status">{notice || (readingAttachments ? "正在读取附件…" : "正在转交消息…")}</div>}
+    {uncertainQueue && <div className="composer-notice-actions">
+      <button type="button" onClick={restoreQueueSubmission}>恢复待确认消息</button>
+      <button type="button" disabled={!onCheckQueueSubmission || checkingQueue} onClick={() => { void checkUncertainQueueSubmission(); }}>{checkingQueue ? "正在核对队列…" : "核对服务端队列"}</button>
+    </div>}
     <input ref={fileRef} className="visually-hidden" type="file" accept=".txt,.md,.markdown,.json,.csv" multiple onChange={event => { const files = [...(event.target.files ?? [])]; event.target.value = ""; void addFiles(files); }} />
   </div>;
 });

@@ -372,6 +372,19 @@ export interface QueueItem {
   expectedTurnId?: string | null;
   clientUserMessageId?: string | null;
 }
+export interface TurnSteerParams {
+  threadId: string;
+  expectedTurnId: string;
+  input: string;
+  clientUserMessageId?: string;
+}
+export interface QueueAddParams {
+  threadId: string;
+  input: string;
+  clientUserMessageId?: string;
+}
+export interface QueueListResponse { items: QueueItem[] }
+export interface QueueItemResponse { queueItem: QueueItem }
 
 export interface ModelCapabilities {
   contextWindow: number;

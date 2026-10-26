@@ -1,4 +1,4 @@
-import type { ApprovalState, ThreadItem } from "@boss-cli/protocol";
+import type { ApprovalState, QueueItem, ThreadItem } from "@boss-cli/protocol";
 import type { MessageItem } from "./mockData";
 import { toMessage } from "./harnessBridge";
 
@@ -17,6 +17,7 @@ export interface HarnessEvent {
     consequential?: boolean; approval?: ApprovalState;
     eventCursor?: string; eventId?: string; clientUserMessageId?: string;
     state?: string; generation?: number; running?: boolean;
+    queueId?: string; queue?: QueueItem[];
   };
 }
 

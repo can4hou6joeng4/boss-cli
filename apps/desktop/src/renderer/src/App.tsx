@@ -8,10 +8,12 @@ import { RevertConfirmModal } from "./components/RevertConfirmModal";
 import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
-import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, harnessStatus, forkThread, interruptTurn, listThreads, reconnectHarness, respondApproval, sendTurn, startThread } from "./data/harnessBridge";
+import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, startThread, steerTurn } from "./data/harnessBridge";
 import { reduceHarnessEvent, type HarnessEvent } from "./data/harnessEvents";
 import { HarnessReplica } from "./data/harnessReplica";
 import { toMessage } from "./data/harnessBridge";
+import type { QueueItem } from "@boss-cli/protocol";
+import type { QueueIntent, QueueSubmissionCheck } from "./data/composerDraft";
 export function App(): JSX.Element {
   const [isDark, setIsDark] = useState(() => {
     try { const saved = localStorage.getItem("boss-cli.ui.theme"); if (saved) return saved === "dark"; } catch {}
@@ -27,6 +29,7 @@ export function App(): JSX.Element {
   const [configuredModelLabel, setConfiguredModelLabel] = useState<string>();
   const [messages, setMessages] = useState<MessageItem[]>([]);
   const [runningThreadIds, setRunningThreadIds] = useState(new Set<string>());
+  const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
   const [error, setError] = useState("");
   const activeRef = useRef<SessionItem | null>(null);
   const runningRef = useRef(new Set<string>());
@@ -74,6 +77,11 @@ export function App(): JSX.Element {
     const replica = new HarnessReplica(window.boss, event => {
       const params = event.params ?? {}, id = params.threadId;
       if (!id) return;
+      if (["queue/updated", "turn/steeringApplied", "turn/started", "turn/completed"].includes(event.method)) {
+        void listQueue(id).then(items => {
+          if (items && activeRef.current?.id === id) setQueueItems(items);
+        });
+      }
       if (["thread/created", "thread/archived", "thread/unarchived", "thread/renamed"].includes(event.method)) { void refresh(); return; }
       if (event.method === "turn/started") {
         lifecycleVersion.current += 1;
@@ -93,6 +101,7 @@ export function App(): JSX.Element {
     }, snapshot => {
       if (cancelled) return;
       const id = snapshot.thread.id;
+      if (activeRef.current?.id === id) setQueueItems(snapshot.queue ?? []);
       const real = snapshot.items.map(toMessage).filter((item): item is MessageItem => item !== null);
       updateThread(id, () => real);
       if (snapshot.activeTurnId) turnIds.current.set(id, snapshot.activeTurnId);
@@ -145,6 +154,7 @@ export function App(): JSX.Element {
   const handleSelectSession = useCallback((session: SessionItem) => {
     const requestVersion = ++selectionVersion.current;
     activeRef.current = session; setActiveSession(session); setIsHomeView(false); setError("");
+    setQueueItems([]);
     if (window.innerWidth < 700) setIsSidebarOpen(false);
     if (session.projectId !== HARNESS_PROJECT_ID) {
       const sample = cache.current.get(session.id) ?? (session.id === "s-algo" ? MOCK_CONVERSATION_THREAD : [
@@ -230,6 +240,49 @@ export function App(): JSX.Element {
     const session = activeRef.current; if (!session || !text.trim()) return false;
     return send(session.id, text, session.projectId === HARNESS_PROJECT_ID);
   }, [send]);
+  const handleQueueMessage = useCallback(async (text: string, intent: QueueIntent, clientUserMessageId: string): Promise<boolean> => {
+    const session = activeRef.current;
+    if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp || !text.trim()) return false;
+    if (intent === "steering") {
+      const expectedTurnId = turnIds.current.get(session.id);
+      if (!runningRef.current.has(session.id) || !expectedTurnId) {
+        setError("当前回合已结束或状态尚未同步；消息仍保留在输入框，请刷新后再提交。");
+        await replicaRef.current?.resume(session.id);
+        return false;
+      }
+      const item = await steerTurn({ threadId: session.id, expectedTurnId, input: text, clientUserMessageId });
+      if (activeRef.current?.id === session.id) setQueueItems(previous => [...previous.filter(existing => existing.id !== item.id), item]);
+      return true;
+    }
+    const item = await queueFollowUp({ threadId: session.id, input: text, clientUserMessageId });
+    if (activeRef.current?.id === session.id) setQueueItems(previous => [...previous.filter(existing => existing.id !== item.id), item]);
+    return true;
+  }, [harnessUp]);
+  const handleCheckQueueSubmission = useCallback(async (clientUserMessageId: string): Promise<QueueSubmissionCheck> => {
+    const session = activeRef.current;
+    if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp) return { status: "unavailable" };
+    const items = await listQueue(session.id);
+    if (!items) return { status: "unavailable" };
+    if (activeRef.current?.id === session.id) setQueueItems(items);
+    const item = items.find(candidate => candidate.clientUserMessageId === clientUserMessageId);
+    if (!item) return { status: "missing" };
+    return item.status === "cancelled" ? { status: "cancelled", item } : { status: "found", item };
+  }, [harnessUp]);
+  const handleRemoveQueueItem = useCallback(async (queueId: string): Promise<boolean> => {
+    const session = activeRef.current;
+    if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp) return false;
+    try {
+      const item = await removeQueuedItem(session.id, queueId);
+      if (activeRef.current?.id === session.id) setQueueItems(previous => previous.map(existing => existing.id === item.id ? item : existing));
+      return true;
+    } catch {
+      if (activeRef.current?.id !== session.id) return false;
+      setError("撤回结果尚未确认，正在刷新队列状态；不会自动重复撤回。");
+      const items = await listQueue(session.id);
+      if (items && activeRef.current?.id === session.id) setQueueItems(items);
+      return false;
+    }
+  }, [harnessUp]);
   const handleInterrupt = useCallback(() => {
     const id = activeRef.current?.id; if (!id || !runningRef.current.has(id)) return;
     const timer = timers.current.get(id);
@@ -273,7 +326,7 @@ export function App(): JSX.Element {
   return <>
     <AppShell isDark={isDark} onToggleTheme={() => setIsDark(previous => !previous)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => setIsSidebarOpen(previous => !previous)}
       folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} currentMode={currentMode} onModeChange={setCurrentMode}
-      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onSendMessage={handleSendMessage} simulateLocal={preview} harnessUp={harnessUp}
+      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} onRemoveQueueItem={handleRemoveQueueItem} simulateLocal={preview} harnessUp={harnessUp}
       onCreateConnectionSession={createConnectionSession}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession}
       onInterrupt={handleInterrupt} onApprovalDecision={handleApproval} onStartSessionWithPrompt={handleStartSessionWithPrompt} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel} onSelectModel={setActiveModelId}
