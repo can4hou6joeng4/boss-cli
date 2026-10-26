@@ -197,3 +197,19 @@ JSON-RPC 维持 0.2.0；终态枚举、14 个招聘工具、参数、业务 argv
 本项目继续标记字符估算，尚未接入模型 tokenizer。Pi 可使用适用 usage 与尾部增量校准；本轮 `usageApplied=false`，仅独立展示历史 usage，避免模型/工具/检查点变化后的陈旧用量影响准入。自动摘要、阈值恢复和更完整生命周期接口仍待后续阶段。
 
 验收使用合成 provider/工具、临时状态与真实 ApplicationService/RPC/持久化入口，覆盖容量切换、输出裁剪、大窗口高输出、完整预算与预览一致、schema/输入/结果/steering 越限、并发隔离、队列暂停及重启不重放。测试只在本地保留，源码 CI 只负责构建及依赖审计；没有真实模型、平台或安装包验收。
+
+## 第十轮：显式工具组合与 bridge 隔离
+
+[Issue #28](https://github.com/can4hou6joeng4/boss-cli/issues/28) 将统一执行器与招聘领域工具的组合职责分开。应用现在可通过 `ToolDefinition`、`ToolBundle` 显式配置工具 schema、handler、逐次审批分类、system prompt、暂停策略、bridge 描述和可选离线回复；`ToolRegistry` 从不可变定义导出工具和只读投影。默认 `create_boss_bundle()` 只从唯一招聘 `TOOLS` 表派生，维持原 14 项顺序、schema、handler、参数兼容、唯一写工具审批及平台停止规则。
+
+架构参考仍是 Pi commit `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）。阅读 `packages/coding-agent/docs/extensions.md`、`src/core/sdk.ts` 的 `customTools`、`src/core/extensions/loader.ts` 的 `registerTool`、`src/core/agent-session.ts` 的 active allowlist 和显式工具 projection。采用其“注册与执行清单分离”的职责；本项目使用同步、进程内 Python host callbacks，不复制代码或引入依赖。schema 使用有界受限 JSON 子集并在注册时拒绝未支持关键字；不支持自动目录加载、动态导入、热重载、名称覆盖或插件市场。handler、暂停策略及 bridge 描述回调属于可信嵌入方代码，不提供沙箱隔离。
+
+`ApplicationService` 接受 `tool_bundle` 与显式 `bridge_factory`；所有生成的 bridge 须可弱引用并支持独立 `cancel_event`。在共享 runtime lock 下用弱引用记录仍存活 bridge 的身份，避免模型回合和 host connection check 获得同一对象并覆盖取消信号，也避免保留对象本身。自定义 bundle 无论其 id 如何命名，local/platform 检查及平台登录 RPC 均 disabled/`NOT_SUPPORTED`；模型连接探针仍走本轮预算。默认招聘 bundle 保持既有 local/platform/login 行为。初始化描述回调的返回值须是有界 JSON 且不能覆盖工具清单或 bundle id，失败可重试握手。
+
+生命周期限制：当前 `ApplicationService` 不调用自定义 bridge 的 `close`/`dispose`。Bridge 应作为轻量适配对象自行管理临时资源；持久连接、后台线程和明确关闭钩子留待后续生命周期阶段。
+
+工具结果在持久化/暂停策略前按严格 JSON `ToolResult` 校验。callback 异常、非法 envelope 或非法暂停策略统一成为 `TOOL_ERROR`；已派发写工具持久化为 `outcome_unknown` 并暂停后续队列，不再自动重放。只读会话 projection 和执行入口共用注册表，恶意猜测写工具名或参数不合法均不产生审批或副作用。`requires_approval` 是宿主安全分类，嵌入方必须把有副作用操作设为 `True`。
+
+本轮只读核对 `jackwener/boss-cli` 最近相关开放事项（2026-10-26 快照）：[Issue #34](https://github.com/jackwener/boss-cli/issues/34) 请求候选人搜索页自动打招呼；[PR #29](https://github.com/jackwener/boss-cli/pull/29)，head `a32839b`，改为真实 `/chat/start` 写操作；本项目继续让写工具逐次审批，不照搬其流程。[PR #37](https://github.com/jackwener/boss-cli/pull/37)，head `bee4a290df69da581520e566e3f46488885b53a3`，为 `boss chat` 显式提供页码，属于本项目已处理的问题来源。[Issue #35](https://github.com/jackwener/boss-cli/issues/35) 指出只读命令可能读取浏览器 Cookie/Keychain；这支持把平台凭据与普通工具组合隔离。上述事项没有提供可移植的通用 Harness composition 实现，故本轮 Pi 固定 commit 是接口架构来源，Boss CLI issues/PRs 仅作为业务与权限边界证据。
+
+验证使用真实 `ApplicationService`、JSON-RPC、临时会话、合成 provider 和虚构 handler。默认 bundle 14 项完整投影/兼容和参数接受性验证通过；工具/schema 套件 23 项、bundle 应用 11 项、Application/Connection 回归 37 项、预算 10 项、停止边界 5 项、平台宿主隔离 8 项、工具结果读取 10 项及 Python-host IPC 7 项通过。`npm test` 的 Python/桌面/IPC 60 项、TypeScript 检查、桌面构建、smoke，以及 Python 3.10 下 application 37 项、schema 23 项、host 隔离 8 项通过。干净 Git 源 wheel/sdist 构建和 wheel 独立安装通过；安装产物保留 14/13/1 工具投影且不包含 tests 或 scripted provider。所有测试、测试辅助与负控仅在本地忽略目录，不进入 Git 提交。未调用真实模型、招聘平台或默认 Electron profile。

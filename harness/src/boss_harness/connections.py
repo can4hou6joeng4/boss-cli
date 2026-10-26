@@ -3,6 +3,9 @@
 Checks run outside the RPC reader so stop/approval requests remain responsive.
 Only a user-triggered model/platform check accesses the network. Results are
 ephemeral observations of this process, never a claim about future calls.
+An explicit ``bridge_factory=None`` disables the platform host capabilities,
+independently of model access or the names of the selected tools. This follows
+Pi d5b3de22d0e24a3e9c38a9410d3329b099717283 SDK's explicit composition boundary.
 """
 from __future__ import annotations
 
@@ -18,6 +21,7 @@ from typing import Callable
 
 from boss_harness.models import ModelConfig, Provider, build_provider
 from boss_harness.models.types import ModelRequest, UserMessage
+from boss_harness.rpc import RpcError
 from boss_harness.tools import BossCliTool, should_pause
 from boss_harness.tools.boss_cli import PAUSE_CODES
 
@@ -25,6 +29,11 @@ PUBLIC_CHECK_CODES = PAUSE_CODES | {
     "CLI_ERROR", "CLI_CONTRACT_ERROR", "TOOL_TIMEOUT", "CANCELLED", "NETWORK_ERROR",
     "INVALID_PARAM", "NOT_SUPPORTED", "LOGIN_CREDENTIAL_EXTRACTION_FAILED", "CONNECTION_FAILED",
 }
+_PLATFORM_DISABLED = "当前工具组合未启用平台连接与登录"
+
+
+def _disabled() -> dict:
+    return {"state": "disabled", "code": "NOT_SUPPORTED", "summary": _PLATFORM_DISABLED}
 
 
 def _now() -> str:
@@ -32,7 +41,7 @@ def _now() -> str:
 
 
 class ConnectionChecks:
-    def __init__(self, config: ModelConfig, *, bridge_factory: Callable = BossCliTool,
+    def __init__(self, config: ModelConfig, *, bridge_factory: Callable | None = BossCliTool,
                  provider_factory: Callable[[ModelConfig], Provider | None] = build_provider,
                  timeout: float = 25.0,
                  request_preparer: Callable[[ModelRequest], ModelRequest] | None = None) -> None:
@@ -51,10 +60,22 @@ class ConnectionChecks:
                       "model": config.model, "summary": "已配置，尚未发送请求" if real else "当前为离线运行配置"},
             "platform": {"state": "unchecked", "summary": "尚未在线验证", "authState": "unknown"},
         }
+        if bridge_factory is None:
+            self.report["cli"].update(_disabled())
+            self.report["platform"].update(_disabled())
+            self.login = _disabled()
 
     def read(self) -> dict:
         with self.lock:
-            return deepcopy(self.report)
+            report = deepcopy(self.report)
+            if self.bridge_factory is None:
+                report["cli"].update(_disabled())
+                report["platform"].update(_disabled())
+            return report
+
+    def _require_platform(self) -> None:
+        if self.bridge_factory is None:
+            raise RpcError(-32006, _PLATFORM_DISABLED, {"code": "NOT_SUPPORTED"})
 
     def _set(self, target: str, **values) -> None:
         with self.lock:
@@ -65,6 +86,8 @@ class ConnectionChecks:
             raise ValueError("target 必须是 local、model 或 platform")
         key = "cli" if target == "local" else target
         with self.lock:
+            if key != "model" and self.bridge_factory is None:
+                return self.read()
             # Serialize CLI checks against each other; never fan out platform probes.
             busy = key in self.active or (key in {"cli", "platform"} and (
                 any(k in self.active for k in ("cli", "platform", "login")) or self.login["state"] in {"waiting", "saving"}))
@@ -88,11 +111,12 @@ class ConnectionChecks:
 
     def read_login(self) -> dict:
         with self.lock:
-            return deepcopy(self.login)
+            return _disabled() if self.bridge_factory is None else deepcopy(self.login)
 
     def begin_login(self) -> dict:
         """Host-only control: no credentials, browser access or network here."""
         with self.lock:
+            self._require_platform()
             if self.closed:
                 raise ValueError("连接服务已关闭")
             if self.login["state"] in {"waiting", "saving"}:
@@ -107,6 +131,7 @@ class ConnectionChecks:
 
     def cancel_login(self, attempt: str) -> dict:
         with self.lock:
+            self._require_platform()
             if attempt == self.login.get("id") and self.login["state"] in {"waiting", "saving"}:
                 saving = self.login["state"] == "saving"
                 if self.login_cancel:
@@ -124,6 +149,7 @@ class ConnectionChecks:
         is never persisted, emitted as an event, or included in an exception.
         Upstream validates once before replacing its encrypted session.
         """
+        self._require_platform()
         cookies, user_agent = params.get("cookies"), params.get("userAgent")
         if (not isinstance(cookies, dict) or not 1 <= len(cookies) <= 200
                 or not isinstance(user_agent, str) or len(user_agent) > 512
@@ -152,6 +178,8 @@ class ConnectionChecks:
 
     def _save_login(self, payload: str, cancel: threading.Event) -> None:
         try:
+            if self.bridge_factory is None:
+                return
             bridge = self.bridge_factory()
             bridge.cancel_event = cancel
             result = bridge.call("login", "--curl-file", "-", stdin=payload, timeout=20)
@@ -185,6 +213,9 @@ class ConnectionChecks:
                 self.active.pop("login", None)
 
     def _local_auth(self, bridge) -> bool:
+        if self.bridge_factory is None:
+            self._set("platform", **_disabled())
+            return False
         result = bridge.call("status", timeout=15)
         if not result.ok:
             self._set("platform", **self._error(result), authState="unknown", checkedAt=_now())
@@ -207,6 +238,9 @@ class ConnectionChecks:
         provider = None
         timer = None
         try:
+            if key != "model" and self.bridge_factory is None:
+                self._set(key, **_disabled())
+                return
             if key == "model":
                 config = replace(self.config, max_tokens=512, effort="low", thinking=None)
                 request = ModelRequest(model=config.model, system="Connection check. Reply OK only.",

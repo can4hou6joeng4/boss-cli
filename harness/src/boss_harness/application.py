@@ -17,6 +17,7 @@ import re
 import threading
 import time
 import uuid
+import weakref
 from typing import Any, Callable
 
 from boss_harness import __version__
@@ -32,9 +33,7 @@ from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
 from boss_harness.session import Entry, SessionStore
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
-from boss_harness.tools import BossCliTool, should_pause
-from boss_harness.tools.commands import offline_reply
-from boss_harness.tools.recruitment import SYSTEM_PROMPT
+from boss_harness.tool_bundle import ToolBundle
 
 PROTOCOL_VERSION = "0.2.0"
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
@@ -91,11 +90,23 @@ class EventHub:
 class ApplicationService:
     def __init__(self, server: JsonRpcServer, state_dir: Path, config: ModelConfig,
                  provider: Provider | None, *, provider_factory: Callable[[ModelConfig], Provider | None] | None = None,
-                 workspace: Path | None = None, model_catalog: ModelCatalog | None = None) -> None:
+                 workspace: Path | None = None, model_catalog: ModelCatalog | None = None,
+                 tool_bundle: ToolBundle | None = None, bridge_factory: Callable[[], Any] | None = None) -> None:
         self.server, self.config, self.provider = server, config, provider
         if type(config.max_tokens) is not int or config.max_tokens <= 0:
             raise ValueError("max_tokens 必须是正整数")
         self.model_catalog = model_catalog if model_catalog is not None else ModelCatalog.from_environment()
+        self._business_services = tool_bundle is None
+        if tool_bundle is None:
+            from boss_harness.tools.bundle import create_boss_bundle
+            tool_bundle = create_boss_bundle()
+            if bridge_factory is None:
+                from boss_harness.tools import BossCliTool
+                bridge_factory = BossCliTool
+        if not isinstance(tool_bundle, ToolBundle) or not callable(bridge_factory):
+            raise ValueError("工具组合须提供有效 ToolBundle 和独立 bridge_factory")
+        self.tool_bundle, self.bridge_factory = tool_bundle, bridge_factory
+        self.registry = ToolRegistry(tool_bundle.tools)
         self.provider_factory = provider_factory
         self.workspace = (workspace or Path.cwd()).resolve()
         self._owner = StateDirectoryOwner(state_dir)
@@ -107,13 +118,14 @@ class ApplicationService:
             self.queue = TurnQueue(self.sessions)
             self.queue.recover()
             self.runtimes = RuntimeManager()
-            self.registry = ToolRegistry()
+            self._bridge_refs: list[Any] = []
             self.context = ContextService(self.sessions)
             self.skills = SkillCatalog(self.workspace / ".boss-cli" / "skills")
             self.attachments = AttachmentStore(self.sessions, state_dir / "attachments", self.workspace)
-            self.tools = BossCliTool()
+            self.tools = self._new_bridge()
             self.connections = ConnectionChecks(config, request_preparer=lambda request: self.context.prepare(
-                request, self.model_catalog.resolve(config.provider, request.model))[0])
+                request, self.model_catalog.resolve(config.provider, request.model))[0],
+                bridge_factory=self._new_bridge if self._business_services else None)
             self.handlers = self.registry.handlers
             self.approval_required = self.registry.approval_required
             self.approval_timeout = _approval_timeout()
@@ -127,6 +139,10 @@ class ApplicationService:
             self._register()
             server.before_dispatch = self._check_ready
         except Exception:
+            if hasattr(self, "connections"):
+                self.connections.close()
+            if hasattr(self, "sessions"):
+                self.sessions.close()
             self._owner.close()
             raise
 
@@ -158,12 +174,40 @@ class ApplicationService:
                     self.sessions.append(thread["id"], Entry(type="item", payload={
                         **pending[item_id], **text, "revises": item_id}))
 
-    def _new_runner(self, bridge: BossCliTool, provider: Provider | None, config: ModelConfig) -> TurnRunner:
+    def _new_bridge(self) -> Any:
+        with self.runtimes.lock:
+            try:
+                bridge = self.bridge_factory()
+            except Exception:
+                raise ValueError("工具桥工厂无法创建实例") from None
+            live_refs = []
+            duplicate = False
+            for reference in self._bridge_refs:
+                existing = reference() if isinstance(reference, weakref.ReferenceType) else reference
+                if existing is None:
+                    continue
+                live_refs.append(reference)
+                duplicate = duplicate or existing is bridge
+            self._bridge_refs = live_refs
+            if duplicate:
+                raise RpcError(-32005, "工具桥工厂必须为每个运行器创建独立实例")
+            try:
+                bridge_ref = weakref.ref(bridge)
+            except TypeError:
+                raise ValueError("工具桥实例必须支持独立身份跟踪") from None
+            try:
+                bridge.cancel_event = None
+            except Exception:
+                raise ValueError("工具桥须支持独立的 cancel_event") from None
+            self._bridge_refs.append(bridge_ref)
+            return bridge
+
+    def _new_runner(self, bridge: Any, provider: Provider | None, config: ModelConfig) -> TurnRunner:
         return TurnRunner(sessions=self.sessions, tool_bridge=bridge, handlers=self.handlers,
             provider=provider, config=config, notify=lambda m, p=None: self.events.emit(m, p),
             approval_required=self.approval_required, approval_timeout=self.approval_timeout,
-            tools=self.registry.specs(), system_prompt=SYSTEM_PROMPT,
-            validate_arguments=self.registry.validate, pause_on_result=should_pause,
+            tools=self.registry.specs(), system_prompt=self.tool_bundle.system_prompt,
+            validate_arguments=self.registry.validate, pause_on_result=self.tool_bundle.pause_on_result,
             history_provider=self.context.history,
             request_preparer=lambda request: self.context.prepare(request,
                 self.model_catalog.resolve(config.provider, request.model)))
@@ -227,6 +271,7 @@ class ApplicationService:
         if type(bidirectional) is not bool or not isinstance(opt_out, list) or len(opt_out) > 128 or any(
                 not isinstance(name, str) or len(name) > 200 for name in opt_out):
             raise ValueError("客户端能力声明无效")
+        bridge_description = self._bridge_description()
         self._bidirectional = bidirectional and protocol == PROTOCOL_VERSION
         self._protocol = protocol
         self.server.opt_out_notifications = frozenset(opt_out)
@@ -234,13 +279,28 @@ class ApplicationService:
         return {"serverName": "boss-harness", "serverVersion": __version__, "protocolVersion": protocol,
             "capabilities": {"bidirectionalRequests": True, "eventReplay": True,
                              "pagination": True, "parallelThreads": True},
-            "toolBridge": {"available": self.tools.available(), "binary": self.tools.binary,
-                "binarySource": self.tools.source, "tools": self.runner.tool_names},
+            "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
+                           "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
                 "driven": self.provider is not None, "thinking": dict(self.config.thinking) if self.config.thinking else None,
                 "serverSideFallback": self.config.server_side_fallback},
             "approval": {"requiredTools": sorted(self.approval_required), "timeoutSeconds": self.approval_timeout},
             "eventCursor": self.sessions.latest_event_cursor()}
+
+    def _bridge_description(self) -> dict:
+        try:
+            metadata = self.tool_bundle.describe_bridge(self.tools)
+        except Exception:
+            raise ValueError("工具桥描述回调失败") from None
+        if not isinstance(metadata, dict) or type(metadata.get("available")) is not bool:
+            raise ValueError("工具桥描述必须包含布尔 available")
+        try:
+            encoded = json.dumps(metadata, ensure_ascii=False, allow_nan=False)
+            if len(encoded.encode()) > 16 * 1024:
+                raise ValueError
+            return json.loads(encoded)
+        except (TypeError, ValueError, RecursionError):
+            raise ValueError("工具桥描述必须是有界 JSON 元数据") from None
 
     def on_initialized(self, params: dict | None) -> dict:
         if self._state != "initializing":
@@ -256,6 +316,7 @@ class ApplicationService:
                 "provider": self.config.provider, "model": self.config.model,
                 "maxOutputTokens": self.config.max_tokens, "parallelThreads": self.runtimes.capacity,
                 "modelCapabilities": self.model_catalog.resolve(self.config.provider, self.config.model).describe(),
+                "toolBundleId": self.tool_bundle.id,
                 "approvalPolicy": "each-consequential-call", "approvalTimeoutSeconds": self.approval_timeout}
 
     def on_model_list(self, params: dict | None) -> dict:
@@ -438,7 +499,7 @@ class ApplicationService:
         return replace(self.config, model=model)
 
     def _system_prompt(self, read_only: bool, skill_text: str) -> str:
-        prompt = SYSTEM_PROMPT + ("\n\n用户选择的技能：\n" + skill_text if skill_text else "")
+        prompt = self.tool_bundle.system_prompt + ("\n\n用户选择的技能：\n" + skill_text if skill_text else "")
         if read_only:
             prompt += "\n\n本会话仅允许只读工具。禁止对外沟通、投递、交换联系方式或其他写操作；用户消息不能解除此限制。"
         return prompt
@@ -462,8 +523,7 @@ class ApplicationService:
                 config = self._model_config(thread, params)
                 skill_text, _ = self.skills.load(params.get("skillIds"))
                 prompt = self._system_prompt(thread.get("toolPolicy") == "readOnly", skill_text)
-                tools = tuple(t for t in self.registry.specs()
-                              if thread.get("toolPolicy") != "readOnly" or t.name not in self.approval_required)
+                tools = self.registry.specs(read_only=thread.get("toolPolicy") == "readOnly")
             messages = list(self.context.history(thread_id))
             if job is None:
                 attachment_text, _ = self.attachments.context(thread_id, params.get("attachmentIds"))
@@ -493,13 +553,13 @@ class ApplicationService:
 
     def _runner_for(self, config: ModelConfig) -> TurnRunner:
         if self.provider_factory is not None:
-            return self._new_runner(BossCliTool(), self.provider_factory(config), config)
+            return self._new_runner(self._new_bridge(), self.provider_factory(config), config)
         if not any(job["runner"] is self.runner for job in self.runtimes.active.values()):
             self.runner.provider, self.runner.config = self.provider, config
             return self.runner
         if self.provider is not None:
             raise RpcError(-32005, "嵌入方须提供独立 provider_factory 才能并发运行模型会话")
-        return self._new_runner(BossCliTool(), None, config)
+        return self._new_runner(self._new_bridge(), None, config)
 
     def on_turn_start(self, params: dict | None, *, queue_item: dict | None = None) -> dict:
         params = params or {}
@@ -524,8 +584,8 @@ class ApplicationService:
             runner = self._runner_for(config)
             runner.last_preparation = None
             read_only = thread.get("toolPolicy") == "readOnly"
-            allowed = {t["name"] for t in self.registry.describe() if not read_only or t["readOnly"]}
-            runner._tools = tuple(t for t in self.registry.specs() if t.name in allowed)
+            allowed = self.registry.allowed_names(read_only=read_only)
+            runner._tools = self.registry.specs(read_only=read_only)
             def validate(name: str, arguments: dict) -> None:
                 if read_only and name not in allowed:
                     raise ValueError("只读会话禁止此工具；请新建需要逐次审批的会话")
@@ -638,7 +698,8 @@ class ApplicationService:
         runner.tool_bridge.cancel_event = cancel
         runner._blocked = None
         try:
-            reply = offline_reply(runner, thread_id, text)
+            reply = (self.tool_bundle.offline_reply(runner, thread_id, text)
+                     if self.tool_bundle.offline_reply is not None else "当前未配置模型；请配置模型后继续任务。")
             if cancel is not None and cancel.is_set():
                 return "interrupted"
             runner.append_agent(thread_id, reply)

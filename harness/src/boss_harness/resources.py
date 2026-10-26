@@ -13,29 +13,18 @@ import re
 import uuid
 from typing import Any
 
-from boss_harness.models.types import ToolSpec
 from boss_harness.session import Entry, SessionStore
-from boss_harness.tools import TOOLS, approval_required_tools, tool_handlers, validate_arguments
+from boss_harness.tool_bundle import ToolDefinition, ToolRegistry as _ToolRegistry
 
 
-class ToolRegistry:
-    def __init__(self) -> None:
-        self.handlers = tool_handlers()
-        self.approval_required = approval_required_tools()
+class ToolRegistry(_ToolRegistry):
+    """Compatibility import with a lazily composed recruitment default."""
 
-    def specs(self) -> tuple[ToolSpec, ...]:
-        return tuple(ToolSpec(name=t["name"], description=t["description"],
-                              input_schema=t["input_schema"]) for t in TOOLS)
-
-    def describe(self) -> list[dict]:
-        return [{"name": t.name, "description": t.description,
-                 "inputSchema": dict(t.input_schema), "readOnly": t.name not in self.approval_required,
-                 "requiresApproval": t.name in self.approval_required} for t in self.specs()]
-
-    def validate(self, name: str, arguments: dict) -> None:
-        if name not in self.handlers:
-            raise ValueError("工具不在注册表中")
-        validate_arguments(name, arguments)
+    def __init__(self, definitions: tuple[ToolDefinition, ...] | None = None) -> None:
+        if definitions is None:
+            from boss_harness.tools.bundle import create_boss_bundle
+            definitions = create_boss_bundle().tools
+        super().__init__(definitions)
 
 
 class SkillCatalog:
