@@ -6,12 +6,14 @@ replays an in-flight submission or an external effect with an unknown outcome.
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 import re
 from typing import Any
 
 from boss_harness.rpc import RpcError
 from boss_harness.session import Entry, SessionStore
+from boss_harness.shutdown import TrackedAbort, join_until
 
 
 class RuntimeManager:
@@ -23,6 +25,7 @@ class RuntimeManager:
         self.jobs: dict[str, dict[str, Any]] = {}
         self.capacity = capacity
         self.closed = False
+        self.on_idle = None
 
     def reserve(self, thread_id: str, text: str, runner: Any) -> dict:
         with self.lock:
@@ -45,7 +48,24 @@ class RuntimeManager:
 
     def finish(self, job: dict) -> None:
         with self.lock:
-            self.jobs.pop(job["turnId"], None)
+            job["_worker_done"] = True
+            self._retire_locked(job)
+        self._notify_idle()
+
+    def _retire_locked(self, job: dict) -> None:
+        abort = job.get("_shutdown_abort")
+        if job.get("_worker_done") and (abort is None or abort.done.is_set()):
+            if self.jobs.get(job["turnId"]) is job:
+                self.jobs.pop(job["turnId"], None)
+
+    def _notify_idle(self) -> None:
+        if self.on_idle is not None:
+            self.on_idle()
+
+    def _abort_done(self, job: dict) -> None:
+        with self.lock:
+            self._retire_locked(job)
+        self._notify_idle()
 
     def interrupt(self, thread_id: str, expected_turn_id: str | None = None) -> bool:
         with self.lock:
@@ -59,17 +79,36 @@ class RuntimeManager:
             job["runner"].interrupt()
             return True
 
-    def stop(self) -> None:
+    def cancel_all(self, *, interrupt: bool = True) -> None:
         with self.lock:
             self.closed = True
-            jobs = list(self.jobs.values())
-        for job in jobs:
-            job["cancel"].set()
-            job["runner"].interrupt()
-        for job in jobs:
-            worker = job.get("worker")
-            if worker and worker is not threading.current_thread():
-                worker.join(timeout=2)
+            for job in self.jobs.values():
+                job["cancel"].set()
+                if "_shutdown_abort" not in job:
+                    # Capture the business provider, never the mutable context
+                    # abort callback (automatic summaries have their own owner).
+                    job["_shutdown_abort"] = TrackedAbort(job["runner"].provider,
+                        lambda job=job: self._abort_done(job), name="turn-shutdown-abort",
+                        callback=job["runner"].interrupt if interrupt else None)
+
+    def request_stop_aborts(self) -> None:
+        with self.lock:
+            aborts = [job["_shutdown_abort"] for job in self.jobs.values() if "_shutdown_abort" in job]
+        for abort in aborts:
+            abort.start()
+
+    def wait_for_stop(self, deadline: float) -> None:
+        with self.lock:
+            workers = [job.get("worker") for job in self.jobs.values()]
+            workers.extend(job["_shutdown_abort"].worker for job in self.jobs.values()
+                           if "_shutdown_abort" in job)
+        join_until(workers, deadline)
+
+    def stop(self, *, deadline: float | None = None) -> None:
+        deadline = time.monotonic() + 2 if deadline is None else deadline
+        self.cancel_all(interrupt=True)
+        self.request_stop_aborts()
+        self.wait_for_stop(deadline)
 
 
 class TurnQueue:

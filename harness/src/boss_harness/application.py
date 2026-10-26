@@ -40,6 +40,7 @@ from boss_harness.tool_bundle import ToolBundle
 from boss_harness.summary import SUMMARY_MAX_REQUESTS, SummaryPlanner
 from boss_harness.compaction import CompactionPolicy, ContextCompactionFailed
 from boss_harness.context import NoCompactionSource
+from boss_harness.shutdown import TrackedAbort, join_until
 
 PROTOCOL_VERSION = "0.2.0"
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
@@ -144,6 +145,7 @@ class ApplicationService:
             self.queue = TurnQueue(self.sessions)
             self.queue.recover()
             self.runtimes = RuntimeManager()
+            self._shutdown_preparing = 0
             # Compaction jobs are independent of business turns and never own a
             # tool bridge. The per-thread index prevents a new turn from
             # changing the source while a summary is being generated.
@@ -161,6 +163,8 @@ class ApplicationService:
                 bridge_factory=self._new_bridge if self._business_services else None,
                 browser_source_policy=getattr(self.tools, "browser_source_policy", None),
                 bridge_lifecycle=self.bridge_lifecycle)
+            self.connections.on_idle = self._close_application_resources_if_idle
+            self.runtimes.on_idle = self._close_application_resources_if_idle
             self.handlers = self.registry.handlers
             self.approval_required = self.registry.approval_required
             self.approval_timeout = _approval_timeout()
@@ -606,10 +610,13 @@ class ApplicationService:
         with self.runtimes.lock:
             if job["status"] == "running":
                 return
+            abort = job.get("_shutdown_abort")
+            if abort is not None and not abort.done.is_set():
+                return
             job_id = job["jobId"]
             if job_id in self._compaction_terminal_ids:
                 return
-            for key in ("config", "provider", "cancel", "worker"):
+            for key in ("config", "provider", "cancel", "worker", "_shutdown_abort", "_shutdown_worker_done"):
                 job.pop(key, None)
             self._compaction_terminal_ids.add(job_id)
             self._compaction_terminal_order.append(job_id)
@@ -619,6 +626,25 @@ class ApplicationService:
                 expired = self._compaction_jobs.get(expired_id)
                 if expired is not None and expired["status"] != "running":
                     self._compaction_jobs.pop(expired_id, None)
+
+    def _finish_compaction(self, job: dict) -> None:
+        with self.runtimes.lock:
+            job["_shutdown_worker_done"] = True
+            self._retire_compaction_locked(job)
+        self._close_application_resources_if_idle()
+
+    def _retire_compaction_locked(self, job: dict) -> None:
+        abort = job.get("_shutdown_abort")
+        if not job.get("_shutdown_worker_done") or (abort is not None and not abort.done.is_set()):
+            return
+        if self._compaction_by_thread.get(job["threadId"]) == job["jobId"]:
+            self._compaction_by_thread.pop(job["threadId"], None)
+        self._remember_compaction_terminal(job)
+
+    def _compaction_abort_done(self, job: dict) -> None:
+        with self.runtimes.lock:
+            self._retire_compaction_locked(job)
+        self._close_application_resources_if_idle()
 
     @staticmethod
     def _missing_compaction_job() -> RpcError:
@@ -685,7 +711,7 @@ class ApplicationService:
                                {"code": "COMPACTION_CONCURRENCY_LIMIT", "limit": self.runtimes.capacity})
             provider = self._compaction_provider(config)
             if any(job["runner"].provider is provider for job in self.runtimes.jobs.values()) \
-                    or any(existing.get("provider") is provider and existing.get("status") == "running"
+                    or any(existing.get("provider") is provider
                            for existing in self._compaction_jobs.values()):
                 raise RpcError(-32005, "模型供应商实例正在被其他任务使用，无法安全隔离摘要请求")
             job_id = uuid.uuid4().hex
@@ -710,13 +736,10 @@ class ApplicationService:
             with self.runtimes.lock:
                 job.update(status="failed", code="COMPACTION_START_FAILED",
                            message=self._compaction_safe_error(job, exc))
-                if self._compaction_by_thread.get(thread_id) == job_id:
-                    self._compaction_by_thread.pop(thread_id, None)
             try:
                 self.events.emit("context/compactionFailed", self._compaction_public(job))
             finally:
-                self._remember_compaction_terminal(job)
-                self._close_application_resources_if_idle()
+                self._finish_compaction(job)
             raise RuntimeError(job["message"]) from None
         return self._compaction_public(job)
 
@@ -882,11 +905,7 @@ class ApplicationService:
         except Exception as exc:
             self._compaction_failed(job, "COMPACTION_FAILED", exc)
         finally:
-            with self.runtimes.lock:
-                if self._compaction_by_thread.get(thread_id) == job["jobId"]:
-                    self._compaction_by_thread.pop(thread_id, None)
-                self._remember_compaction_terminal(job)
-            self._close_application_resources_if_idle()
+            self._finish_compaction(job)
 
     def on_context_compact(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")
@@ -965,7 +984,7 @@ class ApplicationService:
                     return None
                 provider = self._compaction_provider(config)
                 if any(job["runner"].provider is provider for job in self.runtimes.jobs.values()) or any(
-                        active["status"] == "running" and active.get("provider") is provider
+                        active.get("provider") is provider
                         for active in self._compaction_jobs.values()):
                     raise ContextCompactionFailed("COMPACTION_PROVIDER_CONFLICT", "摘要 provider 实例正被其他任务使用")
                 job_id = uuid.uuid4().hex
@@ -1026,10 +1045,7 @@ class ApplicationService:
         finally:
             runner.context_abort = None
             if job is not None:
-                with self.runtimes.lock:
-                    if self._compaction_by_thread.get(thread_id) == job["jobId"]:
-                        self._compaction_by_thread.pop(thread_id, None)
-                    self._remember_compaction_terminal(job)
+                self._finish_compaction(job)
 
     def _runner_for(self, config: ModelConfig) -> TurnRunner:
         if self.provider_factory is not None:
@@ -1042,7 +1058,7 @@ class ApplicationService:
                     # A released execution slot still owns its provider until the
                     # worker finishes notifications and all lifecycle cleanup.
                     if any(job["runner"].provider is provider for job in self.runtimes.jobs.values()) \
-                            or any(compaction.get("provider") is provider and compaction["status"] == "running"
+                            or any(compaction.get("provider") is provider
                                    for compaction in self._compaction_jobs.values()):
                         raise RpcError(-32005, "模型供应商实例仍被其他任务持有；工厂必须返回独立实例")
                 return self._new_runner(bridge, provider, config)
@@ -1175,13 +1191,17 @@ class ApplicationService:
         finally:
             if job["runner"] is not self.runner:
                 self.bridge_lifecycle.close(job["runner"].tool_bridge)
-            with self.runtimes.lock:
-                self.runtimes.finish(job)
+            self.runtimes.finish(job)
             self._close_application_resources_if_idle()
 
-    def _close_application_resources_if_idle(self) -> None:
+    def _close_application_resources_if_idle(self, deadline: float | None = None) -> None:
+        # begin_login takes connections.lock before the runtime lock while
+        # creating its bridge. Check this domain before taking runtimes.lock.
+        if not self.connections.is_idle():
+            return
         with self.runtimes.lock:
-            if not self.runtimes.closed or self.runtimes.jobs or self._compaction_by_thread:
+            if (not self.runtimes.closed or self._shutdown_preparing
+                    or self.runtimes.jobs or self._compaction_by_thread):
                 return
             if self._base_bridge_close_claimed:
                 wait_for_close = self._base_bridge_close_owner != threading.get_ident()
@@ -1190,7 +1210,7 @@ class ApplicationService:
                 self._base_bridge_close_owner = threading.get_ident()
                 wait_for_close = False
         if wait_for_close:
-            self._base_bridge_close_done.wait()
+            self._base_bridge_close_done.wait(None if deadline is None else max(0, deadline - time.monotonic()))
             return
         try:
             self.bridge_lifecycle.close(self.tools)
@@ -1342,29 +1362,56 @@ class ApplicationService:
         self.close()
         return {"stopped": True}
 
-    def _stop_compaction_jobs(self) -> None:
+    def _cancel_compaction_jobs(self) -> None:
         with self.runtimes.lock:
-            jobs = list(self._compaction_jobs.values())
-            running = [job for job in jobs if job["status"] == "running"]
-            for job in running:
+            for job in self._compaction_jobs.values():
+                if job["status"] != "running" or "provider" not in job:
+                    continue
                 job["cancel"].set()
-            providers = [job["provider"] for job in running]
-            workers = [job.get("worker") for job in jobs
-                       if job.get("worker") is not None and job["worker"].is_alive()]
-        for provider in providers:
-            abort = getattr(provider, "request_abort", None)
-            if callable(abort):
-                abort()
-        for worker in workers:
-            if worker is not None and worker is not threading.current_thread():
-                worker.join(timeout=2)
+                if "_shutdown_abort" not in job:
+                    job["_shutdown_abort"] = TrackedAbort(job["provider"],
+                        lambda job=job: self._compaction_abort_done(job), name="compaction-shutdown-abort")
+
+    def _request_compaction_aborts(self) -> None:
+        with self.runtimes.lock:
+            aborts = [job["_shutdown_abort"] for job in self._compaction_jobs.values() if "_shutdown_abort" in job]
+        for abort in aborts:
+            abort.start()
+
+    def _wait_compaction_jobs(self, deadline: float) -> None:
+        with self.runtimes.lock:
+            workers = [job.get("worker") for job in self._compaction_jobs.values()]
+            workers.extend(job["_shutdown_abort"].worker for job in self._compaction_jobs.values()
+                           if "_shutdown_abort" in job)
+        join_until(workers, deadline)
+
+    def _stop_compaction_jobs(self, *, deadline: float | None = None) -> None:
+        deadline = time.monotonic() + 2 if deadline is None else deadline
+        self._cancel_compaction_jobs()
+        self._request_compaction_aborts()
+        self._wait_compaction_jobs(deadline)
 
     def close(self) -> None:
-        self._state = "stopped"
-        self.connections.close()
-        self._stop_compaction_jobs()
-        self.runtimes.stop()
-        self._close_application_resources_if_idle()
+        deadline = time.monotonic() + 2
+        with self.runtimes.lock:
+            self._state = "stopped"
+            self._shutdown_preparing += 1
+            self.runtimes.cancel_all(interrupt=False)
+            self._cancel_compaction_jobs()
+        try:
+            # Do not invert begin_login's connections -> runtime lock order.
+            # Dispatch every cancel before any potentially blocking abort hook.
+            self.connections.prepare_close()
+            self.connections.request_stop_aborts()
+            self._request_compaction_aborts()
+            self.runtimes.request_stop_aborts()
+        finally:
+            with self.runtimes.lock:
+                self._shutdown_preparing -= 1
+        self.connections.wait_for_stop(deadline)
+        self._wait_compaction_jobs(deadline)
+        self.runtimes.wait_for_stop(deadline)
+        self._close_application_resources_if_idle(deadline)
 
     def serve_forever(self) -> None:
         try:
