@@ -14,6 +14,7 @@ from collections.abc import Iterator, Sequence
 
 import anthropic
 
+from boss_harness.models.errors import anthropic_error_info
 from boss_harness.models.provider import ModelConfig
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.types import (
@@ -210,10 +211,14 @@ class AnthropicProvider:
             yield StreamEvent(type="error", reason="error", error=self._redact(f"被限流：{exc}"))
             return
         except anthropic.APIStatusError as exc:
+            error_info = anthropic_error_info(exc.body,
+                source="stream_error" if exc.status_code == 200 else "http_error",
+                status_code=exc.status_code)
             yield StreamEvent(
                 type="error",
                 reason="error",
                 error=self._redact(f"接口错误 {exc.status_code}：{exc.message}"),
+                error_info=error_info,
             )
             return
         except Exception as exc:  # noqa: BLE001

@@ -113,6 +113,20 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
   if (payload.method === "turn/start" && (typeof params?.input !== "string" || !params.input.trim())) {
     throw new Error("turn input is required");
   }
+  if (payload.method === "turn/start" && params && "autoCompaction" in params) {
+    const policy = params.autoCompaction;
+    const allowed = new Set(["enabled", "triggerPercent", "keepRecentTokens"]);
+    if (!record(policy) ||
+      (Object.getPrototypeOf(policy) !== Object.prototype && Object.getPrototypeOf(policy) !== null) ||
+      Reflect.ownKeys(policy).some(key => typeof key !== "string" || !allowed.has(key)) ||
+      ("enabled" in policy && typeof policy.enabled !== "boolean") ||
+      ("triggerPercent" in policy && (typeof policy.triggerPercent !== "number" ||
+        !Number.isSafeInteger(policy.triggerPercent) || policy.triggerPercent < 1 || policy.triggerPercent > 100)) ||
+      ("keepRecentTokens" in policy && (typeof policy.keepRecentTokens !== "number" ||
+        !Number.isSafeInteger(policy.keepRecentTokens) || policy.keepRecentTokens < 1 || policy.keepRecentTokens > 1_000_000))) {
+      throw new Error("invalid auto compaction policy");
+    }
+  }
   if (payload.method === "thread/start" && params?.title !== undefined &&
     (typeof params.title !== "string" || params.title.length > 500)) throw new Error("invalid thread title");
   if (payload.method === "approval/respond" && (typeof params?.approvalId !== "string" || !params.approvalId ||

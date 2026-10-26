@@ -15,10 +15,11 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 from boss_harness.context import ContextBudgetExceeded
+from boss_harness.compaction import ContextCompactionFailed
 from boss_harness.models import (
     AssistantMessage,
     ToolCallBlock,
@@ -29,7 +30,7 @@ from boss_harness.models import (
 )
 from boss_harness.models.provider import ModelConfig, Provider
 from boss_harness.models.secret import redact_secrets
-from boss_harness.models.types import ChatMessage, ModelRequest, TextBlock
+from boss_harness.models.types import ChatMessage, ModelRequest, ModelErrorInfo, TextBlock
 from boss_harness.session import Entry, SessionStore
 from boss_harness.toolkit import ToolResult, snapshot_result
 from boss_harness.tool_results import project_error, project_item
@@ -84,6 +85,7 @@ class TurnRunner:
         drain_steering: Callable[[], list[UserMessage]] | None = None,
         stage_steering: Callable[[], tuple[list[UserMessage], Callable[[], None]]] | None = None,
         request_preparer: Callable[[ModelRequest], tuple[ModelRequest, dict[str, Any]]] | None = None,
+        recover_context: Callable[[ModelRequest], ModelRequest | None] | None = None,
     ) -> None:
         self.sessions = sessions
         self.tool_bridge = tool_bridge
@@ -110,6 +112,11 @@ class TurnRunner:
         self.stage_steering = stage_steering
         self.request_preparer = request_preparer
         self.last_preparation: tuple[ModelRequest, dict[str, Any]] | None = None
+        self.recover_context = recover_context
+        self.context_abort: Callable[[], None] | None = None
+        self.last_stream_error: ModelErrorInfo | None = None
+        self.last_stream_recoverable = False
+        self.preparing_request_index: int | None = None
 
     @property
     def tool_names(self) -> list[str]:
@@ -129,6 +136,8 @@ class TurnRunner:
         abort = getattr(self.provider, "request_abort", None)
         if callable(abort):
             abort()
+        if self.context_abort is not None:
+            self.context_abort()
 
     def cancelled(self) -> bool:
         return self._cancel is not None and self._cancel.is_set()
@@ -483,6 +492,7 @@ class TurnRunner:
             messages = list(self.history(thread_id))
             specs = self.tool_specs()
             pending_steering: tuple[list[UserMessage], Callable[[], None]] | None = None
+            overflow_retried = False
             for _round in range(MAX_TOOL_ROUNDS):
                 if self.cancelled():
                     return "interrupted"
@@ -508,7 +518,21 @@ class TurnRunner:
                 )
                 if self.request_preparer is not None:
                     try:
+                        before = request
+                        self.preparing_request_index = _round
                         request, budget = self.request_preparer(request)
+                        messages = list(request.messages)
+                        # A summary can take long enough for new steering to arrive.
+                        # Catch up once, before consuming either batch or calling a model.
+                        commits = [staged[1]] if staged is not None else []
+                        if request.messages != before.messages and self.stage_steering is not None:
+                            catch_up, commit = self.stage_steering()
+                            if catch_up:
+                                messages.extend(catch_up)
+                                request = replace(request, messages=tuple(messages))
+                                request, budget = self.request_preparer(request)
+                                messages = list(request.messages)
+                                commits.append(commit)
                     except ContextBudgetExceeded as exc:
                         self._record_preparation(thread_id, request, exc.budget)
                         if self.cancelled():
@@ -518,10 +542,15 @@ class TurnRunner:
                         self.notify(N_SESSION_ERROR, {"threadId": thread_id,
                             "code": "CONTEXT_BUDGET_EXCEEDED", "message": message})
                         return "blocked"
+                    except ContextCompactionFailed as exc:
+                        return self._context_failed(thread_id, exc)
                     self._record_preparation(thread_id, request, budget)
                 if self.cancelled():
                     return "interrupted"
-                if staged is not None:
+                if self.request_preparer is not None:
+                    for commit in commits:
+                        commit()
+                elif staged is not None:
                     staged[1]()
                 assistant, error, interrupted = self._stream_round(thread_id, request)
 
@@ -529,8 +558,23 @@ class TurnRunner:
                     return "interrupted"
 
                 if error is not None:
+                    if (self.last_stream_recoverable and self.recover_context is not None and
+                            not overflow_retried and _round + 1 < MAX_TOOL_ROUNDS):
+                        overflow_retried = True
+                        try:
+                            replacement = self.recover_context(request)
+                        except ContextCompactionFailed as exc:
+                            return self._context_failed(thread_id, exc)
+                        if self.cancelled():
+                            return "interrupted"
+                        if replacement is not None:
+                            messages = list(replacement.messages)
+                            continue
                     self.append_agent(thread_id, f"模型调用失败：{error}")
-                    self.notify(N_SESSION_ERROR, {"threadId": thread_id, "message": error})
+                    details = {"threadId": thread_id, "message": error}
+                    if self.last_stream_error is not None:
+                        details.update(code=self.last_stream_error.code, recoveryAttempted=overflow_retried)
+                    self.notify(N_SESSION_ERROR, details)
                     return "error"
 
                 if assistant is None:
@@ -599,6 +643,14 @@ class TurnRunner:
             self.tool_bridge.cancel_event = None
             self.notify(N_THREAD_UPDATED, {"threadId": thread_id})
 
+    def _context_failed(self, thread_id: str, error: ContextCompactionFailed) -> str:
+        if self.cancelled():
+            return "interrupted"
+        message = self.safe_error(error)
+        self.append_agent(thread_id, message)
+        self.notify(N_SESSION_ERROR, {"threadId": thread_id, "code": error.code, "message": message})
+        return "blocked"
+
     def _record_preparation(self, thread_id: str, request: ModelRequest, budget: dict[str, Any]) -> None:
         snapshot = {**budget, "provider": self.config.provider, "turnId": self.turn_id}
         self.sessions.append(thread_id, Entry(type="context_budget", payload=snapshot))
@@ -628,6 +680,9 @@ class TurnRunner:
         assistant: AssistantMessage | None = None
         interrupted = False
         error: str | None = None
+        self.last_stream_error = None
+        self.last_stream_recoverable = False
+        output_observed = False
 
         def ensure_entry() -> Entry:
             nonlocal entry
@@ -644,6 +699,7 @@ class TurnRunner:
                 if self.cancelled():
                     interrupted = True
                     break
+
                 try:
                     event = next(stream)
                 except StopIteration:
@@ -652,6 +708,9 @@ class TurnRunner:
                 if self.cancelled():
                     interrupted = True
                     break
+
+                if event.type.startswith(("text_", "thinking_", "toolcall_")):
+                    output_observed = True
 
                 if event.type in ("thinking_start", "thinking_delta", "thinking_end"):
                     if event.delta:
@@ -669,12 +728,16 @@ class TurnRunner:
                     )
                 elif event.type == "done":
                     assistant = event.message
+                    output_observed = output_observed or bool(assistant and assistant.blocks)
                     if assistant is not None and assistant.text():
                         ensure_entry()
                         chunks = [assistant.text()]
                     break
                 elif event.type == "error":
                     error = self.safe_error(event.error or "未知错误")
+                    info = getattr(event, "error_info", None)
+                    if isinstance(info, ModelErrorInfo) and info.provider == self.config.provider:
+                        self.last_stream_error = info
                     break
         except Exception as exc:
             if self.cancelled():
@@ -689,12 +752,21 @@ class TurnRunner:
                 except Exception as exc:
                     if not self.cancelled():
                         error = self.safe_error(exc)
+                        self.last_stream_error = None
 
         interrupted = interrupted or self.cancelled() or (assistant is not None and assistant.stop_reason == "aborted")
         if not interrupted and error is None and assistant is None:
             error = "模型流未返回完成事件，请重试"
         if assistant is not None and assistant.stop_reason == "error" and error is None:
             error = "模型返回失败状态"
+        self.last_stream_recoverable = bool(
+            not interrupted and error is not None and not output_observed and assistant is None and
+            self.last_stream_error is not None and self.last_stream_error.code == "CONTEXT_OVERFLOW")
+        if error is not None:
+            self.sessions.append(thread_id, Entry(type="model_error", payload={
+                "turnId": self.turn_id, "model": request.model, "provider": self.config.provider,
+                "message": error, "errorInfo": asdict(self.last_stream_error) if self.last_stream_error else None,
+                "outputObserved": output_observed, "contextRecoveryEligible": self.last_stream_recoverable}))
         if assistant is not None:
             usage_entry = {
                 "turnId": self.turn_id, "model": request.model, "provider": self.config.provider,
