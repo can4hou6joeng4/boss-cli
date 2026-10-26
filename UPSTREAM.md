@@ -20,6 +20,12 @@
 
 这是来源策略控制，不是无重试或零副作用保证：`auto` 仍允许上游浏览器选择；`existing-browser` 可探测/复用现有 CDP；`stored-cookie` 依赖本地保存凭据及上游显式 CDP 配置，并在不可用时失败。Harness 不读取浏览器数据库、调用 Keychain 或改写共享 `config.json`。来源来自 Pi 的职责分离原则（运行配置由宿主显式组合），不复制 Pi 或上游代码，无 JSON-RPC 主版本变化；协议只新增可选诊断字段。
 
+## 第十八轮：桌面端 steering 与 follow-up 生命周期
+
+本项目 [Issue #51](https://github.com/can4hou6joeng4/boss-cli/issues/51) 补齐已存在的 `turn/steer`、`queue/add/list/remove` 内核 RPC 与桌面 Composer 之间的交互缺口。固定 Pi commit `d5b3de22d0e24a3e9c38a9410d3329b099717283` 的 `packages/agent/src/agent-loop.ts` 及 coding-agent 交互层区分 steering（工具批次结束后进入下一模型请求）与 follow-up（当前运行自然结束后再继续），并将 interrupt 作为独立动作。本项目沿用已持久化队列、`expectedTurnId` 和 JSON-RPC，不复制 Pi 代码或引入依赖。
+
+桌面运行态输入提供显式两态选择；队列面板显示最近 20 项类型和真实状态，允许撤回处于 `queued` 或恢复后处于 `paused` 的未投递项目。快照/事件用于恢复和同步队列；每次队列写入使用客户端请求 id 幂等。回执未知时保留原草稿和请求 id；通过 `queue/list` 核对到已受理项目时清除草稿而不重放；核对成功但不存在时才允许按新请求提交，查询失败则保留原请求关联。停止仍调用 `turn/interrupt`，不假设 steering 会中断正在执行的工具。本轮只扩展 TypeScript 协议客户端类型和 renderer，无 RPC 版本变化。
+
 ## 第十六轮：摘要任务资源保留上限
 
 [Issue #47](https://github.com/can4hou6joeng4/boss-cli/issues/47) 针对自动与手动摘要反复运行后进程内任务注册表无界增长。参考 Pi 固定 commit `d5b3de22d0e24a3e9c38a9410d3329b099717283` 的 coding-agent 对手动/自动摘要分别持有 AbortController、完成或失败时清除 controller 的生命周期（`agent-session.ts` 的 `_clearManualCompactionState`、`abortCompaction` 和 `_runAutoCompaction`），以及 [Pi Issue #11297](https://github.com/earendil-works/pi/issues/11297) 提出的长期压缩状态有界目标。Issue #11297 本身讨论的是 Pi 文件列表累积，本项目没有对应 fileOps 数据，因此只采用“长期状态须有界”的设计提示，不复用其业务数据方案。

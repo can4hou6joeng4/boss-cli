@@ -12,6 +12,11 @@ import {
   type ThreadReadResponse,
   type TurnInterruptResponse,
   type TurnStartResponse,
+  type TurnSteerParams,
+  type QueueAddParams,
+  type QueueItem,
+  type QueueItemResponse,
+  type QueueListResponse,
   type ModelListResponse,
   type ConnectionReport,
   type ConnectionTarget,
@@ -127,6 +132,37 @@ export async function interruptTurn(threadId: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+export async function steerTurn(params: TurnSteerParams): Promise<QueueItem> {
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  const response = await api.request<QueueItemResponse>(ClientMethods.turnSteer, params);
+  return response.queueItem;
+}
+
+export async function queueFollowUp(params: QueueAddParams): Promise<QueueItem> {
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  const response = await api.request<QueueItemResponse>(ClientMethods.queueAdd, params);
+  return response.queueItem;
+}
+
+export async function listQueue(threadId: string): Promise<QueueItem[] | null> {
+  const api = bridge();
+  if (!api) return null;
+  try {
+    return (await api.request<QueueListResponse>(ClientMethods.queueList, { threadId })).items;
+  } catch {
+    return null;
+  }
+}
+
+export async function removeQueuedItem(threadId: string, queueId: string): Promise<QueueItem> {
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  const response = await api.request<QueueItemResponse>(ClientMethods.queueRemove, { threadId, queueId });
+  return response.queueItem;
 }
 
 /** 回答一次工具审批；返回是否被内核受理（id 过期时会失败）。 */

@@ -16,6 +16,8 @@ import { IconNotification, IconCheck } from "../components/Icons";
 import { type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "../data/mockData";
 import { ClientMethods, type ToolDescriptor, type ToolListResponse } from "@boss-cli/protocol";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
+import type { CheckQueueSubmission, ComposerQueue } from "../data/composerDraft";
+import type { QueueItem } from "@boss-cli/protocol";
 import "../styles/login-sidebar.css";
 
 export interface AppShellProps {
@@ -23,6 +25,7 @@ export interface AppShellProps {
   folders: ProjectFolder[]; activeSession: SessionItem | null; isHomeView: boolean; messages: MessageItem[];
   currentMode: ConversationMode; onModeChange: (mode: ConversationMode) => void;
   onSelectSession: (session: SessionItem) => void; onNewTask: () => void; onSendMessage: ComposerSend;
+  onQueueMessage?: ComposerQueue; onCheckQueueSubmission?: CheckQueueSubmission; queueItems?: QueueItem[]; onRemoveQueueItem?: (id: string) => Promise<boolean>;
   simulateLocal?: boolean; harnessUp?: boolean; running?: boolean; taskBlocked?: boolean;
   onInterrupt?: () => void;
   onApprovalDecision?: (approvalId: string, approved: boolean, toolName: string, remember: boolean) => void | boolean | Promise<boolean>;
@@ -180,7 +183,7 @@ export function AppShell(props: AppShellProps) {
             {page !== "home" ? <WorkspacePages page={page} folders={allFolders} messages={props.messages} onSelect={select} onNewTask={newTask} onDraft={text => { newTask(); setDraft(text); }} tools={tools} preview={props.simulateLocal ?? true} /> : props.isHomeView ? <HomeView key={draft.id} folders={allFolders} draft={draft} onDraftChange={updateHomeDraft} selectedProjectId={draftProjectId} onSelectProject={setDraftProjectId} onNewProject={() => setNewProject(true)} preview={!window.boss} harnessUp={props.harnessUp ?? false} blocked={props.taskBlocked} activeModelId={props.activeModelId ?? "deepseek-v4"} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} currentMode={props.currentMode} onModeChange={props.onModeChange} onStartSessionWithPrompt={startInProject} onOpenSettings={() => openSettings("connections")} /> : <>
               <div className="conversation-pane">
                 {props.simulateLocal && <div className="conversation-preview-badge">示例会话 · 交互预览</div>}
-                <ConversationArea readOnly={props.activeSession?.toolPolicy === "readOnly"} key={props.activeSession?.id ?? "conversation"} draft={sessionDraft} onDraftChange={updateSessionDraft} messages={props.messages} currentMode={props.currentMode} onModeChange={props.onModeChange} onSendMessage={props.onSendMessage} simulateLocal={props.simulateLocal} running={props.running} taskBlocked={props.taskBlocked} activeModelId={props.activeModelId} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} onOpenSettings={() => openSettings("connections")} onInterrupt={props.onInterrupt} onApprovalDecision={props.onApprovalDecision} onReviewDiff={props.onReviewDiff} onRevertDiff={props.onRevertDiff} onOpenRewind={props.onOpenRewind} onOpenCockpit={props.onOpenCockpit}
+                <ConversationArea readOnly={props.activeSession?.toolPolicy === "readOnly"} key={props.activeSession?.id ?? "conversation"} draft={sessionDraft} onDraftChange={updateSessionDraft} messages={props.messages} currentMode={props.currentMode} onModeChange={props.onModeChange} onSendMessage={props.onSendMessage} onQueueMessage={props.onQueueMessage} onCheckQueueSubmission={props.onCheckQueueSubmission} queueItems={props.queueItems} onRemoveQueueItem={props.onRemoveQueueItem} simulateLocal={props.simulateLocal} running={props.running} taskBlocked={props.taskBlocked} activeModelId={props.activeModelId} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} onOpenSettings={() => openSettings("connections")} onInterrupt={props.onInterrupt} onApprovalDecision={props.onApprovalDecision} onReviewDiff={props.onReviewDiff} onRevertDiff={props.onRevertDiff} onOpenRewind={props.onOpenRewind} onOpenCockpit={props.onOpenCockpit}
                   onLogin={window.boss ? () => { void loginEntry(); } : undefined}
                   loginGuide={login.visibleIn(loginThreadId) ? <LoginChoice status={loginStatus} pending={login.choiceThreadId === loginThreadId} busy={login.busy} panelOpen={browserOpen} error={login.error?.threadId === loginThreadId ? login.error.message : undefined} onOpen={() => { void login.open(loginThreadId); }} onHide={login.hideForLater} onCancel={() => { void login.cancel(loginThreadId); }} onDismiss={() => login.dismiss(loginThreadId)} onSettings={() => openSettings("connections")} /> : undefined} />
                 <RightPanel isOpen={summaryOpen && !browserOpen} projectName={currentProject?.name ?? "本地招聘项目"} messages={props.messages} preview={props.simulateLocal ?? true} onReviewChanges={props.onReviewDiff} onOpenSettings={() => openSettings("connections")} />
