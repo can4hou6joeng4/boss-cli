@@ -33,6 +33,8 @@ Electron 运行时从官方源单独下载和校验，失败后需先恢复安�
 
 工具可执行文件按 `BOSS_CLI_BIN`、并排 `boss-agent-cli/.venv/bin/boss`、PATH 的顺序查找。`BOSS_CLI_DATA_DIR` 是上游登录及平台状态目录，`BOSS_CLI_HARNESS_DIR` 是本项目的会话目录，两者分别管理。
 
+启动 Harness 或桌面应用前，可用 `BOSS_HARNESS_BROWSER_SOURCE` 覆盖业务 CLI 的浏览器来源：`auto`、`existing-browser` 或 `stored-cookie`。未设置时完整继承上游 `config.json`。显式覆盖只传递上游 `--browser-source` 参数，不读取或改写该共享配置；不支持该参数的 CLI 会明确失败，不自动去掉参数重试。连接设置页会显示当前覆盖值或“继承上游 CLI 配置”。
+
 默认桌面模型为 OpenAI Responses，可由 `BOSS_HARNESS_PROVIDER` 选择 `openai`、`anthropic` 或 `none`。OpenAI 配置读取本地 Codex 配置或 `BOSS_HARNESS_OPENAI_*` 环境变量；Anthropic 使用 `ANTHROPIC_*`。真实模型请求可能联网并产生费用。不要将凭据写入仓库或公开日志。
 
 ## 模型配置来源
@@ -93,7 +95,9 @@ OpenAI Responses 的完整显式配置由以下三项组成，去除首尾空白
 
 Harness 只能在 CLI 返回的最终错误或受支持的部分结果停止元数据可见时暂停；中断、外层超时和进程组清理不能保证在不可见的第一次限制响应后精确停止。成功结果也不能证明此次未发生限流、认证过期或刷新。模型不得据此报告“首次限流即停止”或“没有触碰浏览器”。
 
-当前适配未提供控制这些工具内部重试或认证刷新的参数。业务 CLI 的 `--browser-source` 是登录态来源策略，显式 CDP 也会改变运行前提；它们不能替代一个独立的无重试契约。Harness 不会为了改变请求次数而自动切换来源、改写上游共享配置或添加未知参数。部署前如需严格的首次停止或禁止认证刷新，须先使用已明确支持并核验这些约束的业务版本与配置；当前适配尚不能保证这一要求。
+Harness 可通过进程环境变量 `BOSS_HARNESS_BROWSER_SOURCE` 显式传递上游支持的来源：`auto` 保留上游默认自动选择，可能探测 CDP 或降级到 headless；`existing-browser` 只复用现有 CDP 浏览器且不读取存储凭据；`stored-cookie` 使用上游存储凭据并只连接显式配置的 CDP，不自动探测或启动浏览器。后二者会改变请求通道和运行前提，不能视为“无重试”或“零平台访问”模式。未设置变量时不添加参数，继续继承上游 `config.json`；显式参数被上游拒绝时只失败一次，不静默删参或重放。该参数只对支持它的业务 CLI 有效，更换 `BOSS_CLI_BIN` 后须重新核验。
+
+该覆盖不会读取 Chrome Cookie 数据库或 Keychain，也不修改共享上游配置；但 `auto` 仍允许上游的浏览器行为。Harness 无法约束忽略或误解该选项的任意二进制，也不能保证上游不会通过其他路径访问本地状态。浏览器来源策略不替代独立的请求预算、首次限流停止或认证刷新契约；若需要这些保证，仍须使用明确支持并验证相应行为的上游版本。
 
 固定调用链、可观察范围及后续能力接入条件见 [UPSTREAM.md](UPSTREAM.md)。
 

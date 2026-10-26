@@ -60,6 +60,21 @@ PAUSE_CODES = frozenset({
 
 #: 显式指定上游二进制的环境变量（最高优先级）。
 BINARY_ENV = "BOSS_CLI_BIN"
+BROWSER_SOURCE_ENV = "BOSS_HARNESS_BROWSER_SOURCE"
+BROWSER_SOURCE_VALUES = frozenset({"auto", "existing-browser", "stored-cookie"})
+
+
+def resolve_browser_source_override(value: str | None = None) -> str | None:
+    """Read an optional, validated per-process upstream browser policy."""
+    if value is None:
+        value = os.environ.get(BROWSER_SOURCE_ENV)
+    if value is None or value == "":
+        return None
+    normalized = value.strip().lower()
+    if normalized not in BROWSER_SOURCE_VALUES:
+        choices = ", ".join(sorted(BROWSER_SOURCE_VALUES))
+        raise ValueError(f"{BROWSER_SOURCE_ENV} 必须是以下值之一：{choices}")
+    return normalized
 
 _HERE = Path(__file__).resolve()
 #: 仓库根（harness/src/boss_harness/tools/ -> 上溯四级）。
@@ -102,6 +117,8 @@ class BossCliTool:
         self.binary = choice.path
         self.source = choice.source
         self.data_dir = data_dir or os.environ.get("BOSS_CLI_DATA_DIR")
+        self.browser_source = resolve_browser_source_override()
+        self.browser_source_policy = self.browser_source or "inherit"
         self.cancel_event: threading.Event | None = None
 
     def available(self) -> bool:
@@ -111,6 +128,8 @@ class BossCliTool:
         argv = [self.binary, "--json"]
         if self.data_dir:
             argv += ["--data-dir", self.data_dir]
+        if self.browser_source is not None:
+            argv += ["--browser-source", self.browser_source]
         argv += list(args)
         def failure(code: str, message: str) -> ToolResult:
             return ToolResult(ok=False, command=" ".join(args), error={"code": code, "message": redact_secrets(message)})

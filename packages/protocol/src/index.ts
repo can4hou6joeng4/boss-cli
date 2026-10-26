@@ -485,6 +485,7 @@ export interface ConnectionCheck {
   model?: string;
   authState?: string;
   binarySource?: string;
+  browserSourcePolicy?: "inherit" | "auto" | "existing-browser" | "stored-cookie";
 }
 export interface ConnectionReport { cli: ConnectionCheck; model: ConnectionCheck; platform: ConnectionCheck }
 /** Login control contains no credentials; cookie transport is private to the host. */
