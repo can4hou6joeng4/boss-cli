@@ -127,7 +127,7 @@ export BOSS_HARNESS_MODEL_LIMITS='{"openai/custom-model":{"contextWindow":128000
 
 `context/read` 传 `threadId` 可查看完整预算；空闲时还可传与下一回合一致的 `model`、`input`、`skillIds`、`attachmentIds` 做预览。运行中返回当前已准备请求的快照，并拒绝预览参数。`requestSource` 区分 `active`、`preview`、`default`；准备完成前的 `active` 是按当前回合配置生成的候选预算。`requestedOutputTokens` 保留原请求值，`outputReserve` 是裁剪后的值；`breakdown` 分列 system/messages/tools/options。每次请求记录预算，重启后 `lastBudget` 可追溯最后一次准入或拒绝，读取不会执行模型或工具。
 
-token 数仍是 `characters/2+message-overhead` 的分类估算，不是供应商 tokenizer 或计费值。实际 usage 单独展示，`usageApplied=false`；尚未实现绑定模型和上下文投影的 usage 校准或自动摘要。公开工具组合接口与自动压缩继续建设，来源及兼容差异见 [内核建设记录](UPSTREAM.md#第九轮模型能力与完整请求预算)。
+token 数仍是 `characters/2+message-overhead` 的分类估算，不是供应商 tokenizer 或计费值。实际 usage 单独展示，`usageApplied=false`；模型摘要通过独立的 `context/compact/start` 后台任务生成，摘要请求不带工具、支持 `context/compact/abort`，并在 `context/compact/read` 中读取状态。只有 source digest 未变化时才写入模型摘要 checkpoint；自动阈值触发和有限恢复仍在建设。来源及兼容差异见 [内核建设记录](UPSTREAM.md#第九轮模型能力与完整请求预算)。
 
 用户主动触发的模型连接检查也应用同一容量约束，其最多 512 token 的诊断请求会按模型输出上限裁剪；预算不足在构造供应商前返回检查失败。诊断不属于会话回合，不写入会话预算历史。
 
@@ -157,7 +157,7 @@ RPC 客户端可通过 `thread/item/result/read`，传入 `threadId`、`itemId`�
 
 完整请求预算默认使用保守字符估算。成功的 OpenAI 或 Anthropic 响应会保存 provider、模型、完整请求指纹和消息前缀长度；下一次请求只有在这些边界仍匹配时才使用 input usage 作为基线，并对新增消息继续估算。OpenAI 的缓存 input 是总 input 的子集，Anthropic 的缓存读写字段按独立计数处理，避免重复计算。模型、提示、工具、请求选项或可追溯摘要变化后会回退到字符估算；这不是精确 tokenizer 或计费保证。
 
-长会话可先调用 `context/compact/plan` 获取完整回合的 source item IDs 和 SHA-256，再将 `sourceDigest` 一并提交给 `context/compact`。来源在摘要准备期间发生变化时，内核拒绝写 checkpoint；原始条目、工具调用和工具结果始终保留。该计划不自动调用模型，也不改变工具权限。
+长会话可先调用 `context/compact/plan` 获取完整回合的 source item IDs 和 SHA-256，再将 `sourceDigest` 一并提交给 `context/compact`，或调用 `context/compact/start` 让内核后台生成摘要。来源在摘要准备期间发生变化时，内核拒绝写 checkpoint；原始条目、工具调用和工具结果始终保留。摘要任务不执行招聘工具，也不改变工具权限。
 
 schema 接受受限 JSON 子集：单一 `type`、`properties`、`required`、布尔型 `additionalProperties`、`enum`、`anyOf`、数值/长度/数组边界、Python `re.search` `pattern`、数组 `items`/`uniqueItems`，以及 `title`、`description`、`default` 注释。不支持引用和未知关键字；`default` 不会自动填充。定义、桥接和暂停回调由嵌入应用显式提供，属于可信宿主代码，不构成进程沙箱。
 

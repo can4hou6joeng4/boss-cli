@@ -190,6 +190,14 @@ JSON-RPC 维持 0.2.0；终态枚举、14 个招聘工具、参数、业务 argv
 
 Pi commit `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）的 coding-agent compaction preparation 先冻结 projection/cut point，再在摘要成功且来源未变化时追加 compaction entry。本轮独立实现只读计划和提交前校验，不复制代码，不调用摘要模型，不引入 `packages/durable` 或自动阈值恢复。完整工具调用/结果配对、原始 JSONL 和摘要来源 hash 保持可追溯。
 
+## 第十三轮：可取消的模型摘要任务
+
+[Issue #36](https://github.com/can4hou6joeng4/boss-cli/issues/36) 将第十二轮的来源计划接入独立摘要执行。新增 `context/compact/start`、`context/compact/abort` 和 `context/compact/read`：任务在后台运行，按冻结的 through-turn 与 source digest 构造单条摘要输入，模型请求不携带招聘工具、bridge、技能执行或业务回合条目。
+
+摘要请求只接受非空纯文本和正常 `stop`，任何 tool call、截断、错误、取消或超长响应都以失败收尾；provider 的 `request_abort()` 与任务取消事件同时生效。成功响应的 usage 以 `context_summary_usage` 单独落库，`eligible=false`，不会成为普通回合的 usage 基线。追加 checkpoint 前在运行锁内重新生成计划并核对 digest，来源变化时不写入；原始条目和既有摘要仍保留。
+
+这轮参考 Pi 固定 commit `d5b3de22d0e24a3e9c38a9410d3329b099717283` 的 `generateSummaryWithUsage`、AbortSignal 和成功后追加 compaction entry 的顺序，独立实现 Python provider/JSON-RPC 生命周期，不复制源码或引入 `packages/durable`。自动阈值触发、overflow 一次性恢复和正式桌面摘要界面仍另立范围。
+
 ## 第九轮：模型能力与完整请求预算
 
 [Issue #26](https://github.com/can4hou6joeng4/boss-cli/issues/26) 继续内核强化。招聘任务加载技能/材料、增加工具结果或切换模型后，原固定 200k 预算无法反映实际请求：工具 schema 和 thinking 未计入，`context/read` 还省略 system。

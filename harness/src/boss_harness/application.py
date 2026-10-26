@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
-from dataclasses import replace
+from dataclasses import asdict, replace
 import json
 import math
 import os
@@ -23,11 +23,12 @@ from typing import Any, Callable
 from boss_harness import __version__
 from boss_harness.agent import TurnRunner
 from boss_harness.bridge_lifecycle import BridgeLifecycle
-from boss_harness.context import ContextService
+from boss_harness.context import ContextBudgetExceeded, ContextService, request_fingerprint
 from boss_harness.connections import ConnectionChecks
 from boss_harness.models import ModelConfig, Provider
+from boss_harness.models.secret import redact_secrets
 from boss_harness.models.capabilities import ModelCatalog
-from boss_harness.models.types import ModelRequest, UserMessage
+from boss_harness.models.types import AssistantMessage, ModelRequest, UserMessage
 from boss_harness.ownership import StateDirectoryOwner
 from boss_harness.resources import AttachmentStore, SkillCatalog, ToolRegistry
 from boss_harness.rpc import JsonRpcServer, RpcError
@@ -38,6 +39,23 @@ from boss_harness.tool_bundle import ToolBundle
 
 PROTOCOL_VERSION = "0.2.0"
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
+SUMMARY_MAX_TOKENS = 8_192
+SUMMARY_SYSTEM = (
+    "你是招聘 Agent Harness 的会话摘要器。只总结 <conversation> 中已经发生的记录，"
+    "不要调用工具、不要执行操作，也不要把模型判断写成已确认事实。保留职位、候选人、企业、"
+    "用户偏好、来源、未决事项和不确定性，并区分用户原话、工具事实与模型判断。输出非空的"
+    "纯文本摘要；不要输出工具调用、JSON、代码围栏或新的操作授权。"
+)
+
+
+class _CompactionFailure(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class _CompactionCancelled(Exception):
+    pass
 
 
 def _approval_timeout() -> float:
@@ -123,6 +141,11 @@ class ApplicationService:
             self.queue = TurnQueue(self.sessions)
             self.queue.recover()
             self.runtimes = RuntimeManager()
+            # Compaction jobs are independent of business turns and never own a
+            # tool bridge. The per-thread index prevents a new turn from
+            # changing the source while a summary is being generated.
+            self._compaction_jobs: dict[str, dict[str, Any]] = {}
+            self._compaction_by_thread: dict[str, str] = {}
             self._bridge_refs: list[Any] = []
             self.context = ContextService(self.sessions)
             self.skills = SkillCatalog(self.workspace / ".boss-cli" / "skills")
@@ -247,6 +270,9 @@ class ApplicationService:
             "skills/list": lambda p: {"skills": self.skills.list()},
             "context/read": self.on_context_read,
             "context/compact/plan": self.on_context_compact_plan,
+            "context/compact/start": self.on_context_compact_start,
+            "context/compact/abort": self.on_context_compact_abort,
+            "context/compact/read": self.on_context_compact_read,
             "context/compact": self.on_context_compact,
             "attachment/add": self.on_attachment_add, "attachment/read": self.on_attachment_read,
             "shutdown": self.on_shutdown,
@@ -464,6 +490,8 @@ class ApplicationService:
     def _idle(self, thread_id: str) -> None:
         if thread_id in self.runtimes.active:
             raise RpcError(-32004, "请先中断该会话的运行回合")
+        if thread_id in self._compaction_by_thread:
+            raise RpcError(-32004, "该会话正在生成摘要，请等待完成或先取消摘要")
 
     def on_thread_archive(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")
@@ -548,14 +576,216 @@ class ApplicationService:
                                        provider=config.provider)
             return {**result, "provider": config.provider, "requestSource": "active" if job else "preview" if preview else "default"}
 
+    @staticmethod
+    def _source_digest(params: dict) -> str | None:
+        value = params.get("sourceDigest")
+        if value is None:
+            return None
+        if not isinstance(value, str) or len(value) != 64 or not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("sourceDigest 格式无效")
+        return value
+
+    @staticmethod
+    def _compaction_public(job: dict) -> dict[str, Any]:
+        result = {"jobId": job["jobId"], "threadId": job["threadId"],
+                  "throughTurnId": job["throughTurnId"], "sourceDigest": job["sourceDigest"],
+                  "status": job["status"]}
+        for key in ("code", "message", "result"):
+            if key in job and job[key] is not None:
+                result[key] = job[key]
+        return result
+
+    def _compaction_provider(self, config: ModelConfig) -> Provider:
+        if self.provider_factory is not None:
+            provider = self.provider_factory(config)
+        else:
+            if self.runtimes.active:
+                raise RpcError(-32004, "当前模型供应商正在处理其他回合，请稍后再生成摘要")
+            if self.provider is None or config.provider != self.config.provider or config.model != self.config.model:
+                raise ValueError("当前嵌入的模型线路不支持独立摘要请求")
+            provider = self.provider
+        if provider is None:
+            raise ValueError("当前未配置可用模型，无法生成摘要")
+        return provider
+
+    def on_context_compact_start(self, params: dict | None) -> dict:
+        params = params or {}
+        thread_id = _text(params, "threadId")
+        through_turn_id = _text(params, "throughTurnId")
+        source_digest = self._source_digest(params)
+        with self.runtimes.lock:
+            self._idle(thread_id)
+            if thread_id in self._compaction_by_thread:
+                raise RpcError(-32004, "该会话已经有摘要任务在运行")
+            plan, _ = self.context.compaction_prompt(thread_id, through_turn_id, source_digest)
+            config = self._model_config(self.sessions.get_thread(thread_id), params)
+            provider = self._compaction_provider(config)
+            if any(active["runner"].provider is provider for active in self.runtimes.active.values()) \
+                    or any(existing.get("provider") is provider and existing.get("status") == "running"
+                           for existing in self._compaction_jobs.values()):
+                raise RpcError(-32005, "模型供应商实例正在被其他任务使用，无法安全隔离摘要请求")
+            job_id = uuid.uuid4().hex
+            job = {"jobId": job_id, "threadId": thread_id, "throughTurnId": through_turn_id,
+                   "sourceDigest": plan["sourceDigest"], "config": config, "provider": provider,
+                   "cancel": threading.Event(), "status": "running"}
+            self._compaction_jobs[job_id] = job
+            self._compaction_by_thread[thread_id] = job_id
+        self.events.emit("context/compactionStarted", self._compaction_public(job))
+        worker = threading.Thread(target=self._run_compaction, args=(job,),
+                                  name=f"compact-{job_id[:8]}", daemon=True)
+        job["worker"] = worker
+        worker.start()
+        return self._compaction_public(job)
+
+    def on_context_compact_abort(self, params: dict | None) -> dict:
+        job_id = _text(params, "jobId", maximum=128)
+        with self.runtimes.lock:
+            job = self._compaction_jobs.get(job_id)
+            if job is None:
+                raise ValueError("摘要任务不存在")
+            if job["status"] != "running":
+                return {"aborted": False, **self._compaction_public(job)}
+            job["cancel"].set()
+            provider = job["provider"]
+        abort = getattr(provider, "request_abort", None)
+        if callable(abort):
+            abort()
+        return {"aborted": True, **self._compaction_public(job)}
+
+    def on_context_compact_read(self, params: dict | None) -> dict:
+        job_id = _text(params, "jobId", maximum=128)
+        with self.runtimes.lock:
+            job = self._compaction_jobs.get(job_id)
+            if job is None:
+                raise ValueError("摘要任务不存在")
+            return self._compaction_public(job)
+
+    def _stream_compaction(self, provider: Provider, request: ModelRequest,
+                           cancel: threading.Event) -> AssistantMessage:
+        if cancel.is_set():
+            raise _CompactionCancelled
+        stream = provider.stream(request)
+        assistant: AssistantMessage | None = None
+        error: str | None = None
+        tool_event = False
+        try:
+            while True:
+                if cancel.is_set():
+                    raise _CompactionCancelled
+                try:
+                    event = next(stream)
+                except StopIteration:
+                    break
+                if cancel.is_set():
+                    raise _CompactionCancelled
+                if event.type == "done":
+                    assistant = event.message
+                    break
+                if event.type in {"toolcall_start", "toolcall_delta", "toolcall_end"}:
+                    tool_event = True
+                if event.type == "error":
+                    error = event.error or "模型摘要请求失败"
+                    break
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception:
+                    if error is None and not cancel.is_set():
+                        error = "摘要流关闭失败"
+        if cancel.is_set():
+            raise _CompactionCancelled
+        if error is not None:
+            raise _CompactionFailure("COMPACTION_PROVIDER_ERROR", error)
+        if assistant is None:
+            raise _CompactionFailure("COMPACTION_INCOMPLETE", "摘要模型未返回完成响应")
+        if assistant.stop_reason != "stop":
+            raise _CompactionFailure("COMPACTION_INVALID_STOP_REASON",
+                                     "摘要模型未以正常停止原因结束")
+        if tool_event or assistant.tool_calls():
+            raise _CompactionFailure("COMPACTION_TOOL_CALL_REJECTED", "摘要请求不允许调用工具")
+        summary = assistant.text().strip()
+        if not summary:
+            raise _CompactionFailure("COMPACTION_EMPTY", "摘要模型返回了空内容")
+        if len(summary) > 32_000:
+            raise _CompactionFailure("COMPACTION_TOO_LARGE", "摘要模型返回内容超过 32000 字符")
+        return assistant
+
+    def _run_compaction(self, job: dict) -> None:
+        thread_id = job["threadId"]
+        assistant: AssistantMessage | None = None
+        try:
+            plan, prompt = self.context.compaction_prompt(thread_id, job["throughTurnId"], job["sourceDigest"])
+            config: ModelConfig = job["config"]
+            request = ModelRequest(model=config.model, system=SUMMARY_SYSTEM,
+                                   messages=(UserMessage(text=prompt),), tools=(),
+                                   max_tokens=min(config.max_tokens, SUMMARY_MAX_TOKENS),
+                                   effort=None, thinking=None)
+            prepared, budget = self.context.prepare(
+                request, self.model_catalog.resolve(config.provider, config.model), provider=config.provider)
+            assistant = self._stream_compaction(job["provider"], prepared, job["cancel"])
+            usage_payload = {
+                "jobId": job["jobId"], "provider": config.provider, "model": prepared.model,
+                "usage": asdict(assistant.usage) if assistant.usage is not None else None,
+                "stopReason": assistant.stop_reason, "eligible": False,
+                "requestFingerprint": request_fingerprint(config.provider, prepared),
+                "budget": budget,
+            }
+            self.sessions.append(thread_id, Entry(type="context_summary_usage", payload=usage_payload))
+            summary = assistant.text().strip()
+            with self.runtimes.lock:
+                if job["cancel"].is_set():
+                    raise _CompactionCancelled
+                current = self.context.compaction_plan(thread_id, job["throughTurnId"])
+                if current["sourceDigest"] != plan["sourceDigest"]:
+                    raise _CompactionFailure("COMPACTION_SOURCE_CHANGED", "摘要来源已变化，未写入检查点")
+                self.context.compact(
+                    thread_id, summary, job["throughTurnId"], plan["sourceDigest"], origin="model",
+                    metadata={"summaryJobId": job["jobId"], "summaryProvider": config.provider,
+                              "summaryModel": config.model})
+                result = self.on_context_read({"threadId": thread_id})
+                job.update(status="completed", result=result)
+                self._compaction_by_thread.pop(thread_id, None)
+            self.events.emit("context/compactionCompleted", self._compaction_public(job))
+            self.events.emit("context/compacted", {"threadId": thread_id, "jobId": job["jobId"], "origin": "model"})
+        except _CompactionCancelled:
+            with self.runtimes.lock:
+                job.update(status="cancelled", code="COMPACTION_CANCELLED", message="摘要已取消")
+                self._compaction_by_thread.pop(thread_id, None)
+            self.events.emit("context/compactionFailed", self._compaction_public(job))
+        except ContextBudgetExceeded as exc:
+            with self.runtimes.lock:
+                job.update(status="failed", code="COMPACTION_INPUT_TOO_LARGE", message=str(exc))
+                self._compaction_by_thread.pop(thread_id, None)
+            self.events.emit("context/compactionFailed", self._compaction_public(job))
+        except _CompactionFailure as exc:
+            with self.runtimes.lock:
+                job.update(status="failed", code=exc.code, message=str(exc))
+                self._compaction_by_thread.pop(thread_id, None)
+            self.events.emit("context/compactionFailed", self._compaction_public(job))
+        except ValueError as exc:
+            message = str(exc)
+            code = "COMPACTION_SOURCE_CHANGED" if "来源" in message else "COMPACTION_FAILED"
+            with self.runtimes.lock:
+                job.update(status="failed", code=code, message=message)
+                self._compaction_by_thread.pop(thread_id, None)
+            self.events.emit("context/compactionFailed", self._compaction_public(job))
+        except Exception as exc:
+            secret = job["config"].api_key.get() if job["config"].api_key else ""
+            message = redact_secrets(str(exc), extra=(secret,))
+            with self.runtimes.lock:
+                job.update(status="failed", code="COMPACTION_FAILED", message=message)
+                self._compaction_by_thread.pop(thread_id, None)
+            self.events.emit("context/compactionFailed", self._compaction_public(job))
+        finally:
+            self._close_application_resources_if_idle()
+
     def on_context_compact(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")
         with self.runtimes.lock:
             self._idle(thread_id)
-            source_digest = (params or {}).get("sourceDigest")
-            if source_digest is not None and (not isinstance(source_digest, str) or len(source_digest) != 64
-                                               or not re.fullmatch(r"[0-9a-f]{64}", source_digest)):
-                raise ValueError("sourceDigest 格式无效")
+            source_digest = self._source_digest(params or {})
             self.context.compact(thread_id, _text(params, "summary", maximum=32_000),
                                  _text(params, "throughTurnId"), source_digest)
             result = self.on_context_read({"threadId": thread_id})
@@ -604,6 +834,8 @@ class ApplicationService:
                 thread = self.sessions.get_thread(thread_id)
                 if thread.get("archived"):
                     raise ValueError("请先恢复归档会话")
+                if thread_id in self._compaction_by_thread:
+                    raise RpcError(-32004, "该会话正在生成摘要，请等待完成或先取消摘要")
                 if client_id:
                     previous = next((i for i in self.sessions.read_items(thread_id) if i.get("clientUserMessageId") == client_id), None)
                     if previous:
@@ -704,7 +936,7 @@ class ApplicationService:
 
     def _close_application_resources_if_idle(self) -> None:
         with self.runtimes.lock:
-            if not self.runtimes.closed or self.runtimes.jobs:
+            if not self.runtimes.closed or self.runtimes.jobs or self._compaction_by_thread:
                 return
             if self._base_bridge_close_claimed:
                 wait_for_close = self._base_bridge_close_owner != threading.get_ident()
@@ -865,9 +1097,25 @@ class ApplicationService:
         self.close()
         return {"stopped": True}
 
+    def _stop_compaction_jobs(self) -> None:
+        with self.runtimes.lock:
+            jobs = [job for job in self._compaction_jobs.values() if job["status"] == "running"]
+            for job in jobs:
+                job["cancel"].set()
+            providers = [job["provider"] for job in jobs]
+            workers = [job.get("worker") for job in jobs]
+        for provider in providers:
+            abort = getattr(provider, "request_abort", None)
+            if callable(abort):
+                abort()
+        for worker in workers:
+            if worker is not None and worker is not threading.current_thread():
+                worker.join(timeout=2)
+
     def close(self) -> None:
         self._state = "stopped"
         self.connections.close()
+        self._stop_compaction_jobs()
         self.runtimes.stop()
         self._close_application_resources_if_idle()
 

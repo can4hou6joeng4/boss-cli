@@ -109,6 +109,9 @@ export const ClientMethods = {
   attachmentRead: "attachment/read",
   contextRead: "context/read",
   contextCompactPlan: "context/compact/plan",
+  contextCompactStart: "context/compact/start",
+  contextCompactAbort: "context/compact/abort",
+  contextCompactRead: "context/compact/read",
   contextCompact: "context/compact",
 } as const;
 
@@ -135,6 +138,9 @@ export const ServerNotifications = {
   threadUnarchived: "thread/unarchived",
   threadRenamed: "thread/renamed",
   queueUpdated: "queue/updated",
+  contextCompactionStarted: "context/compactionStarted",
+  contextCompactionCompleted: "context/compactionCompleted",
+  contextCompactionFailed: "context/compactionFailed",
 } as const;
 
 export type ServerNotification =
@@ -391,6 +397,24 @@ export interface ContextCompactPlan {
   firstItemId: string;
   lastItemId: string;
 }
+export type ContextCompactionJobStatus = "running" | "completed" | "failed" | "cancelled";
+export interface ContextCompactStartParams {
+  threadId: string;
+  throughTurnId: string;
+  sourceDigest?: string;
+  model?: string;
+}
+export interface ContextCompactJob {
+  jobId: string;
+  threadId: string;
+  throughTurnId: string;
+  sourceDigest: string;
+  status: ContextCompactionJobStatus;
+  code?: string;
+  message?: string;
+  result?: ContextReadResponse;
+}
+export interface ContextCompactAbortResponse extends ContextCompactJob { aborted: boolean }
 export interface ContextBudget {
   estimatedInputTokens: number;
   estimateMethod: string;
@@ -416,6 +440,7 @@ export interface ContextReadResponse extends ContextBudget {
   requestSource: "active" | "preview" | "default";
   checkpoint: Record<string, unknown> | null;
   usage: Record<string, unknown> | null;
+  summaryUsage?: Record<string, unknown> | null;
   lastBudget?: ContextBudget & { turnId: string } | null;
 }
 export type ConnectionTarget = "local" | "model" | "platform";

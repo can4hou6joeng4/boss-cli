@@ -90,6 +90,26 @@ def _message_size(messages: tuple[ChatMessage, ...] | list[ChatMessage]) -> int:
     return size
 
 
+def _summary_text(messages: tuple[ChatMessage, ...]) -> str:
+    """将结构化历史转成只读摘要输入；工具结果仍作为不可信事实保留。"""
+    lines: list[str] = []
+    for message in messages:
+        if isinstance(message, UserMessage):
+            lines.append("[user]\n" + message.text)
+        elif isinstance(message, AssistantMessage):
+            for block in message.blocks:
+                if isinstance(block, TextBlock):
+                    lines.append("[assistant]\n" + block.text)
+                elif isinstance(block, ToolCallBlock):
+                    lines.append("[tool-call " + block.name + "]\n" + json.dumps(
+                        {"id": block.id, "arguments": dict(block.arguments)}, ensure_ascii=False,
+                        sort_keys=True))
+        else:
+            for result in message.results:
+                lines.append("[tool-result " + result.tool_call_id + "]\n" + result.content)
+    return "\n\n".join(lines)
+
+
 def _message_fingerprint_payload(message: ChatMessage) -> dict[str, Any]:
     if isinstance(message, UserMessage):
         return {"role": "user", "text": message.text}
@@ -278,19 +298,60 @@ class ContextService:
         checkpoint = self._checkpoint(thread_id)
         entries = self.sessions.read_entries(thread_id)
         usage = [e["payload"] for e in entries if e["type"] == "model_usage"]
+        summary_usage = [e["payload"] for e in entries if e["type"] == "context_summary_usage"]
         last_budget = next((e["payload"] for e in reversed(entries) if e["type"] == "context_budget"), None)
         return {"threadId": thread_id, **budget, "checkpoint": checkpoint,
-                "usage": usage[-1] if usage else None, "lastBudget": last_budget}
+                "usage": usage[-1] if usage else None,
+                "summaryUsage": summary_usage[-1] if summary_usage else None,
+                "lastBudget": last_budget}
+
+    def compaction_prompt(self, thread_id: str, through_turn_id: str,
+                          source_digest: str | None = None) -> tuple[dict[str, Any], str]:
+        """Freeze a plan and build a bounded-contract, tool-free summary prompt."""
+        plan = self.compaction_plan(thread_id, through_turn_id)
+        if source_digest is not None and source_digest != plan["sourceDigest"]:
+            raise ValueError("压缩来源已变化，请重新读取压缩计划")
+        items = {item["id"]: item for item in self.sessions.read_items(thread_id)}
+        selected = [items[item_id] for item_id in plan["sourceItemIds"] if item_id in items]
+        if len(selected) != plan["sourceItemCount"]:
+            raise ValueError("压缩来源条目已变化，请重新读取压缩计划")
+        checkpoint = self._checkpoint(thread_id)
+        covered = set(checkpoint.get("sourceItemIds", [])) if checkpoint else set()
+        fresh = [item for item in selected if item["id"] not in covered]
+        if not fresh and checkpoint is not None:
+            raise ValueError("没有新增可压缩内容")
+        previous = ""
+        if checkpoint is not None:
+            previous = ("<previous-summary>\n" + str(checkpoint.get("summary", ""))
+                        + "\n</previous-summary>\n")
+        conversation = _summary_text(messages_from_items(fresh))
+        prompt = (previous + "<conversation>\n" + conversation + "\n</conversation>\n"
+                  "请生成一份可供后续模型回合使用的事实摘要。")
+        return plan, prompt
 
     def compact(self, thread_id: str, summary: str, through_turn_id: str,
-                source_digest: str | None = None) -> dict:
+                source_digest: str | None = None, *, origin: str = "user",
+                metadata: dict[str, Any] | None = None) -> dict:
         if not isinstance(summary, str) or not summary.strip() or len(summary) > 32_000:
             raise ValueError("summary 必须是 1 到 32000 字符的用户摘要")
+        if origin not in {"user", "model"}:
+            raise ValueError("压缩来源无效")
+        if metadata is not None and not isinstance(metadata, dict):
+            raise ValueError("压缩元数据必须是对象")
+        extra = dict(metadata or {})
+        if set(extra) & {"summary", "throughTurnId", "sourceItemIds", "sourceDigest", "origin"}:
+            raise ValueError("压缩元数据包含保留字段")
+        try:
+            encoded_extra = json.dumps(extra, ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError):
+            raise ValueError("压缩元数据必须是有限 JSON") from None
+        if len(encoded_extra.encode()) > 4096:
+            raise ValueError("压缩元数据过大")
         plan = self.compaction_plan(thread_id, through_turn_id)
         if source_digest is not None and source_digest != plan["sourceDigest"]:
             raise ValueError("压缩来源已变化，请重新读取压缩计划")
         payload = {"summary": summary.strip(), "throughTurnId": through_turn_id,
                    "sourceItemIds": plan["sourceItemIds"], "sourceDigest": plan["sourceDigest"],
-                   "origin": "user"}
+                   "origin": origin, **extra}
         self.sessions.append(thread_id, Entry(type="context_checkpoint", payload=payload))
         return self.read(thread_id)
