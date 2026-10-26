@@ -18,6 +18,8 @@ import {
   type QueueItemResponse,
   type QueueListResponse,
   type ModelListResponse,
+  type SkillDescriptor,
+  type SkillListResponse,
   type ConnectionReport,
   type ConnectionTarget,
 } from "@boss-cli/protocol";
@@ -41,6 +43,8 @@ export interface HarnessStatus {
   state?: string;
   generation?: number;
 }
+
+export type SkillCatalogState = "unavailable" | "loading" | "ready" | "empty" | "error";
 
 export async function harnessStatus(): Promise<HarnessStatus | null> {
   try { return await bridge()?.status() ?? null; }
@@ -112,11 +116,11 @@ export async function startThread(title: string, model?: string): Promise<Sessio
   }
 }
 
-export async function sendTurn(threadId: string, input: string, clientUserMessageId: string, model?: string): Promise<TurnStartResponse | null> {
+export async function sendTurn(threadId: string, input: string, clientUserMessageId: string, model?: string, skillIds: string[] = []): Promise<TurnStartResponse | null> {
   const api = bridge();
   if (!api) return null;
   try {
-    return await api.request(ClientMethods.turnStart, { threadId, input, clientUserMessageId, model });
+    return await api.request(ClientMethods.turnStart, { threadId, input, clientUserMessageId, model, skillIds });
   } catch {
     return null;
   }
@@ -210,6 +214,12 @@ export function toMessage(item: ThreadItem): MessageItem | null {
 export async function configuredModels(): Promise<ModelListResponse["models"]> {
   try { return (await bridge()?.request<ModelListResponse>(ClientMethods.modelList))?.models ?? []; }
   catch { return []; }
+}
+
+export async function listSkills(): Promise<SkillDescriptor[]> {
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  return (await api.request<SkillListResponse>(ClientMethods.skillsList)).skills;
 }
 
 export async function connectionReport(target?: ConnectionTarget): Promise<ConnectionReport> {

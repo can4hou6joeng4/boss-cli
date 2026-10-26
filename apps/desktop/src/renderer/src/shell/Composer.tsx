@@ -4,6 +4,8 @@ import { Popover } from "../components/Popover";
 import { SlashCommandList, SLASH_COMMANDS, type SlashCommandItem } from "../components/SlashCommandList";
 import { AtMentionList, filterMentions, type MentionItem } from "../components/AtMentionList";
 import { MODEL_OPTIONS, type ConversationMode } from "../data/mockData";
+import type { SkillDescriptor } from "@boss-cli/protocol";
+import type { SkillCatalogState } from "../data/harnessBridge";
 import { createComposerDraft, clearTransferredDraft, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type QueueIntent, type CheckQueueSubmission } from "../data/composerDraft";
 import "../styles/composer-menus.css";
 
@@ -16,6 +18,7 @@ export interface ComposerProps {
   isRunning?: boolean; blocked?: boolean; onInterrupt?: () => void; preview?: boolean;
   currentMode?: ConversationMode; onModeChange?: (mode: ConversationMode) => void;
   activeModelId?: string; configuredModelLabel?: string; onSelectModel?: (id: string) => void; onOpenSettings?: () => void;
+  skills?: SkillDescriptor[]; skillCatalogState?: SkillCatalogState; onRefreshSkills?: () => void;
   home?: boolean;
   onLogin?: () => void;
 }
@@ -31,8 +34,9 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   value, onChange, onSend, draft, onDraftChange, isRunning = false, blocked = false, onInterrupt, preview = true, readOnly = false,
   onQueue, onCheckQueueSubmission,
   currentMode = "agent", onModeChange, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, home = false, onLogin,
+  skills = [], skillCatalogState = "unavailable", onRefreshSkills,
 }, forwardedRef) {
-  const [menu, setMenu] = useState<"add" | "permissions" | "mode" | "model" | null>(null);
+  const [menu, setMenu] = useState<"add" | "permissions" | "mode" | "model" | "skills" | null>(null);
   const [modelQuery, setModelQuery] = useState("");
   const [slashOpen, setSlashOpen] = useState(false), [mentionOpen, setMentionOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -53,6 +57,8 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const composerDraft = draft && onDraftChange ? draft : { ...localDraft, text: value, textVersion: valueVersion.current };
   const draftRef = useRef(composerDraft); draftRef.current = composerDraft;
   const attachments = composerDraft.attachments;
+  const selectedSkillIds = composerDraft.skillIds ?? [];
+  const staleSkillIds = selectedSkillIds.filter(id => !skills.some(skill => skill.id === id));
   const readingAttachments = composerDraft.pendingReads > 0;
   const submitting = composerDraft.submitting;
   const uncertainQueue = composerDraft.queueSubmission?.uncertain ? composerDraft.queueSubmission : null;
@@ -124,6 +130,14 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     const priorQueueSubmission = submitted.queueSubmission;
     const queueing = Boolean(onQueue && (isRunning || (priorQueueSubmission?.uncertain && priorQueueSubmission.intent === "followUp")));
     if ((!isRunning && blocked) || (isRunning && !queueing) || readingRef.current || submitted.pendingReads > 0 || sendingRef.current || submitted.submitting || (!submitted.text.trim() && !submitted.attachments.length)) return;
+    if (queueing && (submitted.skillIds?.length ?? 0) > 0) {
+      setNotice("队列消息暂不支持技能。请先清除已选技能，或等当前回合结束后直接发送。");
+      return;
+    }
+    if (!queueing && (submitted.skillIds?.length ?? 0) > 0 && (skillCatalogState !== "ready" || submitted.skillIds?.some(id => !skills.some(skill => skill.id === id)))) {
+      setNotice("所选技能尚未确认可用，请刷新技能目录或清除不可用技能后再发送。");
+      return;
+    }
     const text = [submitted.text.trim(), ...submitted.attachments.map(file => `附件：${file.name}\n\n${file.text}`)].filter(Boolean).join("\n\n");
     if (priorQueueSubmission?.uncertain) {
       const sameRequest = priorQueueSubmission.text === text && priorQueueSubmission.intent === queueIntent;
@@ -148,7 +162,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
         updateDraft(previous => previous.id === submitted.id ? { ...previous, queueSubmission: queueRequest } : previous);
         transferred = await onQueue(text, queueIntent, queueRequest.id);
       } else {
-        transferred = await onSend(text);
+        transferred = await onSend(text, submitted.skillIds ?? []);
       }
       if (transferred === false) {
         updateDraft(previous => previous.id === submitted.id ? { ...previous, submitting: false, ...(queueing ? { queueSubmission: undefined } : {}) } : previous);
@@ -214,6 +228,11 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     }
   };
   const selectModel = (id: string) => { onSelectModel?.(id); setMenu(null); focusInput(); };
+  const toggleSkill = (id: string) => updateDraft(previous => {
+    const current = previous.skillIds ?? [];
+    if (current.includes(id)) return { ...previous, skillIds: current.filter(skillId => skillId !== id) };
+    return current.length >= 10 ? previous : { ...previous, skillIds: [...current, id] };
+  });
 
   return <div className={`composer-surface ${home ? "home-composer" : ""} ${dragging ? "composer-drop-active" : ""}`}
     onDragEnter={event => { if (event.dataTransfer.types.includes("Files")) { event.preventDefault(); dragDepth.current += 1; setDragging(true); } }}
@@ -251,12 +270,29 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
         }
         if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); }
       }} />
-    {isRunning && onQueue && <div className="composer-queue-mode" role="group" aria-label="运行中消息处理方式">
+    {queueModeActive && onQueue && <div className="composer-queue-mode" role="group" aria-label="运行中消息处理方式">
       <button type="button" aria-pressed={queueIntent === "steering"} title="当前已发出的工具调用完成后，在下一次模型请求前加入此消息。" onClick={() => setQueueIntent("steering")}>转向当前回合</button>
       <button type="button" aria-pressed={queueIntent === "followUp"} title="等当前任务自然结束后，再以新回合处理此消息。" onClick={() => setQueueIntent("followUp")}>排到后续回合</button>
     </div>}
     <div className="composer-controls">
       <div className="composer-control-left">
+        <div className="popover-anchor">
+          <button type="button" className={`composer-mode composer-skills-trigger ${menu === "skills" ? "is-open" : ""}`} aria-label={`选择运行时技能${selectedSkillIds.length ? `，已选 ${selectedSkillIds.length} 项` : ""}`} data-count={selectedSkillIds.length || undefined} title={queueModeActive ? "队列消息不应用技能，当前不能更改技能" : submitting ? "正在转交消息，暂不能更改技能" : "选择应用于消息的运行时技能"} aria-haspopup="menu" aria-expanded={menu === "skills"} disabled={queueModeActive || submitting} onClick={() => toggleMenu("skills")}><IconSparkles size={14} /><span>技能{selectedSkillIds.length ? ` ${selectedSkillIds.length}` : ""}</span><IconChevronDown size={10} /></button>
+          <Popover open={menu === "skills"} onClose={() => setMenu(null)} above label="选择运行时技能" className="composer-action-menu composer-skills-menu">
+            <div className="composer-menu-heading">运行时技能</div>
+            {skillCatalogState === "loading" && <div className="composer-menu-empty">正在加载可用技能…</div>}
+            {skillCatalogState === "unavailable" && <div className="composer-menu-empty">{preview ? "运行时技能仅在连接桌面 Harness 后可用。" : "连接本地 Harness 后可加载技能。"}</div>}
+            {skillCatalogState === "error" && <div className="composer-menu-empty">无法加载技能目录，请重试。</div>}
+            {skillCatalogState === "empty" && <div className="composer-menu-empty">当前工作区没有可用技能。</div>}
+            {skillCatalogState === "ready" && skills.map(skill => <button type="button" role="menuitemcheckbox" aria-checked={selectedSkillIds.includes(skill.id)} key={skill.id} disabled={queueModeActive || submitting || (selectedSkillIds.length >= 10 && !selectedSkillIds.includes(skill.id))} onClick={() => toggleSkill(skill.id)}><IconSparkles /><span>{skill.name}<small>{skill.description || "无描述"}</small></span>{selectedSkillIds.includes(skill.id) && <IconCheck className="menu-check" />}</button>)}
+            {skillCatalogState === "ready" && selectedSkillIds.length >= 10 && <div className="composer-menu-footer">每回合最多选择 10 项技能。</div>}
+            {staleSkillIds.length > 0 && skillCatalogState === "ready" && <div className="composer-menu-empty">{staleSkillIds.length} 项已选技能已不在当前目录中。</div>}
+            {staleSkillIds.length > 0 && skillCatalogState === "ready" && <button type="button" disabled={queueModeActive || submitting} onClick={() => updateDraft(previous => ({ ...previous, skillIds: previous.skillIds.filter(id => !staleSkillIds.includes(id)) }))}>清除不可用技能</button>}
+            {selectedSkillIds.length > 0 && skillCatalogState !== "ready" && <button type="button" disabled={queueModeActive || submitting} onClick={() => updateDraft(previous => ({ ...previous, skillIds: [] }))}>清除已选技能</button>}
+            {skillCatalogState !== "unavailable" && onRefreshSkills && <button type="button" disabled={queueModeActive || submitting || skillCatalogState === "loading"} onClick={onRefreshSkills}>{skillCatalogState === "error" ? "重试加载技能" : "刷新技能目录"}</button>}
+            <div className="composer-menu-footer">所选技能仅应用于本次直接发送，转交成功后清空。</div>
+          </Popover>
+        </div>
         <div className="popover-anchor">
           <button type="button" className={`composer-icon ${menu === "add" ? "is-open" : ""}`} aria-label="添加附件或上下文" title="添加附件或上下文" aria-haspopup="menu" aria-expanded={menu === "add"} onClick={() => toggleMenu("add")}><IconPlus size={19} /></button>
           <Popover open={menu === "add"} onClose={() => setMenu(null)} above label="添加上下文" className="composer-action-menu">
@@ -313,6 +349,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
         {isRunning && onInterrupt && <button type="button" className="composer-stop" aria-label="停止任务" title="停止当前任务" onClick={onInterrupt}><IconStop size={15} /></button>}
       </div>
     </div>
+    {queueModeActive && selectedSkillIds.length > 0 && <div className="composer-notice" role="status">队列消息暂不支持技能。清除选择后可排队，或等当前回合结束后直接发送。<button type="button" className="composer-menu-retry" disabled={submitting} onClick={() => updateDraft(previous => ({ ...previous, skillIds: [] }))}>清除已选技能</button></div>}
     {(notice || readingAttachments || submitting) && <div className="composer-notice" role="status">{notice || (readingAttachments ? "正在读取附件…" : "正在转交消息…")}</div>}
     {uncertainQueue && <div className="composer-notice-actions">
       <button type="button" onClick={restoreQueueSubmission}>恢复待确认消息</button>

@@ -14,6 +14,17 @@
 .ui-popover.composer-permission-menu { width: 305px; }
 .ui-popover.composer-mode-menu { width: 265px; }
 .ui-popover.composer-model-menu { width: 300px; }
+.ui-popover.composer-skills-menu { width: 330px; max-height: min(420px, calc(100vh - 32px)); overflow-y: auto; }
+.composer-skills-trigger { flex: 0 0 auto; }
+.composer-skills-trigger[data-count] { position: relative; }
+.composer-skills-trigger[data-count]::after { content: attr(data-count); display: none; position: absolute; top: 0; right: -2px; min-width: 12px; height: 12px; padding: 0 2px; border-radius: 6px; background: var(--accent-warning); color: var(--surface-main); font-size: 8px; line-height: 12px; text-align: center; }
+.composer-skills-menu .composer-menu-empty { line-height: 1.6; }
+.composer-menu-retry { margin-left: 5px; border: 0; background: transparent; color: var(--text-main); text-decoration: underline; cursor: pointer; }
+@media (max-width:699px) {
+  .composer-skills-trigger { width: 30px; height: 30px; justify-content: center; padding: 0; }
+  .composer-skills-trigger > span, .composer-skills-trigger > svg:last-child { display: none; }
+  .composer-skills-trigger[data-count]::after { display: block; }
+}
 .composer-menu-search { display: flex; align-items: center; gap: 8px; padding: 0 8px; margin: 0 4px 6px; min-height: 32px; border: 1px solid var(--border-color); border-radius: 7px; color: var(--text-faint); }
 .composer-menu-search:focus-within { border-color: var(--text-faint); }
 .composer-menu-search input { width: 100%; min-width: 0; border: 0; background: transparent; color: var(--text-main); padding: 7px 0; outline: none; font-size: 12px; }
