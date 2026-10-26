@@ -23,6 +23,7 @@ from typing import Any
 
 import openai
 
+from boss_harness.models.errors import openai_error_info
 from boss_harness.models.provider import ModelConfig
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.types import (
@@ -427,18 +428,22 @@ class OpenAIResponsesProvider:
                         )
                         error_type = str(getattr(error, "type", "") or "")
                         message = str(getattr(error, "message", "") or "") or "响应失败"
-                        self._last_error_retryable = _looks_transient(code, f"{error_type} {message}")
+                        error_info = openai_error_info(error, source="stream_error")
+                        self._last_error_retryable = error_info is None and _looks_transient(code, f"{error_type} {message}")
                         yield StreamEvent(
-                            type="error", reason="error", error=self._redact(f"接口错误 {code}：{message}")
+                            type="error", reason="error", error=self._redact(f"接口错误 {code}：{message}"),
+                            error_info=error_info,
                         )
                         return
 
                     elif kind == "error":
                         code = str(getattr(event, "code", "") or "unknown")
                         message = str(getattr(event, "message", "") or "")
-                        self._last_error_retryable = _looks_transient(code, message)
+                        error_info = openai_error_info(event, source="stream_error")
+                        self._last_error_retryable = error_info is None and _looks_transient(code, message)
                         yield StreamEvent(
-                            type="error", reason="error", error=self._redact(f"接口错误 {code}：{message}")
+                            type="error", reason="error", error=self._redact(f"接口错误 {code}：{message}"),
+                            error_info=error_info,
                         )
                         return
 
@@ -446,12 +451,14 @@ class OpenAIResponsesProvider:
                 # 原始事件流没有 get_final_response()。
 
         except openai.APIStatusError as exc:
-            self._last_error_retryable = exc.status_code in _RETRYABLE_STATUS
+            error_info = openai_error_info(exc.body, source="http_error", status_code=exc.status_code)
+            self._last_error_retryable = error_info is None and exc.status_code in _RETRYABLE_STATUS
             self._last_error_retry_after = _retry_after_seconds(exc)
             yield StreamEvent(
                 type="error",
                 reason="error",
                 error=self._redact(f"接口错误 {exc.status_code}：{_error_message(exc)}"),
+                error_info=error_info,
             )
             return
         except openai.APIConnectionError as exc:

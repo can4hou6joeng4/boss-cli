@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第十五轮：自动压缩与有限溢出恢复
+
+[Issue #45](https://github.com/can4hou6joeng4/boss-cli/issues/45) 继续参考 Pi `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）的 `packages/agent/README.md`、`src/agent-loop.ts` 请求准备/工具完成顺序，及 coding-agent 的 `docs/compaction.md`、`docs/settings.md`、`agent-session.ts` 中 `_checkCompaction`、`_runAutoCompaction`。采用在下一次业务模型请求前准备上下文、独立摘要、来源冻结后提交和一次溢出恢复的职责划分，全部独立实现，无新增依赖或代码复制。
+
+适配采用完整请求 `inputBudget` 使用率阈值（默认80%），已扣输出储备和4096安全余量；不照搬只按上下文窗口减reserveTokens的公式。启动环境及每回合参数可关闭或覆盖阈值/近期保留目标。默认保留20000估算token；只压缩旧完整回合，当前活动回合及其工具配对始终原样保留。替换前严格核对历史投影前缀，实时消息尾部沿用原对象，不从持久化条目重新构造而丢失思考或暂存steering。准备后更新运行内存，避免下一工具轮次恢复旧全文；摘要期间新到steering在业务请求前再领取一次并重新预算。
+
+固定Pi的 `packages/ai/src/utils/overflow.ts` 包含广泛错误表达式、413、usage超窗及部分length启发式。本项目仅在可信OpenAI精确错误code或Anthropic带数字上下限的typed prompt拒绝处添加可选 `ModelErrorInfo`；不解析普通错误文本、截断或usage来推断恢复。只有当前请求无任何文本/思考/工具事件时最多压缩重试一次，失败与重试同计6次业务请求；第6次错误不启动无后续请求额度的摘要。先前成功工具结果完整保留，不重跑工具/runner/审批，也不复制Pi对失败历史的删除或省略策略。
+
+自动摘要同步由业务worker持有，通过现有任务索引、独立provider与分段生成器报告reason/turnId、逐片usage和进度；中断同时取消业务与摘要流，worker退出前继续持有状态目录所有权。全流程核对active owner、取消与source digest，最终使用当前精确system/技能/附件/tools/消息/输出储备准入。checkpoint成功后的观察异常不撤回已提交状态；取消后不自动续跑。无可压缩前缀且仍在预算内可继续，已启动摘要失败则暂停并保留队列。
+
+本轮只读刷新 `jackwener/boss-cli`：Issue #35 的隐式Cookie/Keychain访问及 #32/#27/#23 风控问题仍作为边界约束；PR #28 recommend分页、#29真实greet、#24简历同步均不直接进入通用内核。相关状态会变化，未采信外部自述的live-test作为本项目验收，也未调用真实招聘平台。
+
 ## 第十四轮：保留近期回合的分段摘要
 
 [Issue #43](https://github.com/can4hou6joeng4/boss-cli/issues/43) 面向大工具结果导致摘要请求自身超限的长招聘会话。固定参考 Pi `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）的 `packages/coding-agent/src/core/compaction/compaction.ts` 中 `findCutPoint`、`prepareCompaction`、`generateSummaryWithUsage`，以及 `utils.ts` 的序列化。采用先准备统一投影、冻结范围、无工具摘要、成功后提交 checkpoint 的职责划分，全部独立实现，无新增依赖或代码复制。

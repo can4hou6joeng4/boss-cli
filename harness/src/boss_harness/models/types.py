@@ -128,6 +128,20 @@ class ModelRequest:
 
 
 @dataclass(frozen=True)
+class ModelErrorInfo:
+    """供应商已确认的错误分类；不包含原始响应、请求或凭据。
+
+    分类只说明当前请求失败的原因，是否允许恢复由执行内核判断。
+    """
+
+    code: Literal["CONTEXT_OVERFLOW"]
+    provider: Literal["openai", "anthropic"]
+    source: Literal["http_error", "stream_error"]
+    provider_code: str | None = None
+    status_code: int | None = None
+
+
+@dataclass(frozen=True)
 class StreamEvent:
     """一条流事件；字段按 `type` 取用，其余为空。"""
 
@@ -139,3 +153,4 @@ class StreamEvent:
     reason: str = ""
     message: AssistantMessage | None = None
     error: str = ""
+    error_info: ModelErrorInfo | None = None

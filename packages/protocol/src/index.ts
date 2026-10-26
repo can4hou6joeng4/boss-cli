@@ -288,6 +288,12 @@ export interface ToolBridgeStatus {
   tools: string[];
 }
 
+export interface AutoCompactionPolicy {
+  enabled: boolean;
+  triggerPercent: number;
+  keepRecentTokens: number;
+}
+
 export interface TurnStartParams {
   threadId: string;
   input: string;
@@ -296,6 +302,7 @@ export interface TurnStartParams {
   model?: string;
   attachmentIds?: string[];
   skillIds?: string[];
+  autoCompaction?: Partial<AutoCompactionPolicy>;
 }
 
 export interface TurnStartResponse {
@@ -426,6 +433,8 @@ export interface ContextCompactJob {
   throughTurnId: string;
   sourceDigest: string;
   status: ContextCompactionJobStatus;
+  reason?: "threshold" | "budget" | "overflow";
+  turnId?: string;
   code?: string;
   message?: string;
   result?: ContextReadResponse;
