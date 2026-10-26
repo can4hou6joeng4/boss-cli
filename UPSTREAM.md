@@ -1,5 +1,11 @@
 # 上游吸收记录
 
+## 第十九轮：会话分支隔离执行队列
+
+[Issue #53](https://github.com/can4hou6joeng4/boss-cli/issues/53) 来自本地会话生命周期审查：此前 `fork_thread` 复制所有扩展记录，再暂停子会话队列，导致原会话消息可随分支重新进入投递范围。参考 Pi 固定 `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）的 `session-manager.ts` 历史分支与 `agent-session.ts` 运行队列职责分离；本项目使用独立 append-only 队列协议，在深拷贝历史时过滤全部 `queue` 记录，移除子队列暂停操作，不复制 Pi 代码或新增依赖。
+
+普通消息、已投递输入、附件、上下文 checkpoint 及其来源字段继续保留；父引用按保留记录重连，原会话文件和队列不变。保持已结束回合及完整工具批次边界，重启恢复也不会生成子队列。本轮不改变 JSON-RPC 0.2.0、业务 CLI 或权限。离线验证覆盖五种队列状态和重启，未调用真实模型或招聘平台；测试材料仅保留本地。
+
 ## 第十五轮：自动压缩与有限溢出恢复
 
 [Issue #45](https://github.com/can4hou6joeng4/boss-cli/issues/45) 继续参考 Pi `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）的 `packages/agent/README.md`、`src/agent-loop.ts` 请求准备/工具完成顺序，及 coding-agent 的 `docs/compaction.md`、`docs/settings.md`、`agent-session.ts` 中 `_checkCompaction`、`_runAutoCompaction`。采用在下一次业务模型请求前准备上下文、独立摘要、来源冻结后提交和一次溢出恢复的职责划分，全部独立实现，无新增依赖或代码复制。

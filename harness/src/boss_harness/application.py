@@ -490,7 +490,6 @@ class ApplicationService:
     def on_thread_fork(self, params: dict | None) -> dict:
         params = params or {}
         thread = self.sessions.fork_thread(_text(params, "threadId"), turn_id=params.get("turnId"), title=params.get("title"))
-        self.queue.pause(thread["id"])
         self.events.emit("thread/created", {"threadId": thread["id"], "thread": thread})
         return {"thread": thread}
 
