@@ -521,4 +521,5 @@ export interface PlatformLoginContext {
   bounds?: { x: number; y: number; width: number; height: number };
 }
 export interface SkillDescriptor { id: string; name: string; description: string; digest: string; bytes: number }
+export interface SkillListResponse { skills: SkillDescriptor[] }
 export interface AttachmentDescriptor { id: string; name: string; digest: string; bytes: number; mediaType: string }

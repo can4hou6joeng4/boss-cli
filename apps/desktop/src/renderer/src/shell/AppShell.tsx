@@ -14,10 +14,11 @@ import { SearchDialog } from "../components/SearchDialog";
 import { ModalSurface } from "../components/ModalSurface";
 import { IconNotification, IconCheck } from "../components/Icons";
 import { type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "../data/mockData";
-import { ClientMethods, type ToolDescriptor, type ToolListResponse } from "@boss-cli/protocol";
+import { ClientMethods, type SkillDescriptor, type ToolDescriptor, type ToolListResponse } from "@boss-cli/protocol";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
 import type { CheckQueueSubmission, ComposerQueue } from "../data/composerDraft";
 import type { QueueItem } from "@boss-cli/protocol";
+import { listSkills, type SkillCatalogState } from "../data/harnessBridge";
 import "../styles/login-sidebar.css";
 
 export interface AppShellProps {
@@ -29,7 +30,7 @@ export interface AppShellProps {
   simulateLocal?: boolean; harnessUp?: boolean; running?: boolean; taskBlocked?: boolean;
   onInterrupt?: () => void;
   onApprovalDecision?: (approvalId: string, approved: boolean, toolName: string, remember: boolean) => void | boolean | Promise<boolean>;
-  onStartSessionWithPrompt: (prompt: string, domainId: string, modelId: string) => Promise<SessionItem | null>;
+  onStartSessionWithPrompt: (prompt: string, domainId: string, modelId: string, skillIds?: string[]) => Promise<SessionItem | null>;
   activeModelId?: string; onSelectModel?: (modelId: string) => void;
   configuredModelLabel?: string;
   onOpenCockpit: () => void; onOpenSideChat: () => void; onOpenRewind: () => void; onOpenShortcuts: () => void;
@@ -75,6 +76,9 @@ export function AppShell(props: AppShellProps) {
   });
   const [draftProjectId, setDraftProjectId] = useState("");
   const [tools, setTools] = useState<ToolDescriptor[]>([]);
+  const [skills, setSkills] = useState<SkillDescriptor[]>([]);
+  const [skillCatalogState, setSkillCatalogState] = useState<SkillCatalogState>("unavailable");
+  const [skillRefresh, setSkillRefresh] = useState(0);
   const [history, setHistory] = useState<Route[]>([{ page: "home" }]), [cursor, setCursor] = useState(0);
   const cursorRef = useRef(cursor); cursorRef.current = cursor;
   const historyRef = useRef(history); historyRef.current = history;
@@ -109,9 +113,9 @@ export function AppShell(props: AppShellProps) {
   const newTask = () => { resetDraft(); setDraftProjectId(""); openRoute({ page: "home" }); };
   const newTaskInProject = (folder: ProjectFolder) => { resetDraft(); setDraftProjectId(folder.id); openRoute({ page: "home" }); };
   const openSettings = (section: SettingsSection = "general") => { setSettingsSection(section); setSettings(true); };
-  const startInProject = async (prompt: string, domainId: string, modelId: string) => {
+  const startInProject = async (prompt: string, domainId: string, modelId: string, skillIds: string[] = []) => {
     const projectId = draftProjectId;
-    const session = await props.onStartSessionWithPrompt(prompt, domainId, modelId);
+    const session = await props.onStartSessionWithPrompt(prompt, domainId, modelId, skillIds);
     if (session && projectId) setThreadGroups(prev => ({ ...prev, [session.id]: projectId }));
     return Boolean(session);
   };
@@ -150,6 +154,20 @@ export function AppShell(props: AppShellProps) {
     return () => { current = false; };
   }, [props.harnessUp]);
   useEffect(() => {
+    let current = true;
+    setSkills([]);
+    if (!props.harnessUp || !window.boss) { setSkillCatalogState("unavailable"); return () => { current = false; }; }
+    setSkillCatalogState("loading");
+    void listSkills().then(result => {
+      if (!current) return;
+      setSkills(result);
+      setSkillCatalogState(result.length ? "ready" : "empty");
+    }).catch(() => {
+      if (current) setSkillCatalogState("error");
+    });
+    return () => { current = false; };
+  }, [props.harnessUp, skillRefresh]);
+  useEffect(() => {
     const handle = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
       if (document.querySelector('[aria-modal="true"]')) return;
@@ -180,10 +198,10 @@ export function AppShell(props: AppShellProps) {
             onRename={session => { setRename(session); setName(session.title); }} onPin={id => setPinned(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id])} onHide={id => setHidden(prev => [...prev.filter(item => item !== id), id])}
             onMoveSession={(id, folderId) => setThreadGroups(prev => ({ ...prev, [id]: folderId }))} onRenameProject={folder => { setRenameProject(folder); setFolderName(folder.name); }} onRemoveProject={setRemoveProject} />
           <main className="main-canvas">
-            {page !== "home" ? <WorkspacePages page={page} folders={allFolders} messages={props.messages} onSelect={select} onNewTask={newTask} onDraft={text => { newTask(); setDraft(text); }} tools={tools} preview={props.simulateLocal ?? true} /> : props.isHomeView ? <HomeView key={draft.id} folders={allFolders} draft={draft} onDraftChange={updateHomeDraft} selectedProjectId={draftProjectId} onSelectProject={setDraftProjectId} onNewProject={() => setNewProject(true)} preview={!window.boss} harnessUp={props.harnessUp ?? false} blocked={props.taskBlocked} activeModelId={props.activeModelId ?? "deepseek-v4"} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} currentMode={props.currentMode} onModeChange={props.onModeChange} onStartSessionWithPrompt={startInProject} onOpenSettings={() => openSettings("connections")} /> : <>
+            {page !== "home" ? <WorkspacePages page={page} folders={allFolders} messages={props.messages} onSelect={select} onNewTask={newTask} onDraft={text => { newTask(); setDraft(text); }} tools={tools} preview={props.simulateLocal ?? true} /> : props.isHomeView ? <HomeView key={draft.id} folders={allFolders} draft={draft} onDraftChange={updateHomeDraft} selectedProjectId={draftProjectId} onSelectProject={setDraftProjectId} onNewProject={() => setNewProject(true)} preview={!window.boss} harnessUp={props.harnessUp ?? false} blocked={props.taskBlocked} activeModelId={props.activeModelId ?? "deepseek-v4"} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} currentMode={props.currentMode} onModeChange={props.onModeChange} skills={skills} skillCatalogState={skillCatalogState} onRefreshSkills={() => setSkillRefresh(previous => previous + 1)} onStartSessionWithPrompt={startInProject} onOpenSettings={() => openSettings("connections")} /> : <>
               <div className="conversation-pane">
                 {props.simulateLocal && <div className="conversation-preview-badge">示例会话 · 交互预览</div>}
-                <ConversationArea readOnly={props.activeSession?.toolPolicy === "readOnly"} key={props.activeSession?.id ?? "conversation"} draft={sessionDraft} onDraftChange={updateSessionDraft} messages={props.messages} currentMode={props.currentMode} onModeChange={props.onModeChange} onSendMessage={props.onSendMessage} onQueueMessage={props.onQueueMessage} onCheckQueueSubmission={props.onCheckQueueSubmission} queueItems={props.queueItems} onRemoveQueueItem={props.onRemoveQueueItem} simulateLocal={props.simulateLocal} running={props.running} taskBlocked={props.taskBlocked} activeModelId={props.activeModelId} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} onOpenSettings={() => openSettings("connections")} onInterrupt={props.onInterrupt} onApprovalDecision={props.onApprovalDecision} onReviewDiff={props.onReviewDiff} onRevertDiff={props.onRevertDiff} onOpenRewind={props.onOpenRewind} onOpenCockpit={props.onOpenCockpit}
+                <ConversationArea readOnly={props.activeSession?.toolPolicy === "readOnly"} key={props.activeSession?.id ?? "conversation"} draft={sessionDraft} onDraftChange={updateSessionDraft} messages={props.messages} currentMode={props.currentMode} onModeChange={props.onModeChange} onSendMessage={props.onSendMessage} onQueueMessage={props.onQueueMessage} onCheckQueueSubmission={props.onCheckQueueSubmission} queueItems={props.queueItems} onRemoveQueueItem={props.onRemoveQueueItem} simulateLocal={props.simulateLocal} running={props.running} taskBlocked={props.taskBlocked} activeModelId={props.activeModelId} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} skills={skills} skillCatalogState={skillCatalogState} onRefreshSkills={() => setSkillRefresh(previous => previous + 1)} onOpenSettings={() => openSettings("connections")} onInterrupt={props.onInterrupt} onApprovalDecision={props.onApprovalDecision} onReviewDiff={props.onReviewDiff} onRevertDiff={props.onRevertDiff} onOpenRewind={props.onOpenRewind} onOpenCockpit={props.onOpenCockpit}
                   onLogin={window.boss ? () => { void loginEntry(); } : undefined}
                   loginGuide={login.visibleIn(loginThreadId) ? <LoginChoice status={loginStatus} pending={login.choiceThreadId === loginThreadId} busy={login.busy} panelOpen={browserOpen} error={login.error?.threadId === loginThreadId ? login.error.message : undefined} onOpen={() => { void login.open(loginThreadId); }} onHide={login.hideForLater} onCancel={() => { void login.cancel(loginThreadId); }} onDismiss={() => login.dismiss(loginThreadId)} onSettings={() => openSettings("connections")} /> : undefined} />
                 <RightPanel isOpen={summaryOpen && !browserOpen} projectName={currentProject?.name ?? "本地招聘项目"} messages={props.messages} preview={props.simulateLocal ?? true} onReviewChanges={props.onReviewDiff} onOpenSettings={() => openSettings("connections")} />

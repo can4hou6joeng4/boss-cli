@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第二十轮：桌面显式选择运行时技能
+
+[Issue #55](https://github.com/can4hou6joeng4/boss-cli/issues/55) 补齐已有 `skills/list`、`turn/start.skillIds` 与桌面输入区的交互缺口。阅读 Pi 固定 `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）的 `packages/coding-agent/docs/skills.md`，采用技能目录发现与显式调用分离的职责。本项目只加载工作区 `.boss-cli/skills/*/SKILL.md`，经现有 RPC 显式选择最多 10 项，全文仅用于当前直接发送回合的提示上下文；不采用 Pi 的自动模型选择、脚本执行或全局目录加载。全部独立实现，无代码复制或新增依赖。
+
+目录提供未连接、加载中、空、失败重试和刷新状态。新会话和已有会话都将所选 ID 原样传给 `turn/start`，成功转交后清空；失效选择阻止直接发送。队列协议暂不携带技能，运行中不允许新增选择，已有选择会明确阻止排队并提供清除入口，不静默忽略。保持 JSON-RPC 0.2.0、业务 CLI、工具允许清单和审批权限不变。再次复核 `jackwener/boss-cli` 开放 Issue/PR 后，本轮选择通用 Harness 缺口，没有移植其认证或自动沟通方案。
+
+Electron 43.8.3 使用生产 main/preload/renderer、合成工作区与独立用户/会话目录，验证两条发送路径的后端 turn 技能元数据、单次清空、刷新、队列阻止与显式清除、480px 菜单边界。目录错误与断连由 IPC 故障注入；无模型模式与假 CLI 的 Python socket 审计为零，未调用真实模型或招聘平台。测试脚本与证据仅保留本地，源码 CI 不运行这些材料。
+
 ## 第十九轮：会话分支隔离执行队列
 
 [Issue #53](https://github.com/can4hou6joeng4/boss-cli/issues/53) 来自本地会话生命周期审查：此前 `fork_thread` 复制所有扩展记录，再暂停子会话队列，导致原会话消息可随分支重新进入投递范围。参考 Pi 固定 `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）的 `session-manager.ts` 历史分支与 `agent-session.ts` 运行队列职责分离；本项目使用独立 append-only 队列协议，在深拷贝历史时过滤全部 `queue` 记录，移除子队列暂停操作，不复制 Pi 代码或新增依赖。

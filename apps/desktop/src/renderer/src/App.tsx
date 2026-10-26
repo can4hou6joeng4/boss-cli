@@ -190,7 +190,7 @@ export function App(): JSX.Element {
       markRunning(id, false); timers.current.delete(id);
     }, 1300));
   }, [markRunning, updateThread]);
-  const send = useCallback(async (id: string, text: string, real: boolean, model = activeModelId): Promise<boolean> => {
+  const send = useCallback(async (id: string, text: string, real: boolean, model = activeModelId, skillIds: string[] = []): Promise<boolean> => {
     if (real && !harnessUp) { setError("本地内核未连接，请重启应用后再发起任务。"); return false; }
     if (runningRef.current.has(id)) { setError("该会话仍在运行，请等待结束或停止后再发送。"); return false; }
     const clientId = crypto.randomUUID();
@@ -198,7 +198,7 @@ export function App(): JSX.Element {
     if (!real) { simulate(id); return true; }
     markRunning(id, true);
     try {
-      const accepted = await sendTurn(id, text, clientId, model);
+      const accepted = await sendTurn(id, text, clientId, model, skillIds);
       if (accepted) turnIds.current.set(id, accepted.turnId);
       else {
         markRunning(id, false);
@@ -213,7 +213,7 @@ export function App(): JSX.Element {
     // 已交给会话并发起请求；回执未知仍不能作为可自动重发的草稿。
     return true;
   }, [harnessUp, activeModelId, updateThread, markRunning, simulate]);
-  const handleStartSessionWithPrompt = useCallback((prompt: string, _domain: string, modelId: string) => {
+  const handleStartSessionWithPrompt = useCallback((prompt: string, _domain: string, modelId: string, skillIds: string[] = []) => {
     return (async () => {
       if (window.boss && !harnessUp) { setError("本地内核未连接，请检查启动配置并重启应用。"); return null; }
       if (startingRef.current) { setError("已有任务正在创建或运行，请等待结束或停止后再创建。"); return null; }
@@ -224,7 +224,7 @@ export function App(): JSX.Element {
         const started = harnessUp ? await startThread(prompt.slice(0, 32), modelId) : { id: "preview-" + Date.now(), title: prompt.slice(0, 32), timeAgo: "刚刚", status: "idle" as const, projectId: MOCK_PROJECT_FOLDERS[0]?.id ?? "preview" };
         if (!started) { setError("创建会话失败，请检查本地内核连接后重试。"); return null; }
         insertSession(started);
-        const transferred = await send(started.id, prompt, started.projectId === HARNESS_PROJECT_ID, modelId);
+        const transferred = await send(started.id, prompt, started.projectId === HARNESS_PROJECT_ID, modelId, skillIds);
         if (!transferred) return null;
         if (selectionVersion.current === requestVersion) {
           ++selectionVersion.current; activeRef.current = started; setActiveSession(started); setIsHomeView(false);
@@ -236,10 +236,10 @@ export function App(): JSX.Element {
       } finally { startingRef.current = false; setStartingSession(false); }
     })();
   }, [harnessUp, insertSession, send]);
-  const handleSendMessage = useCallback((text: string) => {
+  const handleSendMessage = useCallback((text: string, skillIds: string[] = []) => {
     const session = activeRef.current; if (!session || !text.trim()) return false;
-    return send(session.id, text, session.projectId === HARNESS_PROJECT_ID);
-  }, [send]);
+    return send(session.id, text, session.projectId === HARNESS_PROJECT_ID, activeModelId, skillIds);
+  }, [send, activeModelId]);
   const handleQueueMessage = useCallback(async (text: string, intent: QueueIntent, clientUserMessageId: string): Promise<boolean> => {
     const session = activeRef.current;
     if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp || !text.trim()) return false;
