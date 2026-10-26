@@ -18,9 +18,11 @@ from shutil import which
 from typing import Any, Callable
 
 from boss_harness.models.secret import redact_secrets
+from boss_harness.process_io import BoundedProcessOutput
 from boss_harness.toolkit import ToolResult
 
 DEFAULT_TIMEOUT_SECONDS = 120
+MAX_CLI_OUTPUT_BYTES = 16 * 1024 * 1024
 
 # Public CLI labels, checked against boss-agent-cli@bdc7034df563f1ea458d3af5bb4b40e8ea4603a8
 # src/boss_agent_cli/api/boss.yaml and search_filters.py. This adapter accepts
@@ -136,37 +138,62 @@ class BossCliTool:
 
         if self.cancel_event is not None and self.cancel_event.is_set():
             return failure("CANCELLED", "操作已停止，未启动 CLI")
+
+        def output_limit_failure() -> ToolResult:
+            return failure("CLI_OUTPUT_LIMIT", f"CLI 标准输出与错误输出合计超过 {MAX_CLI_OUTPUT_BYTES} 字节，结果不完整，已停止；请先核对已发出的操作，不要自动重试。")
+
         try:
             proc = subprocess.Popen(argv, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
-                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     start_new_session=os.name == "posix")
         except OSError:
             return failure("CLI_ERROR", "上游 CLI 不可执行，请检查 BOSS_CLI_BIN")
         deadline = time.monotonic() + timeout
-        completed = threading.Event()
-        output: list[tuple[str, str]] = []
-        def communicate() -> None:
-            try:
-                # One I/O exchange handles pipe backpressure. Retrying communicate
-                # with an empty input can strand a partially written credential.
-                output.append(proc.communicate(input=stdin))
-            except (OSError, ValueError):
-                pass
-            finally:
-                completed.set()
-        io_worker = threading.Thread(target=communicate, daemon=True, name="boss-cli-stdio")
-        io_worker.start()
-        while not completed.is_set():
+        output = None
+        try:
+            output = BoundedProcessOutput(proc, stdin, MAX_CLI_OUTPUT_BYTES)
+            output.start()
+        except Exception:
+            # Retire the producer before closing pipes: an active reader may
+            # hold a buffered I/O lock until the child stops writing.
+            self._terminate(proc)
+            if output is not None:
+                output.close_unstarted()
+                output.join()
+            else:
+                for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                    if pipe is not None:
+                        pipe.close()
+            return failure("CLI_ERROR", "CLI 输入输出未能启动，进程已停止；请先核对已发出的操作。")
+        while True:
             cancelled = self.cancel_event is not None and self.cancel_event.is_set()
-            if cancelled or time.monotonic() >= deadline:
+            if cancelled or output.overflow.is_set() or output.failed or time.monotonic() >= deadline:
                 self._terminate(proc)
-                io_worker.join(1)
+                output.join()
+                if not cancelled and output.overflow.is_set():
+                    return output_limit_failure()
+                if not cancelled and output.failed:
+                    return failure("CLI_ERROR", "CLI 输入输出未能完成，进程已停止；请先核对已发出的操作。")
                 code = "CANCELLED" if cancelled else "TOOL_TIMEOUT"
                 return failure(code, "CLI 已停止；已发出的操作可能生效，请先核对平台状态，不要直接重试。")
-            completed.wait(min(0.1, max(0.001, deadline - time.monotonic())))
-        if not output:
+            # EOF alone is insufficient: a child can close both output pipes
+            # while remaining alive, or descendants can keep its pipes open.
+            if output.done.is_set() and proc.poll() is not None:
+                break
+            output.overflow.wait(min(0.1, max(0.001, deadline - time.monotonic())))
+        output.join()
+        # A reader can hit the limit between the supervisor's first check and
+        # its completion check. Recheck after joining before parsing any bytes.
+        if output.overflow.is_set():
+            self._terminate(proc)
+            return output_limit_failure()
+        if output.failed:
             return failure("CLI_ERROR", "CLI 输入输出未能完成")
-        stdout, stderr = output[0]
+        try:
+            stdout = output.stdout.decode("utf-8")
+            stderr = output.stderr.decode("utf-8")
+        except UnicodeDecodeError:
+            return failure("CLI_ERROR", "CLI 输出不是有效 UTF-8")
 
         stdout = stdout.strip()
         if not stdout:
@@ -237,8 +264,8 @@ class BossCliTool:
             proc.wait(timeout=0.5)
         except subprocess.TimeoutExpired:
             pass
-        # A child can exit before descendants close inherited pipes. The sole
-        # I/O worker drains them after the process group has been retired.
+        # A child can exit before descendants close inherited pipes. The I/O
+        # workers finish after the process group has been retired.
         stop(signal.SIGKILL)
         proc.wait()
 
@@ -553,4 +580,4 @@ def approval_required_tools() -> frozenset[str]:
 
 
 def should_pause(result: ToolResult) -> bool:
-    return not result.ok and (result.error or {}).get("code") in PAUSE_CODES
+    return not result.ok and (result.error or {}).get("code") in (PAUSE_CODES | {"CLI_OUTPUT_LIMIT"})

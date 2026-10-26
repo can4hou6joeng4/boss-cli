@@ -407,7 +407,7 @@ class TurnRunner:
             self._blocked = result
         unknown = (dispatched and name in self.approval_required and not result.ok
                    and (result.error or {}).get("code") in {
-                       "CANCELLED", "TOOL_TIMEOUT", "TOOL_ERROR", "CLI_ERROR", "CLI_CONTRACT_ERROR", "INVALID_ENVELOPE",
+                       "CANCELLED", "TOOL_TIMEOUT", "TOOL_ERROR", "CLI_ERROR", "CLI_CONTRACT_ERROR", "CLI_OUTPUT_LIMIT", "INVALID_ENVELOPE",
                        "GREET_RESULT_UNKNOWN", "ACTION_UNCONFIRMED"})
         self.finish_tool_call(thread_id, entry, name, result, call_id, approval,
                               "outcome_unknown" if unknown else None)
