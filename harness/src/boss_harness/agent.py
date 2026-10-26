@@ -2,7 +2,7 @@
 
 职责：把「一条用户输入」变成「一串协议事件 + 落库条目」。
 - 历史重建：从会话条目还原 ChatMessage（含工具调用与其结果）；
-- 工具回路：模型要调工具就执行、回填结果，再让模型继续，最多 MAX_TOOL_ROUNDS 轮；
+- 工具回路：模型要调工具就执行、回填结果，再让模型继续，最多 MAX_TOOL_ROUNDS 次模型请求；
 - 审批闸门：标记为需要批准的工具，在执行前先向用户要批准，拿不到就 fail closed；
 - 中断：回合可被外部取消，取消点落在每次取流事件之前与每个工具调用之前。
 
@@ -454,7 +454,7 @@ class TurnRunner:
 
         `turn/started` 由入口负责发出（它才知道 turnId），这里只管回合本身。
         `cancel` 由调用方提供：同一个取消信号也要能被确定性的回合路径使用。
-        返回值是这一轮的收尾状态：`completed` / `interrupted` / `error`。
+        返回值是这一轮的收尾状态：`completed` / `interrupted` / `blocked` / `error`。
         """
         if self.provider is None:
             raise RuntimeError("run() 需要已配置的 provider；无 provider 时请走确定性路径")
@@ -498,8 +498,22 @@ class TurnRunner:
                     break
 
                 calls = assistant.tool_calls()
+                if assistant.stop_reason == "length":
+                    code = "MODEL_OUTPUT_TRUNCATED"
+                    recovery = "请检查请求并调整输出上限后，明确发起新回合；不会自动重试。"
+                    self._skip_calls(thread_id, calls, uuid.uuid4().hex[:12], error={
+                        "code": code,
+                        "message": "模型输出达到长度上限，工具参数可能不完整，该工具未执行",
+                        "recovery_action": recovery,
+                    })
+                    message = "模型输出达到长度上限，本回合未正常完成；本次响应中的工具均未执行。\n\n恢复提示：" + recovery
+                    self.append_agent(thread_id, message)
+                    self.notify(N_SESSION_ERROR, {"threadId": thread_id, "code": code, "message": message})
+                    return "error"
                 if not calls:
-                    steering = self.drain_steering() if self.drain_steering is not None else []
+                    # Only deliver steering when another model request can consume it.
+                    steering = (self.drain_steering() if self.drain_steering is not None
+                                and _round + 1 < MAX_TOOL_ROUNDS else [])
                     if steering:
                         messages.append(assistant)
                         messages.extend(steering)
@@ -528,9 +542,11 @@ class TurnRunner:
                         return "interrupted"
                 messages.append(ToolResultsMessage(results=tuple(results)))
 
-            # 轮次用尽
-            self.append_agent(thread_id, f"已达到工具调用上限（{MAX_TOOL_ROUNDS} 轮），先停在这里。")
-            return "completed"
+            message = (f"已达到模型调用上限（{MAX_TOOL_ROUNDS} 次请求），本回合已暂停。"
+                       "已执行的工具结果已保留；请核对后明确发起新回合，不会自动继续或重试。")
+            self.append_agent(thread_id, message)
+            self.notify(N_SESSION_ERROR, {"threadId": thread_id, "code": "TURN_ROUND_LIMIT", "message": message})
+            return "blocked"
         finally:
             # 回合结束就丢弃本轮所有待决定审批，避免它们被后续回合误认领。
             with self._approval_lock:
@@ -539,11 +555,12 @@ class TurnRunner:
             self.tool_bridge.cancel_event = None
             self.notify(N_THREAD_UPDATED, {"threadId": thread_id})
 
-    def _skip_calls(self, thread_id: str, calls: tuple[ToolCallBlock, ...], batch_id: str) -> None:
+    def _skip_calls(self, thread_id: str, calls: tuple[ToolCallBlock, ...], batch_id: str,
+                    *, error: dict[str, Any] | None = None) -> None:
         for call in calls:
             entry = self.start_tool_call(thread_id, call.name, dict(call.arguments), call.id, batch_id=batch_id)
-            result = ToolResult(ok=False, command=call.name, error={"code": "NOT_EXECUTED",
-                                "message": "回合中断或平台暂停，该工具未执行"})
+            result = ToolResult(ok=False, command=call.name, error=error or {
+                "code": "NOT_EXECUTED", "message": "回合中断或平台暂停，该工具未执行"})
             self.finish_tool_call(thread_id, entry, call.name, result, call.id, execution_state="not_executed")
 
     def _stream_round(
@@ -636,8 +653,9 @@ class TurnRunner:
                 "usage": asdict(assistant.usage) if assistant.usage is not None else None}))
         if entry is not None:
             text = "".join(chunks)
+            truncated = assistant is not None and assistant.stop_reason == "length"
             payload = {"kind": "agentMessage", "text": text, "thinking": "".join(thinking),
-                       "revises": entry.id, "status": "failed" if interrupted or error else "completed",
+                       "revises": entry.id, "status": "failed" if interrupted or error or truncated else "completed",
                        "turnId": self.turn_id}
             self.sessions.append(thread_id, Entry(type="item",
                 parent_id=self.sessions.last_entry_id(thread_id), payload=payload))
