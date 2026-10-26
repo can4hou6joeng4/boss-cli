@@ -17,8 +17,10 @@ import shlex
 import threading
 import time
 import uuid
+import weakref
 from typing import Callable
 
+from boss_harness.bridge_lifecycle import BridgeLifecycle
 from boss_harness.models import ModelConfig, Provider, build_provider
 from boss_harness.models.types import ModelRequest, UserMessage
 from boss_harness.rpc import RpcError
@@ -44,10 +46,12 @@ class ConnectionChecks:
     def __init__(self, config: ModelConfig, *, bridge_factory: Callable | None = BossCliTool,
                  provider_factory: Callable[[ModelConfig], Provider | None] = build_provider,
                  timeout: float = 25.0,
-                 request_preparer: Callable[[ModelRequest], ModelRequest] | None = None) -> None:
+                 request_preparer: Callable[[ModelRequest], ModelRequest] | None = None,
+                 bridge_lifecycle: BridgeLifecycle | None = None) -> None:
         self.config, self.bridge_factory = config, bridge_factory
         self.provider_factory, self.timeout = provider_factory, timeout
         self.request_preparer = request_preparer
+        self.bridge_lifecycle = bridge_lifecycle or BridgeLifecycle()
         self.lock = threading.RLock()
         self.active: dict[str, tuple[threading.Thread, threading.Event]] = {}
         self.closed = False
@@ -76,6 +80,17 @@ class ConnectionChecks:
     def _require_platform(self) -> None:
         if self.bridge_factory is None:
             raise RpcError(-32006, _PLATFORM_DISABLED, {"code": "NOT_SUPPORTED"})
+
+    def _new_bridge(self):
+        if self.bridge_factory is None:
+            raise RpcError(-32006, _PLATFORM_DISABLED, {"code": "NOT_SUPPORTED"})
+        bridge = self.bridge_factory()
+        try:
+            weakref.ref(bridge)
+        except TypeError:
+            self.bridge_lifecycle.close(bridge)
+            raise ValueError("工具桥实例必须支持独立身份跟踪") from None
+        return bridge
 
     def _set(self, target: str, **values) -> None:
         with self.lock:
@@ -123,7 +138,12 @@ class ConnectionChecks:
                 return self.read_login()
             if any(k in self.active for k in ("cli", "platform", "login")):
                 return {"state": "failed", "code": "CHECK_BUSY", "summary": "请等待当前平台检查结束后再登录"}
-            if not self.bridge_factory().available():
+            bridge = self._new_bridge()
+            try:
+                available = bridge.available()
+            finally:
+                self.bridge_lifecycle.close(bridge)
+            if not available:
                 return {"state": "failed", "code": "CLI_UNAVAILABLE", "summary": "上游 CLI 不可用，请先检查本机连接"}
             self.login_cancel = threading.Event()
             self.login = {"id": uuid.uuid4().hex, "state": "waiting", "summary": "请在下方选择你已有的账号身份并扫码，完成官方页面提示后自动连接"}
@@ -177,10 +197,11 @@ class ConnectionChecks:
             return self.read_login()
 
     def _save_login(self, payload: str, cancel: threading.Event) -> None:
+        bridge = None
         try:
             if self.bridge_factory is None:
                 return
-            bridge = self.bridge_factory()
+            bridge = self._new_bridge()
             bridge.cancel_event = cancel
             result = bridge.call("login", "--curl-file", "-", stdin=payload, timeout=20)
             payload = ""
@@ -209,6 +230,8 @@ class ConnectionChecks:
                     self.login.update(state="failed", code="LOGIN_SAVE_FAILED", summary="保存登录态失败，请检查上游 CLI 与网络")
                     self._set("platform", state="failed", code="LOGIN_SAVE_FAILED", summary=self.login["summary"], checkedAt=_now())
         finally:
+            if bridge is not None:
+                self.bridge_lifecycle.close(bridge)
             with self.lock:
                 self.active.pop("login", None)
 
@@ -236,6 +259,7 @@ class ConnectionChecks:
 
     def _run(self, key: str, cancel: threading.Event) -> None:
         provider = None
+        bridge = None
         timer = None
         try:
             if key != "model" and self.bridge_factory is None:
@@ -277,7 +301,7 @@ class ConnectionChecks:
                 outcome = {"state": "ready", "summary": "真实模型已完成一次小请求"} if success else {
                     "state": "failed", "code": "MODEL_CHECK_FAILED", "summary": "模型未完成有效响应，请核对供应商、模型与网络"}
             else:
-                bridge = self.bridge_factory()
+                bridge = self._new_bridge()
                 bridge.cancel_event = cancel
                 if not bridge.available():
                     outcome = {"state": "failed", "code": "CLI_UNAVAILABLE", "summary": "上游 CLI 不可执行，请检查 BOSS_CLI_BIN"}
@@ -301,6 +325,8 @@ class ConnectionChecks:
         finally:
             if timer:
                 timer.cancel()
+            if bridge is not None:
+                self.bridge_lifecycle.close(bridge)
             with self.lock:
                 self.active.pop(key, None)
 
