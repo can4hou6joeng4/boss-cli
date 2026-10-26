@@ -627,11 +627,25 @@ class ApplicationService:
                    "cancel": threading.Event(), "status": "running"}
             self._compaction_jobs[job_id] = job
             self._compaction_by_thread[thread_id] = job_id
-        self.events.emit("context/compactionStarted", self._compaction_public(job))
         worker = threading.Thread(target=self._run_compaction, args=(job,),
                                   name=f"compact-{job_id[:8]}", daemon=True)
         job["worker"] = worker
-        worker.start()
+        try:
+            self.events.emit("context/compactionStarted", self._compaction_public(job))
+            worker.start()
+        except Exception as exc:
+            if worker.is_alive():
+                raise
+            with self.runtimes.lock:
+                job.update(status="failed", code="COMPACTION_START_FAILED",
+                           message=redact_secrets(str(exc)))
+                if self._compaction_by_thread.get(thread_id) == job_id:
+                    self._compaction_by_thread.pop(thread_id, None)
+            try:
+                self.events.emit("context/compactionFailed", self._compaction_public(job))
+            finally:
+                self._close_application_resources_if_idle()
+            raise
         return self._compaction_public(job)
 
     def on_context_compact_abort(self, params: dict | None) -> dict:
@@ -743,39 +757,36 @@ class ApplicationService:
                               "summaryModel": config.model})
                 result = self.on_context_read({"threadId": thread_id})
                 job.update(status="completed", result=result)
-                self._compaction_by_thread.pop(thread_id, None)
             self.events.emit("context/compactionCompleted", self._compaction_public(job))
             self.events.emit("context/compacted", {"threadId": thread_id, "jobId": job["jobId"], "origin": "model"})
         except _CompactionCancelled:
             with self.runtimes.lock:
                 job.update(status="cancelled", code="COMPACTION_CANCELLED", message="摘要已取消")
-                self._compaction_by_thread.pop(thread_id, None)
             self.events.emit("context/compactionFailed", self._compaction_public(job))
         except ContextBudgetExceeded as exc:
             with self.runtimes.lock:
                 job.update(status="failed", code="COMPACTION_INPUT_TOO_LARGE", message=str(exc))
-                self._compaction_by_thread.pop(thread_id, None)
             self.events.emit("context/compactionFailed", self._compaction_public(job))
         except _CompactionFailure as exc:
             with self.runtimes.lock:
                 job.update(status="failed", code=exc.code, message=str(exc))
-                self._compaction_by_thread.pop(thread_id, None)
             self.events.emit("context/compactionFailed", self._compaction_public(job))
         except ValueError as exc:
             message = str(exc)
             code = "COMPACTION_SOURCE_CHANGED" if "来源" in message else "COMPACTION_FAILED"
             with self.runtimes.lock:
                 job.update(status="failed", code=code, message=message)
-                self._compaction_by_thread.pop(thread_id, None)
             self.events.emit("context/compactionFailed", self._compaction_public(job))
         except Exception as exc:
             secret = job["config"].api_key.get() if job["config"].api_key else ""
             message = redact_secrets(str(exc), extra=(secret,))
             with self.runtimes.lock:
                 job.update(status="failed", code="COMPACTION_FAILED", message=message)
-                self._compaction_by_thread.pop(thread_id, None)
             self.events.emit("context/compactionFailed", self._compaction_public(job))
         finally:
+            with self.runtimes.lock:
+                if self._compaction_by_thread.get(thread_id) == job["jobId"]:
+                    self._compaction_by_thread.pop(thread_id, None)
             self._close_application_resources_if_idle()
 
     def on_context_compact(self, params: dict | None) -> dict:
@@ -1099,11 +1110,13 @@ class ApplicationService:
 
     def _stop_compaction_jobs(self) -> None:
         with self.runtimes.lock:
-            jobs = [job for job in self._compaction_jobs.values() if job["status"] == "running"]
-            for job in jobs:
+            jobs = list(self._compaction_jobs.values())
+            running = [job for job in jobs if job["status"] == "running"]
+            for job in running:
                 job["cancel"].set()
-            providers = [job["provider"] for job in jobs]
-            workers = [job.get("worker") for job in jobs]
+            providers = [job["provider"] for job in running]
+            workers = [job.get("worker") for job in jobs
+                       if job.get("worker") is not None and job["worker"].is_alive()]
         for provider in providers:
             abort = getattr(provider, "request_abort", None)
             if callable(abort):
