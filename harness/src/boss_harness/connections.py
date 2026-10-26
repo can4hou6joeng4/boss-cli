@@ -10,7 +10,7 @@ Pi d5b3de22d0e24a3e9c38a9410d3329b099717283 SDK's explicit composition boundary.
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import re
 import shlex
@@ -42,6 +42,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+@dataclass
+class _ModelCheck:
+    cancel: threading.Event
+    provider: Provider | None = None
+    worker_done: bool = False
+    abort_started: bool = False
+    abort_pending: bool = False
+    abort_worker: threading.Thread | None = None
+
+
 class ConnectionChecks:
     def __init__(self, config: ModelConfig, *, bridge_factory: Callable | None = BossCliTool,
                  provider_factory: Callable[[ModelConfig], Provider | None] = build_provider,
@@ -56,6 +66,7 @@ class ConnectionChecks:
         self.bridge_lifecycle = bridge_lifecycle or BridgeLifecycle()
         self.lock = threading.RLock()
         self.active: dict[str, tuple[threading.Thread, threading.Event]] = {}
+        self._model_check: _ModelCheck | None = None
         self.closed = False
         self.login = {"state": "idle", "summary": "尚未开始扫码登录"}
         self.login_cancel: threading.Event | None = None
@@ -115,10 +126,65 @@ class ConnectionChecks:
                 return self.read()
             self._set(key, state="checking", summary="检查中…", code=None, checkedAt=None)
             cancel = threading.Event()
-            worker = threading.Thread(target=self._run, args=(key, cancel), daemon=True, name=f"connection-{key}")
-            self.active[key] = worker, cancel
-            worker.start()
+            try:
+                worker = threading.Thread(target=self._run, args=(key, cancel), daemon=True, name=f"connection-{key}")
+                self.active[key] = worker, cancel
+                if key == "model":
+                    self._model_check = _ModelCheck(cancel)
+                worker.start()
+            except Exception:
+                self.active.pop(key, None)
+                if key == "model":
+                    self._model_check = None
+                self._set(key, state="failed", code="CHECK_FAILED", summary="检查失败，请核对本机配置后重试", checkedAt=_now())
             return self.read()
+
+    def _current_model_locked(self, job: _ModelCheck) -> bool:
+        active = self.active.get("model")
+        return self._model_check is job and active is not None and active[1] is job.cancel
+
+    def _retire_model_locked(self, job: _ModelCheck) -> None:
+        # Like Pi's activeRun/waitForIdle, ownership includes cancellation and
+        # cleanup, not only the last streamed event. Never reuse during abort.
+        if self._current_model_locked(job) and job.worker_done and not job.abort_pending:
+            self.active.pop("model", None)
+            self._model_check = None
+            job.provider = None
+
+    def _abort_model(self, job: _ModelCheck, provider: Provider) -> None:
+        try:
+            abort = getattr(provider, "request_abort", None)
+            if callable(abort):
+                abort()
+        except Exception:
+            pass
+        finally:
+            with self.lock:
+                job.abort_pending = False
+                self._retire_model_locked(job)
+
+    def _request_model_abort_locked(self, job: _ModelCheck) -> None:
+        if not self._current_model_locked(job) or job.provider is None or job.abort_started:
+            return
+        job.abort_started = job.abort_pending = True
+        try:
+            worker = threading.Thread(target=self._abort_model, args=(job, job.provider),
+                                      daemon=True, name="connection-model-abort")
+            job.abort_worker = worker
+            worker.start()
+        except Exception:
+            # No synchronous fallback: a provider's abort may itself block.
+            job.abort_started = job.abort_pending = False
+            job.abort_worker = None
+
+    def _expire_model(self, job: _ModelCheck) -> None:
+        with self.lock:
+            if (not self._current_model_locked(job) or job.cancel.is_set()
+                    or self.report["model"]["state"] != "checking"):
+                return
+            job.cancel.set()
+            self._set("model", state="failed", code="CHECK_TIMEOUT", summary="模型检查超时，请核对网络后重试", checkedAt=_now())
+            self._request_model_abort_locked(job)
 
     @staticmethod
     def _error(result) -> dict:
@@ -266,11 +332,23 @@ class ConnectionChecks:
         provider = None
         bridge = None
         timer = None
+        stream = None
+        job = None
         try:
             if key != "model" and self.bridge_factory is None:
                 self._set(key, **_disabled())
                 return
             if key == "model":
+                with self.lock:
+                    current = self._model_check
+                    if current is None or current.cancel is not cancel:
+                        return
+                    job = current
+                    if cancel.is_set():
+                        return
+                timer = threading.Timer(self.timeout, self._expire_model, args=(job,))
+                timer.daemon = True
+                timer.start()
                 config = replace(self.config, max_tokens=512, effort="low", thinking=None)
                 request = ModelRequest(model=config.model, system="Connection check. Reply OK only.",
                     messages=(UserMessage("Reply OK."),), max_tokens=512, effort=config.effort)
@@ -281,20 +359,19 @@ class ConnectionChecks:
                 provider = self.provider_factory(replace(config, max_tokens=request.max_tokens))
                 if provider is None:
                     raise ValueError("no provider")
-                def expire() -> None:
-                    with self.lock:
-                        if self.report[key]["state"] != "checking" or cancel.is_set():
-                            return
-                        cancel.set()
-                        self._set(key, state="failed", code="CHECK_TIMEOUT", summary="模型检查超时，请核对网络后重试", checkedAt=_now())
-                    abort = getattr(provider, "request_abort", None)
-                    if abort:
-                        abort()
-                timer = threading.Timer(self.timeout, expire)
-                timer.daemon = True
-                timer.start()
+                with self.lock:
+                    if not self._current_model_locked(job) or self.closed or cancel.is_set():
+                        return
+                    job.provider = provider
                 success = False
-                for event in provider.stream(request):
+                if cancel.is_set():
+                    return
+                stream = provider.stream(request)
+                while not cancel.is_set():
+                    try:
+                        event = next(stream)
+                    except StopIteration:
+                        break
                     if cancel.is_set():
                         return
                     if event.type == "error":
@@ -322,30 +399,57 @@ class ConnectionChecks:
                 else:
                     return
             with self.lock:
-                if not cancel.is_set():
+                active = self.active.get(key)
+                if active is not None and active[1] is cancel and not cancel.is_set():
                     self._set(key, **outcome, checkedAt=_now())
         except Exception:
-            if not cancel.is_set():
-                self._set(key, state="failed", code="CHECK_FAILED", summary="检查失败，请核对本机配置后重试", checkedAt=_now())
+            with self.lock:
+                active = self.active.get(key)
+                if active is not None and active[1] is cancel and not cancel.is_set():
+                    self._set(key, state="failed", code="CHECK_FAILED", summary="检查失败，请核对本机配置后重试", checkedAt=_now())
         finally:
             if timer:
                 timer.cancel()
-            if bridge is not None:
-                self.bridge_lifecycle.close(bridge)
-            with self.lock:
-                self.active.pop(key, None)
+            try:
+                if stream is not None:
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        close()
+            except Exception:
+                pass
+            finally:
+                try:
+                    if bridge is not None:
+                        self.bridge_lifecycle.close(bridge)
+                finally:
+                    with self.lock:
+                        if job is not None:
+                            job.worker_done = True
+                            self._retire_model_locked(job)
+                        else:
+                            active = self.active.get(key)
+                            if active is not None and active[1] is cancel:
+                                self.active.pop(key, None)
 
     def close(self) -> None:
+        deadline = time.monotonic() + 2
         with self.lock:
             self.closed = True
             if self.login_cancel:
                 self.login_cancel.set()
             for _, cancel in self.active.values():
                 cancel.set()
-            workers = [worker for key, (worker, _) in self.active.items() if key in {"cli", "platform", "login"}]
-        # Let cancellation retire CLI process groups before the Python host exits.
+            job = self._model_check
+            if job is not None and self._current_model_locked(job):
+                if self.report["model"]["state"] == "checking":
+                    self._set("model", state="failed", code="CANCELLED", summary="模型检查已停止", checkedAt=_now())
+                self._request_model_abort_locked(job)
+            workers = [worker for worker, _ in self.active.values()]
+            if job is not None and job.abort_worker is not None:
+                workers.append(job.abort_worker)
+        # Let cancellation retire model streams and CLI process groups before
+        # host exit. Non-cooperative providers retain their ownership record.
         # Never join while holding the lock needed by worker finalization.
-        deadline = time.monotonic() + 2
         for worker in workers:
             if worker is not threading.current_thread():
                 worker.join(max(0, deadline - time.monotonic()))
