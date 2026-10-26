@@ -24,6 +24,7 @@ from boss_harness.bridge_lifecycle import BridgeLifecycle
 from boss_harness.models import ModelConfig, Provider, build_provider
 from boss_harness.models.types import ModelRequest, UserMessage
 from boss_harness.rpc import RpcError
+from boss_harness.shutdown import join_until
 from boss_harness.tools import BossCliTool, should_pause
 from boss_harness.tools.boss_cli import PAUSE_CODES
 
@@ -68,6 +69,7 @@ class ConnectionChecks:
         self.active: dict[str, tuple[threading.Thread, threading.Event]] = {}
         self._model_check: _ModelCheck | None = None
         self.closed = False
+        self.on_idle: Callable[[], None] | None = None
         self.login = {"state": "idle", "summary": "尚未开始扫码登录"}
         self.login_cancel: threading.Event | None = None
         real = config.provider in {"openai", "anthropic"}
@@ -162,6 +164,15 @@ class ConnectionChecks:
             with self.lock:
                 job.abort_pending = False
                 self._retire_model_locked(job)
+            self._notify_idle()
+
+    def _notify_idle(self) -> None:
+        if self.on_idle is not None:
+            self.on_idle()
+
+    def is_idle(self) -> bool:
+        with self.lock:
+            return not self.active
 
     def _request_model_abort_locked(self, job: _ModelCheck) -> None:
         if not self._current_model_locked(job) or job.provider is None or job.abort_started:
@@ -305,6 +316,7 @@ class ConnectionChecks:
                 self.bridge_lifecycle.close(bridge)
             with self.lock:
                 self.active.pop("login", None)
+            self._notify_idle()
 
     def _local_auth(self, bridge) -> bool:
         if self.bridge_factory is None:
@@ -430,9 +442,9 @@ class ConnectionChecks:
                             active = self.active.get(key)
                             if active is not None and active[1] is cancel:
                                 self.active.pop(key, None)
+                    self._notify_idle()
 
-    def close(self) -> None:
-        deadline = time.monotonic() + 2
+    def prepare_close(self) -> None:
         with self.lock:
             self.closed = True
             if self.login_cancel:
@@ -443,13 +455,26 @@ class ConnectionChecks:
             if job is not None and self._current_model_locked(job):
                 if self.report["model"]["state"] == "checking":
                     self._set("model", state="failed", code="CANCELLED", summary="模型检查已停止", checkedAt=_now())
+
+    def request_stop_aborts(self) -> None:
+        with self.lock:
+            job = self._model_check
+            if job is not None:
                 self._request_model_abort_locked(job)
+
+    def wait_for_stop(self, deadline: float) -> None:
+        with self.lock:
+            job = self._model_check
             workers = [worker for worker, _ in self.active.values()]
             if job is not None and job.abort_worker is not None:
                 workers.append(job.abort_worker)
         # Let cancellation retire model streams and CLI process groups before
         # host exit. Non-cooperative providers retain their ownership record.
         # Never join while holding the lock needed by worker finalization.
-        for worker in workers:
-            if worker is not threading.current_thread():
-                worker.join(max(0, deadline - time.monotonic()))
+        join_until(workers, deadline)
+
+    def close(self, *, deadline: float | None = None) -> None:
+        deadline = time.monotonic() + 2 if deadline is None else deadline
+        self.prepare_close()
+        self.request_stop_aborts()
+        self.wait_for_stop(deadline)

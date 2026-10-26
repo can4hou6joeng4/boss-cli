@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第二十五轮：应用关闭预算与取消分发
+
+[Issue #66](https://github.com/can4hou6joeng4/boss-cli/issues/66) 来自关闭竞态复现：业务回合和摘要各自等待两秒会串行延长退出时间，首个阻塞的 provider abort 还会延迟其他任务的取消；worker 结束但终态通知或 abort 仍在进行时提前释放状态目录，也会允许第二个应用取得错误的 owner。
+
+参考固定的 Pi commit `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）`packages/agent/src/agent.ts` 的 `abort()` 与 `waitForIdle()` 职责分离，以及 `packages/coding-agent/src/core/agent-session.ts` 的会话收尾边界。本项目独立实现 `TrackedAbort`、共享 deadline 和应用级取消编排：先冻结准入并置位所有取消，再在锁外异步派发业务、摘要和连接 abort，最后让所有 worker 共用同一最多两秒的等待期限。不把 Pi 的两秒政策或其代码引入本项目。
+
+业务 job、摘要 job 与连接检查在对应 worker、abort 和终态通知都完成前保持 provider、bridge、摘要索引及状态目录所有权；重复 close 只认领一次 abort，线程构造/启动失败也不会同步执行可能阻塞的 provider hook。关闭和 idle 回调遵循登录路径的 `connections.lock → runtimes.lock` 顺序，避免反向嵌套。同步 base bridge `close()` 仍依赖嵌入方快速返回的既有约定，不能宣称任意嵌入 hook 都具备严格 wall-clock 上限。
+
+独立审查补充直接启动及嵌套 follow-up 的 worker 启动失败与登录并发验证：应用尚未关闭时，idle 回调提前返回，避免在调用方仍持有运行锁时获取连接锁；进入关闭后继续二次校验所有任务和资源所有权。
+
+验证使用真实 `ApplicationService` worker、合成 provider/bridge 和隔离状态目录：应用验收 9/9 通过，混合任务关闭约 2.010 秒，四 worker 约 2.002 秒；Harness 全套 339 项中 335 项通过、4 项跳过，专项 94/94 通过。网络、真实模型和招聘平台调用均为零；验收脚本和故障探针仅保留 ignored 本地目录。
+
 ## 第二十四轮：摘要来源有效性与历史投影
 
 [Issue #62](https://github.com/can4hou6joeng4/boss-cli/issues/62) 来自合法 append-only revision 复现：`read_items()` 已显示修正后的远程岗位偏好，`history()` 仍用旧现场办公摘要隐藏修订；同一来源的摘要 planner 已正确拒绝。较新完整回合的 fork 和重新打开会话后仍复现，普通桌面 UI 的晚期修订触发路径未证明，影响结论限定于存储、嵌入、恢复及分支兼容。
