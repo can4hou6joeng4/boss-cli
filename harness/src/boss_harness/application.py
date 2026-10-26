@@ -1261,9 +1261,12 @@ class ApplicationService:
                     pass
                 self._notify_runner(job, "session/error", {"message": message})
         finally:
-            # Admission uses the same lock: no steering can be accepted after
-            # the final queue sweep but before this turn releases ownership.
+            # Cancellation, terminal persistence and queue finalization share
+            # one boundary. An accepted cancel wins even after the runner has
+            # returned its result; completed output and tool facts stay intact.
             with self.runtimes.lock:
+                if job["cancel"].is_set():
+                    status = "interrupted"
                 try:
                     self.sessions.record_turn(thread_id, job["turnId"], status)
                     if status != "completed":

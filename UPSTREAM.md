@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第二十七轮：回合取消与终态提交边界
+
+[Issue #70](https://github.com/can4hou6joeng4/boss-cli/issues/70) 来自真实 `TurnRunner` 已返回完成结果、应用尚未持久化终态时的确定性竞争：中断返回 `interrupted=true` 且取消已置位，原回合仍记为 `completed`，现有 follow-up 自动执行。原始 `736e56b` 与合并后 `3edbd5a` 均可复现，属于既有提交边界缺口；合成 provider 和隔离状态验证无网络、真实模型、平台或外部业务进程调用。
+
+参考 Pi 固定 commit `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）`packages/agent/src/agent.ts` 的 `activeRun`、`runWithLifecycle()` / `finishRun()` 和事件收尾职责，独立在本项目的运行锁内统一取消接受、终态写入、队列暂停与执行槽位释放。runner 已返回但取消先于终态提交时，优先以 `interrupted` 结算；既有文本、工具结果、审批及外部动作事实不删除、不重放，也不声称被撤销。终态先完成后，旧 `turnId` 不能影响后续 owner，正常完成继续合法 follow-up；之后显式新任务不复活已暂停队列。
+
+本轮不改变 JSON-RPC `0.2.0`、异步中止分发和 provider/worker/bridge/目录收尾契约，无代码复制或新增依赖。队列启动失败恢复仍由独立 [Issue #71](https://github.com/can4hou6joeng4/boss-cli/issues/71) 跟踪。
+
+最终 Python 3.12 完整依赖环境回归 339 项中 335 通过、4 跳过；独立应用/RPC/真实 stdio 验收 14/14 通过，同批基线 `3edbd5a` 为 9 失败、5 通过。覆盖完成/取消先后、无 factory 与独立 factory、12 路并发取消、关闭共享预算与目录责任、合成写工具及审批结果保留、重启不重放，以及终态后的显式新任务不复活暂停队列。父子验收网络、真实模型、平台及业务进程调用均为零，仅 1 个专用测试子进程；测试与证据仅保留本地 ignored 目录。
+
 ## 第二十六轮：手动取消分发与中止所有权
 
 [Issue #68](https://github.com/can4hou6joeng4/boss-cli/issues/68) 来自独立取消审计：`turn/interrupt` 在全局运行锁内同步等待 provider abort，合成慢 hook 使另一会话的启动也等待；手动摘要 worker 已结束而 abort 尚未完成时，provider 被第二摘要复用，迟到中止命中新流。复现使用真实 `ApplicationService` / `JsonRpcServer` dispatch、隔离状态与合成 provider，不证明默认 SDK 必然发生同样时序，也不将独立线程下可完成的读取夸大为全部 RPC 都被运行锁阻塞。
