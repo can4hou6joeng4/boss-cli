@@ -81,13 +81,13 @@ const RENDERER_METHODS = new Set([
   "thread/archive", "thread/unarchive", "thread/name/set", "thread/turns/list", "thread/items/list", "thread/item/result/read",
   "turn/start", "turn/interrupt", "turn/steer", "turn/read", "queue/list", "queue/add", "queue/remove",
   "event/list", "model/list", "config/read", "skills/list", "tool/list", "attachment/add", "attachment/read",
-  "context/read", "context/compact", "approval/respond",
+  "context/read", "context/compact/plan", "context/compact", "approval/respond",
   "connection/read", "connection/check",
 ]);
 const THREAD_METHODS = new Set([
   "thread/read", "thread/resume", "thread/fork", "thread/archive", "thread/unarchive", "thread/name/set",
   "thread/turns/list", "thread/items/list", "thread/item/result/read", "turn/start", "turn/interrupt", "turn/steer", "turn/read",
-  "queue/list", "queue/add", "queue/remove", "context/read", "context/compact",
+  "queue/list", "queue/add", "queue/remove", "context/read", "context/compact/plan", "context/compact",
 ]);
 
 function record(value: unknown): value is Record<string, unknown> {

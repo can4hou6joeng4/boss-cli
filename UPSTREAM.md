@@ -184,6 +184,12 @@ JSON-RPC 维持 0.2.0；终态枚举、14 个招聘工具、参数、业务 argv
 
 只有成功且带有可验证 usage 的响应才可成为锚点；provider、模型、system、tools、options、消息前缀或 checkpoint 变化都会使锚点失效。匹配时将 usage 基线与新增尾部的字符估算合并，并标记 `usageApplied=true`；否则保持原估算和 `usageApplied=false`。usage 原始记录仍可读取，不宣称精确 tokenizer、计费或跨 provider 可比性。
 
+## 第十二轮：可追溯压缩计划与来源校验
+
+[Issue #34](https://github.com/can4hou6joeng4/boss-cli/issues/34) 在自动摘要前先冻结压缩来源。新增只读 `context/compact/plan`，按已收尾回合返回 source item IDs、范围边界、条目数和 SHA-256；`context/compact` 可接受同一 `sourceDigest`，来源变化时在追加 checkpoint 前拒绝。旧客户端省略 digest 仍兼容原用户摘要流程。
+
+Pi commit `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）的 coding-agent compaction preparation 先冻结 projection/cut point，再在摘要成功且来源未变化时追加 compaction entry。本轮独立实现只读计划和提交前校验，不复制代码，不调用摘要模型，不引入 `packages/durable` 或自动阈值恢复。完整工具调用/结果配对、原始 JSONL 和摘要来源 hash 保持可追溯。
+
 ## 第九轮：模型能力与完整请求预算
 
 [Issue #26](https://github.com/can4hou6joeng4/boss-cli/issues/26) 继续内核强化。招聘任务加载技能/材料、增加工具结果或切换模型后，原固定 200k 预算无法反映实际请求：工具 schema 和 thinking 未计入，`context/read` 还省略 system。

@@ -177,6 +177,29 @@ class ContextService:
         return next((e["payload"] for e in reversed(self.sessions.read_entries(thread_id))
                      if e["type"] == "context_checkpoint"), None)
 
+    def compaction_plan(self, thread_id: str, through_turn_id: str) -> dict[str, Any]:
+        turn = self.sessions.get_turn(thread_id, through_turn_id)
+        if turn["status"] == "running":
+            raise ValueError("只能为已收尾的完整回合生成压缩计划")
+        items = self.sessions.read_items(thread_id)
+        turn_items = turn.get("items", [])
+        if not turn_items:
+            raise ValueError("回合没有可压缩的条目")
+        end_id = turn_items[-1]["id"]
+        try:
+            end = next(index for index, item in enumerate(items) if item["id"] == end_id) + 1
+        except StopIteration:
+            raise ValueError("回合条目不完整，无法生成压缩计划") from None
+        selected = items[:end]
+        if any(item.get("status") == "running" for item in selected):
+            raise ValueError("压缩范围包含尚未完成的工具或消息")
+        encoded = json.dumps(selected, ensure_ascii=False, sort_keys=True).encode()
+        return {"threadId": thread_id, "throughTurnId": through_turn_id,
+                "sourceItemIds": [item["id"] for item in selected],
+                "sourceDigest": hashlib.sha256(encoded).hexdigest(),
+                "sourceItemCount": len(selected), "firstItemId": selected[0]["id"],
+                "lastItemId": selected[-1]["id"]}
+
     def history(self, thread_id: str) -> tuple[ChatMessage, ...]:
         items = self.sessions.read_items(thread_id)
         checkpoint = self._checkpoint(thread_id)
@@ -259,24 +282,15 @@ class ContextService:
         return {"threadId": thread_id, **budget, "checkpoint": checkpoint,
                 "usage": usage[-1] if usage else None, "lastBudget": last_budget}
 
-    def compact(self, thread_id: str, summary: str, through_turn_id: str) -> dict:
+    def compact(self, thread_id: str, summary: str, through_turn_id: str,
+                source_digest: str | None = None) -> dict:
         if not isinstance(summary, str) or not summary.strip() or len(summary) > 32_000:
             raise ValueError("summary 必须是 1 到 32000 字符的用户摘要")
-        turn = self.sessions.get_turn(thread_id, through_turn_id)
-        if turn["status"] == "running":
-            raise ValueError("只能压缩已收尾的完整回合")
-        items = self.sessions.read_items(thread_id)
-        turn_items = turn.get("items", [])
-        if not turn_items:
-            raise ValueError("回合没有可压缩的条目")
-        end_id = turn_items[-1]["id"]
-        end = next(i for i, item in enumerate(items) if item["id"] == end_id) + 1
-        selected = items[:end]
-        if any(item.get("status") == "running" for item in selected):
-            raise ValueError("压缩范围包含尚未完成的工具或消息")
+        plan = self.compaction_plan(thread_id, through_turn_id)
+        if source_digest is not None and source_digest != plan["sourceDigest"]:
+            raise ValueError("压缩来源已变化，请重新读取压缩计划")
         payload = {"summary": summary.strip(), "throughTurnId": through_turn_id,
-                   "sourceItemIds": [item["id"] for item in selected],
-                   "sourceDigest": hashlib.sha256(json.dumps(selected, ensure_ascii=False,
-                       sort_keys=True).encode()).hexdigest(), "origin": "user"}
+                   "sourceItemIds": plan["sourceItemIds"], "sourceDigest": plan["sourceDigest"],
+                   "origin": "user"}
         self.sessions.append(thread_id, Entry(type="context_checkpoint", payload=payload))
         return self.read(thread_id)

@@ -246,6 +246,7 @@ class ApplicationService:
             "platform/login/cancel": lambda p: self.connections.cancel_login(_text(p, "id")),
             "skills/list": lambda p: {"skills": self.skills.list()},
             "context/read": self.on_context_read,
+            "context/compact/plan": self.on_context_compact_plan,
             "context/compact": self.on_context_compact,
             "attachment/add": self.on_attachment_add, "attachment/read": self.on_attachment_read,
             "shutdown": self.on_shutdown,
@@ -551,10 +552,19 @@ class ApplicationService:
         thread_id = _text(params, "threadId")
         with self.runtimes.lock:
             self._idle(thread_id)
-            self.context.compact(thread_id, _text(params, "summary", maximum=32_000), _text(params, "throughTurnId"))
+            source_digest = (params or {}).get("sourceDigest")
+            if source_digest is not None and (not isinstance(source_digest, str) or len(source_digest) != 64
+                                               or not re.fullmatch(r"[0-9a-f]{64}", source_digest)):
+                raise ValueError("sourceDigest 格式无效")
+            self.context.compact(thread_id, _text(params, "summary", maximum=32_000),
+                                 _text(params, "throughTurnId"), source_digest)
             result = self.on_context_read({"threadId": thread_id})
         self.events.emit("context/compacted", {"threadId": thread_id})
         return result
+
+    def on_context_compact_plan(self, params: dict | None) -> dict:
+        thread_id = _text(params, "threadId")
+        return self.context.compaction_plan(thread_id, _text(params, "throughTurnId"))
 
     def on_attachment_add(self, params: dict | None) -> dict:
         return {"attachment": self.attachments.add(_text(params, "threadId"), _text(params, "path", maximum=4096))}
