@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from collections import deque
 from dataclasses import asdict, replace
 import json
 import math
@@ -42,6 +43,8 @@ from boss_harness.context import NoCompactionSource
 
 PROTOCOL_VERSION = "0.2.0"
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
+MAX_RETAINED_COMPACTION_JOBS = 64
+MAX_COMPACTION_ERROR_CHARACTERS = 2_048
 
 
 class _CompactionFailure(Exception):
@@ -146,6 +149,8 @@ class ApplicationService:
             # changing the source while a summary is being generated.
             self._compaction_jobs: dict[str, dict[str, Any]] = {}
             self._compaction_by_thread: dict[str, str] = {}
+            self._compaction_terminal_order: deque[str] = deque()
+            self._compaction_terminal_ids: set[str] = set()
             self._bridge_refs: list[Any] = []
             self.context = ContextService(self.sessions)
             self.skills = SkillCatalog(self.workspace / ".boss-cli" / "skills")
@@ -597,10 +602,35 @@ class ApplicationService:
                 result[key] = job[key]
         return result
 
+    def _remember_compaction_terminal(self, job: dict) -> None:
+        with self.runtimes.lock:
+            if job["status"] == "running":
+                return
+            job_id = job["jobId"]
+            if job_id in self._compaction_terminal_ids:
+                return
+            for key in ("config", "provider", "cancel", "worker"):
+                job.pop(key, None)
+            self._compaction_terminal_ids.add(job_id)
+            self._compaction_terminal_order.append(job_id)
+            while len(self._compaction_terminal_order) > MAX_RETAINED_COMPACTION_JOBS:
+                expired_id = self._compaction_terminal_order.popleft()
+                self._compaction_terminal_ids.discard(expired_id)
+                expired = self._compaction_jobs.get(expired_id)
+                if expired is not None and expired["status"] != "running":
+                    self._compaction_jobs.pop(expired_id, None)
+
+    @staticmethod
+    def _missing_compaction_job() -> RpcError:
+        return RpcError(-32011, "摘要任务不存在或已过期", {"code": "COMPACTION_JOB_NOT_FOUND"})
+
     @staticmethod
     def _compaction_safe_error(job: dict, error: Exception | str) -> str:
         secret = job["config"].api_key.get() if job["config"].api_key else ""
-        return redact_secrets(str(error), extra=(secret,))
+        message = redact_secrets(str(error), extra=(secret,))
+        if len(message) > MAX_COMPACTION_ERROR_CHARACTERS:
+            message = message[:MAX_COMPACTION_ERROR_CHARACTERS - 1] + "…"
+        return message
 
     def _compaction_failed(self, job: dict, code: str, error: Exception | str) -> None:
         with self.runtimes.lock:
@@ -648,6 +678,11 @@ class ApplicationService:
             through_turn_id = plan["throughTurnId"]
             _, source = self.context.compaction_material(thread_id, through_turn_id, source_digest or plan["sourceDigest"])
             config = self._model_config(self.sessions.get_thread(thread_id), params)
+            active_manual = sum(1 for existing in self._compaction_jobs.values()
+                                if existing["status"] == "running" and "turnId" not in existing)
+            if active_manual >= self.runtimes.capacity:
+                raise RpcError(-32005, "已达到后台摘要并发上限",
+                               {"code": "COMPACTION_CONCURRENCY_LIMIT", "limit": self.runtimes.capacity})
             provider = self._compaction_provider(config)
             if any(active["runner"].provider is provider for active in self.runtimes.active.values()) \
                     or any(existing.get("provider") is provider and existing.get("status") == "running"
@@ -680,6 +715,7 @@ class ApplicationService:
             try:
                 self.events.emit("context/compactionFailed", self._compaction_public(job))
             finally:
+                self._remember_compaction_terminal(job)
                 self._close_application_resources_if_idle()
             raise RuntimeError(job["message"]) from None
         return self._compaction_public(job)
@@ -689,7 +725,7 @@ class ApplicationService:
         with self.runtimes.lock:
             job = self._compaction_jobs.get(job_id)
             if job is None:
-                raise ValueError("摘要任务不存在")
+                raise self._missing_compaction_job()
             if job["status"] != "running":
                 return {"aborted": False, **self._compaction_public(job)}
             job["cancel"].set()
@@ -704,7 +740,7 @@ class ApplicationService:
         with self.runtimes.lock:
             job = self._compaction_jobs.get(job_id)
             if job is None:
-                raise ValueError("摘要任务不存在")
+                raise self._missing_compaction_job()
             return self._compaction_public(job)
 
     def _stream_compaction(self, provider: Provider, request: ModelRequest,
@@ -849,6 +885,7 @@ class ApplicationService:
             with self.runtimes.lock:
                 if self._compaction_by_thread.get(thread_id) == job["jobId"]:
                     self._compaction_by_thread.pop(thread_id, None)
+                self._remember_compaction_terminal(job)
             self._close_application_resources_if_idle()
 
     def on_context_compact(self, params: dict | None) -> dict:
@@ -928,7 +965,7 @@ class ApplicationService:
                     return None
                 provider = self._compaction_provider(config)
                 if any(active["runner"].provider is provider for active in self.runtimes.active.values()) or any(
-                        active["provider"] is provider and active["status"] == "running"
+                        active["status"] == "running" and active.get("provider") is provider
                         for active in self._compaction_jobs.values()):
                     raise ContextCompactionFailed("COMPACTION_PROVIDER_CONFLICT", "摘要 provider 实例正被其他任务使用")
                 job_id = uuid.uuid4().hex
@@ -992,6 +1029,7 @@ class ApplicationService:
                 with self.runtimes.lock:
                     if self._compaction_by_thread.get(thread_id) == job["jobId"]:
                         self._compaction_by_thread.pop(thread_id, None)
+                    self._remember_compaction_terminal(job)
 
     def _runner_for(self, config: ModelConfig) -> TurnRunner:
         if self.provider_factory is not None:
@@ -1040,7 +1078,7 @@ class ApplicationService:
                 skill_text, skills = self.skills.load(params.get("skillIds"))
                 attachment_text, attachments = self.attachments.context(thread_id, params.get("attachmentIds"))
                 runner = self._runner_for(config)
-                if any(compaction["provider"] is runner.provider and compaction["status"] == "running"
+                if any(compaction["status"] == "running" and compaction.get("provider") is runner.provider
                        for compaction in self._compaction_jobs.values()):
                     raise RpcError(-32005, "模型供应商实例正在执行摘要任务，请稍后重试")
                 runner.last_preparation = None

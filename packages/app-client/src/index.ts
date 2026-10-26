@@ -24,6 +24,18 @@ type Pending = {
 };
 type Outgoing = { frame: string; bytes: number; id?: JsonRpcId };
 
+export class HarnessRpcError extends Error {
+  readonly code: number;
+  readonly data: unknown;
+
+  constructor(error: JsonRpcError) {
+    super(error.message);
+    this.name = "HarnessRpcError";
+    this.code = error.code;
+    this.data = error.data;
+  }
+}
+
 function validId(value: unknown): value is JsonRpcId {
   return typeof value === "string" || (typeof value === "number" && Number.isSafeInteger(value));
 }
@@ -242,7 +254,7 @@ export class HarnessClient {
         typeof (message.error as JsonRpcError).message !== "string" ||
         typeof (message.error as JsonRpcError).code !== "number")) return;
       this.#pending.delete(message.id); clearTimeout(pending.timer);
-      if (message.error) pending.reject(new Error((message.error as JsonRpcError).message));
+      if (message.error) pending.reject(new HarnessRpcError(message.error as JsonRpcError));
       else pending.resolve(message.result);
       return;
     }
