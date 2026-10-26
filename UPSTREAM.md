@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第二十六轮：手动取消分发与中止所有权
+
+[Issue #68](https://github.com/can4hou6joeng4/boss-cli/issues/68) 来自独立取消审计：`turn/interrupt` 在全局运行锁内同步等待 provider abort，合成慢 hook 使另一会话的启动也等待；手动摘要 worker 已结束而 abort 尚未完成时，provider 被第二摘要复用，迟到中止命中新流。复现使用真实 `ApplicationService` / `JsonRpcServer` dispatch、隔离状态与合成 provider，不证明默认 SDK 必然发生同样时序，也不将独立线程下可完成的读取夸大为全部 RPC 都被运行锁阻塞。
+
+继续参考 Pi 固定 commit `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）`packages/agent/src/agent.ts` 的 `abort()`、`waitForIdle()` 与 `runWithLifecycle()`：取消请求与等待运行/事件收尾分责。独立复用本项目的 `TrackedAbort` 认领记录，手动回合及摘要取消先在锁内置位全部相关 cancel，再在锁外和 RPC 线程外分别分发；关闭复用同一记录，不重复调用 hook。模型执行、终态通知、bridge 和已分发 abort 完成前继续保留 provider/job/index；实际取消仍依赖 provider 协作，不强杀 Python 线程。
+
+无 factory 的主 runner 同样检查完整业务 job 所有权。正常 follow-up 改为在旧模型及资源收尾后派发，保留串行主实例兼容；尾部派发单独跟踪状态目录责任，关闭仍按共享 deadline 等待它完成，不因让渡 provider 而提前释放目录。直接 `TurnRunner.interrupt()` 的同步嵌入接口与 JSON-RPC `0.2.0` 保持原有约定，无代码复制或新增依赖。
+
+最终本地完整回归 339 项中 335 通过、4 跳过；独立应用/RPC/真实 stdio 验收 14/14 通过，同批旧基线 `736e56b` 为 11 失败、3 通过。慢 abort 未放行时，stdio 取消和后续请求约 9.5ms 内返回；故障探针 5/5、无 factory follow-up、关闭尾部目录 owner 及启动失败登录锁序回归通过。合成验收父子进程网络、真实模型和平台调用均为零，专用测试子进程 1 个；全部测试与证据仅保留 ignored 本地目录。默认 SDK、真实平台及独立桌面安装包仍未验收。
+
 ## 第二十五轮：应用关闭预算与取消分发
 
 [Issue #66](https://github.com/can4hou6joeng4/boss-cli/issues/66) 来自关闭竞态复现：业务回合和摘要各自等待两秒会串行延长退出时间，首个阻塞的 provider abort 还会延迟其他任务的取消；worker 结束但终态通知或 abort 仍在进行时提前释放状态目录，也会允许第二个应用取得错误的 owner。

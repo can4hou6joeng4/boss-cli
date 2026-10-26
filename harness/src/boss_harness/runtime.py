@@ -20,8 +20,8 @@ class RuntimeManager:
     def __init__(self, *, capacity: int = 8) -> None:
         self.lock = threading.RLock()
         self.active: dict[str, dict[str, Any]] = {}
-        # A turn releases its execution slot before publishing completion. Keep
-        # ownership of its worker until event delivery and follow-up dispatch end.
+        # Keep model ownership through completion notifications and cleanup.
+        # The application tracks follow-up storage tails separately.
         self.jobs: dict[str, dict[str, Any]] = {}
         self.capacity = capacity
         self.closed = False
@@ -67,29 +67,42 @@ class RuntimeManager:
             self._retire_locked(job)
         self._notify_idle()
 
-    def interrupt(self, thread_id: str, expected_turn_id: str | None = None) -> bool:
+    def _claim_abort_locked(self, job: dict, *, interrupt: bool) -> TrackedAbort:
+        if "_shutdown_abort" not in job:
+            # Manual cancellation and shutdown share one claim. The application
+            # captures summary providers separately, rather than consulting a
+            # runner's mutable context_abort when this hook eventually runs.
+            job["_shutdown_abort"] = TrackedAbort(job["runner"].provider,
+                lambda job=job: self._abort_done(job), name="turn-abort",
+                callback=job["runner"].interrupt if interrupt else None)
+        return job["_shutdown_abort"]
+
+    def prepare_interrupt(self, thread_id: str, expected_turn_id: str | None = None,
+                          *, interrupt: bool = True) -> dict | None:
+        """Cancel and claim ownership; dispatch only after all owner locks exit."""
         with self.lock:
             job = self.active.get(thread_id)
             if job is None:
-                return False
+                return None
             if expected_turn_id and expected_turn_id != job["turnId"]:
                 raise RpcError(-32004, "回合已变化；请刷新后再中断")
             job["cancel"].set()
-            # SDK abort may block briefly; it never shares a provider with other actors.
-            job["runner"].interrupt()
-            return True
+            self._claim_abort_locked(job, interrupt=interrupt)
+            return job
+
+    def interrupt(self, thread_id: str, expected_turn_id: str | None = None) -> bool:
+        job = self.prepare_interrupt(thread_id, expected_turn_id)
+        if job is None:
+            return False
+        job["_shutdown_abort"].start()
+        return True
 
     def cancel_all(self, *, interrupt: bool = True) -> None:
         with self.lock:
             self.closed = True
             for job in self.jobs.values():
                 job["cancel"].set()
-                if "_shutdown_abort" not in job:
-                    # Capture the business provider, never the mutable context
-                    # abort callback (automatic summaries have their own owner).
-                    job["_shutdown_abort"] = TrackedAbort(job["runner"].provider,
-                        lambda job=job: self._abort_done(job), name="turn-shutdown-abort",
-                        callback=job["runner"].interrupt if interrupt else None)
+                self._claim_abort_locked(job, interrupt=interrupt)
 
     def request_stop_aborts(self) -> None:
         with self.lock:

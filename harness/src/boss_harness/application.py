@@ -146,6 +146,9 @@ class ApplicationService:
             self.queue.recover()
             self.runtimes = RuntimeManager()
             self._shutdown_preparing = 0
+            # Queue dispatch can outlive provider ownership. Its worker still
+            # owns the state directory until all follow-up bookkeeping ends.
+            self._follow_up_workers: dict[str, threading.Thread] = {}
             # Compaction jobs are independent of business turns and never own a
             # tool bridge. The per-thread index prevents a new turn from
             # changing the source while a summary is being generated.
@@ -751,12 +754,15 @@ class ApplicationService:
                 raise self._missing_compaction_job()
             if job["status"] != "running":
                 return {"aborted": False, **self._compaction_public(job)}
-            job["cancel"].set()
-            provider = job["provider"]
-        abort = getattr(provider, "request_abort", None)
-        if callable(abort):
-            abort()
-        return {"aborted": True, **self._compaction_public(job)}
+            aborts = [self._claim_compaction_abort_locked(job)]
+            turn = self.runtimes.active.get(job["threadId"])
+            if turn is not None and job.get("turnId") == turn["turnId"]:
+                self.runtimes.prepare_interrupt(job["threadId"], turn["turnId"], interrupt=False)
+                aborts.append(turn["_shutdown_abort"])
+            result = {"aborted": True, **self._compaction_public(job)}
+        for abort in aborts:
+            abort.start()
+        return result
 
     def on_context_compact_read(self, params: dict | None) -> dict:
         job_id = _text(params, "jobId", maximum=128)
@@ -1065,7 +1071,7 @@ class ApplicationService:
             except Exception:
                 self.bridge_lifecycle.close(bridge)
                 raise
-        if not any(job["runner"] is self.runner for job in self.runtimes.active.values()):
+        if not any(job["runner"] is self.runner for job in self.runtimes.jobs.values()):
             self.runner.provider, self.runner.config = self.provider, config
             return self.runner
         if self.provider is not None:
@@ -1186,12 +1192,26 @@ class ApplicationService:
         request.future.add_done_callback(completed)
 
     def _run_turn(self, job: dict) -> None:
+        status = None
         try:
-            self._execute_turn(job)
+            try:
+                status = self._execute_turn(job)
+            finally:
+                if status == "completed":
+                    with self.runtimes.lock:
+                        self._follow_up_workers[job["turnId"]] = threading.current_thread()
+                try:
+                    if job["runner"] is not self.runner:
+                        self.bridge_lifecycle.close(job["runner"].tool_bridge)
+                finally:
+                    self.runtimes.finish(job)
+            if status == "completed":
+                # A serial provider can pass to the next turn after the old
+                # notifications and bridge cleanup; the tail still owns storage.
+                self._start_follow_up(job["threadId"])
         finally:
-            if job["runner"] is not self.runner:
-                self.bridge_lifecycle.close(job["runner"].tool_bridge)
-            self.runtimes.finish(job)
+            with self.runtimes.lock:
+                self._follow_up_workers.pop(job["turnId"], None)
             self._close_application_resources_if_idle()
 
     def _close_application_resources_if_idle(self, deadline: float | None = None) -> None:
@@ -1207,7 +1227,7 @@ class ApplicationService:
             return
         with self.runtimes.lock:
             if (not self.runtimes.closed or self._shutdown_preparing
-                    or self.runtimes.jobs or self._compaction_by_thread):
+                    or self.runtimes.jobs or self._compaction_by_thread or self._follow_up_workers):
                 return
             if self._base_bridge_close_claimed:
                 wait_for_close = self._base_bridge_close_owner != threading.get_ident()
@@ -1225,7 +1245,7 @@ class ApplicationService:
         finally:
             self._base_bridge_close_done.set()
 
-    def _execute_turn(self, job: dict) -> None:
+    def _execute_turn(self, job: dict) -> str:
         thread_id, runner = job["threadId"], job["runner"]
         status = "error"
         try:
@@ -1256,8 +1276,7 @@ class ApplicationService:
                     self.runtimes.release(job)
             self.events.emit("turn/completed", {"threadId": thread_id, "turnId": job["turnId"], "status": status})
             self.events.emit("thread/updated", {"threadId": thread_id, "turnId": job["turnId"], "status": status})
-            if status == "completed":
-                self._start_follow_up(thread_id)
+        return status
 
     def _run_deterministic(self, thread_id: str, text: str, cancel: threading.Event | None = None,
                            *, runner: TurnRunner | None = None) -> str:
@@ -1278,7 +1297,18 @@ class ApplicationService:
             runner._cancel = None
 
     def on_turn_interrupt(self, params: dict | None) -> dict:
-        return {"interrupted": self.runtimes.interrupt(_text(params, "threadId"), (params or {}).get("turnId"))}
+        thread_id = _text(params, "threadId")
+        with self.runtimes.lock:
+            turn = self.runtimes.prepare_interrupt(thread_id, (params or {}).get("turnId"), interrupt=False)
+            if turn is None:
+                return {"interrupted": False}
+            aborts = [turn["_shutdown_abort"]]
+            job = self._compaction_jobs.get(self._compaction_by_thread.get(thread_id))
+            if job is not None and job.get("turnId") == turn["turnId"] and job["status"] == "running":
+                aborts.append(self._claim_compaction_abort_locked(job))
+        for abort in aborts:
+            abort.start()
+        return {"interrupted": True}
 
     def on_approval_respond(self, params: dict | None) -> dict:
         approval_id = _text(params, "approvalId")
@@ -1368,15 +1398,19 @@ class ApplicationService:
         self.close()
         return {"stopped": True}
 
+    def _claim_compaction_abort_locked(self, job: dict) -> TrackedAbort:
+        job["cancel"].set()
+        if "_shutdown_abort" not in job:
+            job["_shutdown_abort"] = TrackedAbort(job["provider"],
+                lambda job=job: self._compaction_abort_done(job), name="compaction-abort")
+        return job["_shutdown_abort"]
+
     def _cancel_compaction_jobs(self) -> None:
         with self.runtimes.lock:
             for job in self._compaction_jobs.values():
                 if job["status"] != "running" or "provider" not in job:
                     continue
-                job["cancel"].set()
-                if "_shutdown_abort" not in job:
-                    job["_shutdown_abort"] = TrackedAbort(job["provider"],
-                        lambda job=job: self._compaction_abort_done(job), name="compaction-shutdown-abort")
+                self._claim_compaction_abort_locked(job)
 
     def _request_compaction_aborts(self) -> None:
         with self.runtimes.lock:
@@ -1417,6 +1451,9 @@ class ApplicationService:
         self.connections.wait_for_stop(deadline)
         self._wait_compaction_jobs(deadline)
         self.runtimes.wait_for_stop(deadline)
+        with self.runtimes.lock:
+            follow_up_workers = list(self._follow_up_workers.values())
+        join_until(follow_up_workers, deadline)
         self._close_application_resources_if_idle(deadline)
 
     def serve_forever(self) -> None:
