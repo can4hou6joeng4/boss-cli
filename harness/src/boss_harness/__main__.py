@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         # 构造 Harness 会创建会话目录；state-dir 不可写同样是启动期的配置问题，应当走同一个干净
         # 退出码，而不是把回溯打到 stdout（stdout 只走协议）并以 1 结束。
         harness = Harness(server, Path(args.state_dir), config, provider, provider_factory=build_provider)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         print(f"[harness] 启动失败（{type(exc).__name__}）：{exc}", file=sys.stderr)
         return 2
     bridge = harness.tools
