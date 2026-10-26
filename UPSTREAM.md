@@ -175,3 +175,25 @@ JSON-RPC 维持 0.2.0；终态枚举、14 个招聘工具、参数、业务 argv
 1. **模型能力与完整请求预算**：窗口/输出上限随模型变化，统一计入 system/技能、工具 schema、thinking 和消息；`context/read` 与实际准入保持一致。usage 校准需绑定 provider/model、system/tools 和检查点，不能沿用陈旧用量。已阅读同一 Pi commit 的 `packages/ai/src/types.ts`、`src/api/simple-options.ts` 和 `src/utils/estimate.ts`；采用能力声明与每次请求准备的职责，暂不引入 Pi 模型库。
 2. **显式工具组合接口**：统一工具定义与不可变 bundle，显式注入应用及每运行器 bridge factory；拒绝重复名或缺 schema/handler，保留只读策略与逐次审批。已阅读 coding-agent 的 `src/core/sdk.ts`、`resource-loader.ts`、`extensions/loader.ts` 及 `agent-session.ts`；参考 customTools/factory/active allowlist。技能继续仅提供显式上下文，不自动执行目录插件或扩权。
 3. **可追溯压缩与生命周期接口**：从统一投影生成保留完整工具配对、最近回合和旧摘要来源的压缩计划，再接可取消、无工具权限的摘要请求；失败不写 checkpoint、不重放业务工具。已阅读 coding-agent 的 `session-manager.ts`、`compaction/compaction.ts`、`agent-session.ts` 及 agent 的 `prepareRequest`/`finishTurn`。先完成预算与稳定边界，再引入有限自动恢复；不采用实验性的 `packages/durable` 恢复语义。
+
+## 第九轮：模型能力与完整请求预算
+
+[Issue #26](https://github.com/can4hou6joeng4/boss-cli/issues/26) 继续内核强化。招聘任务加载技能/材料、增加工具结果或切换模型后，原固定 200k 预算无法反映实际请求：工具 schema 和 thinking 未计入，`context/read` 还省略 system。
+
+来源仍固定 Pi `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）：先读 `packages/ai/README.md`、`src/types.ts` 的 `Model.contextWindow/maxTokens`、`src/utils/estimate.ts`、`src/api/simple-options.ts`，以及 agent README 与 `src/agent-loop.ts` 的 `prepareRequest`。本轮采用模型容量独立于供应商传输、完整请求前准备和分类估算的职责；独立实现，不复制源码、不引入 Pi 或新增运行依赖。
+
+采用方式：
+
+- 不可变 `ModelCapabilities` / `ModelCatalog` 按精确 provider/model 解析容量，默认从唯一环境变量 `BOSS_HARNESS_MODEL_LIMITS` 读取严格限量 JSON；嵌入方可注入目录。未知模型显式采用 200000/64000 本地兼容假设，不猜测别名或实际网关能力，也不读取认证文件和动态模型目录。
+- `TurnRunner.request_preparer` 在完整 `ModelRequest` 形成后准入，覆盖 system/技能、材料/消息、thinking、工具 schema/调用/结果及请求选项。保留旧 `context_check` 供嵌入兼容，正式应用只使用完整路径。
+- 输出取用户请求与声明模型上限的较小值，另保留 4096 安全余量。与 Pi 可随输入缩小输出不同，本项目不因输入增长静默压缩回复额度；超限记录预算、返回 `blocked` 与 `CONTEXT_BUDGET_EXCEEDED`，不调用 provider、不自动启动 follow-up。
+- steering 先转 `delivering` 作为排他认领，但不写用户条目或发 Applied。下一请求预算成功且检查取消后才确认投递；失败由既有收尾暂停，无隐式重试。此前已经完成的工具不会因预算不足而重放。
+- 终态记录、队列清扫与释放回合占用使用和入队相同的运行锁，防止清扫后仍接受指向旧回合的 steering 而留下悬挂项；事件在锁外发布，保持释放占用后通知的约定。
+- 运行中复用已准备快照，保留裁剪前请求输出值；空闲预览复用相同提示、技能/附件、只读工具投影和模型配置。每请求持久 `context_budget`，`context/read.lastBudget` 在重启后可查；预算只保存计数/来源，不保存额外私密正文。
+- 主动模型连接检查的小请求使用同一容量准入，并将裁剪后的输出上限同时交给 factory/config 和 request；预算不足不构造供应商。它是独立诊断，不写会话预算历史，不扩大现有网络触发授权。
+
+兼容与限制：JSON-RPC 维持 0.2.0，新增响应字段和 TypeScript 契约；工具、领域 argv、审批及平台暂停不变。未知模型请求输出超过 64000 会按兼容假设裁剪，需要明确更高容量时配置覆盖。`context/read` 活动回合不能同时请求下一回合预览；普通空闲读取针对默认下一回合，若要包含一次性技能和附件须明确提供相同参数。旧直接调用 `ContextService.read/check` 仍保留历史估算接口，正式 RPC 不走省略工具的旧路径。
+
+本项目继续标记字符估算，尚未接入模型 tokenizer。Pi 可使用适用 usage 与尾部增量校准；本轮 `usageApplied=false`，仅独立展示历史 usage，避免模型/工具/检查点变化后的陈旧用量影响准入。自动摘要、阈值恢复和更完整生命周期接口仍待后续阶段。
+
+验收使用合成 provider/工具、临时状态与真实 ApplicationService/RPC/持久化入口，覆盖容量切换、输出裁剪、大窗口高输出、完整预算与预览一致、schema/输入/结果/steering 越限、并发隔离、队列暂停及重启不重放。测试只在本地保留，源码 CI 只负责构建及依赖审计；没有真实模型、平台或安装包验收。

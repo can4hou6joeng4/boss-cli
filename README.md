@@ -111,7 +111,25 @@ Harness 只能在 CLI 返回的最终错误或受支持的部分结果停止元�
 
 模型输出达到长度上限时，本次响应中的工具全部记为未执行，截断文本保留并以错误收尾，不自动重试或启动后续队列。每回合最多 6 次模型请求；第 6 次工具批次后仍需续答时暂停回合并保留结果，需核对后明确发起新回合。第 6 次正常最终文本仍可完成，最后到达而未能响应的 steering 保留为暂停队列项。
 
-当前内核仍待补齐随模型变化的完整请求预算、公开工具组合接口和自动摘要压缩；采用理由及阶段边界见 [上游与内核建设记录](UPSTREAM.md#第八轮内核停止边界与后续建设)。
+## 模型容量与请求预算
+
+内核在每次模型请求前估算完整输入，包括 system/技能、用户材料、消息与思考、工具调用及结果、工具 schema 和请求选项。输出预留受模型声明的上限约束，输入增长不会静默缩小输出；保留 4096 token 安全余量。超限时以 `blocked / CONTEXT_BUDGET_EXCEEDED` 暂停，不请求模型、不自动启动后续队列，已有工具结果继续保留。steering 只有在下一请求通过预算检查后才标记已投递；预算失败时保留为暂停项。
+
+通过启动环境变量 `BOSS_HARNESS_MODEL_LIMITS` 配置精确的 `provider/model` 容量，例如：
+
+```sh
+export BOSS_HARNESS_MODEL_LIMITS='{"openai/custom-model":{"contextWindow":128000,"maxOutputTokens":16000}}'
+```
+
+键中的 provider 使用 `anthropic`、`openai` 或 `none`（`codex` 线路解析为 `openai`）；模型名精确匹配且可含 `/`。两个容量均为整数，窗口须大于 4096，输出上限须为不超过窗口的正数。配置最多 128 项、UTF-8 编码 64 KiB，拒绝重复键、未知字段、布尔值和无效类型；错误不显示原配置。嵌入方可显式传入不可变 `ModelCatalog`，不读取该环境变量。
+
+未知模型使用 200000/64000 的兼容预算，返回 `capabilitySource=legacy-default`、`capacityIsEstimate=true`；这是本地假设，不能证明真实服务容量。请求输出大于此默认上限时会裁剪到 64000，需要更高额度时应显式配置。显式容量标记为 `configured`，仍由部署者核对模型及网关约束，不自动探测或下载模型目录。
+
+`context/read` 传 `threadId` 可查看完整预算；空闲时还可传与下一回合一致的 `model`、`input`、`skillIds`、`attachmentIds` 做预览。运行中返回当前已准备请求的快照，并拒绝预览参数。`requestSource` 区分 `active`、`preview`、`default`；准备完成前的 `active` 是按当前回合配置生成的候选预算。`requestedOutputTokens` 保留原请求值，`outputReserve` 是裁剪后的值；`breakdown` 分列 system/messages/tools/options。每次请求记录预算，重启后 `lastBudget` 可追溯最后一次准入或拒绝，读取不会执行模型或工具。
+
+token 数仍是 `characters/2+message-overhead` 的分类估算，不是供应商 tokenizer 或计费值。实际 usage 单独展示，`usageApplied=false`；尚未实现绑定模型和上下文投影的 usage 校准或自动摘要。公开工具组合接口与自动压缩继续建设，来源及兼容差异见 [内核建设记录](UPSTREAM.md#第九轮模型能力与完整请求预算)。
+
+用户主动触发的模型连接检查也应用同一容量约束，其最多 512 token 的诊断请求会按模型输出上限裁剪；预算不足在构造供应商前返回检查失败。诊断不属于会话回合，不写入会话预算历史。
 
 ## 大结果与会话恢复
 

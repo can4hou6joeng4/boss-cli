@@ -358,8 +358,53 @@ export interface QueueItem {
   clientUserMessageId?: string | null;
 }
 
-export interface ModelDescriptor { id: string; provider: string; configured: boolean; available: boolean }
+export interface ModelCapabilities {
+  contextWindow: number;
+  maxOutputTokens: number;
+  capabilitySource: string;
+  capacityIsEstimate: boolean;
+}
+export interface ModelDescriptor {
+  id: string;
+  provider: string;
+  configured: boolean;
+  available: boolean;
+  capabilities?: ModelCapabilities;
+}
 export interface ModelListResponse { models: ModelDescriptor[]; source: "local-config" }
+/** Read the active prepared request, or preview the next turn while idle. */
+export interface ContextReadParams {
+  threadId: string;
+  model?: string;
+  input?: string;
+  skillIds?: string[];
+  attachmentIds?: string[];
+}
+export interface ContextBudget {
+  estimatedInputTokens: number;
+  estimateMethod: string;
+  contextWindow: number;
+  outputReserve: number;
+  inputBudget: number;
+  messageCount: number;
+  breakdown: { system: number; messages: number; tools: number; options: number };
+  requestedOutputTokens: number;
+  modelMaxOutputTokens: number;
+  capabilitySource: string;
+  capacityIsEstimate: boolean;
+  withinBudget: boolean;
+  model: string;
+  provider: string;
+  usageApplied: false;
+}
+export interface ContextReadResponse extends ContextBudget {
+  threadId: string;
+  turnId?: string;
+  requestSource: "active" | "preview" | "default";
+  checkpoint: Record<string, unknown> | null;
+  usage: Record<string, unknown> | null;
+  lastBudget?: ContextBudget & { turnId: string } | null;
+}
 export type ConnectionTarget = "local" | "model" | "platform";
 export interface ConnectionCheck {
   state: "unchecked" | "checking" | "ready" | "failed" | "blocked" | "disabled";

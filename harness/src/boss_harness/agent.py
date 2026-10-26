@@ -18,6 +18,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from boss_harness.context import ContextBudgetExceeded
 from boss_harness.models import (
     AssistantMessage,
     ToolCallBlock,
@@ -81,6 +82,8 @@ class TurnRunner:
         history_provider: Callable[[str], tuple[ChatMessage, ...]] | None = None,
         context_check: Callable[[list[ChatMessage], str], None] | None = None,
         drain_steering: Callable[[], list[UserMessage]] | None = None,
+        stage_steering: Callable[[], tuple[list[UserMessage], Callable[[], None]]] | None = None,
+        request_preparer: Callable[[ModelRequest], tuple[ModelRequest, dict[str, Any]]] | None = None,
     ) -> None:
         self.sessions = sessions
         self.tool_bridge = tool_bridge
@@ -104,6 +107,9 @@ class TurnRunner:
         self.history_provider = history_provider
         self.context_check = context_check
         self.drain_steering = drain_steering
+        self.stage_steering = stage_steering
+        self.request_preparer = request_preparer
+        self.last_preparation: tuple[ModelRequest, dict[str, Any]] | None = None
 
     @property
     def tool_names(self) -> list[str]:
@@ -462,15 +468,22 @@ class TurnRunner:
         self._cancel = cancel or threading.Event()
         self.tool_bridge.cancel_event = self._cancel
         self._blocked = None
+        self.last_preparation = None
 
         try:
             messages = list(self.history(thread_id))
             specs = self.tool_specs()
+            pending_steering: tuple[list[UserMessage], Callable[[], None]] | None = None
             for _round in range(MAX_TOOL_ROUNDS):
                 if self.cancelled():
                     return "interrupted"
 
-                if self.drain_steering is not None:
+                staged = None
+                if self.stage_steering is not None:
+                    staged = pending_steering if pending_steering is not None else self.stage_steering()
+                    pending_steering = None
+                    messages.extend(staged[0])
+                elif self.drain_steering is not None:
                     messages.extend(self.drain_steering())
                 if self.context_check is not None:
                     self.context_check(messages, self.system_prompt)
@@ -484,6 +497,23 @@ class TurnRunner:
                     effort=self.config.effort,
                     thinking=self.config.thinking,
                 )
+                if self.request_preparer is not None:
+                    try:
+                        request, budget = self.request_preparer(request)
+                    except ContextBudgetExceeded as exc:
+                        self._record_preparation(thread_id, request, exc.budget)
+                        if self.cancelled():
+                            return "interrupted"
+                        message = str(exc)
+                        self.append_agent(thread_id, message)
+                        self.notify(N_SESSION_ERROR, {"threadId": thread_id,
+                            "code": "CONTEXT_BUDGET_EXCEEDED", "message": message})
+                        return "blocked"
+                    self._record_preparation(thread_id, request, budget)
+                if self.cancelled():
+                    return "interrupted"
+                if staged is not None:
+                    staged[1]()
                 assistant, error, interrupted = self._stream_round(thread_id, request)
 
                 if interrupted:
@@ -512,8 +542,13 @@ class TurnRunner:
                     return "error"
                 if not calls:
                     # Only deliver steering when another model request can consume it.
+                    if self.stage_steering is not None and _round + 1 < MAX_TOOL_ROUNDS:
+                        pending_steering = self.stage_steering()
+                        if pending_steering[0]:
+                            messages.append(assistant)
+                            continue
                     steering = (self.drain_steering() if self.drain_steering is not None
-                                and _round + 1 < MAX_TOOL_ROUNDS else [])
+                                and self.stage_steering is None and _round + 1 < MAX_TOOL_ROUNDS else [])
                     if steering:
                         messages.append(assistant)
                         messages.extend(steering)
@@ -554,6 +589,11 @@ class TurnRunner:
             self._cancel = None
             self.tool_bridge.cancel_event = None
             self.notify(N_THREAD_UPDATED, {"threadId": thread_id})
+
+    def _record_preparation(self, thread_id: str, request: ModelRequest, budget: dict[str, Any]) -> None:
+        snapshot = {**budget, "provider": self.config.provider, "turnId": self.turn_id}
+        self.sessions.append(thread_id, Entry(type="context_budget", payload=snapshot))
+        self.last_preparation = (request, snapshot)
 
     def _skip_calls(self, thread_id: str, calls: tuple[ToolCallBlock, ...], batch_id: str,
                     *, error: dict[str, Any] | None = None) -> None:

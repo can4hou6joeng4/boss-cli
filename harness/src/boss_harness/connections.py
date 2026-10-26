@@ -34,9 +34,11 @@ def _now() -> str:
 class ConnectionChecks:
     def __init__(self, config: ModelConfig, *, bridge_factory: Callable = BossCliTool,
                  provider_factory: Callable[[ModelConfig], Provider | None] = build_provider,
-                 timeout: float = 25.0) -> None:
+                 timeout: float = 25.0,
+                 request_preparer: Callable[[ModelRequest], ModelRequest] | None = None) -> None:
         self.config, self.bridge_factory = config, bridge_factory
         self.provider_factory, self.timeout = provider_factory, timeout
+        self.request_preparer = request_preparer
         self.lock = threading.RLock()
         self.active: dict[str, tuple[threading.Thread, threading.Event]] = {}
         self.closed = False
@@ -207,7 +209,13 @@ class ConnectionChecks:
         try:
             if key == "model":
                 config = replace(self.config, max_tokens=512, effort="low", thinking=None)
-                provider = self.provider_factory(config)
+                request = ModelRequest(model=config.model, system="Connection check. Reply OK only.",
+                    messages=(UserMessage("Reply OK."),), max_tokens=512, effort=config.effort)
+                if self.request_preparer is not None:
+                    request = self.request_preparer(request)
+                if cancel.is_set():
+                    return
+                provider = self.provider_factory(replace(config, max_tokens=request.max_tokens))
                 if provider is None:
                     raise ValueError("no provider")
                 def expire() -> None:
@@ -223,8 +231,7 @@ class ConnectionChecks:
                 timer.daemon = True
                 timer.start()
                 success = False
-                for event in provider.stream(ModelRequest(model=config.model, system="Connection check. Reply OK only.",
-                        messages=(UserMessage("Reply OK."),), max_tokens=512, effort=config.effort)):
+                for event in provider.stream(request):
                     if cancel.is_set():
                         return
                     if event.type == "error":
