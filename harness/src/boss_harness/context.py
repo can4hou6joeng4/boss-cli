@@ -90,13 +90,56 @@ def _message_size(messages: tuple[ChatMessage, ...] | list[ChatMessage]) -> int:
     return size
 
 
+def _message_fingerprint_payload(message: ChatMessage) -> dict[str, Any]:
+    if isinstance(message, UserMessage):
+        return {"role": "user", "text": message.text}
+    if isinstance(message, AssistantMessage):
+        blocks = []
+        for block in message.blocks:
+            if isinstance(block, TextBlock):
+                blocks.append({"type": "text", "text": block.text})
+            elif isinstance(block, ThinkingBlock):
+                blocks.append({"type": "thinking", "text": block.thinking})
+            elif isinstance(block, ToolCallBlock):
+                blocks.append({"type": "toolCall", "id": block.id, "name": block.name,
+                               "arguments": dict(block.arguments)})
+        return {"role": "assistant", "blocks": blocks}
+    return {"role": "toolResults", "results": [
+        {"toolCallId": result.tool_call_id, "content": result.content, "isError": result.is_error}
+        for result in message.results]}
+
+
+def request_fingerprint(provider: str, request: ModelRequest) -> str:
+    payload = {"provider": provider, "model": request.model, "system": request.system,
+        "messages": [_message_fingerprint_payload(message) for message in request.messages],
+        "tools": [{"name": tool.name, "description": tool.description,
+                   "inputSchema": dict(tool.input_schema)} for tool in request.tools],
+        "maxTokens": request.max_tokens, "effort": request.effort,
+        "thinking": dict(request.thinking) if request.thinking is not None else None}
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _usage_input_tokens(provider: str, usage: Any) -> int | None:
+    if not isinstance(usage, dict):
+        return None
+    names = ("input",) if provider == "openai" else ("input", "cache_read", "cache_write") if provider == "anthropic" else ()
+    if not names:
+        return None
+    values = [usage.get(name) for name in names]
+    if any(type(value) is not int or value < 0 for value in values):
+        return None
+    total = sum(values)
+    return total if total > 0 else None
+
+
 def estimate_tokens(messages: tuple[ChatMessage, ...] | list[ChatMessage], system: str = "") -> int:
     # A conservative character estimate, not a vendor tokenizer or billing value.
     size = len(system) + _message_size(messages)
     return (size + 1) // 2
 
 
-def describe_request(request: ModelRequest, capabilities: ModelCapabilities) -> dict[str, Any]:
+def describe_request(request: ModelRequest, capabilities: ModelCapabilities, *, provider: str = "") -> dict[str, Any]:
     """Describe the complete request budget without rejecting an oversized input."""
     if type(request.max_tokens) is not int or request.max_tokens <= 0:
         raise ValueError("max_tokens 必须是正整数")
@@ -114,11 +157,13 @@ def describe_request(request: ModelRequest, capabilities: ModelCapabilities) -> 
     breakdown = {name: (size + 1) // 2 for name, size in sizes.items()}
     estimate = sum(breakdown.values())
     input_budget = capabilities.context_window - effective_output - _SAFETY_TOKENS
+    fingerprint = request_fingerprint(provider, replace(request, max_tokens=effective_output)) if provider else None
     return {"estimatedInputTokens": estimate, "estimateMethod": _ESTIMATE_METHOD,
             "contextWindow": capabilities.context_window, "outputReserve": effective_output,
             "inputBudget": input_budget, "messageCount": len(request.messages), "breakdown": breakdown,
             "requestedOutputTokens": request.max_tokens, "modelMaxOutputTokens": capabilities.max_output_tokens,
             "capabilitySource": capabilities.source, "capacityIsEstimate": capabilities.estimated,
+            "requestFingerprint": fingerprint,
             "withinBudget": estimate <= input_budget, "model": request.model, "usageApplied": False}
 
 
@@ -149,18 +194,57 @@ class ContextService:
         if estimate_tokens(messages, system) > self.window - self.reserve - 4096:
             raise ValueError("上下文估算超过输入预算；请通过 context/compact 提供可追溯摘要，或新建会话。")
 
-    def prepare(self, request: ModelRequest, capabilities: ModelCapabilities) -> tuple[ModelRequest, dict[str, Any]]:
-        budget = describe_request(request, capabilities)
+    def _apply_usage(self, thread_id: str, request: ModelRequest, provider: str,
+                     budget: dict[str, Any]) -> dict[str, Any]:
+        current_count = len(request.messages)
+        entries = self.sessions.read_entries(thread_id)
+        for entry in reversed(entries):
+            if entry["type"] != "model_usage":
+                continue
+            anchor = entry["payload"]
+            if (anchor.get("provider") != provider or anchor.get("model") != request.model
+                    or anchor.get("eligible") is not True):
+                continue
+            count = anchor.get("messageCount")
+            fingerprint = anchor.get("requestFingerprint")
+            if type(count) is not int or count < 0 or count > current_count or not isinstance(fingerprint, str):
+                continue
+            baseline = _usage_input_tokens(provider, anchor.get("usage"))
+            if baseline is None:
+                continue
+            prepared = replace(request, max_tokens=budget["outputReserve"])
+            prefix = replace(prepared, messages=prepared.messages[:count])
+            if request_fingerprint(provider, prefix) != fingerprint:
+                continue
+            tail_tokens = (_message_size(request.messages[count:]) + 1) // 2
+            estimate = baseline + tail_tokens
+            if estimate <= 0:
+                continue
+            return {**budget, "estimatedInputTokens": estimate,
+                "estimateMethod": "provider-usage+characters/2+message-overhead",
+                "breakdown": {"system": 0, "messages": tail_tokens, "tools": 0, "options": 0,
+                              "usageBaseline": baseline},
+                "usageApplied": True, "usageAnchorTurnId": anchor.get("turnId"),
+                "withinBudget": estimate <= budget["inputBudget"]}
+        return budget
+
+    def prepare(self, request: ModelRequest, capabilities: ModelCapabilities, *,
+                provider: str = "", thread_id: str | None = None) -> tuple[ModelRequest, dict[str, Any]]:
+        budget = describe_request(request, capabilities, provider=provider)
+        if thread_id is not None and provider:
+            budget = self._apply_usage(thread_id, request, provider, budget)
         if not budget["withinBudget"]:
             raise ContextBudgetExceeded(budget)
         return replace(request, max_tokens=budget["outputReserve"]), budget
 
     def read(self, thread_id: str, *, request: ModelRequest | None = None,
-             capabilities: ModelCapabilities | None = None) -> dict[str, Any]:
+             capabilities: ModelCapabilities | None = None, provider: str = "") -> dict[str, Any]:
         if (request is None) != (capabilities is None):
             raise ValueError("request 和 capabilities 必须同时提供")
         if request is not None and capabilities is not None:
-            budget = describe_request(request, capabilities)
+            budget = describe_request(request, capabilities, provider=provider)
+            if provider:
+                budget = self._apply_usage(thread_id, request, provider, budget)
         else:
             messages = self.history(thread_id)
             estimate = estimate_tokens(messages)

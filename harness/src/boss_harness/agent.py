@@ -696,10 +696,18 @@ class TurnRunner:
         if assistant is not None and assistant.stop_reason == "error" and error is None:
             error = "模型返回失败状态"
         if assistant is not None:
-            self.sessions.append(thread_id, Entry(type="model_usage", payload={
+            usage_entry = {
                 "turnId": self.turn_id, "model": request.model, "provider": self.config.provider,
                 "stopReason": assistant.stop_reason,
-                "usage": asdict(assistant.usage) if assistant.usage is not None else None}))
+                "usage": asdict(assistant.usage) if assistant.usage is not None else None,
+                "eligible": (not interrupted and error is None and assistant.stop_reason not in {"aborted", "error"}
+                             and assistant.usage is not None)}
+            if self.last_preparation is not None:
+                fingerprint = self.last_preparation[1].get("requestFingerprint")
+                if isinstance(fingerprint, str):
+                    usage_entry["requestFingerprint"] = fingerprint
+                    usage_entry["messageCount"] = len(request.messages)
+            self.sessions.append(thread_id, Entry(type="model_usage", payload=usage_entry))
         if entry is not None:
             text = "".join(chunks)
             truncated = assistant is not None and assistant.stop_reason == "length"
