@@ -87,7 +87,7 @@ const RENDERER_METHODS = new Set([
 const THREAD_METHODS = new Set([
   "thread/read", "thread/resume", "thread/fork", "thread/archive", "thread/unarchive", "thread/name/set",
   "thread/turns/list", "thread/items/list", "thread/item/result/read", "turn/start", "turn/interrupt", "turn/steer", "turn/read",
-  "queue/list", "queue/add", "queue/remove", "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact",
+  "queue/list", "queue/add", "queue/remove", "context/read", "context/compact/plan", "context/compact/start", "context/compact",
 ]);
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -117,6 +117,20 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
     (typeof params.title !== "string" || params.title.length > 500)) throw new Error("invalid thread title");
   if (payload.method === "approval/respond" && (typeof params?.approvalId !== "string" || !params.approvalId ||
     typeof params.approved !== "boolean")) throw new Error("invalid approval decision");
+  if (payload.method === "context/compact/read" || payload.method === "context/compact/abort") {
+    if (typeof params?.jobId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(params.jobId)) {
+      throw new Error("invalid compaction jobId");
+    }
+  }
+  if (payload.method === "context/compact/plan" || payload.method === "context/compact/start") {
+    if ((params?.throughTurnId !== undefined && (typeof params.throughTurnId !== "string" || !params.throughTurnId.trim())) ||
+      (params?.keepRecentTokens !== undefined && (typeof params.keepRecentTokens !== "number" ||
+        !Number.isSafeInteger(params.keepRecentTokens) || params.keepRecentTokens < 1 || params.keepRecentTokens > 1_000_000)) ||
+      (params?.throughTurnId !== undefined && params?.keepRecentTokens !== undefined) ||
+      (params?.sourceDigest !== undefined && (typeof params.sourceDigest !== "string" || !/^[a-f0-9]{64}$/.test(params.sourceDigest)))) {
+      throw new Error("invalid compaction plan");
+    }
+  }
   if (payload.method === "thread/item/result/read") {
     const allowed = new Set(["threadId", "itemId", "sha256", "cursor", "limit"]);
     if (!params || Object.keys(params).some(key => !allowed.has(key)) ||
