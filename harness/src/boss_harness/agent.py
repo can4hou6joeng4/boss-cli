@@ -14,7 +14,7 @@ import json
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -31,7 +31,7 @@ from boss_harness.models.provider import ModelConfig, Provider
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.types import ChatMessage, ModelRequest, TextBlock
 from boss_harness.session import Entry, SessionStore
-from boss_harness.toolkit import ToolResult
+from boss_harness.toolkit import ToolResult, snapshot_result
 from boss_harness.tool_results import project_error, project_item
 
 MAX_TOOL_ROUNDS = 6
@@ -69,7 +69,7 @@ class TurnRunner:
         *,
         sessions: SessionStore,
         tool_bridge: Any,
-        handlers: dict[str, Callable[[Any, dict[str, Any]], ToolResult]],
+        handlers: Mapping[str, Callable[[Any, dict[str, Any]], ToolResult]],
         provider: Provider | None,
         config: ModelConfig,
         notify: Notify,
@@ -381,10 +381,19 @@ class TurnRunner:
             try:
                 self._tool_phase(thread_id, entry, "executing", approval)
                 dispatched = True
-                result = handler(self.tool_bridge, arguments)
+                result = snapshot_result(handler(self.tool_bridge, arguments))
             except Exception as exc:
                 result = ToolResult(ok=False, command=name, error={"code": "TOOL_ERROR", "message": self.safe_error(exc)})
-        if not result.ok and ((self.pause_on_result is not None and self.pause_on_result(result))
+        pause = False
+        if not result.ok and self.pause_on_result is not None:
+            try:
+                pause = self.pause_on_result(snapshot_result(result))
+                if type(pause) is not bool:
+                    raise ValueError
+            except Exception:
+                result = ToolResult(ok=False, command=name, error={"code": "TOOL_ERROR", "message": "工具暂停策略回调失败"})
+                pause = True
+        if not result.ok and (pause
                               or (name in self.approval_required and (result.error or {}).get("code") not in {"INVALID_PARAM", "CANCELLED"})):
             self._blocked = result
         unknown = (dispatched and name in self.approval_required and not result.ok

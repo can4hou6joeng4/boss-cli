@@ -419,7 +419,7 @@ export interface ConnectionCheck {
 export interface ConnectionReport { cli: ConnectionCheck; model: ConnectionCheck; platform: ConnectionCheck }
 /** Login control contains no credentials; cookie transport is private to the host. */
 export interface PlatformLoginStatus {
-  state: "idle" | "opening" | "waiting" | "saving" | "succeeded" | "failed" | "blocked" | "cancelled";
+  state: "idle" | "opening" | "waiting" | "saving" | "succeeded" | "failed" | "blocked" | "cancelled" | "disabled";
   summary: string;
   code?: string | null;
   phase?: "scan" | "confirm" | "credentials" | "verify";
