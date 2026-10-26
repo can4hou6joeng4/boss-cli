@@ -139,6 +139,7 @@ export const ServerNotifications = {
   threadRenamed: "thread/renamed",
   queueUpdated: "queue/updated",
   contextCompactionStarted: "context/compactionStarted",
+  contextCompactionProgress: "context/compactionProgress",
   contextCompactionCompleted: "context/compactionCompleted",
   contextCompactionFailed: "context/compactionFailed",
 } as const;
@@ -387,7 +388,13 @@ export interface ContextReadParams {
   skillIds?: string[];
   attachmentIds?: string[];
 }
-export interface ContextCompactPlanParams { threadId: string; throughTurnId: string }
+export interface ContextCompactPlanParams {
+  threadId: string;
+  /** Explicit boundary; mutually exclusive with keepRecentTokens. */
+  throughTurnId?: string;
+  /** Positive estimate target; defaults to 20000 when no boundary is supplied. */
+  keepRecentTokens?: number;
+}
 export interface ContextCompactPlan {
   threadId: string;
   throughTurnId: string;
@@ -396,11 +403,20 @@ export interface ContextCompactPlan {
   sourceItemCount: number;
   firstItemId: string;
   lastItemId: string;
+  digestVersion: 2;
+  checkpointDigest: string | null;
+  selection: "explicit" | "keepRecentTokens";
+  keepRecentTokens: number | null;
+  retainedItemCount: number;
+  retainedTurnIds: string[];
+  firstKeptItemId: string | null;
+  estimatedRetainedTokens: number;
 }
 export type ContextCompactionJobStatus = "running" | "completed" | "failed" | "cancelled";
 export interface ContextCompactStartParams {
   threadId: string;
-  throughTurnId: string;
+  throughTurnId?: string;
+  keepRecentTokens?: number;
   sourceDigest?: string;
   model?: string;
 }
@@ -413,6 +429,13 @@ export interface ContextCompactJob {
   code?: string;
   message?: string;
   result?: ContextReadResponse;
+  modelRequestCount?: number;
+  /** Unicode code points in the complete serialized summary source. */
+  processedCharacters?: number;
+  totalCharacters?: number;
+  retainedItemCount?: number;
+  firstKeptItemId?: string | null;
+  estimatedRetainedTokens?: number;
 }
 export interface ContextCompactAbortResponse extends ContextCompactJob { aborted: boolean }
 export interface ContextBudget {

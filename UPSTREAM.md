@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第十四轮：保留近期回合的分段摘要
+
+[Issue #43](https://github.com/can4hou6joeng4/boss-cli/issues/43) 面向大工具结果导致摘要请求自身超限的长招聘会话。固定参考 Pi `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）的 `packages/coding-agent/src/core/compaction/compaction.ts` 中 `findCutPoint`、`prepareCompaction`、`generateSummaryWithUsage`，以及 `utils.ts` 的序列化。采用先准备统一投影、冻结范围、无工具摘要、成功后提交 checkpoint 的职责划分，全部独立实现，无新增依赖或代码复制。
+
+适配差异：Pi 可在 assistant 边界拆分回合并另生成 turn-prefix summary，本项目只在完整回合之间切点，保留工具配对及明确的招聘任务状态。`keepRecentTokens` 默认参考 20000，但只是字符估算目标；整回合保留可能超过目标，小窗口需显式降低目标。自动阈值触发和 overflow 恢复仍是后续范围。
+
+该固定 Pi 版本将摘要输入中的工具结果截为 2000 字符。本项目保留完整原始条目、来源与 `executionState`，将包括单条超长结果的全文按 Unicode 码点连续分段；每个无工具请求携带上一步临时摘要、字符范围、全文 digest 和字符限额，重新做完整预算准入。临时摘要只在内存中滚动，最多 32 个 provider.stream 生成阶段，provider 内部传输重试不计为新阶段；逐步 usage 不参与业务 usage 校准。任意片段失败、取消、非法响应或最终预算不足均不写新 checkpoint；只有全部片段成功，且默认业务模型的 system/tools/保留尾部预算通过时一次提交。不存在工具重放，也不宣称模型摘要语义无损。
+
+来源 digest v2 同时绑定原始前缀和最新 checkpoint 的 id/payload，拒绝倒退覆盖以及只改变旧摘要的过期计划；已被旧摘要覆盖的原文后来被修订时拒绝继续压缩。v1 digest 必须重新读取；省略 digest 的旧用户摘要调用继续兼容。任务进度按已处理 Unicode 码点和生成阶段数报告，原始 JSONL 与来源引用不删除。模型摘要与用户摘要的标签分别标明来源。所有失败路径擦除配置凭据；checkpoint 成功追加即标记任务完成，后续读取或事件通知异常不改成失败。
+
+验证使用合成 provider、空工具组合、虚构记录和临时状态；覆盖大单条用户/工具结果、完整近期工具批次、每次预算、最坏 JSON 转义、取消和中途失败、旧 checkpoint 冲突、32 次请求上限与最终业务模型预算。本地测试、脚本和夹具不提交；不以源码 CI 通过替代真实模型或招聘平台验收。
+
 ## 职责与采用方式
 
 - **业务接入**：`boss-agent-cli` 的 argv / v1 七键 JSON 信封。保留进程边界，不 import 上游实现；工具权限由本地允许清单和审批控制。
