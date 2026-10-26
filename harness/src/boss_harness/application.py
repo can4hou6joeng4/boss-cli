@@ -596,16 +596,13 @@ class ApplicationService:
         return result
 
     def _compaction_provider(self, config: ModelConfig) -> Provider:
-        if self.provider_factory is not None:
-            provider = self.provider_factory(config)
-        else:
-            if self.runtimes.active:
-                raise RpcError(-32004, "当前模型供应商正在处理其他回合，请稍后再生成摘要")
-            if self.provider is None or config.provider != self.config.provider or config.model != self.config.model:
-                raise ValueError("当前嵌入的模型线路不支持独立摘要请求")
-            provider = self.provider
+        if self.provider_factory is None:
+            raise ValueError("模型摘要需要 provider_factory 创建独立供应商实例")
+        provider = self.provider_factory(config)
         if provider is None:
             raise ValueError("当前未配置可用模型，无法生成摘要")
+        if provider is self.provider or provider is self.runner.provider:
+            raise ValueError("模型摘要必须使用独立于主回合的 provider 实例")
         return provider
 
     def on_context_compact_start(self, params: dict | None) -> dict:
@@ -847,6 +844,9 @@ class ApplicationService:
                 skill_text, skills = self.skills.load(params.get("skillIds"))
                 attachment_text, attachments = self.attachments.context(thread_id, params.get("attachmentIds"))
                 runner = self._runner_for(config)
+                if any(compaction["provider"] is runner.provider and compaction["status"] == "running"
+                       for compaction in self._compaction_jobs.values()):
+                    raise RpcError(-32005, "模型供应商实例正在执行摘要任务，请稍后重试")
                 runner.request_preparer = lambda request: self.context.prepare(request,
                     self.model_catalog.resolve(config.provider, request.model),
                     provider=config.provider, thread_id=thread_id)
