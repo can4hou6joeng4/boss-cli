@@ -12,6 +12,12 @@
 
 本轮只读刷新 `jackwener/boss-cli`：Issue #35 的隐式Cookie/Keychain访问及 #32/#27/#23 风控问题仍作为边界约束；PR #28 recommend分页、#29真实greet、#24简历同步均不直接进入通用内核。相关状态会变化，未采信外部自述的live-test作为本项目验收，也未调用真实招聘平台。
 
+## 第十六轮：摘要任务资源保留上限
+
+[Issue #47](https://github.com/can4hou6joeng4/boss-cli/issues/47) 针对自动与手动摘要反复运行后进程内任务注册表无界增长。参考 Pi 固定 commit `d5b3de22d0e24a3e9c38a9410d3329b099717283` 的 coding-agent 对手动/自动摘要分别持有 AbortController、完成或失败时清除 controller 的生命周期（`agent-session.ts` 的 `_clearManualCompactionState`、`abortCompaction` 和 `_runAutoCompaction`），以及 [Pi Issue #11297](https://github.com/earendil-works/pi/issues/11297) 提出的长期压缩状态有界目标。Issue #11297 本身讨论的是 Pi 文件列表累积，本项目没有对应 fileOps 数据，因此只采用“长期状态须有界”的设计提示，不复用其业务数据方案。
+
+本项目有独立的后台 `jobId` 轮询/取消协议，区别于 Pi 的单 controller。手动摘要运行数限定为 `parallelThreads`，自动摘要仍由业务回合并发槽位约束；活跃任务永不淘汰，最近64条终态公开状态在进程内保留。任务进入终态时释放 provider、含密钥配置、worker 和取消事件；淘汰的 `jobId` 以结构化 `COMPACTION_JOB_NOT_FOUND` 返回。会话中的 append-only checkpoint、usage 与通知事件不受内存淘汰影响。内核重启仍不恢复摘要任务；无持久调度器或协议版本变化。该实现独立完成，无代码复制或新增依赖。
+
 ## 第十四轮：保留近期回合的分段摘要
 
 [Issue #43](https://github.com/can4hou6joeng4/boss-cli/issues/43) 面向大工具结果导致摘要请求自身超限的长招聘会话。固定参考 Pi `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）的 `packages/coding-agent/src/core/compaction/compaction.ts` 中 `findCutPoint`、`prepareCompaction`、`generateSummaryWithUsage`，以及 `utils.ts` 的序列化。采用先准备统一投影、冻结范围、无工具摘要、成功后提交 checkpoint 的职责划分，全部独立实现，无新增依赖或代码复制。
