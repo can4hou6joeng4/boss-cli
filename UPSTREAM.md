@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第二十四轮：摘要来源有效性与历史投影
+
+[Issue #62](https://github.com/can4hou6joeng4/boss-cli/issues/62) 来自合法 append-only revision 复现：`read_items()` 已显示修正后的远程岗位偏好，`history()` 仍用旧现场办公摘要隐藏修订；同一来源的摘要 planner 已正确拒绝。较新完整回合的 fork 和重新打开会话后仍复现，普通桌面 UI 的晚期修订触发路径未证明，影响结论限定于存储、嵌入、恢复及分支兼容。
+
+阅读 Pi 固定 `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）`packages/coding-agent/src/core/session-manager.ts` 的 `buildContextEntries()` 与 `core/compaction/compaction.ts` 的 `prepareCompaction()`，采用历史和摘要规划共享来源投影的职责划分。本项目独立提取 checkpoint 校验，从同一次 entries 快照验证完整来源前缀、回合终态和摘要写入前后覆盖条目的规范投影；不迁移 Pi 树路径/firstKeptEntryId 或拆分回合机制，无代码复制或新增依赖。
+
+history/read 对失效摘要回退最新完整逻辑原文，`checkpoint=null`，不改写记录或自动重建摘要；显式 planner 继续明确拒绝不一致来源。只检查已摘要前缀，正常活动用户/工具尾部与未覆盖修订兼容。回退原文后继续完整请求预算和 usage 指纹门禁，不借过期摘要绕过限制；已发出的模型请求无法追溯撤回，后续历史投影使用修订后的事实。JSON-RPC 0.2.0 无新增公共字段，业务工具与审批权限保持既有约定。
+
+21 项本地专项通过，覆盖用户/工具结果修订、严格 metadata 变化、fork/reopen、多摘要、正常活动尾部、坏来源/字段、原文预算阻断及 usage anchor 失效。另有 3 项独立验证覆盖合法 v1 checkpoint/活动尾部、read 单快照一致性，以及累计摘要修订后不同 fork 的原文回退。测试、脚本与证据仅留本地，使用合成状态，网络、模型和招聘平台调用均为零。
+
 ## 第二十三轮：模型连接检查关闭与任务隔离
 
 [Issue #61](https://github.com/can4hou6joeng4/boss-cli/issues/61) 来自连接诊断生命周期复现：旧 `close()` 只设取消事件，模型 worker 未收到 abort 或等待，取消又使 timeout 提前退出，报告可持续为 checking。审查还发现旧 timer 和异常路径可覆盖新检查或已经提交的取消状态。参考 Pi 固定 `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）`packages/agent/src/agent.ts` 的 active-run 取消与 `waitForIdle`，以及 `packages/ai/src/api/openai-responses.ts` 的 SDK signal 所有权；独立实现 Python 诊断任务收尾，无代码复制或新增依赖。

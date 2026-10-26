@@ -187,10 +187,6 @@ class ContextService:
             raise ValueError("上下文窗口必须大于输出预留与安全余量")
         self.sessions, self.window, self.reserve = sessions, window, reserve
 
-    def _checkpoint(self, thread_id: str) -> dict | None:
-        return next((e["payload"] for e in reversed(self.sessions.read_entries(thread_id))
-                     if e["type"] == "context_checkpoint"), None)
-
     def _compaction_items(self, thread_id: str, entries: list[dict]) -> tuple[list[dict], dict]:
         owners = self.sessions._item_owners(entries)
         items = self.sessions._project_items(thread_id, entries)
@@ -201,6 +197,57 @@ class ContextService:
                 raise ValueError("回合条目的来源归属不一致")
             normalized.append({**item, "turnId": owner})
         return normalized, owners
+
+    def _validated_checkpoint(self, thread_id: str, entries: list[dict], *,
+                              items: list[dict] | None = None,
+                              turns: list[dict] | None = None) -> dict | None:
+        """Validate only the summarized prefix; a live retained tail is allowed."""
+        index = next((index for index in range(len(entries) - 1, -1, -1)
+                      if entries[index]["type"] == "context_checkpoint"), None)
+        if index is None:
+            return None
+        checkpoint = {"id": entries[index]["id"], "payload": entries[index]["payload"]}
+        payload = checkpoint["payload"]
+        if (not isinstance(payload.get("summary"), str) or not payload["summary"].strip()
+                or len(payload["summary"]) > 32_000
+                or not isinstance(payload.get("sourceDigest"), str) or not payload["sourceDigest"]):
+            raise ValueError("已有摘要的来源记录无效")
+        turns = self.sessions._turns(entries, thread_id) if turns is None else turns
+        positions = {turn["turnId"]: position for position, turn in enumerate(turns)}
+        through = payload.get("throughTurnId")
+        if not isinstance(through, str) or through not in positions:
+            raise ValueError("已有摘要的来源回合不完整")
+        prefix = turns[:positions[through] + 1]
+        if any(turn.get("status") not in {"completed", "interrupted", "blocked", "error"} for turn in prefix):
+            raise ValueError("已有摘要的来源回合不完整")
+        items = self._compaction_items(thread_id, entries)[0] if items is None else items
+        by_turn: dict[str, list[dict]] = {turn["turnId"]: [] for turn in prefix}
+        for item in items:
+            if item.get("turnId") in by_turn:
+                by_turn[item["turnId"]].append(item)
+        selected = [item for turn in prefix for item in by_turn[turn["turnId"]]]
+        expected = [item["id"] for item in selected]
+        if (not expected or payload.get("sourceItemIds") != expected
+                or [item["id"] for item in items[:len(expected)]] != expected):
+            raise ValueError("已有摘要没有覆盖完整回合前缀")
+        if any(item.get("status") == "running" for item in selected):
+            raise ValueError("已有摘要的来源回合不完整")
+        before, _ = self._compaction_items(thread_id, entries[:index])
+        covered = set(expected)
+        original = [item for item in before if item["id"] in covered]
+        if _canonical_json(original) != _canonical_json(selected):
+            raise ValueError("已有摘要来源已变化，请先核对并恢复摘要与原始记录的一致性")
+        return checkpoint
+
+    def _history_snapshot(self, thread_id: str, entries: list[dict]) -> tuple[list[dict], dict | None]:
+        items = self.sessions._project_items(thread_id, entries)
+        try:
+            checkpoint = self._validated_checkpoint(thread_id, entries)
+        except ValueError:
+            # Revisions remain authoritative. An invalid summary must not hide
+            # them; the complete request budget still gates the expanded input.
+            checkpoint = None
+        return items, checkpoint["payload"] if checkpoint is not None else None
 
     def _compaction_snapshot(self, thread_id: str, through_turn_id: str | None,
                              keep_recent_tokens: int | None = None, *,
@@ -238,27 +285,13 @@ class ContextService:
         if [item["id"] for turn in turns for item in by_turn[turn["turnId"]]] != [item["id"] for item in items]:
             raise ValueError("回合条目交错，无法在完整回合边界压缩")
         positions = {turn["turnId"]: index for index, turn in enumerate(turns)}
-        checkpoint_index = next((index for index in range(len(entries) - 1, -1, -1)
-                                 if entries[index]["type"] == "context_checkpoint"), None)
-        checkpoint = ({"id": entries[checkpoint_index]["id"], "payload": entries[checkpoint_index]["payload"]}
-                      if checkpoint_index is not None else None)
+        checkpoint = self._validated_checkpoint(thread_id, entries, items=items, turns=turns)
         previous_index = -1
         if checkpoint is not None:
-            previous_turn = checkpoint["payload"].get("throughTurnId")
-            if not isinstance(previous_turn, str) or previous_turn not in positions:
-                raise ValueError("已有摘要的来源回合不完整")
+            previous_turn = checkpoint["payload"]["throughTurnId"]
             if previous_turn == _active_turn_id:
                 raise ValueError("已有摘要不得覆盖当前活动回合")
             previous_index = positions[previous_turn]
-            expected = [item["id"] for turn in turns[:previous_index + 1] for item in by_turn[turn["turnId"]]]
-            if not expected or checkpoint["payload"].get("sourceItemIds") != expected:
-                raise ValueError("已有摘要没有覆盖完整回合前缀")
-            before, _ = self._compaction_items(thread_id, entries[:checkpoint_index])
-            covered = set(expected)
-            original = [item for item in before if item["id"] in covered]
-            current = [item for item in items if item["id"] in covered]
-            if _canonical_json(original) != _canonical_json(current):
-                raise ValueError("已有摘要来源已变化，请先核对并恢复摘要与原始记录的一致性")
         if not turns or not items:
             raise NoCompactionSource("会话没有可压缩的完整回合")
         selection = "explicit" if through_turn_id is not None else "keepRecentTokens"
@@ -312,9 +345,7 @@ class ContextService:
 
     def history(self, thread_id: str) -> tuple[ChatMessage, ...]:
         entries = self.sessions.read_entries(thread_id)
-        items = self.sessions._project_items(thread_id, entries)
-        checkpoint = next((entry["payload"] for entry in reversed(entries)
-                           if entry["type"] == "context_checkpoint"), None)
+        items, checkpoint = self._history_snapshot(thread_id, entries)
         return self._history_projection(items, checkpoint)
 
     @staticmethod
@@ -419,19 +450,19 @@ class ContextService:
              capabilities: ModelCapabilities | None = None, provider: str = "") -> dict[str, Any]:
         if (request is None) != (capabilities is None):
             raise ValueError("request 和 capabilities 必须同时提供")
+        entries = self.sessions.read_entries(thread_id)
+        items, checkpoint = self._history_snapshot(thread_id, entries)
         if request is not None and capabilities is not None:
             budget = describe_request(request, capabilities, provider=provider)
             if provider:
                 budget = self._apply_usage(thread_id, request, provider, budget)
         else:
-            messages = self.history(thread_id)
+            messages = self._history_projection(items, checkpoint)
             estimate = estimate_tokens(messages)
             input_budget = self.window - self.reserve - _SAFETY_TOKENS
             budget = {"estimatedInputTokens": estimate, "estimateMethod": _ESTIMATE_METHOD,
                       "contextWindow": self.window, "outputReserve": self.reserve, "inputBudget": input_budget,
                       "messageCount": len(messages), "withinBudget": estimate <= input_budget, "usageApplied": False}
-        checkpoint = self._checkpoint(thread_id)
-        entries = self.sessions.read_entries(thread_id)
         usage = [e["payload"] for e in entries if e["type"] == "model_usage"]
         summary_usage = [e["payload"] for e in entries if e["type"] == "context_summary_usage"]
         last_budget = next((e["payload"] for e in reversed(entries) if e["type"] == "context_budget"), None)
