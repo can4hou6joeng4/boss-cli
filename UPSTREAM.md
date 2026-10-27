@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第四十六轮：压缩 checkpoint 来源元数据增长
+
+本项目主线 `6c2ceffc151b31f92ad525b40b9b6af41d8c548d` 的 `context_checkpoint` 原先把从会话开头到 `throughTurnId` 的所有 `sourceItemIds` 写入每条新 checkpoint。连续摘要时这些 ID 前缀重复留存在 append-only JSONL 中；`compaction_material()` 也将前一 checkpoint 原样放入下一次摘要模型输入，因此这部分 ID 会重复进入后续摘要请求。两者都会随会话增长；持久化副本还增加 JSONL 读取、来源校验和原子复制成本。
+
+参考 Pi 开放 [Issue #11297](https://github.com/earendil-works/pi/issues/11297)（截至 2026-10-28 为 OPEN；Pi main `bb65e3e49710fbd14f10c7792d0eaa6e2b2c5923`；MIT）。该 issue 报告压缩摘要中的 `<read-files>` / `<modified-files>` 路径列表跨压缩无界累积，并进入后续模型上下文。本项目的问题相邻但机制与影响不同，因此只吸收“压缩元数据增长应保持有界”的目标，不移植其文件列表处理。
+
+同步检查 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`（GitHub license 字段为 null）：当前开放 Issue #35、#34 等涉及招聘平台认证、沟通、分页和业务能力，开放 PR #37、#29 等也属于招聘业务；没有可移植到通用会话 checkpoint 的变更。本仓库当前无开放 Issue，草稿 PR #109 是会话模型线路选择，与本轮存储优化无直接关系。
+
+新 checkpoint 只写 `sourceItemCount`；加载时按完整回合投影重建来源 ID，并同时校验覆盖条目数、完整前缀顺序及 checkpoint 写入前的原始来源。旧 `sourceItemIds` checkpoint 继续按原列表校验。传给摘要模型的 `previousCheckpoint` 将旧、新格式统一投影为 `sourceItemCount` 与摘要等必要元数据，避免发送来源 ID 列表；`context/read` 与 `context/compact/plan` 仍返回完整 `sourceItemIds`，保持接口兼容。这将新 checkpoint 的重复来源清单持久化成本从覆盖前缀大小降为常数，也限制了后续摘要请求中的元数据增长，但不会减少原始会话记录、整份 JSONL 读取或 checkpoint 原子复制成本。
+
 ## 第四十五轮：独立摘要模型与推理档位
 
 在本项目主线 `b39b680ab3af51d22bd292729777853270b35ca7` 上，`CompactionPolicy` 原先只有启用状态、触发比例和保留 token 数；手动摘要通过会话 `_model_config()` 选择模型，自动及溢出摘要则复制业务回合配置。用户无法将摘要的成本、推理档位或上下文窗口与日常业务请求分开。
