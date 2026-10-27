@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from boss_harness.persistence import PersistenceIndex
+from boss_harness.models.capabilities import REASONING_EFFORTS
 
 _THREAD_ID = re.compile(r"[a-f0-9]{12}\Z")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
@@ -375,11 +376,13 @@ class SessionStore:
             if "projectId" in changes:
                 raise ValueError("projectId 不可重复提供")
             changes["projectId"] = changes.pop("project_id")
-        if set(changes) - {"title", "projectId", "model", "cwd", "toolPolicy"}:
+        if set(changes) - {"title", "projectId", "model", "cwd", "toolPolicy", "reasoningEffort"}:
             raise ValueError("会话元数据包含不支持的更新字段")
         for key, value in changes.items():
             if key == "toolPolicy" and (not isinstance(value, str) or value not in {"readOnly", "approval"}):
                 raise ValueError("toolPolicy 必须是 readOnly 或 approval")
+            if key == "reasoningEffort" and value is not None and value not in REASONING_EFFORTS:
+                raise ValueError("reasoningEffort 档位无效")
             if key == "title" and not isinstance(value, str):
                 raise ValueError("title 必须是字符串")
             if key in {"projectId", "cwd"} and value is not None and not isinstance(value, str):

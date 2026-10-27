@@ -78,7 +78,7 @@ export function loginCaptureReadiness(url: string, cookies: Record<string, strin
 
 const RENDERER_METHODS = new Set([
   "thread/start", "thread/list", "thread/read", "thread/resume", "thread/fork",
-  "thread/archive", "thread/unarchive", "thread/name/set", "thread/turns/list", "thread/items/list", "thread/item/result/read",
+  "thread/archive", "thread/unarchive", "thread/name/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read",
   "turn/start", "turn/interrupt", "turn/steer", "turn/read", "queue/list", "queue/add", "queue/remove",
   "event/list", "model/list", "config/read", "skills/list", "tool/list", "attachment/add", "attachment/read",
   "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "approval/respond",
@@ -86,7 +86,7 @@ const RENDERER_METHODS = new Set([
 ]);
 const THREAD_METHODS = new Set([
   "thread/read", "thread/resume", "thread/fork", "thread/archive", "thread/unarchive", "thread/name/set",
-  "thread/turns/list", "thread/items/list", "thread/item/result/read", "turn/start", "turn/interrupt", "turn/steer", "turn/read",
+  "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "turn/start", "turn/interrupt", "turn/steer", "turn/read",
   "queue/list", "queue/add", "queue/remove", "context/read", "context/compact/plan", "context/compact/start", "context/compact",
 ]);
 

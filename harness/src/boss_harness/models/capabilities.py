@@ -17,7 +17,10 @@ _ENV_NAME = "BOSS_HARNESS_MODEL_LIMITS"
 _MAX_JSON_BYTES = 64 * 1024
 _MAX_MODELS = 128
 _PROVIDERS = frozenset({"anthropic", "openai", "none"})
-_FIELDS = frozenset({"contextWindow", "maxOutputTokens"})
+_FIELDS = frozenset({"contextWindow", "maxOutputTokens", "reasoningEfforts"})
+_REQUIRED_FIELDS = frozenset({"contextWindow", "maxOutputTokens"})
+REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+_REASONING_EFFORT_SET = frozenset(REASONING_EFFORTS)
 _CONFIG_ERROR = "BOSS_HARNESS_MODEL_LIMITS 必须是有效的模型容量配置"
 _UNSET = object()
 
@@ -28,6 +31,7 @@ class ModelCapabilities:
     max_output_tokens: int
     source: str = "configured"
     estimated: bool = False
+    reasoning_efforts: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if (type(self.context_window) is not int or self.context_window <= 4096
@@ -36,10 +40,17 @@ class ModelCapabilities:
             raise ValueError("模型上下文窗口必须大于 4096，输出上限必须为不超过窗口的正整数")
         if not isinstance(self.source, str) or not self.source.strip() or type(self.estimated) is not bool:
             raise ValueError("模型容量来源或估算标记无效")
+        if (not isinstance(self.reasoning_efforts, tuple)
+                or len(self.reasoning_efforts) > len(_REASONING_EFFORT_SET)
+                or any(not isinstance(level, str) or level not in _REASONING_EFFORT_SET
+                       for level in self.reasoning_efforts)
+                or len(set(self.reasoning_efforts)) != len(self.reasoning_efforts)):
+            raise ValueError("模型推理档位声明无效")
 
-    def describe(self) -> dict[str, int | str | bool]:
+    def describe(self) -> dict[str, int | str | bool | list[str]]:
         return {"contextWindow": self.context_window, "maxOutputTokens": self.max_output_tokens,
-                "capabilitySource": self.source, "capacityIsEstimate": self.estimated}
+                "capabilitySource": self.source, "capacityIsEstimate": self.estimated,
+                "reasoningEfforts": list(self.reasoning_efforts)}
 
 
 _LEGACY_DEFAULT = ModelCapabilities(200_000, 64_000, source="legacy-default", estimated=True)
@@ -100,9 +111,13 @@ class ModelCatalog:
                 provider, separator, model = name.partition("/")
                 key = (provider, model)
                 if (not separator or not _valid_key(key) or not isinstance(limits, dict)
-                        or set(limits) != _FIELDS):
+                        or not _REQUIRED_FIELDS <= set(limits) or set(limits) - _FIELDS):
                     raise ValueError(_CONFIG_ERROR)
-                overrides[key] = ModelCapabilities(limits["contextWindow"], limits["maxOutputTokens"])
+                efforts = limits.get("reasoningEfforts", [])
+                if (not isinstance(efforts, list) or any(not isinstance(level, str) for level in efforts)):
+                    raise ValueError(_CONFIG_ERROR)
+                overrides[key] = ModelCapabilities(limits["contextWindow"], limits["maxOutputTokens"],
+                                                   reasoning_efforts=tuple(efforts))
             return cls(overrides)
         except (ValueError, TypeError, RecursionError, UnicodeError):
             # Never include raw configuration or JSON parser excerpts in errors.

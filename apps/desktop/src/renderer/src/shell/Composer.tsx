@@ -6,6 +6,7 @@ import { AtMentionList, filterMentions, type MentionItem } from "../components/A
 import { MODEL_OPTIONS, type ConversationMode } from "../data/mockData";
 import type { SkillDescriptor } from "@boss-cli/protocol";
 import type { SkillCatalogState } from "../data/harnessBridge";
+import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import { createComposerDraft, clearTransferredDraft, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type QueueIntent, type CheckQueueSubmission } from "../data/composerDraft";
 import "../styles/composer-menus.css";
 
@@ -18,6 +19,7 @@ export interface ComposerProps {
   isRunning?: boolean; blocked?: boolean; onInterrupt?: () => void; preview?: boolean;
   currentMode?: ConversationMode; onModeChange?: (mode: ConversationMode) => void;
   activeModelId?: string; configuredModelLabel?: string; onSelectModel?: (id: string) => void; onOpenSettings?: () => void;
+  sessionReasoning?: SessionReasoningControl;
   skills?: SkillDescriptor[]; skillCatalogState?: SkillCatalogState; onRefreshSkills?: () => void;
   home?: boolean;
   onLogin?: () => void;
@@ -35,6 +37,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   onQueue, onCheckQueueSubmission,
   currentMode = "agent", onModeChange, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, home = false, onLogin,
   skills = [], skillCatalogState = "unavailable", onRefreshSkills,
+  sessionReasoning,
 }, forwardedRef) {
   const [menu, setMenu] = useState<"add" | "permissions" | "mode" | "model" | "skills" | null>(null);
   const [modelQuery, setModelQuery] = useState("");
@@ -228,6 +231,10 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     }
   };
   const selectModel = (id: string) => { onSelectModel?.(id); setMenu(null); focusInput(); };
+  const selectReasoning = async (effort: string | null) => {
+    if (!sessionReasoning || sessionReasoning.pending) return;
+    await sessionReasoning.select(effort);
+  };
   const toggleSkill = (id: string) => updateDraft(previous => {
     const current = previous.skillIds ?? [];
     if (current.includes(id)) return { ...previous, skillIds: current.filter(skillId => skillId !== id) };
@@ -342,6 +349,17 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
               {preview ? filteredModels.map(model => <button type="button" role="menuitemradio" aria-checked={model.id === activeModelId} key={model.id} disabled={!onSelectModel} onClick={() => selectModel(model.id)}><span className="composer-model-monogram" aria-hidden="true">{model.provider.slice(0, 1)}</span><span>{model.name.replace("Adaptive Router: ", "")}<small>{model.provider}</small></span>{model.badge && <span className="composer-menu-badge">{model.badge}</span>}{model.id === activeModelId && <IconCheck className="menu-check" />}</button>) : configuredModelMatches && <div className="composer-configured-model"><span className="composer-model-monogram" aria-hidden="true"><IconSparkles size={15} /></span><span>{modelName}<small>{configuredModelLabel ? "当前运行模型" : "由启动配置管理"}</small></span><IconCheck className="menu-check" /></div>}
               {(preview ? !filteredModels.length : !configuredModelMatches) && <div className="composer-menu-empty">未找到匹配模型</div>}
             </div>
+            {!preview && sessionReasoning && <>
+              <div className="menu-divider" /><div className="composer-menu-heading">会话推理强度</div>
+              {sessionReasoning.data && <>
+                <button type="button" role="menuitemradio" data-menu-keep-open aria-checked={sessionReasoning.data.effort === null} disabled={sessionReasoning.pending} onClick={() => { void selectReasoning(null); }}><IconSparkles /><span>继承配置<small>{sessionReasoning.data.configuredEffort ?? "供应商默认"}</small></span>{sessionReasoning.data.effort === null && <IconCheck className="menu-check" />}</button>
+                {sessionReasoning.data.availableEfforts.map(effort => <button type="button" role="menuitemradio" data-menu-keep-open aria-checked={sessionReasoning.data?.effort === effort} key={effort} disabled={sessionReasoning.pending} onClick={() => { void selectReasoning(effort); }}><span>{effort}</span>{sessionReasoning.data?.effort === effort && <IconCheck className="menu-check" />}</button>)}
+                {!sessionReasoning.data.supported && <div className="composer-menu-footer" role="alert">保存的 {sessionReasoning.data.effort} 不在当前模型支持列表中；请重新选择。</div>}
+                <div className="composer-menu-footer">{sessionReasoning.data.availableEfforts.length ? "保存到当前会话；下次请求准备时生效。" : "当前模型未声明可选推理档位。"}</div>
+              </>}
+              {sessionReasoning.error && <div className="composer-menu-footer" role="alert">{sessionReasoning.error}</div>}
+              {(!sessionReasoning.data || sessionReasoning.error) && <button type="button" disabled={sessionReasoning.pending} onClick={() => { void sessionReasoning.refresh(); }}><span>重新加载推理设置</span></button>}
+            </>}
             <div className="menu-divider" /><button type="button" disabled={!onOpenSettings} onClick={() => { setMenu(null); onOpenSettings?.(); }}><IconSettings /><span>模型与连接设置</span></button>
           </Popover>
         </div>

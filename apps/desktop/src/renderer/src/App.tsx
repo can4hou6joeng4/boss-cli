@@ -3,6 +3,7 @@ import { AppShell } from "./shell/AppShell";
 import { CockpitModal } from "./components/CockpitModal";
 import { ContextPanel } from "./components/ContextPanel";
 import { useContextPanel } from "./data/useContextPanel";
+import { useSessionReasoning } from "./data/useSessionReasoning";
 import { SideChatModal } from "./components/SideChatModal";
 import { RewindOverlay } from "./components/RewindOverlay";
 import { UnifiedDiffModal } from "./components/UnifiedDiffModal";
@@ -51,6 +52,7 @@ export function App(): JSX.Element {
   const [isRevertModalOpen, setIsRevertModalOpen] = useState(false), [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const contextThreadId = activeSession?.projectId === HARNESS_PROJECT_ID && !isHomeView ? activeSession.id : null;
   const contextPanel = useContextPanel(contextThreadId, harnessUp, runningThreadIds);
+  const sessionReasoning = useSessionReasoning(contextThreadId, harnessUp);
   const updateThread = useCallback((id: string, change: (previous: MessageItem[]) => MessageItem[]) => {
     const next = change(cache.current.get(id) ?? []);
     cache.current.set(id, next); versions.current.set(id, (versions.current.get(id) ?? 0) + 1);
@@ -332,6 +334,7 @@ export function App(): JSX.Element {
       folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} currentMode={currentMode} onModeChange={setCurrentMode}
       onSelectSession={handleSelectSession} onNewTask={handleNewTask} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} onRemoveQueueItem={handleRemoveQueueItem} simulateLocal={preview} harnessUp={harnessUp}
       onCreateConnectionSession={createConnectionSession}
+      sessionReasoning={contextThreadId ? sessionReasoning : undefined}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession}
       onInterrupt={handleInterrupt} onApprovalDecision={handleApproval} onStartSessionWithPrompt={handleStartSessionWithPrompt} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel} onSelectModel={setActiveModelId}
       onOpenCockpit={() => setIsCockpitOpen(true)} onOpenSideChat={() => setIsSideChatOpen(previous => !previous)} onOpenRewind={openRewind} onOpenContext={contextThreadId ? contextPanel.open : undefined}

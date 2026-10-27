@@ -176,6 +176,7 @@ def describe_request(request: ModelRequest, capabilities: ModelCapabilities, *, 
             "contextWindow": capabilities.context_window, "outputReserve": effective_output,
             "inputBudget": input_budget, "messageCount": len(request.messages), "breakdown": breakdown,
             "requestedOutputTokens": request.max_tokens, "modelMaxOutputTokens": capabilities.max_output_tokens,
+            "reasoningEffort": request.effort,
             "capabilitySource": capabilities.source, "capacityIsEstimate": capabilities.estimated,
             "requestFingerprint": fingerprint,
             "withinBudget": estimate <= input_budget, "model": request.model, "usageApplied": False}

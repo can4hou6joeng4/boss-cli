@@ -14,6 +14,18 @@ JSON-RPC 保持 `0.2.0`。`context/read` 仅增加可选非递归 `compactionJob
 
 本地验证：`npm run typecheck`、`npm run build`、`npm audit --audit-level=moderate`（0 漏洞）、Python `compileall` 和 `git diff --check` 通过；隔离 Python 3.12 环境运行 Harness 全套 339 项，339 通过、4 跳过。Electron 43.8.3 真实 main/preload/renderer 与隔离 stdio 后端通过 8 项流程验收，覆盖预算/计划、回执和事件丢失对账、会话隔离、终态收尾、过期来源拒绝、重启/无模型状态和 480px 布局；只有合成摘要请求（2 次），真实模型、平台、网络和业务子进程调用均为 0。测试、脚本及报告仅保留本地。独立桌面安装包、签名/公证、真实模型和招聘平台完整验收仍在后续范围。
 
+## 第三十一轮：会话级推理档位与模型能力边界
+
+[Issue #78](https://github.com/can4hou6joeng4/boss-cli/issues/78) 补齐会话在简单职位检索与复杂候选人比较之间调整推理预算的控制面。当前 provider 已接受 `ModelRequest.effort`，但 `turn/start` 只能选择模型，推理强度仍来自启动环境或 Codex profile；用户无法在不改全局配置的情况下调整并恢复某个招聘会话。
+
+阅读 Pi 固定 commit `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）`packages/coding-agent/src/core/agent-session.ts` 的 `setThinkingLevel()`、`thinking_level_change` transcript 记录和模型切换后的能力 clamp；当前 Pi main `6c384aa30f619d7b28963f2bab24d8dacbe73cb6` 保持该会话级职责。Pi 的 `PromptOptions` 没有把 maxTokens 或 thinkingLevel 作为单次用户回合字段，因此本轮不新增孤立的 per-turn max token 覆盖，也不复制 Pi 源码或引入运行依赖。
+
+本项目独立增加 `thread/reasoning/read` 与 `thread/reasoning/set`，`null` 表示继承启动配置。设置作为 `thread_info.reasoningEffort` 追加到 append-only 会话历史，分叉继承创建时的设置，不写入环境变量或 Codex profile。有效档位必须来自部署者显式提供的 `ModelCapabilities.reasoningEfforts`；未知模型的兼容容量不会顺便猜测推理能力。活动回合与摘要任务持有的模型能力集合和会话模型取交集，设置失败时不写历史；已准备或正在传输的请求保持旧档位，下一次请求准备边界读取最新设置。
+
+每次完整请求的预算、请求 fingerprint、自动/手动摘要的每个无工具片段和 provider 适配都使用同一有效 effort。摘要任务在每个片段开始前读取会话值，资源收尾期间仍保留摘要模型的能力交集；worker 与 abort 都结束后，桌面重新读取并放宽档位列表。重启能力表移除已保存档位时，read 返回 `supported=false`，桌面提示并可恢复继承配置，不静默降级。
+
+桌面通过生产 preload/main/renderer 暴露的安全方法读取和保存会话设置。设置回执丢失时先读取状态、不重复写入；切换会话后旧读取响应被丢弃；设置菜单保留错误提示和重试入口。验证：隔离内核 22/22 通过，覆盖 provider 参数构造、预算/fingerprint、活动回合、分段摘要、重启/分叉、能力过期、并发模型交集和关闭边界；Electron 43.8.3 生产链路 10/10 通过，合成 provider 3 次、工具 1 次，真实模型、招聘平台、网络和业务子进程均为 0。测试材料、脚本和报告仅保留本地。
+
 ## 第二十九轮：跨入口请求身份与队列关联
 
 [Issue #73](https://github.com/can4hou6joeng4/boss-cli/issues/73) 处理同一会话的直接发送与后续排队使用同一请求编号时，旧回合虽被去重但新队列长期停在 `delivering` 的既有缺口。`ce5a9c6` 与 `ecb0e50` 均有离线复现；旧回合仍运行、执行失败、仅有回合记录，以及反向从排队转为直接发送也需要按实际身份和持久事实处理，不能只修复正常完成分支。

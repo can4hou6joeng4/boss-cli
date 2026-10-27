@@ -10,6 +10,9 @@ import {
   type ThreadItem,
   type ThreadListResponse,
   type ThreadReadResponse,
+  type ThreadStartResponse,
+  type ThreadReasoningReadResponse,
+  type ThreadReasoningSetResponse,
   type TurnInterruptResponse,
   type TurnStartResponse,
   type TurnSteerParams,
@@ -118,6 +121,8 @@ export async function listThreads(): Promise<SessionItem[]> {
       status: thread.lastTurn?.status === "running" ? "running" as const : "idle" as const,
       turnId: thread.lastTurn?.turnId,
       toolPolicy: thread.toolPolicy ?? "approval",
+      model: thread.model,
+      reasoningEffort: thread.reasoningEffort,
       projectId: HARNESS_PROJECT_ID,
     }));
   } catch {
@@ -129,7 +134,7 @@ export async function startThread(title: string, model?: string): Promise<Sessio
   const api = bridge();
   if (!api) return null;
   try {
-    const response = await api.request<{ thread: { id: string; title: string; updatedAt: string; toolPolicy: "readOnly" | "approval" } }>(
+    const response = await api.request<ThreadStartResponse>(
       ClientMethods.threadStart,
       { title, model, toolPolicy: "readOnly" },
     );
@@ -139,6 +144,8 @@ export async function startThread(title: string, model?: string): Promise<Sessio
       timeAgo: formatRelativeTime(response.thread.updatedAt),
       updatedAt: response.thread.updatedAt,
       toolPolicy: response.thread.toolPolicy,
+      model: response.thread.model,
+      reasoningEffort: response.thread.reasoningEffort,
       status: "idle",
       projectId: HARNESS_PROJECT_ID,
     };
@@ -155,6 +162,23 @@ export async function sendTurn(threadId: string, input: string, clientUserMessag
   } catch {
     return null;
   }
+}
+
+export async function readThreadReasoning(threadId: string): Promise<ThreadReasoningReadResponse> {
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  return api.request(ClientMethods.threadReasoningRead, { threadId });
+}
+
+export async function setThreadReasoning(threadId: string, effort: string | null): Promise<SessionItem> {
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  const response = await api.request<ThreadReasoningSetResponse>(ClientMethods.threadReasoningSet, { threadId, effort });
+  const thread = response.thread;
+  return { id: thread.id, title: thread.title, timeAgo: formatRelativeTime(thread.updatedAt),
+    updatedAt: thread.updatedAt, status: thread.lastTurn?.status === "running" ? "running" : "idle",
+    turnId: thread.lastTurn?.turnId, toolPolicy: thread.toolPolicy ?? "approval", model: thread.model,
+    reasoningEffort: thread.reasoningEffort, projectId: HARNESS_PROJECT_ID };
 }
 
 /** 中断当前回合。返回内核的如实回报：没有在跑的回合时为 false。 */
@@ -268,7 +292,8 @@ export async function forkThread(threadId: string, turnId: string): Promise<Sess
   try {
     const response = await bridge()?.request<ThreadReadResponse>(ClientMethods.threadFork, { threadId, turnId });
     if (!response) return null;
-    return { id: response.thread.id, title: response.thread.title, timeAgo: "刚刚", status: "idle", projectId: HARNESS_PROJECT_ID, toolPolicy: response.thread.toolPolicy ?? "approval" };
+    return { id: response.thread.id, title: response.thread.title, timeAgo: "刚刚", status: "idle", projectId: HARNESS_PROJECT_ID,
+      toolPolicy: response.thread.toolPolicy ?? "approval", model: response.thread.model, reasoningEffort: response.thread.reasoningEffort };
   } catch { return null; }
 }
 
