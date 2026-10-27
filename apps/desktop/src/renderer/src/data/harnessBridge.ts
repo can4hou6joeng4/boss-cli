@@ -10,7 +10,9 @@ import {
   type ThreadItem,
   type ThreadListResponse,
   type ThreadReadResponse,
+  type ThreadSummary,
   type ThreadStartResponse,
+  type ThreadModelSetResponse,
   type ThreadReasoningReadResponse,
   type ThreadReasoningSetResponse,
   type TurnInterruptResponse,
@@ -126,6 +128,7 @@ export async function listThreads(): Promise<SessionItem[]> {
       status: thread.lastTurn?.status === "running" ? "running" as const : "idle" as const,
       turnId: thread.lastTurn?.turnId,
       toolPolicy: thread.toolPolicy ?? "approval",
+      provider: thread.provider,
       model: thread.model,
       reasoningEffort: thread.reasoningEffort,
       projectId: HARNESS_PROJECT_ID,
@@ -135,13 +138,13 @@ export async function listThreads(): Promise<SessionItem[]> {
   }
 }
 
-export async function startThread(title: string, model?: string): Promise<SessionItem | null> {
+export async function startThread(title: string, model?: string, provider?: string): Promise<SessionItem | null> {
   const api = bridge();
   if (!api) return null;
   try {
     const response = await api.request<ThreadStartResponse>(
       ClientMethods.threadStart,
-      { title, model, toolPolicy: "readOnly" },
+      { title, provider, model, toolPolicy: "readOnly" },
     );
     return {
       id: response.thread.id,
@@ -149,6 +152,7 @@ export async function startThread(title: string, model?: string): Promise<Sessio
       timeAgo: formatRelativeTime(response.thread.updatedAt),
       updatedAt: response.thread.updatedAt,
       toolPolicy: response.thread.toolPolicy,
+      provider: response.thread.provider,
       model: response.thread.model,
       reasoningEffort: response.thread.reasoningEffort,
       status: "idle",
@@ -157,6 +161,11 @@ export async function startThread(title: string, model?: string): Promise<Sessio
   } catch {
     return null;
   }
+}
+
+export async function setThreadModel(threadId: string, provider: string, model: string): Promise<ThreadSummary> {
+  const response = await contextRequest<ThreadModelSetResponse>(ClientMethods.threadModelSet, { threadId, provider, model });
+  return response.thread;
 }
 
 export async function sendTurn(threadId: string, input: string, clientUserMessageId: string, model?: string, skillIds: string[] = []): Promise<TurnStartResponse | null> {
@@ -298,7 +307,8 @@ export async function forkThread(threadId: string, turnId: string): Promise<Sess
     const response = await bridge()?.request<ThreadReadResponse>(ClientMethods.threadFork, { threadId, turnId });
     if (!response) return null;
     return { id: response.thread.id, title: response.thread.title, timeAgo: "刚刚", status: "idle", projectId: HARNESS_PROJECT_ID,
-      toolPolicy: response.thread.toolPolicy ?? "approval", model: response.thread.model, reasoningEffort: response.thread.reasoningEffort };
+      toolPolicy: response.thread.toolPolicy ?? "approval", provider: response.thread.provider,
+      model: response.thread.model, reasoningEffort: response.thread.reasoningEffort };
   } catch { return null; }
 }
 

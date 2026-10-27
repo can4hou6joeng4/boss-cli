@@ -59,13 +59,15 @@ OpenAI Responses 的完整显式配置由以下三项组成，去除首尾空白
 | --- | --- |
 | 端点 | `BOSS_HARNESS_OPENAI_BASE_URL` |
 | 凭据 | `BOSS_HARNESS_OPENAI_API_KEY` |
-| 模型 | 命令行 `--model`，其次为 `BOSS_HARNESS_MODEL` |
+| 模型 | 命令行 `--model`、`BOSS_HARNESS_MODEL`、`BOSS_HARNESS_OPENAI_MODEL`，或 Codex profile |
 
-三项齐备时不访问 Codex 配置文件，Python 3.10 也可使用这一路线；可选推理强度只取 `BOSS_HARNESS_EFFORT`，未指定则由模型服务决定，不再继承文件中的值。没有 `BOSS_HARNESS_OPENAI_MODEL` 别名。
+三项齐备时不访问 Codex 配置文件，Python 3.10 也可使用这一路线；可选推理强度只取 `BOSS_HARNESS_EFFORT`，未指定则由模型服务决定，不再继承文件中的值。Anthropic 默认模型可用 `BOSS_HARNESS_ANTHROPIC_MODEL` 指定。多 provider 会话选择时，`BOSS_HARNESS_OPENAI_MODEL` 与 `BOSS_HARNESS_ANTHROPIC_MODEL` 分别指定对应线路模型；全局 `BOSS_HARNESS_MODEL` 仍只覆盖进程默认线路。
 
 缺少任一项时才读取 `BOSS_HARNESS_CODEX_CONFIG`、`CODEX_HOME/config.toml` 或默认 `~/.codex/config.toml`，按此顺序选择文件，显式字段仍优先。读取 TOML 需要 Python 3.11+；已有文件不可读或语法损坏时明确报错，不退到其他 provider。文件不存在或缺少可用 profile 时继续检查端点与凭据，缺项会报错；未提供模型且没有可用文件模型时保留既有 `DEFAULT_MODEL`。
 
 当前文件适配要求文件自身同时提供 `model`、`model_provider` 及该 provider 的 `base_url` 才形成可用 profile；认证仅识别 `experimental_bearer_token`，尚未适配 Codex 的 `env_key`、OAuth 或任意 `wire_api`。配置解析只读本地文件，不探测真实服务。
+
+`model/list` 只列举本机已配置且当前可用的 provider 及其配置模型，不探测或下载远程模型目录，也不返回端点和凭据。`thread/start` 可指定 provider/model；已有会话通过 `thread/model/set` 保存选择，只接受该目录中的精确组合，并要求会话空闲。provider 与 model 追加到会话元数据，fork 会继承；旧会话没有 provider 时继续使用进程默认 provider。切换模型会清除不再适用的会话推理档位。未配置或不可用线路会在用户输入持久化和 worker 启动前被拒绝。
 
 ## 明确条件搜索
 

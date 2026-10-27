@@ -4,6 +4,7 @@
 
 ### 新功能
 
+- 参考 Pi 开放 PR [#11368](https://github.com/earendil-works/pi/pull/11368) 的 provider/model 定义拆分，为本机可用线路增加模型目录和会话级 provider/model 选择；选择追加到会话历史并随 fork 继承，旧会话继续继承启动默认线路。
 - 参考 Pi 的 hook 取消信号边界，为 `before_tool_call` 增加可选协作式 `signal`，并在回合取消时立即结束内核等待；旧的一参数 hook 保持兼容，迟到决策不触发审批或工具派发。
 - [Issue #107](https://github.com/can4hou6joeng4/boss-cli/issues/107)：增加追加式会话上下文编辑，允许替换或排除已结束回合中的用户/助手文本；原始日志不变，编辑参与请求预算与摘要来源，并按 fork 历史继承。
 

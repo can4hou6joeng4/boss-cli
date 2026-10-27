@@ -78,14 +78,14 @@ export function loginCaptureReadiness(url: string, cookies: Record<string, strin
 
 const RENDERER_METHODS = new Set([
   "thread/start", "thread/list", "thread/read", "thread/resume", "thread/fork",
-  "thread/archive", "thread/unarchive", "thread/name/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
+  "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
   "turn/start", "turn/interrupt", "turn/steer", "turn/read", "queue/list", "queue/add", "queue/remove",
   "event/list", "model/list", "config/read", "skills/list", "tool/list", "attachment/add", "attachment/read",
   "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "context/edit/read", "context/edit", "approval/respond",
   "connection/read", "connection/check",
 ]);
 const THREAD_METHODS = new Set([
-  "thread/read", "thread/resume", "thread/fork", "thread/archive", "thread/unarchive", "thread/name/set",
+  "thread/read", "thread/resume", "thread/fork", "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set",
   "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read", "turn/start", "turn/interrupt", "turn/steer", "turn/read",
   "queue/list", "queue/add", "queue/remove", "context/read", "context/compact/plan", "context/compact/start", "context/compact", "context/edit/read", "context/edit",
 ]);
@@ -129,6 +129,16 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
   }
   if (payload.method === "thread/start" && params?.title !== undefined &&
     (typeof params.title !== "string" || params.title.length > 500)) throw new Error("invalid thread title");
+  if (payload.method === "thread/start" && params?.provider !== undefined &&
+    (typeof params.provider !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(params.provider))) {
+    throw new Error("invalid thread provider");
+  }
+  if (payload.method === "thread/model/set" && (!params ||
+    Object.keys(params).some(key => !["threadId", "provider", "model"].includes(key)) ||
+    typeof params.provider !== "string" || !/^[a-z][a-z0-9_-]{0,63}$/.test(params.provider) ||
+    typeof params.model !== "string" || !/^[^\s]{1,200}$/.test(params.model))) {
+    throw new Error("invalid thread model selection");
+  }
   if (payload.method === "approval/respond" && (typeof params?.approvalId !== "string" || !params.approvalId ||
     typeof params.approved !== "boolean")) throw new Error("invalid approval decision");
   if (payload.method === "context/compact/read" || payload.method === "context/compact/abort") {

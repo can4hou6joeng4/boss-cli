@@ -60,6 +60,9 @@ def resolve_config(
     优先级：显式 `provider` 入参（来自命令行）> `BOSS_HARNESS_PROVIDER` >「有 Anthropic
     凭据就用 anthropic，否则 none」。没有可用凭据时返回 `none`，退回确定性回合。
 
+    `BOSS_HARNESS_MODEL` 覆盖进程默认线路的模型；未设置时分别读取 provider 专属模型变量或
+    Codex profile。provider 专属变量也用于同一进程列举其他已配置线路。
+
     `provider` 必须在这里就参与决策，不能在解析完之后再替换 provider 字段：各线路的端点与
     凭据来源不同（anthropic 取 `ANTHROPIC_*`，openai 取 Codex 配置），事后替换会拿到另一条
     线路的端点，并丢掉这条线路的凭据。
@@ -100,7 +103,9 @@ def resolve_config(
 
     return ModelConfig(
         provider=resolved,
-        model=(env.get("BOSS_HARNESS_MODEL") or DEFAULT_MODEL).strip() or DEFAULT_MODEL,
+    model=(env.get("BOSS_HARNESS_MODEL")
+               or env.get("BOSS_HARNESS_ANTHROPIC_MODEL")
+               or DEFAULT_MODEL).strip() or DEFAULT_MODEL,
         max_tokens=int(env.get("BOSS_HARNESS_MAX_TOKENS") or DEFAULT_MAX_TOKENS),
         effort=(env.get("BOSS_HARNESS_EFFORT") or "").strip() or None,
         thinking=thinking,
@@ -116,7 +121,7 @@ def _openai_config(env: Mapping[str, str]) -> ModelConfig:
     """
     from boss_harness.models.codex_config import load_profile
 
-    explicit_model = (env.get("BOSS_HARNESS_MODEL") or "").strip()
+    explicit_model = (env.get("BOSS_HARNESS_MODEL") or env.get("BOSS_HARNESS_OPENAI_MODEL") or "").strip()
     explicit_url = (env.get("BOSS_HARNESS_OPENAI_BASE_URL") or "").strip()
     explicit_key = (env.get("BOSS_HARNESS_OPENAI_API_KEY") or "").strip()
     # Optional file settings must not make a fully specified route depend on

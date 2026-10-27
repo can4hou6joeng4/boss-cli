@@ -11,11 +11,11 @@ import { RevertConfirmModal } from "./components/RevertConfirmModal";
 import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
-import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, startThread, steerTurn } from "./data/harnessBridge";
+import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn } from "./data/harnessBridge";
 import { reduceHarnessEvent, type HarnessEvent } from "./data/harnessEvents";
 import { HarnessReplica } from "./data/harnessReplica";
 import { toMessage } from "./data/harnessBridge";
-import type { QueueItem } from "@boss-cli/protocol";
+import type { ModelDescriptor, QueueItem } from "@boss-cli/protocol";
 import type { QueueIntent, QueueSubmissionCheck } from "./data/composerDraft";
 export function App(): JSX.Element {
   const [isDark, setIsDark] = useState(() => {
@@ -29,6 +29,9 @@ export function App(): JSX.Element {
   const [activeSession, setActiveSession] = useState<SessionItem | null>(null);
   const [currentMode, setCurrentMode] = useState<ConversationMode>("agent");
   const [activeModelId, setActiveModelId] = useState("deepseek-v4");
+  const [activeModelProvider, setActiveModelProvider] = useState("DeepSeek");
+  const [modelOptions, setModelOptions] = useState<ModelDescriptor[]>([]);
+  const [defaultModel, setDefaultModel] = useState<{ provider: string; model: string } | null>(null);
   const [configuredModelLabel, setConfiguredModelLabel] = useState<string>();
   const [messages, setMessages] = useState<MessageItem[]>([]);
   const [runningThreadIds, setRunningThreadIds] = useState(new Set<string>());
@@ -88,7 +91,7 @@ export function App(): JSX.Element {
           if (items && activeRef.current?.id === id) setQueueItems(items);
         });
       }
-      if (["thread/created", "thread/archived", "thread/unarchived", "thread/renamed"].includes(event.method)) { void refresh(); return; }
+      if (["thread/created", "thread/archived", "thread/unarchived", "thread/renamed", "thread/model/updated"].includes(event.method)) { void refresh(); return; }
       if (event.method === "turn/started") {
         lifecycleVersion.current += 1;
         if (params.turnId) turnIds.current.set(id, params.turnId);
@@ -123,7 +126,20 @@ export function App(): JSX.Element {
           if (status?.state === "disconnected" || status?.state === "stopped") setError(status?.error ?? "本地内核未连接，可重新连接后恢复会话。");
           return;
         }
-        if (status.modelBridge) { setActiveModelId(status.modelBridge.model); setConfiguredModelLabel(status.modelBridge.model); }
+        const processDefault = status.modelBridge
+          ? { provider: status.modelBridge.provider, model: status.modelBridge.model }
+          : null;
+        if (processDefault) {
+          const initial = processDefault;
+          setDefaultModel(initial);
+          if (!activeRef.current || activeRef.current.projectId !== HARNESS_PROJECT_ID) {
+            setActiveModelProvider(initial.provider); setActiveModelId(initial.model);
+          }
+          setConfiguredModelLabel(`${initial.provider} · ${initial.model}`);
+        }
+        const modelCatalog = await configuredModels();
+        if (cancelled) return;
+        setModelOptions(modelCatalog.filter(model => model.configured && model.available));
         const version = lifecycleVersion.current;
         const sessions = await listThreads(); if (cancelled) return;
         if (version === lifecycleVersion.current) {
@@ -134,7 +150,18 @@ export function App(): JSX.Element {
         for (const session of sessions) session.status = runningRef.current.has(session.id) ? "running" : "idle";
         setFolders([{ id: HARNESS_PROJECT_ID, name: HARNESS_PROJECT_NAME, sessions }]);
         const active = activeRef.current;
-        if (active?.projectId === HARNESS_PROJECT_ID) await replica.resume(active.id);
+        if (active?.projectId === HARNESS_PROJECT_ID) {
+          const summary = sessions.find(session => session.id === active.id);
+          if (summary) {
+            activeRef.current = summary; setActiveSession(summary);
+            const provider = summary.provider ?? processDefault?.provider ?? active.provider;
+            const model = summary.model ?? modelCatalog.find(candidate => candidate.provider === provider)?.id ?? processDefault?.model ?? active.model;
+            if (provider && model) {
+              setActiveModelProvider(provider); setActiveModelId(model); setConfiguredModelLabel(`${provider} · ${model}`);
+            }
+          }
+          await replica.resume(active.id);
+        }
       })().finally(() => { refreshing = null; if (refreshAgain && !cancelled) { refreshAgain = false; void refresh(); } });
       return refreshing;
     }
@@ -146,7 +173,7 @@ export function App(): JSX.Element {
         return;
       }
       if (event.method === "harness/disconnected") {
-        replica.invalidate(); setHarnessUp(false); setConfiguredModelLabel(undefined);
+        replica.invalidate(); setHarnessUp(false); setConfiguredModelLabel(undefined); setModelOptions([]);
         setError("本地内核已断开，正在恢复连接；结果未确认的对外操作请先核对平台状态。");
         for (const id of runningRef.current) markRunning(id, false);
         return;
@@ -160,6 +187,11 @@ export function App(): JSX.Element {
   const handleSelectSession = useCallback((session: SessionItem) => {
     const requestVersion = ++selectionVersion.current;
     activeRef.current = session; setActiveSession(session); setIsHomeView(false); setError("");
+    const provider = session.provider ?? defaultModel?.provider ?? activeModelProvider;
+    const model = session.model ?? (provider === defaultModel?.provider ? defaultModel.model : undefined)
+      ?? modelOptions.find(candidate => candidate.provider === provider)?.id ?? activeModelId;
+    setActiveModelProvider(provider); setActiveModelId(model);
+    setConfiguredModelLabel(`${provider} · ${model}`);
     setQueueItems([]);
     if (window.innerWidth < 700) setIsSidebarOpen(false);
     if (session.projectId !== HARNESS_PROJECT_ID) {
@@ -173,17 +205,25 @@ export function App(): JSX.Element {
     void replicaRef.current?.resume(session.id).then(snapshot => {
       if (selectionVersion.current !== requestVersion || activeRef.current?.id !== session.id) return;
       if (!snapshot) setError("读取会话失败，已保留当前内容。请检查本地内核连接。");
-      else if (snapshot.thread.model) { setActiveModelId(snapshot.thread.model); setConfiguredModelLabel(snapshot.thread.model); }
+      else {
+        const provider = snapshot.thread.provider ?? defaultModel?.provider ?? activeModelProvider;
+        const model = snapshot.thread.model ?? (provider === defaultModel?.provider ? defaultModel.model : undefined)
+          ?? modelOptions.find(candidate => candidate.provider === provider)?.id ?? activeModelId;
+        const updated = { ...session, provider: snapshot.thread.provider, model: snapshot.thread.model };
+        activeRef.current = updated; setActiveSession(updated);
+        setActiveModelProvider(provider); setActiveModelId(model); setConfiguredModelLabel(`${provider} · ${model}`);
+      }
     });
-  }, []);
+  }, [activeModelId, activeModelProvider, defaultModel, modelOptions]);
   const handleNewTask = useCallback(() => {
     ++selectionVersion.current; activeRef.current = null; setActiveSession(null); setMessages([]); setIsHomeView(true); setError("");
-  }, []);
+    if (defaultModel) { setActiveModelProvider(defaultModel.provider); setActiveModelId(defaultModel.model); setConfiguredModelLabel(`${defaultModel.provider} · ${defaultModel.model}`); }
+  }, [defaultModel]);
   const createConnectionSession = async (): Promise<SessionItem | null> => {
     if (!window.boss || !harnessUp || startingRef.current) return null;
     startingRef.current = true; setStartingSession(true);
     try {
-      const session = await startThread("BOSS 直聘账号连接", activeModelId);
+      const session = await startThread("BOSS 直聘账号连接", activeModelId, activeModelProvider);
       if (session) { insertSession(session); handleSelectSession(session); }
       return session;
     } catch { setError("连接会话尚未创建，请检查本机连接后重试。"); return null; }
@@ -196,6 +236,31 @@ export function App(): JSX.Element {
       markRunning(id, false); timers.current.delete(id);
     }, 1300));
   }, [markRunning, updateThread]);
+  const handleSelectModel = useCallback(async (provider: string, model: string): Promise<boolean> => {
+    const session = activeRef.current;
+    if (session?.projectId === HARNESS_PROJECT_ID && !isHomeView) {
+      if (!harnessUp || runningRef.current.has(session.id)) return false;
+      const selectionVersionAtStart = selectionVersion.current;
+      try {
+        await setThreadModel(session.id, provider, model);
+      } catch {
+        if (selectionVersion.current === selectionVersionAtStart && activeRef.current?.id === session.id) {
+          setError("模型设置失败；当前会话选择保持不变。");
+        }
+        return false;
+      }
+      const updated = { ...session, provider, model, reasoningEffort: null };
+      setFolders(previous => previous.map(folder => ({
+        ...folder,
+        sessions: folder.sessions.map(item => item.id === updated.id ? { ...item, provider, model, reasoningEffort: null } : item),
+      })));
+      if (selectionVersion.current !== selectionVersionAtStart || activeRef.current?.id !== session.id) return true;
+      activeRef.current = updated; setActiveSession(updated);
+      void sessionReasoning.refresh();
+    }
+    setActiveModelProvider(provider); setActiveModelId(model); setConfiguredModelLabel(`${provider} · ${model}`);
+    return true;
+  }, [harnessUp, isHomeView, sessionReasoning]);
   const send = useCallback(async (id: string, text: string, real: boolean, model = activeModelId, skillIds: string[] = []): Promise<boolean> => {
     if (real && !harnessUp) { setError("本地内核未连接，请重启应用后再发起任务。"); return false; }
     if (runningRef.current.has(id)) { setError("该会话仍在运行，请等待结束或停止后再发送。"); return false; }
@@ -219,7 +284,7 @@ export function App(): JSX.Element {
     // 已交给会话并发起请求；回执未知仍不能作为可自动重发的草稿。
     return true;
   }, [harnessUp, activeModelId, updateThread, markRunning, simulate]);
-  const handleStartSessionWithPrompt = useCallback((prompt: string, _domain: string, modelId: string, skillIds: string[] = []) => {
+  const handleStartSessionWithPrompt = useCallback((prompt: string, _domain: string, provider: string, modelId: string, skillIds: string[] = []) => {
     return (async () => {
       if (window.boss && !harnessUp) { setError("本地内核未连接，请检查启动配置并重启应用。"); return null; }
       if (startingRef.current) { setError("已有任务正在创建或运行，请等待结束或停止后再创建。"); return null; }
@@ -227,7 +292,8 @@ export function App(): JSX.Element {
       startingRef.current = true; setStartingSession(true);
       try {
         setActiveModelId(modelId);
-        const started = harnessUp ? await startThread(prompt.slice(0, 32), modelId) : { id: "preview-" + Date.now(), title: prompt.slice(0, 32), timeAgo: "刚刚", status: "idle" as const, projectId: MOCK_PROJECT_FOLDERS[0]?.id ?? "preview" };
+        setActiveModelProvider(provider);
+        const started = harnessUp ? await startThread(prompt.slice(0, 32), modelId, provider) : { id: "preview-" + Date.now(), title: prompt.slice(0, 32), timeAgo: "刚刚", status: "idle" as const, projectId: MOCK_PROJECT_FOLDERS[0]?.id ?? "preview", provider, model: modelId };
         if (!started) { setError("创建会话失败，请检查本地内核连接后重试。"); return null; }
         insertSession(started);
         const transferred = await send(started.id, prompt, started.projectId === HARNESS_PROJECT_ID, modelId, skillIds);
@@ -336,7 +402,7 @@ export function App(): JSX.Element {
       onCreateConnectionSession={createConnectionSession}
       sessionReasoning={contextThreadId ? sessionReasoning : undefined}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession}
-      onInterrupt={handleInterrupt} onApprovalDecision={handleApproval} onStartSessionWithPrompt={handleStartSessionWithPrompt} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel} onSelectModel={setActiveModelId}
+      onInterrupt={handleInterrupt} onApprovalDecision={handleApproval} onStartSessionWithPrompt={handleStartSessionWithPrompt} models={modelOptions} activeModelProvider={activeModelProvider} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel} onSelectModel={handleSelectModel}
       onOpenCockpit={() => setIsCockpitOpen(true)} onOpenSideChat={() => setIsSideChatOpen(previous => !previous)} onOpenRewind={openRewind} onOpenContext={contextThreadId ? contextPanel.open : undefined}
       onOpenShortcuts={() => setIsShortcutsOpen(true)} onReviewDiff={() => setIsDiffModalOpen(true)} onRevertDiff={() => setIsRevertModalOpen(true)} />
     {error && <div className="app-toast" role="alert"><span>{error}</span>{!harnessUp && window.boss && <button onClick={() => { void reconnectHarness(); }}>重新连接</button>}<button onClick={() => setError("")} aria-label="关闭提示"><IconClose size={14} /></button></div>}

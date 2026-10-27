@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第四十四轮：会话级 provider/model 选择
+
+本项目基线为 `b39b680d703c33e83d681f7c1b526810fea7db0c`。`ApplicationService._model_config()` 原先固定使用进程级 provider，`model/list` 也只返回该线路；因此桌面无法在不同会话间隔离 provider/model 选择。
+
+参考 Pi 开放 PR [#11368](https://github.com/earendil-works/pi/pull/11368)（截至 2026-10-28 为 OPEN，head `9a5481061e9b1ec6847780ef95c737b493d7f161`；仓库许可证 MIT）。该 PR 拆分 provider 与 model 定义；本项目仅采用显式线路目录和选择与会话状态分离的设计，不复制其代码。`jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70` 的开放 PR [#37](https://github.com/jackwener/boss-cli/pull/37)（head `bee4a290df69da581520e566e3f46488885b53a3`）是招聘聊天分页修复；开放 Issue [#35](https://github.com/jackwener/boss-cli/issues/35) 涉及隐式 Cookie/Keychain 读取。该仓库 GitHub license 字段为空。本项目业务适配器使用另一可执行文件，现有显式分页和浏览器来源约束已覆盖可迁移的兼容边界；本轮不移植这两个业务事项。
+
+新增目录只列出本机已配置且可用的 provider 及其配置模型，不探测远程模型目录，也不返回端点或凭据。新会话保存 provider/model；空闲会话通过 `thread/model/set` 保存选择并清除旧 reasoning 设置，fork 沿用元数据。没有 provider 字段的旧会话继续使用进程默认 provider。未配置路线在用户输入写入或 worker 启动前被拒绝。
+
 ## 第四十三轮：追加式会话上下文编辑
 
 本项目 [Issue #107](https://github.com/can4hou6joeng4/boss-cli/issues/107) 对照主线 `4cd485e7a833a004d4be3eb88b49da0fe96211f`，确认上下文仅由普通逻辑条目与一个经来源核验的摘要 checkpoint 投影而成，不能针对单条历史文本调整后续模型可见内容。影响用户纠正过期事实、排除误输入，同时又要求保留原始审计记录的场景。

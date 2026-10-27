@@ -42,7 +42,7 @@ export function useSessionReasoning(threadId: string | null, connected: boolean)
     if (threadId && connected) void refresh();
     const unsubscribe = window.boss?.onNotification(raw => {
       const event = raw as { method?: string; params?: { threadId?: string } };
-      if (event.params?.threadId === threadId && ["thread/reasoning/updated", "turn/started", "turn/completed", "context/compactionStarted", "context/compactionCompleted", "context/compactionFailed"].includes(event.method ?? "")) void refresh();
+      if (event.params?.threadId === threadId && ["thread/reasoning/updated", "thread/model/updated", "turn/started", "turn/completed", "context/compactionStarted", "context/compactionCompleted", "context/compactionFailed"].includes(event.method ?? "")) void refresh();
     });
     return () => { ++epoch.current; ++reads.current; unsubscribe?.(); };
   }, [threadId, connected, refresh]);

@@ -606,7 +606,7 @@ class SessionStore:
             if "projectId" in changes:
                 raise ValueError("projectId 不可重复提供")
             changes["projectId"] = changes.pop("project_id")
-        if set(changes) - {"title", "projectId", "model", "cwd", "toolPolicy", "reasoningEffort"}:
+        if set(changes) - {"title", "projectId", "provider", "model", "cwd", "toolPolicy", "reasoningEffort"}:
             raise ValueError("会话元数据包含不支持的更新字段")
         for key, value in changes.items():
             if key == "toolPolicy" and (not isinstance(value, str) or value not in {"readOnly", "approval"}):
@@ -615,6 +615,9 @@ class SessionStore:
                 raise ValueError("reasoningEffort 档位无效")
             if key == "title" and not isinstance(value, str):
                 raise ValueError("title 必须是字符串")
+            if key == "provider" and (not isinstance(value, str) or not value
+                    or len(value) > 64 or any(char.isspace() for char in value)):
+                raise ValueError("provider 必须是非空 provider id")
             if key in {"projectId", "cwd"} and value is not None and not isinstance(value, str):
                 raise ValueError(f"{key} 必须是字符串或 null")
             if key == "model" and value is not None and not isinstance(value, (str, dict)):

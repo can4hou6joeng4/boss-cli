@@ -4,7 +4,7 @@ import { Popover } from "../components/Popover";
 import { SlashCommandList, SLASH_COMMANDS, type SlashCommandItem } from "../components/SlashCommandList";
 import { AtMentionList, filterMentions, type MentionItem } from "../components/AtMentionList";
 import { MODEL_OPTIONS, type ConversationMode } from "../data/mockData";
-import type { SkillDescriptor } from "@boss-cli/protocol";
+import type { ModelDescriptor, SkillDescriptor } from "@boss-cli/protocol";
 import type { SkillCatalogState } from "../data/harnessBridge";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import { createComposerDraft, clearTransferredDraft, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type QueueIntent, type CheckQueueSubmission } from "../data/composerDraft";
@@ -18,7 +18,8 @@ export interface ComposerProps {
   draft?: ComposerDraft; onDraftChange?: UpdateComposerDraft;
   isRunning?: boolean; blocked?: boolean; onInterrupt?: () => void; preview?: boolean;
   currentMode?: ConversationMode; onModeChange?: (mode: ConversationMode) => void;
-  activeModelId?: string; configuredModelLabel?: string; onSelectModel?: (id: string) => void; onOpenSettings?: () => void;
+  models?: ModelDescriptor[]; activeModelProvider?: string; activeModelId?: string; configuredModelLabel?: string;
+  onSelectModel?: (provider: string, id: string) => void | boolean | Promise<void | boolean>; onOpenSettings?: () => void;
   sessionReasoning?: SessionReasoningControl;
   skills?: SkillDescriptor[]; skillCatalogState?: SkillCatalogState; onRefreshSkills?: () => void;
   home?: boolean;
@@ -35,12 +36,14 @@ const MAX_ATTACHMENT_BYTES = 200000;
 export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Composer({
   value, onChange, onSend, draft, onDraftChange, isRunning = false, blocked = false, onInterrupt, preview = true, readOnly = false,
   onQueue, onCheckQueueSubmission,
-  currentMode = "agent", onModeChange, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, home = false, onLogin,
+  currentMode = "agent", onModeChange, models = [], activeModelProvider, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, home = false, onLogin,
   skills = [], skillCatalogState = "unavailable", onRefreshSkills,
   sessionReasoning,
 }, forwardedRef) {
   const [menu, setMenu] = useState<"add" | "permissions" | "mode" | "model" | "skills" | null>(null);
   const [modelQuery, setModelQuery] = useState("");
+  const [modelPending, setModelPending] = useState(false);
+  const [modelError, setModelError] = useState("");
   const [slashOpen, setSlashOpen] = useState(false), [mentionOpen, setMentionOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [localDraft, setLocalDraft] = useState(createComposerDraft);
@@ -74,9 +77,13 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const dragDepth = useRef(0);
   const slashQuery = value.match(/^\/([^\s]*)$/)?.[1] ?? "";
   const mentionQuery = value.match(/(?:^|\s)@([^\s]*)$/)?.[1] ?? "";
-  const modelName = preview ? (MODEL_OPTIONS.find(model => model.id === activeModelId)?.name.replace("Adaptive Router: ", "") ?? "默认模型") : (configuredModelLabel?.trim() || "配置的模型");
+  const availableModels = preview ? MODEL_OPTIONS : models.filter(model => model.configured && model.available);
+  const currentDescriptor = availableModels.find(model => model.id === activeModelId && model.provider === activeModelProvider);
+  const modelName = preview
+    ? (MODEL_OPTIONS.find(model => model.id === activeModelId)?.name.replace("Adaptive Router: ", "") ?? "默认模型")
+    : (currentDescriptor ? `${currentDescriptor.provider} · ${currentDescriptor.id}` : configuredModelLabel?.trim() || "配置的模型");
   const query = modelQuery.trim().toLowerCase();
-  const filteredModels = MODEL_OPTIONS.filter(model => [model.name, model.provider].join(" ").toLowerCase().includes(query));
+  const filteredModels = availableModels.filter(model => ["name" in model ? model.name : "", model.provider, model.id].join(" ").toLowerCase().includes(query));
   const configuredModelMatches = [modelName, "启动配置 当前模型"].join(" ").toLowerCase().includes(query);
   const mode = MODES.find(item => item.id === currentMode) ?? MODES[0];
 
@@ -230,7 +237,17 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
       if (alive.current) setCheckingQueue(false);
     }
   };
-  const selectModel = (id: string) => { onSelectModel?.(id); setMenu(null); focusInput(); };
+  const selectModel = async (provider: string, id: string) => {
+    if (!onSelectModel || modelPending || isRunning || blocked) return;
+    setModelPending(true); setModelError("");
+    try {
+      const changed = await onSelectModel(provider, id);
+      if (changed !== false) { setMenu(null); focusInput(); }
+      else setModelError("模型设置未确认；当前选择保持不变。");
+    } catch {
+      setModelError("模型设置失败；当前选择保持不变。");
+    } finally { setModelPending(false); }
+  };
   const selectReasoning = async (effort: string | null) => {
     if (!sessionReasoning || sessionReasoning.pending) return;
     await sessionReasoning.select(effort);
@@ -332,7 +349,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
       </div>
       <div className="composer-control-right">
         <div className="popover-anchor">
-          <button className={`composer-model ${menu === "model" ? "is-open" : ""}`} type="button" aria-label="选择模型" title={`当前模型：${modelName}`} aria-haspopup="menu" aria-expanded={menu === "model"} onClick={() => toggleMenu("model")}><span>{modelName}</span><IconChevronDown size={11} /></button>
+          <button className={`composer-model ${menu === "model" ? "is-open" : ""}`} type="button" aria-label="选择模型" title={`当前模型：${modelName}`} aria-haspopup="menu" aria-expanded={menu === "model"} aria-busy={modelPending} onClick={() => { setModelError(""); toggleMenu("model"); }}><span>{modelName}</span><IconChevronDown size={11} /></button>
           <Popover open={menu === "model"} onClose={() => setMenu(null)} align="right" above label="选择模型" className="composer-action-menu composer-model-menu">
             <div className="composer-menu-heading">模型{preview && <span className="composer-menu-badge">预览</span>}</div>
             <div className="composer-menu-search"><IconSearch size={15} /><input ref={modelInputRef} data-menu-autofocus aria-label="搜索模型" placeholder="搜索模型…" value={modelQuery} onChange={event => setModelQuery(event.target.value)} onKeyDown={event => {
@@ -343,11 +360,18 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
                   ?? event.currentTarget.closest(".composer-action-menu")?.querySelector<HTMLButtonElement>(":scope > button:not(:disabled)");
                 if (option) { event.preventDefault(); event.stopPropagation(); option.focus(); }
               }
-              if (event.key === "Enter" && preview && onSelectModel && filteredModels[0]) { event.preventDefault(); event.stopPropagation(); selectModel(filteredModels[0].id); }
+              if (event.key === "Enter" && onSelectModel && filteredModels[0] && !modelPending) { event.preventDefault(); event.stopPropagation(); void selectModel(filteredModels[0].provider, filteredModels[0].id); }
             }} />{modelQuery && <button type="button" data-menu-keep-open aria-label="清除模型搜索" onClick={() => { setModelQuery(""); modelInputRef.current?.focus(); }}><IconClose size={12} /></button>}</div>
             <div className="composer-model-options">
-              {preview ? filteredModels.map(model => <button type="button" role="menuitemradio" aria-checked={model.id === activeModelId} key={model.id} disabled={!onSelectModel} onClick={() => selectModel(model.id)}><span className="composer-model-monogram" aria-hidden="true">{model.provider.slice(0, 1)}</span><span>{model.name.replace("Adaptive Router: ", "")}<small>{model.provider}</small></span>{model.badge && <span className="composer-menu-badge">{model.badge}</span>}{model.id === activeModelId && <IconCheck className="menu-check" />}</button>) : configuredModelMatches && <div className="composer-configured-model"><span className="composer-model-monogram" aria-hidden="true"><IconSparkles size={15} /></span><span>{modelName}<small>{configuredModelLabel ? "当前运行模型" : "由启动配置管理"}</small></span><IconCheck className="menu-check" /></div>}
-              {(preview ? !filteredModels.length : !configuredModelMatches) && <div className="composer-menu-empty">未找到匹配模型</div>}
+              {filteredModels.map(model => {
+                const name = "name" in model ? model.name.replace("Adaptive Router: ", "") : model.id;
+                const selected = model.provider === activeModelProvider && model.id === activeModelId;
+                return <button type="button" role="menuitemradio" aria-checked={selected} key={`${model.provider}:${model.id}`} disabled={!onSelectModel || modelPending || isRunning || blocked || (selected && !preview)} onClick={() => { void selectModel(model.provider, model.id); }}><span className="composer-model-monogram" aria-hidden="true">{model.provider.slice(0, 1)}</span><span>{name}<small>{model.provider}</small></span>{"badge" in model && model.badge && <span className="composer-menu-badge">{model.badge}</span>}{selected && <IconCheck className="menu-check" />}</button>;
+              })}
+              {modelPending && <div className="composer-menu-footer" role="status">正在保存模型设置…</div>}
+              {modelError && <div className="composer-menu-footer" role="alert">{modelError}</div>}
+              {!filteredModels.length && <div className="composer-menu-empty">{models.length ? "未找到匹配模型" : preview ? "未找到匹配模型" : "没有可用的本机模型线路"}</div>}
+              {!preview && currentDescriptor && configuredModelMatches && !filteredModels.some(model => model.id === activeModelId && model.provider === activeModelProvider) && <div className="composer-configured-model"><span className="composer-model-monogram" aria-hidden="true"><IconSparkles size={15} /></span><span>{modelName}<small>当前会话</small></span><IconCheck className="menu-check" /></div>}
             </div>
             {!preview && sessionReasoning && <>
               <div className="menu-divider" /><div className="composer-menu-heading">会话推理强度</div>

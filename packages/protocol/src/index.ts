@@ -87,6 +87,7 @@ export const ClientMethods = {
   threadArchive: "thread/archive",
   threadUnarchive: "thread/unarchive",
   threadNameSet: "thread/name/set",
+  threadModelSet: "thread/model/set",
   threadReasoningRead: "thread/reasoning/read",
   threadReasoningSet: "thread/reasoning/set",
   threadTurnsList: "thread/turns/list",
@@ -143,6 +144,7 @@ export const ServerNotifications = {
   threadUnarchived: "thread/unarchived",
   threadRenamed: "thread/renamed",
   threadReasoningUpdated: "thread/reasoning/updated",
+  threadModelUpdated: "thread/model/updated",
   queueUpdated: "queue/updated",
   contextCompactionStarted: "context/compactionStarted",
   contextCompactionProgress: "context/compactionProgress",
@@ -168,6 +170,7 @@ export interface ThreadSummary {
   lastTurn?: { turnId: string; status: TurnStatus } | null;
   sessionId?: string;
   projectId?: string | null;
+  provider?: string;
   model?: string;
   reasoningEffort?: string | null;
   cwd?: string;
@@ -293,6 +296,7 @@ export interface ThreadStartParams {
   toolPolicy?: "readOnly" | "approval";
   title?: string;
   projectId?: string;
+  provider?: string;
   model?: string;
 }
 
@@ -306,6 +310,12 @@ export interface ThreadReasoningSetParams {
   effort: string | null;
 }
 export interface ThreadReasoningSetResponse { thread: ThreadSummary }
+export interface ThreadModelSetParams {
+  threadId: string;
+  provider: string;
+  model: string;
+}
+export interface ThreadModelSetResponse { thread: ThreadSummary }
 export interface ThreadReasoningReadResponse {
   threadId: string;
   model: string;
