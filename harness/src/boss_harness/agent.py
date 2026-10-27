@@ -482,6 +482,8 @@ class TurnRunner:
             try:
                 self.finish_tool_call(thread_id, entry, name, uncertain, call_id, approval,
                                       "outcome_unknown")
+            except ToolCompletionNotificationError:
+                pass
             except ToolRevisionPersistenceError:
                 if self.persistence_fence is not None:
                     self.persistence_fence(thread_id)

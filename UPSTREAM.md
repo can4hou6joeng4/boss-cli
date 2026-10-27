@@ -8,7 +8,7 @@
 
 实现复用单个稳定 revision，在 `SessionStore` writer 锁内按完整 JSONL 行对账并 fsync；已落下的结果不重复追加，确认缺失时最多同结果重试一次。工具执行代码不会重跑 handler 或审批；成功恢复结果后阻止同批剩余工具并暂停回合/队列。若结果缺失且重试失败，追加 `outcome_unknown`；该记录也无法确认时，在释放活动回合前建立会话级内存 fence，手动回合、队列入列与 follow-up 领取均 fail closed。启动恢复依赖现有 JSONL `running` 条目转为未知结果。通知异常不改变已持久化工具事实。
 
-验收使用真实 ApplicationService、合成 provider/bridge/handler、临时状态和一次性 JSONL 故障，覆盖正常、派发前失败、结果写前失败并恢复、结果行已写后抛错、完成通知失败、结果及 unknown 均无法落盘并重启恢复共六种路径。handler 写操作计数始终为 1；第二工具不派发、队列暂停；最坏路径在当前进程拒绝新手动/队列请求，但仍允许原请求去重且其他会话可运行。socket、DNS、子进程尝试均为 0。测试脚本和报告仅保留 ignored 本地目录；真实模型与招聘平台验收未执行。
+验收使用真实 ApplicationService、合成 provider/bridge/handler、临时状态和一次性 JSONL 故障，覆盖正常、派发前失败、结果写前失败并恢复、结果行已写后抛错、成功结果通知失败、`outcome_unknown` 持久化后的通知失败、结果及 unknown 均无法落盘并重启恢复共七种路径。handler 写操作计数始终为 1；第二工具不派发、队列暂停；最坏路径在当前进程拒绝新手动/队列请求，但仍允许原请求去重且其他会话可运行。socket、DNS、子进程尝试均为 0。测试脚本和报告仅保留 ignored 本地目录；真实模型与招聘平台验收未执行。
 
 ## 第三十七轮：摘要 checkpoint 原子发布
 
