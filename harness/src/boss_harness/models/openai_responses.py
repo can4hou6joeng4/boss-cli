@@ -64,6 +64,10 @@ DEFAULT_RETRY_BASE_MS = 500
 _TRANSIENT_ERROR_MARKERS = ("service_unavailable", "server_error", "overloaded", "temporarily")
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"非法 JSON 常量: {value}")
+
+
 def _retry_settings() -> tuple[int, float]:
     """重试次数与基础退避；可用 BOSS_HARNESS_RETRY_ATTEMPTS / _BASE_MS 覆盖。"""
     try:
@@ -307,6 +311,8 @@ class OpenAIResponsesProvider:
         blocks: dict[int, object] = {}
         #: output_index -> function_call 的参数 JSON 缓冲
         json_buffers: dict[int, str] = {}
+        #: output_index -> arguments.done 中的权威原始 JSON
+        arguments_done: dict[int, str | None] = {}
         #: output_index -> function_call 的 call_id（回填工具结果要靠它）
         call_ids: dict[int, str] = {}
         #: 参数不是完整 JSON 的 function_call（用名字记），收尾时按失败处理
@@ -376,10 +382,15 @@ class OpenAIResponsesProvider:
 
                     elif kind == "response.function_call_arguments.done":
                         # 权威参数以 done 为准；只把新增后缀当作增量补发，避免重复。
-                        authoritative = str(getattr(event, "arguments", "") or "")
+                        authoritative = getattr(event, "arguments", None)
+                        if not isinstance(authoritative, str):
+                            authoritative = None
                         previous = json_buffers.get(index, "")
-                        json_buffers[index] = authoritative
-                        if authoritative.startswith(previous) and len(authoritative) > len(previous):
+                        if authoritative is not None:
+                            json_buffers[index] = authoritative
+                        arguments_done[index] = authoritative
+                        if (authoritative is not None and authoritative.startswith(previous)
+                                and len(authoritative) > len(previous)):
                             yield StreamEvent(
                                 type="toolcall_delta",
                                 content_index=index,
@@ -399,10 +410,30 @@ class OpenAIResponsesProvider:
                             yield StreamEvent(type="text_end", content_index=index, text=text)
                         elif item_type == "function_call":
                             name = str(getattr(item, "name", "") or "")
-                            arguments = _parse_arguments(json_buffers.pop(index, None))
+                            buffered = json_buffers.pop(index, None)
+                            has_done_arguments = index in arguments_done
+                            done_raw = arguments_done.pop(index, None)
+                            has_final_arguments = (hasattr(item, "arguments")
+                                                   and getattr(item, "arguments") is not None)
+                            final_raw = getattr(item, "arguments", None)
+                            arguments = None
+                            if has_final_arguments:
+                                final_parsed = (_parse_arguments(final_raw)
+                                                if isinstance(final_raw, str) else None)
+                                if has_done_arguments:
+                                    done_parsed = (_parse_arguments(done_raw)
+                                                   if isinstance(done_raw, str) else None)
+                                    if (final_parsed is not None and done_parsed is not None
+                                            and final_parsed == done_parsed):
+                                        arguments = final_parsed
+                                else:
+                                    arguments = final_parsed
+                            elif has_done_arguments:
+                                arguments = (_parse_arguments(done_raw)
+                                             if isinstance(done_raw, str) else None)
+                            else:
+                                arguments = _parse_arguments(buffered)
                             if arguments is None:
-                                # 参数不是完整 JSON。无参数工具（如 boss_list_tools）的合法参数是
-                                # `{}`，与「解析失败」必须区分开，否则会把正常调用判成失败。
                                 broken.append(name or str(getattr(item, "call_id", "") or ""))
                                 arguments = {}
                             call = ToolCallBlock(
@@ -541,12 +572,14 @@ def _parse_arguments(raw: str | None) -> dict[str, Any] | None:
     上游不发参数事件时缓冲也会停在 `""`。把它们判成失败会让一次合法调用整轮报错。
     真正要拦的只有「参数被截断/不是 JSON」这一种。
     """
-    text = (raw or "").strip()
-    if not text:
+    if raw is None or raw == "":
         return {}
+    text = raw.strip()
+    if not text:
+        return None
     try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError:
+        parsed = json.loads(text, parse_constant=_reject_json_constant)
+    except (TypeError, ValueError):
         return None
     return parsed if isinstance(parsed, dict) else None
 

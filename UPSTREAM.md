@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第三十四轮：provider 工具参数完整性
+
+[Issue #89](https://github.com/can4hou6joeng4/boss-cli/issues/89) 复核本项目 Anthropic/OpenAI 流式适配：不完整 JSON 可能被局部解析为可用字典，或最终工具项参数未被读取，导致未经完整性证明的参数进入 handler。参考 Pi 开放 [Issue #11112](https://github.com/earendil-works/pi/issues/11112) 对原始参数解析失败边界的讨论，独立实现，不复制代码或增加依赖。`jackwener/boss-cli` 当前开放 Issue/PR 仍聚焦招聘业务、平台权限与认证，没有通用 provider 工具参数流协议可移植。
+
+Anthropic 适配现在逐 content index 累积原始 `partial_json`，等流块完整结束后用标准 JSON 解析器校验为 object，完全不信任 SDK 的 partial snapshot；截断、无效 JSON、非 object 或未闭合工具块会令整轮返回错误事件。OpenAI Responses 在 `output_item.done` 核对最终 `item.arguments` 和 `function_call_arguments.done`；单一最终来源可用，两个来源都出现时要求解析后对象一致，否则失败。合法空对象仍接受；空参数保持无参调用兼容，空白、非 object、无效常量和非标准 JSON 数值拒绝。失败响应不产生 `done`，应用不会派发工具。
+
+离线 `ApplicationService` 验收覆盖 18 种 Anthropic/OpenAI 参数形状，合法调用正常完成，异常或冲突调用均为 0 次 handler 派发且回合报错；外部网络、DNS 与子进程守卫为 0。provider 事件映射 10 项通过，并单独验证 OpenAI 最终 item 缺少参数字段时可安全使用完整 delta。全量 Harness 339 项通过、4 项跳过；compileall 与 `git diff --check` 通过。测试脚本和报告仅保留在 ignored `.boss-cli/provider-tool-arguments-audit-20261027/`。
+
 ## 第三十三轮：队列暂停写失败的派发门禁
 
 [Issue #87](https://github.com/can4hou6joeng4/boss-cli/issues/87) 复现了队列暂停追加失败后，旧 follow-up 留在 `queued`，并在后续手动回合成功时被自动派发。参考 Pi 开放 [PR #10016](https://github.com/earendil-works/pi/pull/10016)，固定审阅 head `bbab759c832a8708f31d7049074ccffa8d4e5999`（仓库 MIT）；该 PR 跟踪显式 wake follow-up 在 abort 后仍需送达的责任。这里仅借鉴明确保留待处理队列责任的审查视角，不移植其 abort/resume 行为或源码，因为本项目故障发生在暂停状态无法持久化。
