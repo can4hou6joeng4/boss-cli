@@ -269,6 +269,8 @@ class ApplicationService:
             "thread/read": self.on_thread_read, "thread/resume": self.on_thread_resume,
             "thread/fork": self.on_thread_fork, "thread/archive": self.on_thread_archive,
             "thread/unarchive": self.on_thread_unarchive, "thread/name/set": self.on_thread_name,
+            "thread/reasoning/read": self.on_thread_reasoning_read,
+            "thread/reasoning/set": self.on_thread_reasoning_set,
             "thread/turns/list": self.on_turn_list, "thread/items/list": self.on_items_list,
             "thread/item/result/read": self.on_tool_result_read,
             "turn/start": self.on_turn_start, "turn/interrupt": self.on_turn_interrupt,
@@ -552,7 +554,84 @@ class ApplicationService:
         model = params.get("model") or thread.get("model") or self.config.model
         if not isinstance(model, str) or not model.strip() or len(model) > 200 or any(c.isspace() for c in model):
             raise ValueError("model 格式无效")
-        return replace(self.config, model=model)
+        effort = self._effective_reasoning_effort(thread, self.config.provider, model)
+        return replace(self.config, model=model, effort=effort)
+
+    def _effective_reasoning_effort(self, thread: dict, provider: str, model: str) -> str | None:
+        effort = thread.get("reasoningEffort")
+        if effort is None:
+            return self.config.effort
+        capabilities = self.model_catalog.resolve(provider, model)
+        if effort not in capabilities.reasoning_efforts:
+            raise RpcError(-32012, "当前模型未声明支持该推理档位",
+                           {"code": "REASONING_EFFORT_UNSUPPORTED", "model": model,
+                            "available": list(capabilities.reasoning_efforts)})
+        return effort
+
+    def _apply_session_reasoning(self, thread_id: str, config: ModelConfig,
+                                 request: ModelRequest) -> ModelRequest:
+        with self.runtimes.lock:
+            thread = self.sessions.get_thread(thread_id)
+            effort = self._effective_reasoning_effort(thread, config.provider, request.model)
+        return replace(request, effort=effort)
+
+    def _reasoning_scope(self, thread_id: str, thread: dict) -> tuple[ModelConfig, list[str], bool]:
+        """Read under the runtime lock; a setting must suit all current model owners."""
+        default = self._model_config({**thread, "reasoningEffort": None}, {})
+        active = self.runtimes.active.get(thread_id)
+        summary = self._compaction_jobs.get(self._compaction_by_thread.get(thread_id, ""))
+        primary = active["runner"].config if active else default
+        configs = [primary, default]
+        if summary and summary.get("config") is not None:
+            configs.append(summary["config"])
+        available = list(self.model_catalog.resolve(primary.provider, primary.model).reasoning_efforts)
+        for config in configs[1:]:
+            supported = self.model_catalog.resolve(config.provider, config.model).reasoning_efforts
+            available = [effort for effort in available if effort in supported]
+        return primary, available, summary is not None
+
+    def on_thread_reasoning_set(self, params: dict | None) -> dict:
+        params = params or {}
+        if set(params) != {"threadId", "effort"}:
+            raise ValueError("thread/reasoning/set 只接受 threadId 和 effort")
+        thread_id = _text(params, "threadId")
+        effort = params["effort"]
+        if effort is not None and (not isinstance(effort, str) or not effort):
+            raise ValueError("effort 必须是推理档位字符串或 null")
+        with self.runtimes.lock:
+            if self.runtimes.closed:
+                raise RpcError(-32003, "内核正在关闭")
+            thread = self.sessions.get_thread(thread_id)
+            if thread.get("archived"):
+                raise ValueError("请先恢复归档会话")
+            config, available, _ = self._reasoning_scope(thread_id, thread)
+            if effort is not None:
+                if effort not in available:
+                    raise RpcError(-32012, "会话或当前运行模型未声明支持该推理档位",
+                                   {"code": "REASONING_EFFORT_UNSUPPORTED", "model": config.model,
+                                    "available": available})
+            if thread.get("reasoningEffort") == effort:
+                return {"thread": thread}
+            updated = self.sessions.update_thread(thread_id, reasoningEffort=effort)
+        self.events.emit("thread/reasoning/updated", {"threadId": thread_id, "effort": effort})
+        return {"thread": updated}
+
+    def on_thread_reasoning_read(self, params: dict | None) -> dict:
+        params = params or {}
+        if set(params) != {"threadId"}:
+            raise ValueError("thread/reasoning/read 只接受 threadId")
+        thread_id = _text(params, "threadId")
+        with self.runtimes.lock:
+            thread = self.sessions.get_thread(thread_id)
+            config, available, summary_active = self._reasoning_scope(thread_id, thread)
+            capabilities = self.model_catalog.resolve(config.provider, config.model)
+            effort = thread.get("reasoningEffort")
+            return {"threadId": thread_id, "model": config.model, "effort": effort,
+                    "configuredEffort": self.config.effort,
+                    "supported": effort is None or effort in available,
+                    "availableEfforts": available, "summaryActive": summary_active,
+                    "capabilitySource": capabilities.source,
+                    "capabilityIsEstimate": capabilities.estimated}
 
     def _system_prompt(self, read_only: bool, skill_text: str) -> str:
         prompt = self.tool_bundle.system_prompt + ("\n\n用户选择的技能：\n" + skill_text if skill_text else "")
@@ -589,6 +668,7 @@ class ApplicationService:
                     messages.append(UserMessage(text=text + ("\n\n" + attachment_text if attachment_text else "")))
             request = ModelRequest(model=config.model, system=prompt, messages=tuple(messages), tools=tools,
                                    max_tokens=config.max_tokens, effort=config.effort, thinking=config.thinking)
+            request = self._apply_session_reasoning(thread_id, config, request)
             result = self.context.read(thread_id, request=request,
                                        capabilities=self.model_catalog.resolve(config.provider, config.model),
                                        provider=config.provider)
@@ -855,6 +935,9 @@ class ApplicationService:
         for index in range(1, SUMMARY_MAX_REQUESTS + 1):
             if job["cancel"].is_set():
                 raise _CompactionCancelled
+            with self.runtimes.lock:
+                effort = self._effective_reasoning_effort(self.sessions.get_thread(thread_id), config.provider, config.model)
+                planner.config = replace(config, effort=effort)
             fragment = planner.fragment(offset, summary, index)
             prepared, budget = self.context.prepare(fragment.request, capabilities, provider=config.provider)
             with self.runtimes.lock:
@@ -954,6 +1037,7 @@ class ApplicationService:
 
     def _prepare_turn_request(self, turn: dict, request: ModelRequest) -> tuple[ModelRequest, dict]:
         config = turn["runner"].config
+        request = self._apply_session_reasoning(turn["threadId"], config, request)
         capabilities = self.model_catalog.resolve(config.provider, request.model)
         try:
             prepared, budget = self.context.prepare(request, capabilities, provider=config.provider,
@@ -969,6 +1053,7 @@ class ApplicationService:
             replacement = self._compact_during_turn(turn, request,
                 "threshold" if budget["withinBudget"] else "budget", required=False)
             if replacement is not None:
+                replacement = self._apply_session_reasoning(turn["threadId"], config, replacement)
                 return self.context.prepare(replacement, capabilities, provider=config.provider,
                                             thread_id=turn["threadId"])
         if not budget["withinBudget"]:
@@ -978,7 +1063,7 @@ class ApplicationService:
     def _compact_during_turn(self, turn: dict, request: ModelRequest, reason: str,
                              *, required: bool) -> ModelRequest | None:
         runner, thread_id = turn["runner"], turn["threadId"]
-        config = runner.config
+        config = replace(runner.config, effort=request.effort)
         job: dict | None = None
         replacement: ModelRequest | None = None
 
@@ -1180,6 +1265,7 @@ class ApplicationService:
                 job["queueId"] = queue_item["id"] if queue_item else None
                 try:
                     self.sessions.record_turn(thread_id, job["turnId"], "running", model=model, provider=config.provider,
+                        reasoningEffort=config.effort,
                         skillIds=[s["id"] for s in skills], toolPolicy=thread.get("toolPolicy", "approval"),
                         clientUserMessageId=client_id, requestInputDigest=request_digest, queueId=job["queueId"])
                     user = runner.append_user(thread_id, text + ("\n\n" + attachment_text if attachment_text else ""),

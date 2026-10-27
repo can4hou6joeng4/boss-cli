@@ -61,7 +61,7 @@ class SummaryPlanner:
             "summaryCharacterLimit": self.character_limit}, ensure_ascii=False, allow_nan=False)
         return ModelRequest(model=self.config.model, system=SUMMARY_SYSTEM,
                             messages=(UserMessage(text=prompt),), tools=(), max_tokens=self.max_tokens,
-                            effort=None, thinking=None)
+                            effort=self.config.effort, thinking=None)
 
     def fragment(self, start: int, previous: str, index: int) -> SummaryFragment:
         if len(previous) > self.character_limit:

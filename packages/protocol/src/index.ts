@@ -87,6 +87,8 @@ export const ClientMethods = {
   threadArchive: "thread/archive",
   threadUnarchive: "thread/unarchive",
   threadNameSet: "thread/name/set",
+  threadReasoningRead: "thread/reasoning/read",
+  threadReasoningSet: "thread/reasoning/set",
   threadTurnsList: "thread/turns/list",
   threadItemsList: "thread/items/list",
   threadItemResultRead: "thread/item/result/read",
@@ -137,6 +139,7 @@ export const ServerNotifications = {
   threadArchived: "thread/archived",
   threadUnarchived: "thread/unarchived",
   threadRenamed: "thread/renamed",
+  threadReasoningUpdated: "thread/reasoning/updated",
   queueUpdated: "queue/updated",
   contextCompactionStarted: "context/compactionStarted",
   contextCompactionProgress: "context/compactionProgress",
@@ -161,6 +164,7 @@ export interface ThreadSummary {
   sessionId?: string;
   projectId?: string | null;
   model?: string;
+  reasoningEffort?: string | null;
   cwd?: string;
   archived?: boolean;
   forkedFromId?: string;
@@ -242,6 +246,25 @@ export interface ThreadStartParams {
 
 export interface ThreadStartResponse {
   thread: ThreadSummary;
+}
+
+export interface ThreadReasoningSetParams {
+  threadId: string;
+  /** Null restores the configured provider default. */
+  effort: string | null;
+}
+export interface ThreadReasoningSetResponse { thread: ThreadSummary }
+export interface ThreadReasoningReadResponse {
+  threadId: string;
+  model: string;
+  effort: string | null;
+  configuredEffort: string | null;
+  supported: boolean;
+  /** Retained summary ownership may temporarily restrict the available levels. */
+  summaryActive: boolean;
+  availableEfforts: string[];
+  capabilitySource: string;
+  capabilityIsEstimate: boolean;
 }
 
 export interface ThreadListResponse {
@@ -397,6 +420,7 @@ export interface ModelCapabilities {
   maxOutputTokens: number;
   capabilitySource: string;
   capacityIsEstimate: boolean;
+  reasoningEfforts?: string[];
 }
 export interface ModelDescriptor {
   id: string;
@@ -476,6 +500,8 @@ export interface ContextBudget {
   breakdown: { system: number; messages: number; tools: number; options: number; usageBaseline?: number };
   requestedOutputTokens: number;
   modelMaxOutputTokens: number;
+  /** Effective provider effort at this request's preparation boundary. */
+  reasoningEffort?: string | null;
   capabilitySource: string;
   capacityIsEstimate: boolean;
   withinBudget: boolean;
