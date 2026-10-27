@@ -371,6 +371,10 @@ export interface QueueItem {
   status: "queued" | "delivering" | "delivered" | "paused" | "cancelled";
   expectedTurnId?: string | null;
   clientUserMessageId?: string | null;
+  failureCode?: "TURN_START_FAILED";
+  executionStarted?: false;
+  turnId?: string;
+  inputPersisted?: boolean;
 }
 export interface TurnSteerParams {
   threadId: string;

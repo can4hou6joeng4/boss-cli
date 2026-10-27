@@ -140,6 +140,33 @@ class TurnQueue:
         self.sessions.append(thread_id, Entry(type="queue", payload=item))
         return dict(item)
 
+    def get(self, thread_id: str, queue_id: str) -> dict:
+        with self.lock:
+            item = next((q for q in self.list(thread_id) if q["id"] == queue_id), None)
+            if item is None:
+                raise ValueError("队列项不存在")
+            return item
+
+    def _fail_start(self, thread_id: str, queue_id: str, *, turn_id: str | None = None,
+                    input_persisted: bool | None = None) -> dict:
+        """Settle a proven unstarted delivery; callers hold runtime ownership.
+
+        delivered means the input was persisted, not that its worker started.
+        This restricted failure path never makes delivered generally resumable.
+        """
+        with self.lock:
+            item = self.get(thread_id, queue_id)
+            if item["status"] not in {"delivering", "paused"} and not (
+                    item["status"] == "delivered" and turn_id is not None):
+                return item
+            failed = {**item, "status": "paused", "failureCode": "TURN_START_FAILED",
+                      "executionStarted": False}
+            if turn_id is not None:
+                failed["turnId"] = turn_id
+            if input_persisted is not None:
+                failed["inputPersisted"] = input_persisted
+            return item if failed == item else self._save(thread_id, failed)
+
     def add(self, thread_id: str, text: str, *, kind: str = "followUp", turn_id: str | None = None,
             client_id: str | None = None) -> dict:
         if kind not in {"steering", "followUp"}:

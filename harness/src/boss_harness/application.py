@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 from collections import deque
 from dataclasses import asdict, replace
 import json
@@ -149,6 +150,7 @@ class ApplicationService:
             # Queue dispatch can outlive provider ownership. Its worker still
             # owns the state directory until all follow-up bookkeeping ends.
             self._follow_up_workers: dict[str, threading.Thread] = {}
+            self._follow_up_dispatches: dict[str, dict[str, Any]] = {}
             # Compaction jobs are independent of business turns and never own a
             # tool bridge. The per-thread index prevents a new turn from
             # changing the source while a summary is being generated.
@@ -1090,8 +1092,12 @@ class ApplicationService:
         if client_id is not None and (not isinstance(client_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", client_id)):
             raise ValueError("clientUserMessageId 格式无效")
         runner = None
+        job = None
+        request_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         try:
             with self.runtimes.lock:
+                if self.runtimes.closed:
+                    raise RpcError(-32003, "内核正在关闭")
                 thread = self.sessions.get_thread(thread_id)
                 if thread.get("archived"):
                     raise ValueError("请先恢复归档会话")
@@ -1103,6 +1109,15 @@ class ApplicationService:
                         if previous.get("originalInput", previous.get("text")) != text:
                             raise ValueError("clientUserMessageId 已用于不同输入")
                         return {"turnId": previous["turnId"], "deduplicated": True}
+                    # A failed start may have persisted a turn but no input.
+                    # Keep the request identity without saving another text copy.
+                    previous_turn = next((entry["payload"] for entry in reversed(self.sessions.read_entries(thread_id))
+                        if entry["type"] == "turn" and entry["payload"].get("clientUserMessageId") == client_id
+                        and entry["payload"].get("requestInputDigest")), None)
+                    if previous_turn is not None:
+                        if previous_turn["requestInputDigest"] != request_digest:
+                            raise ValueError("clientUserMessageId 已用于不同输入")
+                        return {"turnId": previous_turn["turnId"], "deduplicated": True}
                 config = self._model_config(thread, params)
                 policy = (self.compaction_policy.override(params["autoCompaction"])
                           if "autoCompaction" in params else self.compaction_policy)
@@ -1135,12 +1150,16 @@ class ApplicationService:
                 runner.notify = lambda method, payload=None: self._notify_runner(job, method, payload)
                 runner.stage_steering = lambda: self._stage_steering(job)
                 job["clientUserMessageId"] = client_id
+                job["requestInputDigest"] = request_digest
+                job["queueId"] = queue_item["id"] if queue_item else None
                 try:
                     self.sessions.record_turn(thread_id, job["turnId"], "running", model=model, provider=config.provider,
-                                              skillIds=[s["id"] for s in skills], toolPolicy=thread.get("toolPolicy", "approval"))
+                        skillIds=[s["id"] for s in skills], toolPolicy=thread.get("toolPolicy", "approval"),
+                        clientUserMessageId=client_id, requestInputDigest=request_digest, queueId=job["queueId"])
                     user = runner.append_user(thread_id, text + ("\n\n" + attachment_text if attachment_text else ""),
                                        originalInput=text, clientUserMessageId=client_id,
                                        queueId=queue_item["id"] if queue_item else None, attachments=attachments)
+                    job["_input_persisted"] = True
                     if queue_item:
                         self.queue.transition(thread_id, queue_item["id"], "delivered")
                     self.events.emit("turn/started", {"threadId": thread_id, "turnId": job["turnId"],
@@ -1150,20 +1169,92 @@ class ApplicationService:
                         "clientUserMessageId": client_id})
                     worker = threading.Thread(target=self._run_turn, args=(job,), name=f"turn-{job['turnId'][:8]}", daemon=True)
                     job["worker"] = worker
-                    worker.start()
-                except Exception:
                     try:
-                        self.sessions.record_turn(thread_id, job["turnId"], "error")
-                    finally:
-                        self.runtimes.release(job)
-                        self.runtimes.finish(job)
+                        worker.start()
+                    except Exception:
+                        # A wrapper can raise after launching. ident survives a
+                        # fast finish; is_alive() alone cannot prove non-start.
+                        if worker.ident is None:
+                            raise
+                except Exception:
+                    self._settle_unstarted_turn_locked(job)
                     raise
             return {"turnId": job["turnId"], "clientUserMessageId": client_id}
         except Exception:
-            if runner is not None and runner is not self.runner:
-                self.bridge_lifecycle.close(runner.tool_bridge)
-            self._close_application_resources_if_idle()
+            # Keep jobs/provider/storage ownership through failure observers and
+            # bridge cleanup. A failed observer must not replace the start error.
+            try:
+                if job is not None and job.get("_start_failed"):
+                    self._notify_start_failure(job)
+            finally:
+                try:
+                    if runner is not None and runner is not self.runner:
+                        self.bridge_lifecycle.close(runner.tool_bridge)
+                except Exception:
+                    pass
+                finally:
+                    if job is not None and job.get("_start_failed"):
+                        try:
+                            self.runtimes.finish(job)
+                        except Exception:
+                            pass
+                    try:
+                        self._close_application_resources_if_idle()
+                    except Exception:
+                        pass
             raise
+
+    def _settle_unstarted_turn_locked(self, job: dict) -> None:
+        """Best-effort persistence; the original start error remains primary."""
+        job["_start_failed"] = True
+        dispatch = self._follow_up_dispatches.get(job["threadId"])
+        if dispatch is not None and dispatch["queueId"] == job.get("queueId"):
+            dispatch["start_failed"] = True
+        persisted = job.get("_input_persisted")
+        if persisted is None:
+            try:
+                persisted = any(item.get("kind") == "userMessage" and item.get("turnId") == job["turnId"]
+                                for item in self.sessions.read_items(job["threadId"]))
+            except Exception:
+                pass  # Unknown persistence is never described as safe to replay.
+        fields = {"failureCode": "TURN_START_FAILED", "executionStarted": False,
+                  "clientUserMessageId": job.get("clientUserMessageId"),
+                  "requestInputDigest": job["requestInputDigest"], "queueId": job.get("queueId")}
+        if persisted is not None:
+            fields["inputPersisted"] = persisted
+        try:
+            self.sessions.record_turn(job["threadId"], job["turnId"], "error", **fields)
+        except Exception:
+            pass
+        try:
+            if job.get("queueId"):
+                # The restricted settlement is idempotent, including a write
+                # that committed before raising. Retry before notifying once.
+                for _ in range(2):
+                    try:
+                        self.queue._fail_start(job["threadId"], job["queueId"], turn_id=job["turnId"],
+                                               input_persisted=persisted)
+                        break
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        finally:
+            self.runtimes.release(job)
+
+    def _notify_start_failure(self, job: dict) -> None:
+        payload = {"threadId": job["threadId"], "turnId": job["turnId"]}
+        notifications = [("session/error", {**payload, "code": "TURN_START_FAILED",
+                          "message": "回合未能启动，未执行模型或工具；请核对当前会话后重新发起任务。"}),
+                         ("turn/completed", {**payload, "status": "error"}),
+                         ("thread/updated", {**payload, "status": "error"})]
+        if job.get("queueId"):
+            notifications.append(("queue/updated", {**payload, "queueId": job["queueId"]}))
+        for method, params in notifications:
+            try:
+                self.events.emit(method, params)
+            except Exception:
+                pass  # Do not replay an event that may already be durable.
 
     def _notify_runner(self, job: dict, method: str, params: dict | None = None) -> None:
         if method == "thread/updated":
@@ -1227,7 +1318,8 @@ class ApplicationService:
             return
         with self.runtimes.lock:
             if (not self.runtimes.closed or self._shutdown_preparing
-                    or self.runtimes.jobs or self._compaction_by_thread or self._follow_up_workers):
+                    or self.runtimes.jobs or self._compaction_by_thread
+                    or self._follow_up_workers or self._follow_up_dispatches):
                 return
             if self._base_bridge_close_claimed:
                 wait_for_close = self._base_bridge_close_owner != threading.get_ident()
@@ -1368,11 +1460,13 @@ class ApplicationService:
         params = params or {}
         thread_id = _text(params, "threadId")
         with self.runtimes.lock:
+            if self.runtimes.closed:
+                raise RpcError(-32003, "内核正在关闭")
             self.sessions.require_thread(thread_id)
             item = self.queue.add(thread_id, _text(params, "input"), client_id=params.get("clientUserMessageId"))
         self.events.emit("queue/updated", {"threadId": thread_id, "queueId": item["id"]})
         self._start_follow_up(thread_id)
-        return {"queueItem": item}
+        return {"queueItem": self.queue.get(thread_id, item["id"])}
 
     def on_queue_list(self, params: dict | None) -> dict:
         return {"items": self.queue.list(_text(params, "threadId"))}
@@ -1385,17 +1479,51 @@ class ApplicationService:
         return {"queueItem": item}
 
     def _start_follow_up(self, thread_id: str) -> None:
-        with self.runtimes.lock:
-            if self.runtimes.closed or thread_id in self.runtimes.active or self.sessions.get_thread(thread_id).get("archived"):
-                return
-            item = self.queue.claim(thread_id, "followUp")
-            if item is None:
-                return
+        while True:
+            with self.runtimes.lock:
+                if self.runtimes.closed or thread_id in self.runtimes.active:
+                    return
+                if thread_id in self._follow_up_dispatches:
+                    # A fast turn can finish before its dispatcher returns.
+                    # Hand the wakeup to that dispatcher without another claim.
+                    self._follow_up_dispatches[thread_id]["again"] = True
+                    return
+                if self.sessions.get_thread(thread_id).get("archived"):
+                    return
+                item = self.queue.claim(thread_id, "followUp")
+                if item is None:
+                    return
+                dispatch = {"owner": threading.get_ident(), "done": threading.Event(), "queueId": item["id"]}
+                self._follow_up_dispatches[thread_id] = dispatch
+            started = False
             try:
                 self.on_turn_start({"threadId": thread_id, "input": item["input"],
-                                    "clientUserMessageId": item.get("clientUserMessageId") or "queue-" + item["id"]}, queue_item=item)
+                    "clientUserMessageId": item.get("clientUserMessageId") or "queue-" + item["id"]}, queue_item=item)
+                started = True
             except Exception:
-                self.queue.transition(thread_id, item["id"], "paused")
+                # Reserved jobs settle and notify while retaining their own
+                # ownership. Only pre-reservation admission failures get here.
+                if not dispatch.get("start_failed"):
+                    try:
+                        with self.runtimes.lock:
+                            persisted = None
+                            try:
+                                persisted = any(entry.get("kind") == "userMessage" and entry.get("queueId") == item["id"]
+                                    for entry in self.sessions.read_items(thread_id))
+                            except Exception:
+                                pass
+                            self.queue._fail_start(thread_id, item["id"], input_persisted=persisted)
+                        self.events.emit("queue/updated", {"threadId": thread_id, "queueId": item["id"]})
+                    except Exception:
+                        pass
+            finally:
+                with self.runtimes.lock:
+                    self._follow_up_dispatches.pop(thread_id, None)
+                    again = started and dispatch.get("again", False)
+                    dispatch["done"].set()
+                self._close_application_resources_if_idle()
+            if not again:
+                return
 
     def on_shutdown(self, params: dict | None) -> dict:
         self.close()
@@ -1456,7 +1584,11 @@ class ApplicationService:
         self.runtimes.wait_for_stop(deadline)
         with self.runtimes.lock:
             follow_up_workers = list(self._follow_up_workers.values())
+            dispatches = list(self._follow_up_dispatches.values())
         join_until(follow_up_workers, deadline)
+        for dispatch in dispatches:
+            if dispatch["owner"] != threading.get_ident():
+                dispatch["done"].wait(max(0, deadline - time.monotonic()))
         self._close_application_resources_if_idle(deadline)
 
     def serve_forever(self) -> None:
