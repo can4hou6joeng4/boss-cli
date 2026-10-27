@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第四十七轮：保留结构化 provider 终态错误信息
+
+本项目主线 `ccee00ca98aca9a80e9abe39cbd52c5e5de2d6b2` 已能在 OpenAI 与 Anthropic 适配器中识别特定上下文溢出，但其他 HTTP 状态、供应商错误 code 与瞬时错误判断会退化为脱敏文本；`session/error` 无法区分 401、503、额度耗尽及流内服务错误。此前 `ModelErrorInfo` 只描述 `CONTEXT_OVERFLOW`，流内结构化事实也没有完整穿过终态事件。
+
+参考 Pi 开放 [Issue #11071](https://github.com/earendil-works/pi/issues/11071)（截至 2026-10-28 为 OPEN；Pi main `bb65e3e49710fbd14f10c7792d0eaa6e2b2c5923`；MIT）。该 issue 要求在终态消息边界保留 HTTP 状态、provider error code 和可选 retryability，特别指出临时限流、额度耗尽与 HTTP 200 流内错误不应只剩下自由文本。本项目采用现有 `StreamEvent.error_info`，并独立扩展 terminal `session/error` 事件与持久错误记录；不复制 Pi 的诊断接口或重试逻辑。
+
+同步检查 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`（GitHub license 字段为空）：当前开放 Issue 与 PR 聚焦招聘业务、平台权限和认证，没有可移植的通用 provider 错误契约；本项目当前无开放 Issue，PR #109 是会话模型线路选择。本轮没有改动招聘业务操作或认证边界。
+
+终态 `errorInfo` 只包含 provider、来源、有效 HTTP 状态、受限字符集且最长 128 字符的 provider code，以及可选请求级 `retryable`；流内 OpenAI 错误明确保留 HTTP 200。额度耗尽 code 明确为不可重试，已知暂时限流/服务端错误才标记可重试，含义不明的 429 不作猜测；`outputObserved` 独立记录是否已出现输出。自动 OpenAI 重试次数和 Anthropic 重试行为保持不变，`retryable` 不授权重放整回合；仅原有精确 `CONTEXT_OVERFLOW` 分类可触发上下文恢复。响应正文、请求、响应头和凭据不进入错误诊断。
+
 ## 第四十六轮：压缩 checkpoint 来源元数据增长
 
 本项目主线 `6c2ceffc151b31f92ad525b40b9b6af41d8c548d` 的 `context_checkpoint` 原先把从会话开头到 `throughTurnId` 的所有 `sourceItemIds` 写入每条新 checkpoint。连续摘要时这些 ID 前缀重复留存在 append-only JSONL 中；`compaction_material()` 也将前一 checkpoint 原样放入下一次摘要模型输入，因此这部分 ID 会重复进入后续摘要请求。两者都会随会话增长；持久化副本还增加 JSONL 读取、来源校验和原子复制成本。

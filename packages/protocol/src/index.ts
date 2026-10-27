@@ -155,6 +155,27 @@ export const ServerNotifications = {
 export type ServerNotification =
   (typeof ServerNotifications)[keyof typeof ServerNotifications];
 
+/** Sanitized provider facts attached to terminal model failures. */
+export interface ProviderFailureInfo {
+  provider: "openai" | "anthropic";
+  source: "http_error" | "stream_error" | "transport_error";
+  /** Harness classification; only CONTEXT_OVERFLOW permits context recovery. */
+  code?: "CONTEXT_OVERFLOW";
+  providerCode?: string;
+  statusCode?: number;
+  /** Adapter transient-failure classification, not permission to replay a turn. */
+  retryable?: boolean;
+}
+
+export interface SessionErrorNotification {
+  threadId?: string;
+  message: string;
+  code?: string;
+  recoveryAttempted?: boolean;
+  outputObserved?: boolean;
+  errorInfo?: ProviderFailureInfo;
+}
+
 /* ---------- 领域模型：thread / turn / item ---------- */
 
 export type ItemKind = "userMessage" | "agentMessage" | "toolCall" | "system";

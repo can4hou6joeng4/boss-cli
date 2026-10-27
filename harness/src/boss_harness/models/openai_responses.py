@@ -564,8 +564,10 @@ class OpenAIResponsesProvider:
                         )
                         error_type = str(getattr(error, "type", "") or "")
                         message = str(getattr(error, "message", "") or "") or "响应失败"
-                        error_info = openai_error_info(error, source="stream_error")
-                        self._last_error_retryable = error_info is None and _looks_transient(code, f"{error_type} {message}")
+                        error_info = openai_error_info(error, source="stream_error", status_code=200)
+                        self._last_error_retryable = not (
+                            error_info is not None and error_info.code == "CONTEXT_OVERFLOW"
+                        ) and _looks_transient(code, f"{error_type} {message}")
                         yield StreamEvent(
                             type="error", reason="error", error=self._redact(f"接口错误 {code}：{message}"),
                             error_info=error_info,
@@ -575,8 +577,10 @@ class OpenAIResponsesProvider:
                     elif kind == "error":
                         code = str(getattr(event, "code", "") or "unknown")
                         message = str(getattr(event, "message", "") or "")
-                        error_info = openai_error_info(event, source="stream_error")
-                        self._last_error_retryable = error_info is None and _looks_transient(code, message)
+                        error_info = openai_error_info(event, source="stream_error", status_code=200)
+                        self._last_error_retryable = not (
+                            error_info is not None and error_info.code == "CONTEXT_OVERFLOW"
+                        ) and _looks_transient(code, message)
                         yield StreamEvent(
                             type="error", reason="error", error=self._redact(f"接口错误 {code}：{message}"),
                             error_info=error_info,
@@ -594,7 +598,9 @@ class OpenAIResponsesProvider:
             return
         except openai.APIStatusError as exc:
             error_info = openai_error_info(exc.body, source="http_error", status_code=exc.status_code)
-            self._last_error_retryable = error_info is None and exc.status_code in _RETRYABLE_STATUS
+            self._last_error_retryable = not (
+                error_info is not None and error_info.code == "CONTEXT_OVERFLOW"
+            ) and exc.status_code in _RETRYABLE_STATUS
             self._last_error_retry_after = _retry_after_seconds(exc)
             yield StreamEvent(
                 type="error",
@@ -606,7 +612,9 @@ class OpenAIResponsesProvider:
         except openai.APIConnectionError as exc:
             # 连接被掐断通常是瞬时的（网关抖动、代理换路），值得重试。
             self._last_error_retryable = True
-            yield StreamEvent(type="error", reason="error", error=self._redact(f"连接失败：{exc}"))
+            error_info = openai_error_info(None, source="transport_error", retryable=True)
+            yield StreamEvent(type="error", reason="error", error=self._redact(f"连接失败：{exc}"),
+                              error_info=error_info)
             return
         except openai.APIError as exc:
             self._last_error_retryable = False
