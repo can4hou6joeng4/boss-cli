@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第三十七轮：摘要 checkpoint 原子发布
+
+[Issue #95](https://github.com/can4hou6joeng4/boss-cli/issues/95) 来自真实 ApplicationService 的离线故障注入：完整 checkpoint 行已经 flush、随后 fsync 抛错，任务报告失败，但历史读取、重开存储及下一显式回合仍采用该新摘要。自动路径当前回合已阻塞，问题在后续上下文；有旧 checkpoint 时也会被未确认的新摘要替换。
+
+参考 Pi 固定 main `842c73170a3658d4e3b39fcc84690211ed503e09`（MIT）的 SessionManager 与上下文投影职责，以及开放 [Issue #11460](https://github.com/earendil-works/pi/issues/11460) 对会话写入失败的审查。本项目不是其 orphan-parent 缺陷，也不采用实验性 durable 恢复。核对 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70` 的开放认证、沟通和分页事项后，没有可移植的通用 checkpoint 协议；本轮未认定该业务仓库的许可证或复制其代码。实现独立完成，无新增依赖。
+
+新 checkpoint 在既有 SQLite writer 锁内重新校验 sourceDigest，逐字节流式复制旧日志并追加到同目录临时文件；候选成功 flush/fsync 后才原子替换原路径。替换前按已同步候选 inode 与元数据复核临时路径，替换后再次核对目标 inode；替换抛错时根据目标 inode 区分已公开、未公开及结果不确定，不能用单纯内容可读性代替同步确认。提交回调发生在公开之后、索引及结果读取之前，后续错误不能撤销已提交事实。所有会话写入必须经由 `SessionStore` 的 SQLite writer 锁；非协作进程直接修改 JSONL 不属于保证范围。普通 append、旧 checkpoint 格式、来源 digest、工具/审批及队列权限不变。
+
+范围为本地文件系统的进程级公开一致性。每次摘要需 O(日志大小) 额外写入与临时空间；保留 POSIX mode 与 group，拒绝符号链接及额外硬链接，不保证 ACL/xattr 复制或任意断电持久性。所有验收使用临时合成状态，测试与证据仅保留 ignored 本地；真实模型和招聘平台验收仍未完成。
+
 ## 第三十六轮：文本与思考的持久化及恢复预算
 
 [Issue #93](https://github.com/can4hou6joeng4/boss-cli/issues/93) 沿 #91 的资源边界审计发现独立缺口：工具参数已受限，但 provider 文本/思考可先累积到会话与事件日志，再因 8 MiB RPC 帧限制发送失败。真实离线 ApplicationService 复现单个 5 MiB LF 增量与 96 个各 100 KiB 增量：已持久化正文无法通过 1 MiB 条目或事件分页恢复。问题由本项目代码与合成探针确认，外部 Issue 标题不作为复现证据。
