@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第四十一轮：Anthropic SDK 流取消的句柄登记窗口
+
+本项目主线 `587a9eca32b26547efee92de61a694fc2c386a0b` 的 `AnthropicProvider.stream()` 在 SDK context manager 返回 stream 后才登记 `_active_stream`。本地离线 `MockTransport` 将响应 handler 阻塞在句柄返回前，另一线程调用 `request_abort()` 时活动句柄为空；放行响应后，原实现仍进入 body 读取并阻塞。独立复现证明了本项目自己的竞态，不把外部 Issue 描述当作本地证据。
+
+参考 Pi 开放 [Issue #11211](https://github.com/earendil-works/pi/issues/11211)（OPEN；报告基于 `82432219a`，2026-10-21），其讨论 Anthropic SSE body 提前结束时未取消及 abort 后结果不 settle。复核 Pi 当前 `main` `b3a29f1111114fac696e2cfcd65acdb382a6ed5e`，GitHub license 为 MIT。问题机制相邻但实现不同：本项目使用 Python 官方 SDK 的 stream context manager，独立在句柄登记后重查取消标志并于读取 body 前终止；未复制 Pi 源码或新增依赖。
+
+同步检查 `jackwener/boss-cli` 当前 `main` `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`（GitHub license 字段为 null）：开放 [Issue #35](https://github.com/jackwener/boss-cli/issues/35)（Cookie/Keychain 权限）、[Issue #34](https://github.com/jackwener/boss-cli/issues/34)（招聘沟通）及 [PR #37](https://github.com/jackwener/boss-cli/pull/37)、[PR #29](https://github.com/jackwener/boss-cli/pull/29)（分页与真实沟通写操作）均属于招聘业务和平台权限边界，与 provider 流取消无可移植契约；本轮不采用其代码。
+
+生产修复在 stream 句柄登记后立即复查取消标志；若取消已到达，则返回 `aborted` 并退出 SDK context manager，让 response body 关闭，外层 `finally` 清空活动句柄。Anthropic SDK `1.15.0`（项目最低声明版本）与 `2.3.0`、`httpx2 2.16.0` 的离线竞态探针均验证：结果为 `start` + `aborted`，body 已关闭、句柄已清空，且没有开始读取 body。`npm run typecheck`、Python wheel/sdist build 与 `git diff --check` 通过。测试探针仅在本地运行，未加入仓库；未调用真实模型或招聘平台。
+
+取消若发生在 SDK `stream_ctx.__enter__()` 仍等待响应 headers 时，调用方尚无 response handle 可关闭；该阶段仍受现有 30 秒 SDK timeout 限制。响应句柄返回后，新增检查会在 body 读取前结束已取消请求。
+
 ## 第四十轮：降低大型会话 JSONL 读取峰值内存
 
 本项目 [Issue #103](https://github.com/can4hou6joeng4/boss-cli/issues/103) 在 `041b03b59b305b6ef009bc6d38196371563c2fca` 上，以 parser-only tracemalloc 测量复现单次 JSONL 全量读取的额外峰值：10,481,439 字节输入峰值 31,844,977 字节；52,426,470 字节输入峰值 159,275,712 字节。候选方案在锁内捕获原始 bytes snapshot，锁外通过标准 `TextIOWrapper` 逐行解码；两种尺寸峰值分别为 21,378,034 与 106,761,186 字节，约降低 33%。LF/CRLF/CR、坏 JSON、坏 UTF-8、尾部无换行、空行与类型筛选的记录投影相同；快照完成后追加及原子替换均不改变该次结果。
