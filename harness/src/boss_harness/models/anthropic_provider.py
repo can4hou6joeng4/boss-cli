@@ -17,6 +17,7 @@ import anthropic
 from boss_harness.models.errors import anthropic_error_info
 from boss_harness.models.output_budget import (
     OutputBudgetExceeded,
+    ResponseTextBudget,
     ToolArgumentBudget,
     bounded_error,
 )
@@ -165,6 +166,7 @@ class AnthropicProvider:
         snapshot_only_tools: set[int] = set()
         closed_tool_blocks: set[int] = set()
         budget = ToolArgumentBudget()
+        text_budget = ResponseTextBudget()
         usage = {"input_tokens": 0, "output_tokens": 0,
                  "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
         stop_reason: str | None = None
@@ -219,12 +221,14 @@ class AnthropicProvider:
                             yield StreamEvent(type="text_start", content_index=index)
                             initial_text = str(getattr(event.content_block, "text", "") or "")
                             if initial_text:
+                                text_budget.account(index, initial_text)
                                 buffers[index].append(initial_text)
                                 yield StreamEvent(type="text_delta", content_index=index, delta=initial_text)
                         elif block_type == "thinking":
                             yield StreamEvent(type="thinking_start", content_index=index)
                             initial_thinking = str(getattr(event.content_block, "thinking", "") or "")
                             if initial_thinking:
+                                text_budget.account(index, initial_thinking)
                                 buffers[index].append(initial_thinking)
                                 yield StreamEvent(type="thinking_delta", content_index=index, delta=initial_thinking)
                         elif block_type == "tool_use":
@@ -247,10 +251,12 @@ class AnthropicProvider:
                         delta_type = getattr(delta, "type", "")
                         if delta_type == "text_delta":
                             text = str(getattr(delta, "text", ""))
+                            text_budget.account(index, text)
                             buffers.setdefault(index, []).append(text)
                             yield StreamEvent(type="text_delta", content_index=index, delta=text)
                         elif delta_type == "thinking_delta":
                             text = str(getattr(delta, "thinking", ""))
+                            text_budget.account(index, text)
                             buffers.setdefault(index, []).append(text)
                             yield StreamEvent(type="thinking_delta", content_index=index, delta=text)
                         elif delta_type == "input_json_delta":
@@ -293,8 +299,8 @@ class AnthropicProvider:
                 error_info=error_info,
             )
             return
-        except OutputBudgetExceeded:
-            yield StreamEvent(type="error", reason="error", error="模型工具参数超过本地字节上限")
+        except OutputBudgetExceeded as exc:
+            yield StreamEvent(type="error", reason="error", error=self._redact(exc))
             return
         except Exception as exc:  # noqa: BLE001
             # SDK exceptions can contain the full malformed partial JSON payload.

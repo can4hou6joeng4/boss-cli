@@ -92,6 +92,7 @@ export const ClientMethods = {
   threadTurnsList: "thread/turns/list",
   threadItemsList: "thread/items/list",
   threadItemResultRead: "thread/item/result/read",
+  threadItemContentRead: "thread/item/content/read",
   toolList: "tool/list",
   turnStart: "turn/start",
   turnInterrupt: "turn/interrupt",
@@ -194,6 +195,10 @@ export interface ThreadItem {
   result?: { ok: boolean; command: string; data: unknown; pagination?: Record<string, unknown> | null; error: unknown; hints: unknown };
   resultOmitted?: boolean;
   resultRef?: ToolResultReference;
+  textOmitted?: boolean;
+  textRef?: ItemContentReference;
+  thinkingOmitted?: boolean;
+  thinkingRef?: ItemContentReference;
   /** 需要用户批准的工具调用会带这个字段；界面据此渲染审批卡。 */
   approval?: ApprovalState;
 }
@@ -223,6 +228,37 @@ export interface ToolResultReadResponse {
   offset: number;
   nextCursor: string | null;
   resultRef: ToolResultReference;
+}
+
+export interface ItemContentReference {
+  threadId: string;
+  itemId: string;
+  part: "text" | "thinking";
+  encoding: "text";
+  sha256: string;
+  byteLength: number;
+  /** Unicode code points, not UTF-16 code units. */
+  characterLength: number;
+  /** Reads must use the same frozen snapshot as this reference. */
+  snapshotId?: string;
+}
+
+export interface ItemContentReadParams {
+  threadId: string;
+  itemId: string;
+  part: ItemContentReference["part"];
+  sha256: string;
+  cursor?: string;
+  /** Default 16384, maximum 32768 Unicode code points. */
+  limit?: number;
+  snapshotId?: string;
+}
+
+export interface ItemContentReadResponse {
+  text: string;
+  offset: number;
+  nextCursor: string | null;
+  contentRef: ItemContentReference;
 }
 
 /** 一次工具审批的状态。`decision` 缺席表示还在等用户决定。 */

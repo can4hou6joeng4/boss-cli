@@ -1,11 +1,13 @@
-"""Wire-byte limits for model output retained as tool arguments."""
+"""Wire-byte limits for retained model text, thinking and tool arguments."""
 from __future__ import annotations
 
 import json
 import math
+from collections.abc import Hashable, Iterable, Iterator
 
 MAX_TOOL_ARGUMENT_BYTES = 1024 * 1024
 MAX_RESPONSE_TOOL_ARGUMENT_BYTES = 1024 * 1024
+MAX_RESPONSE_TEXT_BYTES = 1024 * 1024
 
 
 class OutputBudgetExceeded(ValueError):
@@ -14,13 +16,16 @@ class OutputBudgetExceeded(ValueError):
         self.scope = scope
 
 
-def utf8_size_at_most(value: str, remaining: int) -> int:
+def utf8_size_at_most(value: str, remaining: int, *, scope: str = "工具参数超过本地字节上限") -> int:
     """Return UTF-8 size if it fits, rejecting before encoding an oversized value."""
     if len(value) > remaining:
-        raise OutputBudgetExceeded("工具参数超过本地字节上限")
-    size = len(value.encode("utf-8"))
+        raise OutputBudgetExceeded(scope)
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeEncodeError:
+        raise ValueError("模型输出包含非法 Unicode") from None
     if size > remaining:
-        raise OutputBudgetExceeded("工具参数超过本地字节上限")
+        raise OutputBudgetExceeded(scope)
     return size
 
 
@@ -110,6 +115,56 @@ class ToolArgumentBudget:
         self._tool_bytes[index] = max(current, size)
 
 
+class ResponseTextBudget:
+    """Bound text and thinking together before provider or session accumulation."""
+    def __init__(self) -> None:
+        self._response_bytes = 0
+        self._item_bytes: dict[Hashable, int] = {}
+
+    @staticmethod
+    def size(value: str, remaining: int = MAX_RESPONSE_TEXT_BYTES) -> int:
+        return utf8_size_at_most(value, remaining,
+            scope="模型文本与思考输出超过本地 UTF-8 字节上限")
+
+    def account(self, index: Hashable, fragment: str) -> None:
+        size = self.size(fragment, MAX_RESPONSE_TEXT_BYTES - self._response_bytes)
+        self._response_bytes += size
+        self._item_bytes[index] = self._item_bytes.get(index, 0) + size
+
+    def reconcile(self, index: Hashable, authoritative: str) -> None:
+        self.reconcile_size(index, self.size(authoritative))
+
+    def reconcile_parts(self, index: Hashable, parts: list[str], *, separator: str = "") -> str:
+        size = 0
+        separator_bytes = self.size(separator)
+        for offset, part in enumerate(parts):
+            if offset:
+                size += separator_bytes
+            size += self.size(part, MAX_RESPONSE_TEXT_BYTES - size)
+        self.reconcile_size(index, size)
+        return separator.join(parts)
+
+    def reconcile_size(self, index: Hashable, size: int) -> None:
+        self.ensure_size(index, size)
+        current = self._item_bytes.get(index, 0)
+        self._response_bytes += max(0, size - current)
+        self._item_bytes[index] = max(current, size)
+
+    def ensure_size(self, index: Hashable, size: int) -> None:
+        """Check an authoritative assembled size before retaining another part."""
+        current = self._item_bytes.get(index, 0)
+        delta = max(0, size - current)
+        if delta > MAX_RESPONSE_TEXT_BYTES - self._response_bytes:
+            raise OutputBudgetExceeded("模型文本与思考输出超过本地 UTF-8 字节上限")
+
+    def reconcile_response(self, parts: Iterable[str]) -> None:
+        """Check a complete response without assuming provider indexes survive compaction."""
+        size = 0
+        for part in parts:
+            size += self.size(part, MAX_RESPONSE_TEXT_BYTES - size)
+        self._response_bytes = max(self._response_bytes, size)
+
+
 def bounded_error(prefix: str, detail: str, *, maximum: int = 512) -> str:
     """Keep provider diagnostics bounded without splitting a UTF-8 character."""
     if len(prefix) + len(detail) <= maximum:
@@ -132,3 +187,20 @@ def bounded_error(prefix: str, detail: str, *, maximum: int = 512) -> str:
             out.append(char)
             size += char_size
     return "".join(out)
+
+
+def utf8_chunks(value: str, maximum: int = 32 * 1024) -> Iterator[str]:
+    """Yield code-point-aligned pieces bounded by raw UTF-8 bytes."""
+    if maximum < 4:
+        raise ValueError("UTF-8 分块上限至少为 4 字节")
+    parts: list[str] = []
+    size = 0
+    for char in value:
+        width = len(char.encode("utf-8"))
+        if parts and size + width > maximum:
+            yield "".join(parts)
+            parts, size = [], 0
+        parts.append(char)
+        size += width
+    if parts:
+        yield "".join(parts)
