@@ -722,7 +722,8 @@ class ApplicationService:
                 raise RpcError(-32004, "回合运行中只能读取已准备请求的预算；预览请等待回合结束")
             if job is not None:
                 runner = job["runner"]
-                metadata = self.context.read(thread_id)
+                entries = self.sessions.read_entries(thread_id)
+                metadata = self.context.read(thread_id, entries=entries)
                 if runner.last_preparation is not None:
                     return {**metadata, **runner.last_preparation[1], "requestSource": "active",
                             "compactionJob": self._compaction_reference(thread_id)}
@@ -732,7 +733,8 @@ class ApplicationService:
                 skill_text, _ = self.skills.load(params.get("skillIds"))
                 prompt = self._system_prompt(thread.get("toolPolicy") == "readOnly", skill_text)
                 tools = self.registry.specs(read_only=thread.get("toolPolicy") == "readOnly")
-            messages = list(self.context.history(thread_id))
+                entries = self.sessions.read_entries(thread_id)
+            messages = list(self.context.history(thread_id, entries=entries))
             if job is None:
                 attachment_text, _ = self.attachments.context(thread_id, params.get("attachmentIds"))
                 text = _text(params, "input") if "input" in params else ""
@@ -743,7 +745,7 @@ class ApplicationService:
             request = self._apply_session_reasoning(thread_id, config, request)
             result = self.context.read(thread_id, request=request,
                                        capabilities=self.model_catalog.resolve(config.provider, config.model),
-                                       provider=config.provider)
+                                       provider=config.provider, entries=entries)
             return {**result, "provider": config.provider, "requestSource": "active" if job else "preview" if preview else "default",
                     "compactionJob": self._compaction_reference(thread_id)}
 
