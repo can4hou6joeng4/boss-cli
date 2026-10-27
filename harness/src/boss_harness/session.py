@@ -122,6 +122,14 @@ class CheckpointCommittedError(RuntimeError):
         super().__init__(f"摘要检查点 {checkpoint_id} 已经生效，但提交后的状态刷新失败；请重新读取会话，勿重复提交。")
 
 
+class ToolRevisionPersistenceError(OSError):
+    """A tool result revision could not be confirmed as durably present."""
+
+    def __init__(self, outcome: str) -> None:
+        self.outcome = outcome
+        super().__init__("工具结果无法确认已持久化")
+
+
 class SessionStore:
     def __init__(self, root: Path) -> None:
         self.root = Path(root).resolve()
@@ -204,6 +212,86 @@ class SessionStore:
             self._append_line(self.path_for(thread_id), entry.to_dict())
             self._index_thread(thread_id, connection)
         return entry
+
+    def append_tool_revision(self, thread_id: str, entry: Entry) -> tuple[Entry, bool]:
+        """Append a terminal tool revision, reconciling one ambiguous failure.
+
+        The entry identity and payload are fixed before this method is called.
+        A result that reached JSONL is fsynced and reused; a missing result gets
+        at most one append retry. No handler or approval is replayed here.
+        """
+        payload = entry.payload or {}
+        if (entry.type != "item" or payload.get("kind") != "toolCall"
+                or not isinstance(payload.get("revises"), str)):
+            raise ValueError("工具结果修订格式无效")
+        path = self.path_for(thread_id)
+        expected = entry.to_dict()
+        outcome = "absent"
+        last_error: Exception | None = None
+
+        def inspect_and_sync() -> str:
+            nonlocal outcome
+            found = False
+            with path.open("rb") as handle:
+                for line in handle:
+                    try:
+                        current = json.loads(line)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        continue
+                    if isinstance(current, dict) and current.get("id") == entry.id:
+                        if current != expected:
+                            return "conflict"
+                        found = True
+            if not found:
+                return "absent"
+            try:
+                with path.open("r+b") as handle:
+                    os.fsync(handle.fileno())
+            except OSError:
+                return "present_uncertain"
+            return "durable"
+
+        try:
+            with self._lock, self._index.transaction() as connection:
+                self.require_thread(thread_id)
+                self._append_line(path, expected)
+                self._index_thread(thread_id, connection)
+            return entry, False
+        except Exception as exc:
+            last_error = exc
+
+        for attempt in range(2):
+            try:
+                with self._lock, self._index.transaction() as connection:
+                    self.require_thread(thread_id)
+                    outcome = inspect_and_sync()
+                    if outcome == "durable":
+                        self._index_thread(thread_id, connection)
+                        return entry, True
+                    if outcome in {"conflict", "present_uncertain"}:
+                        raise ToolRevisionPersistenceError(outcome)
+                    if attempt == 0:
+                        self._append_line(path, expected)
+                        self._index_thread(thread_id, connection)
+                        return entry, True
+            except ToolRevisionPersistenceError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                try:
+                    with self._lock, self._index.transaction():
+                        self.require_thread(thread_id)
+                        outcome = inspect_and_sync()
+                    if outcome == "durable":
+                        return entry, True
+                except Exception as reconcile_error:
+                    last_error = reconcile_error
+                    outcome = "uncertain"
+                if outcome in {"conflict", "present_uncertain"}:
+                    raise ToolRevisionPersistenceError(outcome) from exc
+            if attempt == 1 or outcome != "absent":
+                raise ToolRevisionPersistenceError(outcome) from last_error
+        raise ToolRevisionPersistenceError(outcome) from last_error
 
     def append_checkpoint(self, thread_id: str, entry_factory: Callable[[], Entry], *,
                           on_committed: Callable[[], None] | None = None) -> Entry:
