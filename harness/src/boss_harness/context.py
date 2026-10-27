@@ -22,6 +22,7 @@ from boss_harness.models.types import (
     ToolResultItem, ToolResultsMessage, UserMessage,
 )
 from boss_harness.session import CheckpointCommittedError, Entry, SessionStore
+from boss_harness.tool_results import model_result_for_item
 
 
 def messages_from_items(items: list[dict]) -> tuple[ChatMessage, ...]:
@@ -38,7 +39,7 @@ def messages_from_items(items: list[dict]) -> tuple[ChatMessage, ...]:
             for p in pending)))
         messages.append(ToolResultsMessage(results=tuple(
             ToolResultItem(tool_call_id=str(p.get("toolCallId") or p["id"]),
-                           content=str(p.get("modelResult") or p.get("resultSummary", "")),
+                           content=model_result_for_item(p),
                            is_error=p.get("status") == "failed") for p in pending)))
         pending.clear()
 

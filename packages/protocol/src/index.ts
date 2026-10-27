@@ -369,6 +369,7 @@ export interface ToolDescriptor {
   readOnly: boolean;
   requiresApproval: boolean;
   inputSchema: Record<string, unknown>;
+  maxModelResultBytes?: number;
 }
 
 export interface ToolListResponse {

@@ -32,10 +32,18 @@ from boss_harness.models import (
 from boss_harness.models.provider import ModelConfig, Provider
 from boss_harness.models.output_budget import OutputBudgetExceeded, ResponseTextBudget, utf8_chunks
 from boss_harness.models.secret import redact_secrets
-from boss_harness.models.types import ChatMessage, ModelRequest, ModelErrorInfo, TextBlock, ThinkingBlock
+from boss_harness.models.types import (
+    DEFAULT_MODEL_TOOL_RESULT_BYTES, ChatMessage, ModelRequest, ModelErrorInfo, TextBlock, ThinkingBlock,
+)
+from boss_harness.model_tools import (
+    MODEL_RESULT_READ_SPEC, MODEL_RESULT_READ_TOOL, model_tool_specs,
+    read_model_tool_result, validate_model_result_read,
+)
 from boss_harness.session import Entry, SessionStore, ToolRevisionPersistenceError
 from boss_harness.toolkit import ToolResult, snapshot_result
-from boss_harness.tool_results import project_error, project_item
+from boss_harness.tool_results import (
+    model_result_content, model_result_for_item, project_error, project_item,
+)
 
 MAX_TOOL_ROUNDS = 6
 
@@ -104,6 +112,9 @@ class TurnRunner:
         #: 需要用户批准的工具名。为空时闸门不介入，只读工具因此不受影响。
         self.approval_required = approval_required
         self._tools = tools
+        model_tool_specs(tools)
+        self._tool_result_limits = {tool.name: tool.max_model_result_bytes for tool in tools}
+        self._tool_result_limits[MODEL_RESULT_READ_TOOL] = MODEL_RESULT_READ_SPEC.max_model_result_bytes
         self.system_prompt = system_prompt
         self.validate_arguments = validate_arguments
         self.pause_on_result = pause_on_result
@@ -134,7 +145,11 @@ class TurnRunner:
         return [tool.name for tool in self._tools]
 
     def tool_specs(self) -> tuple[ToolSpec, ...]:
-        return self._tools
+        return model_tool_specs(self._tools)
+
+    def _tool_result_limit(self, name: str) -> int:
+        value = self._tool_result_limits.get(name, DEFAULT_MODEL_TOOL_RESULT_BYTES)
+        return value if type(value) is int else DEFAULT_MODEL_TOOL_RESULT_BYTES
 
     # ---------- 中断与审批 ----------
 
@@ -299,14 +314,16 @@ class TurnRunner:
             "result": {"ok": result.ok, "command": result.command, "data": result.data,
                        "pagination": result.pagination, "error": result.error, "hints": result.hints},
             "source": source,
-            "modelResult": model_result(result, source=source),
+            "modelResultLimitBytes": self._tool_result_limit(name),
+            "modelResult": model_result(result, source=source, item_id=entry.id,
+                                         max_bytes=self._tool_result_limit(name)),
         }
         if approval is not None:
             payload["approval"] = approval
         revision = Entry(type="item", parent_id=self.sessions.last_entry_id(thread_id), payload=payload)
         _, recovered = self.sessions.append_tool_revision(thread_id, revision)
-        # The model and rollout keep the complete result. Observers get a bounded
-        # projection and a content-addressed route to retrieve an omitted body.
+        # Keep canonical result data durable; model context uses its own bounded projection.
+        # Observers get a separate bounded projection and content-addressed read route.
         try:
             transport = project_item(thread_id, {"id": entry.id, **payload})
             self.notify(
@@ -340,7 +357,9 @@ class TurnRunner:
         approval: dict[str, Any] | None = None
         invalid: ToolResult | None = None
         try:
-            if self.validate_arguments is not None:
+            if name == MODEL_RESULT_READ_TOOL:
+                arguments = validate_model_result_read(arguments)
+            elif self.validate_arguments is not None:
                 self.validate_arguments(name, arguments)
         except ValueError as exc:
             invalid = ToolResult(ok=False, command=name, error={"code": "INVALID_PARAM", "message": str(exc)})
@@ -406,11 +425,14 @@ class TurnRunner:
                 self.finish_tool_call(thread_id, entry, name, denied, call_id, approval)
                 return ToolResultItem(
                     tool_call_id=call_id or entry.id,
-                    content=model_result(denied, source=tool_source(thread_id, entry, name)),
+                    content=model_result(denied, source=tool_source(thread_id, entry, name),
+                                         item_id=entry.id, max_bytes=self._tool_result_limit(name)),
                     is_error=True,
                 )
 
         handler = self.handlers.get(name)
+        if name == MODEL_RESULT_READ_TOOL:
+            handler = lambda _bridge, values: read_model_tool_result(self.sessions, thread_id, values)
         dispatched = False
         dispatch_persistence_failed = False
         if self.cancelled():
@@ -439,7 +461,7 @@ class TurnRunner:
                     })
                     self._blocked = result
         pause = False
-        if not result.ok and self.pause_on_result is not None:
+        if not result.ok and name != MODEL_RESULT_READ_TOOL and self.pause_on_result is not None:
             try:
                 pause = self.pause_on_result(snapshot_result(result))
                 if type(pause) is not bool:
@@ -473,7 +495,9 @@ class TurnRunner:
                 "recovery_action": "刷新会话并核对已保存结果后，再明确发起下一步。",
             })
             return ToolResultItem(tool_call_id=call_id or entry.id,
-                content=model_result(result, source=tool_source(thread_id, entry, name)), is_error=not result.ok)
+                content=model_result(result, source=tool_source(thread_id, entry, name),
+                                     item_id=entry.id, max_bytes=self._tool_result_limit(name)),
+                is_error=not result.ok)
         except ToolRevisionPersistenceError as persistence_error:
             uncertain = ToolResult(ok=False, command=name, error={
                 "code": "TOOL_RESULT_OUTCOME_UNKNOWN",
@@ -485,7 +509,8 @@ class TurnRunner:
                 if self.persistence_fence is not None:
                     self.persistence_fence(thread_id)
                 return ToolResultItem(tool_call_id=call_id or entry.id,
-                    content=model_result(uncertain, source=tool_source(thread_id, entry, name)), is_error=True)
+                    content=model_result(uncertain, source=tool_source(thread_id, entry, name),
+                                         max_bytes=self._tool_result_limit(name)), is_error=True)
             try:
                 self.finish_tool_call(thread_id, entry, name, uncertain, call_id, approval,
                                       "outcome_unknown")
@@ -495,10 +520,12 @@ class TurnRunner:
                 if self.persistence_fence is not None:
                     self.persistence_fence(thread_id)
             return ToolResultItem(tool_call_id=call_id or entry.id,
-                content=model_result(uncertain, source=tool_source(thread_id, entry, name)), is_error=True)
+                content=model_result(uncertain, source=tool_source(thread_id, entry, name),
+                                     max_bytes=self._tool_result_limit(name)), is_error=True)
         return ToolResultItem(
             tool_call_id=call_id or entry.id,
-            content=model_result(result, source=tool_source(thread_id, entry, name)),
+            content=model_result(result, source=tool_source(thread_id, entry, name),
+                                 item_id=entry.id, max_bytes=self._tool_result_limit(name)),
             is_error=not result.ok,
         )
 
@@ -547,7 +574,7 @@ class TurnRunner:
                         {
                             "name": str(payload.get("toolName", "")),
                             "arguments": dict(payload.get("toolArguments") or {}),
-                            "summary": str(payload.get("modelResult") or payload.get("resultSummary", "")),
+                            "summary": model_result_for_item(payload),
                             "is_error": payload.get("status") == "failed",
                         },
                     )
@@ -975,8 +1002,10 @@ def tool_source(thread_id: str, entry: Entry, name: str) -> dict:
     return {"ref": f"tool:{thread_id}:{entry.id}", "tool": name, "queriedAt": entry.timestamp}
 
 
-def model_result(result: ToolResult, *, source: dict | None = None) -> str:
-    """Keep the structured envelope for context; the UI summary is a separate field."""
-    return json.dumps({"ok": result.ok, "command": result.command, "data": result.data,
-                       "pagination": result.pagination, "error": result.error, "hints": result.hints,
-                       **({"source": source} if source else {})}, ensure_ascii=False, allow_nan=False)
+def model_result(result: ToolResult, *, source: dict | None = None, item_id: str | None = None,
+                 max_bytes: int = DEFAULT_MODEL_TOOL_RESULT_BYTES) -> str:
+    """Bound model-visible tool output while preserving the canonical result in session history."""
+    payload = {"ok": result.ok, "command": result.command, "data": result.data,
+               "pagination": result.pagination, "error": result.error, "hints": result.hints}
+    return model_result_content(payload, item_id, source=source, max_bytes=max_bytes,
+                                preview=summarize_result(result))

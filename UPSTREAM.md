@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第四十八轮：为模型上下文限制大型工具结果
+
+Pi 开放 [Issue #11386](https://github.com/earendil-works/pi/issues/11386)（截至 2026-10-28 为 OPEN；Pi main `85c2ee3e761e4fc4f901ff0ed584fb2465aa552e`；MIT）提出将 MCP 工具结果的固定 20 KiB 上限改为按工具/server/项目配置。议题主要关心单次模型输入预算与大 schema/tree/search 结果；Pi 尚无关联实现 PR。本项目没有 MCP server 配置，工具来自显式 `ToolBundle`；`jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70` 的许可证字段为空，当前开放 Issue/PR 仍集中招聘业务、平台权限、会话发送和认证，不存在可直接移植的通用工具结果预算实现。
+
+本项目现有 64 KiB 限制只控制 Electron/RPC 内联传输；完整结果保存在工具条目，原先又把完整 `modelResult` 写入和回放到模型上下文。若照搬截断而不给模型补读通道，招聘职位或候选人数据会在模型侧不可见。现在 `ToolDefinition.max_model_result_bytes` 提供每工具 UTF-8 字节预算（默认 20 KiB，8 KiB–1 MiB），超限时仅向模型暴露明确省略标记、已有结果摘要和基于规范结果 JSON 的 SHA-256。规范结构化结果保持完整写入会话记录；重启历史、摘要材料与预算预览都重新按原工具预算投影。
+
+新增的 Harness 内核工具 `read_session_tool_result` 只读当前会话中已持久化的工具结果，按 item ID、SHA-256 和绑定会话/条目的游标每次最多读取 8,192 个 Unicode 字符；不进入 `ToolBundle`、招聘 CLI allowlist 或审批清单，也不触发外部招聘操作。桌面仍通过现有 `thread/item/result/read` 独立读取原始结果。没有复制 Pi 源码或引入依赖；本地验收须覆盖完整结果不变、旧会话回放限额、分页原文还原、错误/跨会话引用拒绝及 fork 行为。
+
 ## 第四十七轮：保留结构化 provider 终态错误信息
 
 本项目主线 `ccee00ca98aca9a80e9abe39cbd52c5e5de2d6b2` 已能在 OpenAI 与 Anthropic 适配器中识别特定上下文溢出，但其他 HTTP 状态、供应商错误 code 与瞬时错误判断会退化为脱敏文本；`session/error` 无法区分 401、503、额度耗尽及流内服务错误。此前 `ModelErrorInfo` 只描述 `CONTEXT_OVERFLOW`，流内结构化事实也没有完整穿过终态事件。
