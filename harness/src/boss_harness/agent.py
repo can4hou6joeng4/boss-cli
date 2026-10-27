@@ -33,7 +33,7 @@ from boss_harness.models.provider import ModelConfig, Provider
 from boss_harness.models.output_budget import OutputBudgetExceeded, ResponseTextBudget, utf8_chunks
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.types import ChatMessage, ModelRequest, ModelErrorInfo, TextBlock, ThinkingBlock
-from boss_harness.session import Entry, SessionStore
+from boss_harness.session import Entry, SessionStore, ToolRevisionPersistenceError
 from boss_harness.toolkit import ToolResult, snapshot_result
 from boss_harness.tool_results import project_error, project_item
 
@@ -55,6 +55,10 @@ N_THREAD_UPDATED = "thread/updated"
 N_SESSION_ERROR = "session/error"
 
 Notify = Callable[[str, dict[str, Any] | None], None]
+
+
+class ToolCompletionNotificationError(RuntimeError):
+    """The result is durable, but its observer notification failed."""
 
 
 @dataclass
@@ -89,6 +93,7 @@ class TurnRunner:
         request_preparer: Callable[[ModelRequest], tuple[ModelRequest, dict[str, Any]]] | None = None,
         recover_context: Callable[[ModelRequest], ModelRequest | None] | None = None,
         lifecycle_hooks: LifecycleHooks | None = None,
+        persistence_fence: Callable[[str], None] | None = None,
     ) -> None:
         self.sessions = sessions
         self.tool_bridge = tool_bridge
@@ -117,6 +122,7 @@ class TurnRunner:
         self.last_preparation: tuple[ModelRequest, dict[str, Any]] | None = None
         self.recover_context = recover_context
         self.lifecycle_hooks = lifecycle_hooks
+        self.persistence_fence = persistence_fence
         self.context_abort: Callable[[], None] | None = None
         self.last_stream_error: ModelErrorInfo | None = None
         self.last_stream_recoverable = False
@@ -273,7 +279,7 @@ class TurnRunner:
         call_id: str | None = None,
         approval: dict[str, Any] | None = None,
         execution_state: str | None = None,
-    ) -> None:
+    ) -> bool:
         status = "completed" if result.ok else "failed"
         arguments = dict((entry.payload or {}).get("toolArguments") or {})
         source = tool_source(thread_id, entry, name)
@@ -296,28 +302,30 @@ class TurnRunner:
         }
         if approval is not None:
             payload["approval"] = approval
-        self.sessions.append(
-            thread_id,
-            Entry(type="item", parent_id=self.sessions.last_entry_id(thread_id), payload=payload),
-        )
+        revision = Entry(type="item", parent_id=self.sessions.last_entry_id(thread_id), payload=payload)
+        _, recovered = self.sessions.append_tool_revision(thread_id, revision)
         # The model and rollout keep the complete result. Observers get a bounded
         # projection and a content-addressed route to retrieve an omitted body.
-        transport = project_item(thread_id, {"id": entry.id, **payload})
-        self.notify(
-            N_TOOL_CALL_COMPLETED,
-            {
-                "threadId": thread_id,
-                "itemId": entry.id,
-                "toolName": name,
-                "status": status,
-                "ok": result.ok,
-                "error": project_error(result.error),
-                "resultSummary": payload["resultSummary"],
-                **{key: transport[key] for key in ("result", "resultOmitted", "resultRef") if key in transport},
-                "source": source,
-                "approval": approval,
-            },
-        )
+        try:
+            transport = project_item(thread_id, {"id": entry.id, **payload})
+            self.notify(
+                N_TOOL_CALL_COMPLETED,
+                {
+                    "threadId": thread_id,
+                    "itemId": entry.id,
+                    "toolName": name,
+                    "status": status,
+                    "ok": result.ok,
+                    "error": project_error(result.error),
+                    "resultSummary": payload["resultSummary"],
+                    **{key: transport[key] for key in ("result", "resultOmitted", "resultRef") if key in transport},
+                    "source": source,
+                    "approval": approval,
+                },
+            )
+        except Exception as exc:
+            raise ToolCompletionNotificationError from exc
+        return recovered
 
     def execute_tool(
         self, thread_id: str, name: str, arguments: dict[str, Any], call_id: str | None = None,
@@ -441,9 +449,46 @@ class TurnRunner:
                    and (result.error or {}).get("code") in {
                        "CANCELLED", "TOOL_TIMEOUT", "TOOL_ERROR", "CLI_ERROR", "CLI_CONTRACT_ERROR", "CLI_OUTPUT_LIMIT", "INVALID_ENVELOPE",
                        "GREET_RESULT_UNKNOWN", "ACTION_UNCONFIRMED"})
-        self.finish_tool_call(thread_id, entry, name, result, call_id, approval,
-                              "not_executed" if policy_denied or dispatch_persistence_failed
-                              else "outcome_unknown" if unknown else None)
+        try:
+            recovered_persistence = self.finish_tool_call(thread_id, entry, name, result, call_id, approval,
+                "not_executed" if policy_denied or dispatch_persistence_failed
+                else "outcome_unknown" if unknown else None)
+            if recovered_persistence:
+                self._blocked = ToolResult(ok=False, command=name, error={
+                    "code": "TOOL_RESULT_PERSISTENCE_RECOVERED",
+                    "message": "工具结果已恢复写入；为避免继续使用不确定的回合状态，本回合已暂停。",
+                    "recovery_action": "核对已保存的工具结果后，明确发起下一回合。",
+                })
+        except ToolCompletionNotificationError:
+            self._blocked = ToolResult(ok=False, command=name, error={
+                "code": "TOOL_RESULT_NOTIFICATION_FAILED",
+                "message": "工具结果已保存，但完成通知失败；本回合已暂停以便重新读取会话状态。",
+                "recovery_action": "刷新会话并核对已保存结果后，再明确发起下一步。",
+            })
+            return ToolResultItem(tool_call_id=call_id or entry.id,
+                content=model_result(result, source=tool_source(thread_id, entry, name)), is_error=not result.ok)
+        except ToolRevisionPersistenceError as persistence_error:
+            uncertain = ToolResult(ok=False, command=name, error={
+                "code": "TOOL_RESULT_OUTCOME_UNKNOWN",
+                "message": "工具已经派发，但结果无法确认已保存；请先核对外部状态，不要直接重试。",
+                "recovery_action": "检查会话记录与平台状态后，再明确发起下一步。",
+            })
+            self._blocked = uncertain
+            if persistence_error.outcome != "absent":
+                if self.persistence_fence is not None:
+                    self.persistence_fence(thread_id)
+                return ToolResultItem(tool_call_id=call_id or entry.id,
+                    content=model_result(uncertain, source=tool_source(thread_id, entry, name)), is_error=True)
+            try:
+                self.finish_tool_call(thread_id, entry, name, uncertain, call_id, approval,
+                                      "outcome_unknown")
+            except ToolCompletionNotificationError:
+                pass
+            except ToolRevisionPersistenceError:
+                if self.persistence_fence is not None:
+                    self.persistence_fence(thread_id)
+            return ToolResultItem(tool_call_id=call_id or entry.id,
+                content=model_result(uncertain, source=tool_source(thread_id, entry, name)), is_error=True)
         return ToolResultItem(
             tool_call_id=call_id or entry.id,
             content=model_result(result, source=tool_source(thread_id, entry, name)),

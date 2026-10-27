@@ -36,7 +36,8 @@ from boss_harness.resources import AttachmentStore, SkillCatalog, ToolRegistry
 from boss_harness.request_identity import resolve_request
 from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
-from boss_harness.session import CheckpointCommittedError, CheckpointCommitUncertain, Entry, SessionStore
+from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUncertain, Entry,
+                                  SessionStore, ToolRevisionPersistenceError)
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
 from boss_harness.tool_bundle import ToolBundle
 from boss_harness.summary import SUMMARY_MAX_REQUESTS, SummaryPlanner
@@ -201,6 +202,7 @@ class ApplicationService:
             self.approval_timeout = _approval_timeout()
             self.runner = self._new_runner(self.tools, provider, config)
             self._turn_lock = self.runtimes.lock  # Compatibility for embedded 0.1 users.
+            self._tool_persistence_fences: set[str] = set()
             self._state = "cold"
             self._protocol = "0.1.0"
             self._bidirectional = False
@@ -290,6 +292,7 @@ class ApplicationService:
             tools=self.registry.specs(), system_prompt=self.tool_bundle.system_prompt,
             validate_arguments=self.registry.validate, pause_on_result=self.tool_bundle.pause_on_result,
             lifecycle_hooks=self.lifecycle_hooks,
+            persistence_fence=self._fence_tool_persistence,
             history_provider=self.context.history,
             request_preparer=lambda request: self.context.prepare(request,
                 self.model_catalog.resolve(config.provider, request.model), provider=config.provider))
@@ -1342,6 +1345,9 @@ class ApplicationService:
                             raise RpcError(-32004, "消息已在队列中，请先核对队列状态" if pending else "旧请求需要核对，发起新任务请使用新请求编号",
                                 {"code": "REQUEST_ALREADY_QUEUED" if pending else "REQUEST_REQUIRES_REVIEW",
                                  "queueId": current["id"], "status": current["status"]})
+                if thread_id in self._tool_persistence_fences:
+                    raise RpcError(-32004, "该会话的工具结果尚未完成持久化核对，请重启内核后重新读取状态",
+                                   {"code": "THREAD_REQUIRES_REVIEW"})
                 config = self._model_config(thread, params)
                 policy = (self.compaction_policy.override(params["autoCompaction"])
                           if "autoCompaction" in params else self.compaction_policy)
@@ -1734,6 +1740,10 @@ class ApplicationService:
                 raise RpcError(-32003, "内核正在关闭")
             self.sessions.require_thread(thread_id)
             identity = resolve_request(self.sessions, thread_id, params.get("clientUserMessageId"), text)
+            if (thread_id in self._tool_persistence_fences
+                    and identity.queue is None and identity.turn is None):
+                raise RpcError(-32004, "该会话的工具结果尚未完成持久化核对，请重启内核后重新读取状态",
+                               {"code": "THREAD_REQUIRES_REVIEW"})
             item = identity.queue or self.queue.add(thread_id, text, client_id=params.get("clientUserMessageId"))
             if identity.turn is not None:
                 item = self.queue._associate_request(thread_id, item["id"], identity)
@@ -1765,6 +1775,8 @@ class ApplicationService:
         while True:
             with self.runtimes.lock:
                 if self.runtimes.closed or thread_id in self.runtimes.active:
+                    return
+                if thread_id in self._tool_persistence_fences:
                     return
                 if thread_id in self._follow_up_dispatches:
                     # A fast turn can finish before its dispatcher returns.
@@ -1814,6 +1826,11 @@ class ApplicationService:
                 self._close_application_resources_if_idle()
             if not again:
                 return
+
+    def _fence_tool_persistence(self, thread_id: str) -> None:
+        """Keep a session closed when dispatched tool outcome cannot be confirmed."""
+        with self.runtimes.lock:
+            self._tool_persistence_fences.add(thread_id)
 
     def on_shutdown(self, params: dict | None) -> dict:
         self.close()
