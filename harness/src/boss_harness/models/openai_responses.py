@@ -24,6 +24,11 @@ from typing import Any
 import openai
 
 from boss_harness.models.errors import openai_error_info
+from boss_harness.models.output_budget import (
+    OutputBudgetExceeded,
+    ToolArgumentBudget,
+    bounded_error,
+)
 from boss_harness.models.provider import ModelConfig
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.types import (
@@ -189,7 +194,7 @@ class OpenAIResponsesProvider:
 
     def _redact(self, text: object) -> str:
         """错误文本会被写进会话文件并推给外壳，落盘前先把凭据抹掉。"""
-        return redact_secrets(str(text), extra=(self._secret,))
+        return bounded_error("", redact_secrets(str(text), extra=(self._secret,)))
 
     # ---------- 请求参数 ----------
 
@@ -315,6 +320,10 @@ class OpenAIResponsesProvider:
         arguments_done: dict[int, str | None] = {}
         #: output_index -> function_call 的 call_id（回填工具结果要靠它）
         call_ids: dict[int, str] = {}
+        started_function_calls: set[int] = set()
+        final_argument_sources: dict[int, str] = {}
+        final_items_seen: set[int] = set()
+        budget = ToolArgumentBudget()
         #: 参数不是完整 JSON 的 function_call（用名字记），收尾时按失败处理
         broken: list[str] = []
         #: 是否已经发出过思考增量（没有内容时不补空行）
@@ -348,8 +357,15 @@ class OpenAIResponsesProvider:
                         elif item_type == "message":
                             yield StreamEvent(type="text_start", content_index=index)
                         elif item_type == "function_call":
-                            json_buffers[index] = str(getattr(item, "arguments", "") or "")
+                            if index in started_function_calls:
+                                raise ValueError("响应重复使用工具调用索引")
+                            initial = getattr(item, "arguments", "")
+                            if not isinstance(initial, str):
+                                raise ValueError("工具调用初始参数不是文本")
+                            budget.account(index, initial)
+                            json_buffers[index] = initial
                             call_ids[index] = str(getattr(item, "call_id", "") or "")
+                            started_function_calls.add(index)
                             yield StreamEvent(type="toolcall_start", content_index=index)
 
                     elif kind in _THINKING_DELTA_EVENTS:
@@ -375,18 +391,28 @@ class OpenAIResponsesProvider:
                             yield StreamEvent(type="text_delta", content_index=index, delta=delta)
 
                     elif kind == "response.function_call_arguments.delta":
-                        fragment = str(getattr(event, "delta", "") or "")
+                        if index not in started_function_calls or index in final_items_seen:
+                            raise ValueError("工具参数增量没有活动的工具调用")
+                        if index in arguments_done:
+                            raise ValueError("工具调用参数终态之后仍收到增量")
+                        fragment = getattr(event, "delta", "")
+                        if not isinstance(fragment, str):
+                            raise ValueError("工具调用参数增量不是文本")
                         if fragment:
+                            budget.account(index, fragment)
                             json_buffers[index] = json_buffers.get(index, "") + fragment
                             yield StreamEvent(type="toolcall_delta", content_index=index, delta=fragment)
 
                     elif kind == "response.function_call_arguments.done":
                         # 权威参数以 done 为准；只把新增后缀当作增量补发，避免重复。
+                        if index not in started_function_calls or index in arguments_done or index in final_items_seen:
+                            raise ValueError("工具参数终态没有对应的活动工具调用")
                         authoritative = getattr(event, "arguments", None)
                         if not isinstance(authoritative, str):
                             authoritative = None
                         previous = json_buffers.get(index, "")
                         if authoritative is not None:
+                            budget.reconcile(index, authoritative)
                             json_buffers[index] = authoritative
                         arguments_done[index] = authoritative
                         if (authoritative is not None and authoritative.startswith(previous)
@@ -409,6 +435,8 @@ class OpenAIResponsesProvider:
                             blocks[index] = TextBlock(text=text)
                             yield StreamEvent(type="text_end", content_index=index, text=text)
                         elif item_type == "function_call":
+                            if index not in started_function_calls or index in final_items_seen:
+                                raise ValueError("工具调用终态没有对应的唯一初始项")
                             name = str(getattr(item, "name", "") or "")
                             buffered = json_buffers.pop(index, None)
                             has_done_arguments = index in arguments_done
@@ -416,6 +444,11 @@ class OpenAIResponsesProvider:
                             has_final_arguments = (hasattr(item, "arguments")
                                                    and getattr(item, "arguments") is not None)
                             final_raw = getattr(item, "arguments", None)
+                            if has_final_arguments:
+                                if not isinstance(final_raw, str):
+                                    raise ValueError("工具调用参数终态不是文本")
+                                budget.reconcile(index, final_raw)
+                                final_argument_sources[index] = final_raw
                             arguments = None
                             if has_final_arguments:
                                 final_parsed = (_parse_arguments(final_raw)
@@ -433,6 +466,11 @@ class OpenAIResponsesProvider:
                                              if isinstance(done_raw, str) else None)
                             else:
                                 arguments = _parse_arguments(buffered)
+                            if index not in final_argument_sources:
+                                if has_done_arguments and isinstance(done_raw, str):
+                                    final_argument_sources[index] = done_raw
+                                elif isinstance(buffered, str):
+                                    final_argument_sources[index] = buffered
                             if arguments is None:
                                 broken.append(name or str(getattr(item, "call_id", "") or ""))
                                 arguments = {}
@@ -442,10 +480,28 @@ class OpenAIResponsesProvider:
                                 arguments=arguments,
                             )
                             blocks[index] = call
+                            final_items_seen.add(index)
                             yield StreamEvent(type="toolcall_end", content_index=index, tool_call=call)
 
                     elif kind in ("response.completed", "response.incomplete"):
                         terminal = getattr(event, "response", None)
+                        for output_index, item in enumerate(getattr(terminal, "output", None) or []):
+                            if str(getattr(item, "type", "") or "") != "function_call":
+                                continue
+                            if output_index not in final_items_seen:
+                                raise ValueError("工具调用缺少完整的 output_item.done 事件")
+                            raw = getattr(item, "arguments", None)
+                            if raw is None:
+                                continue
+                            if not isinstance(raw, str):
+                                raise ValueError("工具调用终态参数不是文本")
+                            previous_final = final_argument_sources.get(output_index)
+                            budget.reconcile(output_index, raw)
+                            if previous_final is not None and raw != previous_final:
+                                expected = _parse_arguments(previous_final)
+                                actual = _parse_arguments(raw)
+                                if expected is None or actual is None or expected != actual:
+                                    raise ValueError("响应中的工具参数终态来源冲突")
 
                     elif kind == "response.failed":
                         # 网关过载时会在 HTTP 200 的流里回这个事件，例如
@@ -480,7 +536,13 @@ class OpenAIResponsesProvider:
 
                 # 终态响应由 response.completed / response.incomplete 事件记录，见上面的分支；
                 # 原始事件流没有 get_final_response()。
+                if started_function_calls != final_items_seen:
+                    raise ValueError("工具调用缺少完整的 output_item.done 事件")
 
+        except OutputBudgetExceeded:
+            self._last_error_retryable = False
+            yield StreamEvent(type="error", reason="error", error="模型工具参数超过本地字节上限")
+            return
         except openai.APIStatusError as exc:
             error_info = openai_error_info(exc.body, source="http_error", status_code=exc.status_code)
             self._last_error_retryable = error_info is None and exc.status_code in _RETRYABLE_STATUS
@@ -511,7 +573,7 @@ class OpenAIResponsesProvider:
             yield StreamEvent(
                 type="error",
                 reason="error",
-                error=self._redact(f"流处理异常（{type(exc).__name__}）：{exc}"),
+                error=f"模型流处理异常（{type(exc).__name__}）",
             )
             return
 
@@ -526,7 +588,7 @@ class OpenAIResponsesProvider:
             error_message = f"工具调用参数不完整：{'、'.join(unfinished)}"
 
         if error_message:
-            yield StreamEvent(type="error", reason="error", error=error_message)
+            yield StreamEvent(type="error", reason="error", error=self._redact(error_message))
             return
 
         message = AssistantMessage(
@@ -579,7 +641,7 @@ def _parse_arguments(raw: str | None) -> dict[str, Any] | None:
         return None
     try:
         parsed = json.loads(text, parse_constant=_reject_json_constant)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return None
     return parsed if isinstance(parsed, dict) else None
 
