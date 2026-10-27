@@ -25,8 +25,12 @@ export function QueuePanel({ items, onRemove }: {
       {visibleItems.map(item => <li key={item.id}>
         <div className="turn-queue-item-copy">
           <span className={`turn-queue-kind is-${item.kind}`}>{item.kind === "steering" ? "当前回合" : "后续回合"}</span>
-          <span className="turn-queue-status">{LABELS[item.status]}</span>
+          <span className="turn-queue-status">{item.status === "paused" && item.failureCode === "TURN_START_FAILED" ? "启动失败，未执行" : LABELS[item.status]}</span>
           <p title={item.input}>{item.input}</p>
+          {item.status === "paused" && item.failureCode === "TURN_START_FAILED" && <p className="turn-queue-error">
+            {item.inputPersisted === true ? "输入已保留在当前会话，核对后可发起新任务。" : item.inputPersisted === false
+              ? "输入尚未写入当前会话，核对后可发起新任务。" : "请先核对当前会话，再决定是否发起新任务。"}
+          </p>}
         </div>
         {(item.status === "queued" || item.status === "paused") && <button type="button" aria-label={`撤回排队消息：${item.input.slice(0, 80)}`} title={item.status === "paused" ? "取消暂停的队列消息" : "撤回排队消息"} disabled={pending !== null} onClick={async () => {
           setPending(item.id); setError("");
