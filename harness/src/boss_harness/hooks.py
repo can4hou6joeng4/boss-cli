@@ -25,6 +25,8 @@ from boss_harness.models.secret import redact_secrets
 MAX_HOOK_TIMEOUT_SECONDS = 30.0
 DEFAULT_HOOK_TIMEOUT_SECONDS = 0.25
 MAX_PENDING_EVENTS = 256
+MAX_ACTIVE_HOOK_CALLBACKS = 16
+HOOK_BUSY_DIAGNOSTIC_INTERVAL_SECONDS = 1.0
 MAX_CONTEXT_STRING = 16_384
 MAX_CONTEXT_KEYS = 64
 MAX_CONTEXT_ITEMS = 128
@@ -35,6 +37,7 @@ MAX_POLICY_CONTEXT_BYTES = 1_052_672
 MAX_POLICY_CONTEXT_NODES = 32_784
 MAX_POLICY_CONTEXT_DEPTH = 66
 _HOOK_FAILED = object()
+_HOOK_BUSY = object()
 _HOOK_CONTEXT_TOO_LARGE = object()
 _HOOK_CONTEXT_INVALID = object()
 
@@ -235,6 +238,7 @@ class LifecycleHooks:
     event/RPC locks. Policy checks run in daemon threads with a bounded join.
     A timed out callback may finish later, but cannot hold a kernel lock; its
     late return is ignored and never changes a turn result.
+    At most ``MAX_ACTIVE_HOOK_CALLBACKS`` callbacks may be in flight at once.
     """
 
     def __init__(
@@ -264,6 +268,8 @@ class LifecycleHooks:
         self._closing = False
         self._closed = False
         self._dropped_events = 0
+        self._busy_events = 0
+        self._last_busy_diagnostic = 0.0
         self._event_queue: queue.Queue[tuple[str, dict[str, Any]] | None] = queue.Queue(MAX_PENDING_EVENTS)
         self._event_worker: threading.Thread | None = None
         if any(callable(getattr(hook, "on_event", None)) for hook in self._hooks):
@@ -323,10 +329,6 @@ class LifecycleHooks:
         if timeout <= 0:
             self._failure(hook, method, event, "HOOK_TIMEOUT", "生命周期 hook 未能在关闭期限内开始", timed_out=True)
             return _HOOK_FAILED
-        with self._lock:
-            if self._closed or (self._closing and method == "before_tool_call"):
-                return None
-            self._active += 1
         result: list[Any] = []
         error: list[BaseException] = []
         finished = threading.Event()
@@ -343,13 +345,29 @@ class LifecycleHooks:
                 finished.set()
 
         thread = threading.Thread(target=run, name=f"boss-hook-{method}", daemon=True)
-        try:
-            thread.start()
-        except Exception as exc:
-            with self._lock:
-                self._active -= 1
-                self._lock.notify_all()
-            self._failure(hook, method, event, "HOOK_START_FAILED", str(exc))
+        start_error: Exception | None = None
+        with self._lock:
+            if self._closed or (self._closing and method == "before_tool_call"):
+                return None
+            if self._active >= MAX_ACTIVE_HOOK_CALLBACKS:
+                if method == "on_event":
+                    self._busy_events += 1
+                busy = True
+            else:
+                busy = False
+                self._active += 1
+                try:
+                    thread.start()
+                except Exception as exc:
+                    start_error = exc
+                    self._active -= 1
+                    self._lock.notify_all()
+        if busy:
+            if method != "on_event":
+                self._failure(hook, method, event, "HOOK_BUSY", "生命周期 hook 在途回调已达到内核上限")
+            return _HOOK_BUSY
+        if start_error is not None:
+            self._failure(hook, method, event, "HOOK_START_FAILED", str(start_error))
             return _HOOK_FAILED
         if not finished.wait(timeout):
             self._failure(hook, method, event, "HOOK_TIMEOUT", "生命周期 hook 超时", timed_out=True)
@@ -387,18 +405,33 @@ class LifecycleHooks:
             self._failure(hook, "on_event", None, "HOOK_EVENT_DROPPED",
                           f"生命周期事件队列已满；累计丢弃 {count} 个观察事件")
 
+    def _report_busy_events(self, *, force: bool = False) -> None:
+        with self._lock:
+            now = time.monotonic()
+            if not self._busy_events or (
+                not force and now - self._last_busy_diagnostic < HOOK_BUSY_DIAGNOSTIC_INTERVAL_SECONDS
+            ):
+                return
+            count, self._busy_events = self._busy_events, 0
+            self._last_busy_diagnostic = now
+            hook = next((item for item in self._hooks if callable(getattr(item, "on_event", None))), self)
+        self._failure(hook, "on_event", None, "HOOK_BUSY",
+                      f"生命周期观察 hook 达到在途回调上限；累计跳过 {count} 个观察回调")
+
     def _drain_events(self) -> None:
         while True:
             with self._lock:
                 closing = self._closing
             if closing and self._event_queue.empty():
                 self._report_dropped_events()
+                self._report_busy_events(force=True)
                 return
             try:
                 record = self._event_queue.get(timeout=0.05)
             except queue.Empty:
                 if self._event_queue.empty():
                     self._report_dropped_events()
+                    self._report_busy_events()
                 continue
             try:
                 if record is None:
@@ -423,6 +456,8 @@ class LifecycleHooks:
                 return HookDecision(False, "HOOK_CONTEXT_TOO_LARGE", "策略输入超过内核上限；为保证策略检查完整，工具调用已暂停")
             if result is _HOOK_CONTEXT_INVALID:
                 return HookDecision(False, "HOOK_CONTEXT_INVALID", "策略输入不是受支持的 JSON；为保证策略检查完整，工具调用已暂停")
+            if result is _HOOK_BUSY:
+                return HookDecision(False, "HOOK_BUSY", "内核策略 hook 已达到在途回调上限；工具调用已暂停")
             if result is _HOOK_FAILED:
                 return HookDecision(False, "HOOK_ERROR", "内核策略 hook 未能完成；为避免执行未核对的工具，当前回合已暂停")
             if result is None:
