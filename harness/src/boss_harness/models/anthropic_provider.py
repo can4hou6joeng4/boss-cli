@@ -188,6 +188,9 @@ class AnthropicProvider:
 
             with stream_ctx as stream:
                 self._active_stream = stream
+                if self._abort_requested:
+                    yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+                    return
                 for event in stream:
                     if self._abort_requested:
                         yield StreamEvent(type="error", reason="aborted", error="请求已取消")
