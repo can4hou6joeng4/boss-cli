@@ -400,6 +400,7 @@ class TurnRunner:
 
         handler = self.handlers.get(name)
         dispatched = False
+        dispatch_persistence_failed = False
         if self.cancelled():
             result = ToolResult(ok=False, command=name, error={"code": "CANCELLED", "message": "操作已取消，未执行工具"})
         elif invalid is not None:
@@ -412,7 +413,15 @@ class TurnRunner:
                 dispatched = True
                 result = snapshot_result(handler(self.tool_bridge, arguments))
             except Exception as exc:
-                result = ToolResult(ok=False, command=name, error={"code": "TOOL_ERROR", "message": self.safe_error(exc)})
+                if dispatched:
+                    result = ToolResult(ok=False, command=name, error={"code": "TOOL_ERROR", "message": self.safe_error(exc)})
+                else:
+                    dispatch_persistence_failed = True
+                    result = ToolResult(ok=False, command=name, error={
+                        "code": "SESSION_PERSISTENCE_ERROR",
+                        "message": "执行状态未能持久化，工具未派发；请检查会话状态后再继续",
+                    })
+                    self._blocked = result
         pause = False
         if not result.ok and self.pause_on_result is not None:
             try:
@@ -432,7 +441,8 @@ class TurnRunner:
                        "CANCELLED", "TOOL_TIMEOUT", "TOOL_ERROR", "CLI_ERROR", "CLI_CONTRACT_ERROR", "CLI_OUTPUT_LIMIT", "INVALID_ENVELOPE",
                        "GREET_RESULT_UNKNOWN", "ACTION_UNCONFIRMED"})
         self.finish_tool_call(thread_id, entry, name, result, call_id, approval,
-                              "not_executed" if policy_denied else "outcome_unknown" if unknown else None)
+                              "not_executed" if policy_denied or dispatch_persistence_failed
+                              else "outcome_unknown" if unknown else None)
         return ToolResultItem(
             tool_call_id=call_id or entry.id,
             content=model_result(result, source=tool_source(thread_id, entry, name)),
