@@ -286,10 +286,15 @@ class AnthropicProvider:
                 if not saw_message_stop:
                     raise ValueError("模型流未正常结束")
         except anthropic.APIConnectionError as exc:
-            yield StreamEvent(type="error", reason="error", error=self._redact(f"连接失败：{exc}"))
+            error_info = anthropic_error_info(None, source="transport_error")
+            yield StreamEvent(type="error", reason="error", error=self._redact(f"连接失败：{exc}"),
+                              error_info=error_info)
             return
         except anthropic.RateLimitError as exc:
-            yield StreamEvent(type="error", reason="error", error=self._redact(f"被限流：{exc}"))
+            status_code = getattr(exc, "status_code", 429)
+            error_info = anthropic_error_info(exc.body, source="http_error", status_code=status_code)
+            yield StreamEvent(type="error", reason="error", error=self._redact(f"被限流：{exc}"),
+                              error_info=error_info)
             return
         except anthropic.APIStatusError as exc:
             error_info = anthropic_error_info(exc.body,

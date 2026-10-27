@@ -126,6 +126,7 @@ class TurnRunner:
         self.context_abort: Callable[[], None] | None = None
         self.last_stream_error: ModelErrorInfo | None = None
         self.last_stream_recoverable = False
+        self.last_stream_output_observed = False
         self.preparing_request_index: int | None = None
 
     @property
@@ -655,9 +656,13 @@ class TurnRunner:
                             messages = list(replacement.messages)
                             continue
                     self.append_agent(thread_id, f"模型调用失败：{error}")
-                    details = {"threadId": thread_id, "message": error}
+                    details = {"threadId": thread_id, "message": error,
+                               "outputObserved": self.last_stream_output_observed}
                     if self.last_stream_error is not None:
-                        details.update(code=self.last_stream_error.code, recoveryAttempted=overflow_retried)
+                        details["errorInfo"] = self.last_stream_error.event_payload()
+                        if self.last_stream_error.code is not None:
+                            details.update(code=self.last_stream_error.code,
+                                           recoveryAttempted=overflow_retried)
                     self.notify(N_SESSION_ERROR, details)
                     return "error"
 
@@ -769,6 +774,7 @@ class TurnRunner:
         error: str | None = None
         self.last_stream_error = None
         self.last_stream_recoverable = False
+        self.last_stream_output_observed = False
         output_observed = False
 
         def ensure_entry() -> Entry:
@@ -913,6 +919,7 @@ class TurnRunner:
         self.last_stream_recoverable = bool(
             not interrupted and error is not None and not output_observed and assistant is None and
             self.last_stream_error is not None and self.last_stream_error.code == "CONTEXT_OVERFLOW")
+        self.last_stream_output_observed = output_observed
         if error is not None:
             self.sessions.append(thread_id, Entry(type="model_error", payload={
                 "turnId": self.turn_id, "model": request.model, "provider": self.config.provider,

@@ -13,7 +13,13 @@ from typing import Literal
 from boss_harness.models.types import ModelErrorInfo
 
 
-ErrorSource = Literal["http_error", "stream_error"]
+ErrorSource = Literal["http_error", "stream_error", "transport_error"]
+_PROVIDER_CODE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_QUOTA_CODES = frozenset({"insufficient_quota", "billing_hard_limit_reached", "billing_error",
+                          "usage_limit_error", "credits_exhausted"})
+_TRANSIENT_CODES = frozenset({"rate_limit_exceeded", "rate_limit_error", "server_error",
+                              "service_unavailable_error", "overloaded_error"})
+_TRANSIENT_STATUSES = frozenset({408, 409, 500, 502, 503, 504})
 _ANTHROPIC_PROMPT_LIMIT = re.compile(
     r"prompt is too long:\s*([0-9]+) tokens\s*>\s*([0-9]+) maximum\.?",
     re.IGNORECASE,
@@ -29,44 +35,79 @@ def _error_payload(value: object) -> object:
     return nested if nested is not None else value
 
 
-def _allowed_source(source: ErrorSource, status_code: int | None) -> bool:
+def _valid_source(source: str, status_code: int | None) -> bool:
     if source == "http_error":
-        return type(status_code) is int and status_code == 400
+        return type(status_code) is int and 100 <= status_code <= 599
     if source == "stream_error":
         # The Anthropic SDK raises an APIStatusError for SSE errors under HTTP
-        # 200; Responses errors are already parsed stream objects without status.
+        # 200; Responses errors are parsed from an already-open stream.
         return status_code is None or (type(status_code) is int and status_code == 200)
+    if source == "transport_error":
+        return status_code is None
     return False
 
 
+def _safe_provider_code(error: object) -> str | None:
+    payload = _error_payload(error)
+    for field in ("code", "type"):
+        value = _field(payload, field)
+        if type(value) is str and _PROVIDER_CODE.fullmatch(value):
+            return value
+    return None
+
+
+def _retryable_hint(error: object, status_code: int | None) -> bool | None:
+    payload = _error_payload(error)
+    codes = {value for field in ("code", "type")
+             if type(value := _field(payload, field)) is str and _PROVIDER_CODE.fullmatch(value)}
+    if codes & _QUOTA_CODES:
+        return False
+    if codes & _TRANSIENT_CODES or status_code in _TRANSIENT_STATUSES:
+        return True
+    if status_code in {400, 401, 403}:
+        return False
+    # A bare 429 can mean temporary throttling or an exhausted quota.
+    return None
+
+
+def _is_overflow_source(source: str, status_code: int | None) -> bool:
+    if source == "http_error":
+        return type(status_code) is int and status_code == 400
+    return source == "stream_error" and (status_code is None or status_code == 200)
+
+
 def openai_error_info(error: object, *, source: ErrorSource,
-                      status_code: int | None = None) -> ModelErrorInfo | None:
-    """Use a parsed error code; never infer overflow from free-form text."""
-    if not _allowed_source(source, status_code):
+                      status_code: int | None = None,
+                      retryable: bool | None = None) -> ModelErrorInfo | None:
+    """Preserve bounded provider facts; classify overflow only by exact code/source."""
+    if not _valid_source(source, status_code):
         return None
-    code = _field(_error_payload(error), "code")
-    if type(code) is not str or code != "context_length_exceeded":
-        return None
-    return ModelErrorInfo(code="CONTEXT_OVERFLOW", provider="openai", source=source,
-                          provider_code="context_length_exceeded", status_code=status_code)
+    raw_code = _field(_error_payload(error), "code")
+    overflow = (_is_overflow_source(source, status_code)
+                and type(raw_code) is str and raw_code == "context_length_exceeded")
+    return ModelErrorInfo(provider="openai", source=source,
+                          code="CONTEXT_OVERFLOW" if overflow else None,
+                          provider_code=_safe_provider_code(error), status_code=status_code,
+                          retryable=retryable if retryable is not None else _retryable_hint(error, status_code))
 
 
 def anthropic_error_info(error: object, *, source: ErrorSource,
-                         status_code: int | None = None) -> ModelErrorInfo | None:
-    """Recognize only Anthropic's typed, explicit input-token limit rejection."""
-    if not _allowed_source(source, status_code):
+                         status_code: int | None = None,
+                         retryable: bool | None = None) -> ModelErrorInfo | None:
+    """Preserve bounded provider facts; classify only typed numeric prompt overflow."""
+    if not _valid_source(source, status_code):
         return None
-    payload = _field(error, "error")
-    if _field(payload, "type") != "invalid_request_error":
-        return None
+    payload = _error_payload(error)
     message = _field(payload, "message")
-    if type(message) is not str or len(message) > 512:
-        return None
-    match = _ANTHROPIC_PROMPT_LIMIT.fullmatch(message.strip())
-    if match is None:
-        return None
-    actual, limit = map(int, match.groups())
-    if limit <= 0 or actual <= limit:
-        return None
-    return ModelErrorInfo(code="CONTEXT_OVERFLOW", provider="anthropic", source=source,
-                          provider_code="invalid_request_error", status_code=status_code)
+    overflow = False
+    if (_is_overflow_source(source, status_code)
+            and _field(payload, "type") == "invalid_request_error"
+            and type(message) is str and len(message) <= 512):
+        match = _ANTHROPIC_PROMPT_LIMIT.fullmatch(message.strip())
+        if match is not None:
+            actual, limit = map(int, match.groups())
+            overflow = limit > 0 and actual > limit
+    return ModelErrorInfo(provider="anthropic", source=source,
+                          code="CONTEXT_OVERFLOW" if overflow else None,
+                          provider_code=_safe_provider_code(error), status_code=status_code,
+                          retryable=retryable if retryable is not None else _retryable_hint(error, status_code))
