@@ -1227,6 +1227,7 @@ class ApplicationService:
                     raise ValueError("请先恢复归档会话")
                 if thread_id in self._compaction_by_thread:
                     raise RpcError(-32004, "该会话正在生成摘要，请等待完成或先取消摘要")
+                self.queue.settle_pauses(thread_id)
                 if client_id:
                     identity = resolve_request(self.sessions, thread_id, client_id, text,
                                                queue_id=queue_item["id"] if queue_item else None)
@@ -1534,6 +1535,13 @@ class ApplicationService:
                         self.queue.pause(thread_id, kind="steering")
                 except (OSError, ValueError):
                     status = "error"
+                    # A steering-only settlement failure also blocks existing
+                    # follow-ups. Keep that responsibility even if storage is
+                    # still unavailable when attempting the broader pause.
+                    try:
+                        self.queue.pause(thread_id)
+                    except (OSError, ValueError):
+                        pass
                     try:
                         self.sessions.record_turn(thread_id, job["turnId"], "error",
                                                   recoveryReason="queueSettlementFailure")

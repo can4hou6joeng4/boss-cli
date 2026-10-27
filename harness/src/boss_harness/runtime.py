@@ -129,6 +129,7 @@ class TurnQueue:
     def __init__(self, sessions: SessionStore) -> None:
         self.sessions = sessions
         self.lock = threading.RLock()
+        self._pending_pauses: dict[str, set[str | None]] = {}
 
     def list(self, thread_id: str) -> list[dict]:
         states: dict[str, dict] = {}
@@ -156,6 +157,7 @@ class TurnQueue:
         This restricted failure path never makes delivered generally resumable.
         """
         with self.lock:
+            self.settle_pauses(thread_id)
             item = self.get(thread_id, queue_id)
             if item["status"] not in {"delivering", "paused"} and not (
                     item["status"] == "delivered" and turn_id is not None):
@@ -171,6 +173,7 @@ class TurnQueue:
     def _associate_request(self, thread_id: str, queue_id: str, identity: RequestIdentity) -> dict:
         """Append a receipt for an existing turn without resuming its request."""
         with self.lock:
+            self.settle_pauses(thread_id)
             item = self.get(thread_id, queue_id)
             fields = identity.receipt()
             if item["status"] not in {"queued", "delivering"}:
@@ -189,6 +192,7 @@ class TurnQueue:
         if client_id is not None and (not isinstance(client_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", client_id)):
             raise ValueError("clientUserMessageId 格式无效")
         with self.lock:
+            self.settle_pauses(thread_id)
             for item in self.list(thread_id):
                 if client_id and item.get("clientUserMessageId") == client_id:
                     if item["input"] != text or item["kind"] != kind:
@@ -200,6 +204,7 @@ class TurnQueue:
 
     def transition(self, thread_id: str, queue_id: str, status: str) -> dict:
         with self.lock:
+            self.settle_pauses(thread_id)
             item = next((q for q in self.list(thread_id) if q["id"] == queue_id), None)
             if item is None:
                 raise ValueError("队列项不存在")
@@ -211,15 +216,32 @@ class TurnQueue:
 
     def claim(self, thread_id: str, kind: str, turn_id: str | None = None) -> dict | None:
         with self.lock:
+            self.settle_pauses(thread_id)
             item = next((q for q in self.list(thread_id) if q["kind"] == kind and q["status"] == "queued"
                          and (kind != "steering" or q["expectedTurnId"] == turn_id)), None)
             return self.transition(thread_id, item["id"], "delivering") if item else None
 
     def pause(self, thread_id: str, *, kind: str | None = None) -> None:
         with self.lock:
+            # Register responsibility before touching storage. A failed write
+            # must not leave old work eligible for a later successful turn.
+            self._pending_pauses.setdefault(thread_id, set()).add(kind)
+            self.settle_pauses(thread_id)
+
+    def settle_pauses(self, thread_id: str) -> None:
+        """Finish earlier pauses before accepting or claiming more work.
+
+        Reads remain read-only. New work can only be added after these scopes
+        settle, so a delayed retry cannot accidentally pause a new request.
+        """
+        with self.lock:
+            scopes = self._pending_pauses.get(thread_id)
+            if not scopes:
+                return
             for item in self.list(thread_id):
-                if item["status"] in {"queued", "delivering"} and (kind is None or item["kind"] == kind):
-                    self.transition(thread_id, item["id"], "paused")
+                if item["status"] in {"queued", "delivering"} and (None in scopes or item["kind"] in scopes):
+                    self._save(thread_id, {**item, "status": "paused"})
+            self._pending_pauses.pop(thread_id, None)
 
     def recover(self) -> None:
         for thread in self.sessions.list_threads(include_archived=True):

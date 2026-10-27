@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第三十三轮：队列暂停写失败的派发门禁
+
+[Issue #87](https://github.com/can4hou6joeng4/boss-cli/issues/87) 复现了队列暂停追加失败后，旧 follow-up 留在 `queued`，并在后续手动回合成功时被自动派发。参考 Pi 开放 [PR #10016](https://github.com/earendil-works/pi/pull/10016)，固定审阅 head `bbab759c832a8708f31d7049074ccffa8d4e5999`（仓库 MIT）；该 PR 跟踪显式 wake follow-up 在 abort 后仍需送达的责任。这里仅借鉴明确保留待处理队列责任的审查视角，不移植其 abort/resume 行为或源码，因为本项目故障发生在暂停状态无法持久化。
+
+`TurnQueue` 在写暂停状态前登记内存中的待暂停范围，并在新回合、入队、状态变更和领取前先补齐；部分写入失败后保留未结算范围，持续存储失败则拒绝继续派发。终态为 `error` 的 steering 暂停失败会升级为暂停该会话的全部旧任务。只读查询不触发补写；进程重启后由既有恢复流程将未结算队列转为暂停，不重放输入。JSON-RPC 和持久格式不变，不新增依赖。
+
+离线 ApplicationService 故障注入覆盖写前/写后失败、部分成功、持续故障 admission、请求幂等、只读查询、重启、会话隔离及归档；11/11 通过。Python 3.12 Harness 全量回归 339 项通过、4 项跳过；`npm run typecheck`、`npm run build`、compileall 与 `git diff --check` 通过。测试与报告仅保留在本地忽略目录，没有真实模型、网络或招聘平台调用。
+
 ## 第三十二轮：显式会话生命周期 hooks
 
 [Issue #80](https://github.com/can4hou6joeng4/boss-cli/issues/80) 将 Pi 的 AgentSession 生命周期事件与具体交互模式分离的思路接入招聘内核。当前 Pi main 固定为 `6c384aa30f619d7b28963f2bab24d8dacbe73cb6`；核对 `packages/coding-agent/src/core/agent-session.ts` 的会话/工具/压缩事件、`src/core/event-bus.ts` 的订阅边界及 `docs/extensions.md`。Pi extension runtime 可动态注册工具、命令和 UI；本项目只实现宿主显式注入的生命周期观察与工具前拒绝策略，不复制代码、不引入运行依赖，也不加载 workspace 插件。
