@@ -2,6 +2,15 @@
 
 ## 未发布
 
+## 0.2.0-rc.7 - 2026-10-28
+
+第七次私有源码与 Python 内核候选发布，限制模型上下文中的大型工具结果，并持续完善会话摘要、provider 错误诊断与内核可靠性。
+
+### 兼容变化
+
+- npm 组件统一为 `0.2.0-rc.7`，Python 内核为等价 PEP 440 版本 `0.2.0rc7`；JSON-RPC 保持 `0.2.0`。
+- `ToolDescriptor.maxModelResultBytes` 为可选字段；自定义工具默认使用 20 KiB 模型结果预算，可设置 8 KiB 至 1 MiB。
+
 ### 新功能
 
 - 按工具配置模型可见结果的 UTF-8 字节预算，完整结果仍持久化；超限时向模型提供省略提示、摘要和 SHA-256，并新增只读 `read_session_tool_result` 内核工具分段读取，确保省略数据可按会话、条目和摘要校验后继续读取。
@@ -22,6 +31,11 @@
 - [Issue #89](https://github.com/can4hou6joeng4/boss-cli/issues/89)：严格验证 Anthropic 和 OpenAI Responses 的最终工具参数是完整 JSON object；截断、非对象、非标准 JSON 常量或终态来源冲突时不派发工具，保留合法空对象调用。
 - [Issue #91](https://github.com/can4hou6joeng4/boss-cli/issues/91)：Anthropic 与 OpenAI Responses 的工具参数在增量、初始值和终态快照入口按 UTF-8 原始字节检查；每项和每次模型响应合计上限均为 1 MiB。超限、终态缺失或来源冲突时整轮报错，不派发工具且错误不回显输入。
 - [Issue #93](https://github.com/can4hou6joeng4/boss-cli/issues/93)：将每响应文本与思考合计限制为 1 MiB UTF-8，超限在持久化前报错并阻止工具与队列继续；拆分增量事件，并用内容引用和冻结快照分段恢复大 Agent 字段。
+
+### 验证与限制
+
+- 本地 Python 3.10/3.12 编译、TypeScript 类型检查、桌面源码构建、干净 Git archive wheel/sdist 构建和结果预算专项探针通过；PR #113 的 Source build 与 GitGuardian 检查通过。探针未加入仓库。
+- 未调用真实模型或招聘平台。此候选继续交付私有源码与 Python wheel/sdist，不含独立桌面安装包；签名/公证、完整 Python 依赖锁及真实模型/平台完整验收仍未完成。
 
 ## 0.2.0-rc.6 - 2026-10-27
 
