@@ -31,6 +31,7 @@ import {
   type ContextCompactStartParams,
   type ContextCompactJob,
   type ContextCompactAbortResponse,
+  type ContextEditReadResponse,
 } from "@boss-cli/protocol";
 import { formatRelativeTime } from "@boss-cli/shared";
 import type { MessageItem, SessionItem } from "./mockData";
@@ -89,6 +90,10 @@ export const planContextCompaction = (params: ContextCompactPlanParams): Promise
 export const startContextCompaction = (params: ContextCompactStartParams): Promise<ContextCompactJob> => contextRequest(ClientMethods.contextCompactStart, params);
 export const readContextCompaction = (jobId: string): Promise<ContextCompactJob> => contextRequest(ClientMethods.contextCompactRead, { jobId });
 export const abortContextCompaction = (jobId: string): Promise<ContextCompactAbortResponse> => contextRequest(ClientMethods.contextCompactAbort, { jobId });
+export const readContextEdit = (threadId: string, itemId: string): Promise<ContextEditReadResponse> =>
+  contextRequest(ClientMethods.contextEditRead, { threadId, itemId });
+export const writeContextEdit = (params: { threadId: string; itemId: string; sourceDigest: string; replacementText: string | null }): Promise<ContextEditReadResponse> =>
+  contextRequest(ClientMethods.contextEdit, params);
 
 /** 内核是否已连接（preload 未注入或进程未起时返回 false）。 */
 export async function isHarnessUp(): Promise<boolean> {
@@ -239,9 +244,9 @@ export async function respondApproval(approvalId: string, approved: boolean): Pr
 export function toMessage(item: ThreadItem): MessageItem | null {
   switch (item.kind) {
     case "userMessage":
-      return { id: item.id, turnId: item.turnId, role: "user", content: item.text ?? "" };
+      return { id: item.id, turnId: item.turnId, contextEdit: item.contextEdit, role: "user", content: item.text ?? "" };
     case "agentMessage":
-      return { id: item.id, turnId: item.turnId, role: "agent", paragraphs: item.text ? [item.text] : [],
+      return { id: item.id, turnId: item.turnId, contextEdit: item.contextEdit, role: "agent", paragraphs: item.text ? [item.text] : [],
         ...(item.thinking ? { thinkingTime: "思考过程", thinkingContent: item.thinking } : {}) };
     case "toolCall": {
       const approval = item.approval ? toApproval(item.approval) : undefined;

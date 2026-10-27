@@ -116,6 +116,8 @@ export const ClientMethods = {
   contextCompactAbort: "context/compact/abort",
   contextCompactRead: "context/compact/read",
   contextCompact: "context/compact",
+  contextEditRead: "context/edit/read",
+  contextEdit: "context/edit",
 } as const;
 
 export type ClientMethod = (typeof ClientMethods)[keyof typeof ClientMethods];
@@ -146,6 +148,7 @@ export const ServerNotifications = {
   contextCompactionProgress: "context/compactionProgress",
   contextCompactionCompleted: "context/compactionCompleted",
   contextCompactionFailed: "context/compactionFailed",
+  contextEdited: "context/edited",
   kernelHookError: "kernel/hookError",
 } as const;
 
@@ -201,6 +204,18 @@ export interface ThreadItem {
   thinkingRef?: ItemContentReference;
   /** 需要用户批准的工具调用会带这个字段；界面据此渲染审批卡。 */
   approval?: ApprovalState;
+  contextEdit?: { entryId: string; excluded: boolean };
+}
+
+export interface ContextEditReadResponse {
+  threadId: string;
+  itemId: string;
+  sourceDigest: string;
+  originalText: string;
+  currentText: string | null;
+  excluded: boolean;
+  canEdit: boolean;
+  reason?: string | null;
 }
 
 /** Reference to canonical JSON in a durable tool item, independent of model text. */

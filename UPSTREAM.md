@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第四十三轮：追加式会话上下文编辑
+
+本项目 [Issue #107](https://github.com/can4hou6joeng4/boss-cli/issues/107) 对照主线 `4cd485e7a833a004d4be3eb88b49da0fe96211f`，确认上下文仅由普通逻辑条目与一个经来源核验的摘要 checkpoint 投影而成，不能针对单条历史文本调整后续模型可见内容。影响用户纠正过期事实、排除误输入，同时又要求保留原始审计记录的场景。
+
+参考 Pi 固定 revision `d3398f826ae2654b52a7988830d533a354754c13`（MIT）中的 `ContextEditEntry`、`appendContextEdit()` 与 `buildSessionProjection()`：编辑以追加式记录绑定目标条目，最新编辑决定 branch-local 上下文投影，原始消息保持不变。独立实现为 user/assistant 文本编辑；拒绝活动回合、工具条目及摘要已覆盖条目。编辑投影同时参与模型历史、预算、摘要来源校验和材料，fork 仅复制所选历史目标对应的编辑。未复制 Pi 源码或新增依赖。
+
+`context/edit/read` 返回原文、当前模型可见文本、是否排除及来源摘要；`context/edit` 在会话空闲时通过来源摘要 compare-and-append 替换或排除。快照仅公开已编辑状态，不返回替换正文；renderer 权限表仅开放这两个显式方法。原文替换恢复同一消息的原始内容；摘要覆盖范围不允许通过编辑逆转。桌面显示保留原始消息，并明确提示后续模型上下文的替换/排除状态。
+
+本地隔离探针覆盖替换、排除、过期来源拒绝、摘要材料、检查点覆盖、保留尾部、fork 继承、重开恢复、工具目标拒绝及大小限制；所有检查均使用临时 JSONL，无模型、网络或招聘平台调用。完整 Harness、Electron 类型检查/构建与真实 UI 交互验收尚待本轮合并前完成；本记录的来源是设计与实现跟踪，不把模拟结果描述为远程 CI。
+
+同步检查 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`（GitHub license 字段为 null）：其开放招聘业务 Issue/PR 不提供通用会话投影编辑机制。本轮采用 Pi 的架构概念并独立建模，不迁移业务流程或平台权限。
+
 ## 第四十二轮：策略 hook 的协作式回合取消
 
 在主线 `4461a392b1f496aa5456a58a24b977b18687bd61` 上，真实 `TurnRunner` 配合合成 provider 和临时 `SessionStore` 可复现：模型产出工具调用后进入 `before_tool_call`，回合取消只能等到 hook 完成或超时，hook 本身也不知道取消已到达。该缺口位于内核策略等待与回合中断之间，不涉及招聘平台操作。

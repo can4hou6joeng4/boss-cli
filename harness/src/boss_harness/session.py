@@ -747,7 +747,9 @@ class SessionStore:
             # corrections owned by the selected prefix, never those unrelated turns.
             for entry in entries[cutoff + 1:]:
                 if ((entry.get("type") == "item" and owners.get(entry["id"]) in included_turns)
-                        or (entry.get("type") == "turn" and entry["payload"].get("turnId") in included_turns)):
+                        or (entry.get("type") == "turn" and entry["payload"].get("turnId") in included_turns)
+                        or (entry.get("type") == "context_edit"
+                            and owners.get(entry["payload"].get("targetItemId")) in included_turns)):
                     prefix.append(entry)
             projected = self._project_items(thread_id, prefix)
             for item in projected:
@@ -773,6 +775,9 @@ class SessionStore:
             for entry in json.loads(_json(prefix)):
                 # Queue state belongs to one thread, not its transcript forks.
                 if entry["type"] in {"thread_info", "queue"}:
+                    continue
+                if (entry["type"] == "context_edit"
+                        and owners.get(entry["payload"].get("targetItemId")) not in included_turns):
                     continue
                 if entry.get("parentId") not in copied_ids:
                     entry["parentId"] = copied[-1]["id"] if copied else None

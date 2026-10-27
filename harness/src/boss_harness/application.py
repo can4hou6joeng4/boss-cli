@@ -207,7 +207,7 @@ class ApplicationService:
             self._protocol = "0.1.0"
             self._bidirectional = False
             self._server_approvals: dict[str, str] = {}
-            self._snapshot_pages: dict[str, tuple[str, list[dict], float]] = {}
+            self._snapshot_pages: dict[str, tuple[str, list[dict], float, dict[str, dict[str, Any]]]] = {}
             self._register()
             server.before_dispatch = self._check_ready
         except Exception:
@@ -329,6 +329,8 @@ class ApplicationService:
             "context/compact/abort": self.on_context_compact_abort,
             "context/compact/read": self.on_context_compact_read,
             "context/compact": self.on_context_compact,
+            "context/edit/read": self.on_context_edit_read,
+            "context/edit": self.on_context_edit,
             "attachment/add": self.on_attachment_add, "attachment/read": self.on_attachment_read,
             "shutdown": self.on_shutdown,
         }
@@ -441,9 +443,13 @@ class ApplicationService:
             thread = self.sessions.get_thread(thread_id)
             job = self.runtimes.active.get(thread_id)
             canonical_items = [] if exclude and not paged else self.events.items(thread_id)
+            edit_states = self.context.context_edit_states(self.sessions.read_entries(thread_id))
             snapshot_id = uuid.uuid4().hex if paged else None
             items = [project_item(thread_id, item, snapshot_id=snapshot_id)
                      for item in canonical_items]
+            for item in items:
+                if item["id"] in edit_states:
+                    item["contextEdit"] = edit_states[item["id"]]
             result = {"thread": thread, "items": [] if exclude or paged else items,
                     "turns": None if exclude else self.sessions.list_turns(thread_id)["turns"],
                     "activeTurnId": job["turnId"] if job else None,
@@ -453,7 +459,7 @@ class ApplicationService:
                                         if value[2] > time.monotonic()}
                 if len(self._snapshot_pages) >= 16:
                     self._snapshot_pages.pop(next(iter(self._snapshot_pages)))
-                self._snapshot_pages[snapshot_id] = (thread_id, canonical_items, time.monotonic() + 120)
+                self._snapshot_pages[snapshot_id] = (thread_id, canonical_items, time.monotonic() + 120, edit_states)
                 result.update(snapshotId=snapshot_id, itemCount=len(items), items=[])
             self._check_response_budget(result)
             return result
@@ -506,8 +512,10 @@ class ApplicationService:
             if snapshot is None or snapshot[0] != thread_id or snapshot[2] <= time.monotonic():
                 raise ValueError("会话快照已过期；请重新 resume")
             items = snapshot[1]
+            edit_states = snapshot[3]
         else:
             items = self.events.items(thread_id)
+            edit_states = self.context.context_edit_states(self.sessions.read_entries(thread_id))
         if offset > len(items):
             raise ValueError("条目分页游标超出结果范围")
         page = []
@@ -515,6 +523,8 @@ class ApplicationService:
         for raw_item in items[offset:offset + limit]:
             item = project_item(thread_id, raw_item,
                                 snapshot_id=snapshot_id if isinstance(snapshot_id, str) else None)
+            if item["id"] in edit_states:
+                item["contextEdit"] = edit_states[item["id"]]
             candidate = page + [item]
             next_offset = offset + len(candidate)
             next_cursor = (base64.urlsafe_b64encode(json.dumps([scope_id, next_offset]).encode()).decode()
@@ -748,6 +758,40 @@ class ApplicationService:
                                        provider=config.provider, entries=entries)
             return {**result, "provider": config.provider, "requestSource": "active" if job else "preview" if preview else "default",
                     "compactionJob": self._compaction_reference(thread_id)}
+
+    def on_context_edit_read(self, params: dict | None) -> dict:
+        params = params or {}
+        if set(params) != {"threadId", "itemId"}:
+            raise ValueError("context/edit/read 参数无效")
+        thread_id, item_id = _text(params, "threadId"), _text(params, "itemId")
+        with self.runtimes.lock:
+            result = self.context.context_edit_read(thread_id, item_id)
+            thread = self.sessions.get_thread(thread_id)
+            if thread.get("archived"):
+                result.update(canEdit=False, reason="归档会话不可编辑。")
+            elif thread_id in self.runtimes.active or thread_id in self._compaction_by_thread:
+                result.update(canEdit=False, reason="会话正在运行或整理摘要；请等待结束后再编辑。")
+            return result
+
+    def on_context_edit(self, params: dict | None) -> dict:
+        params = params or {}
+        if set(params) != {"threadId", "itemId", "sourceDigest", "replacementText"}:
+            raise ValueError("context/edit 参数无效")
+        thread_id, item_id = _text(params, "threadId"), _text(params, "itemId")
+        replacement = params.get("replacementText")
+        if replacement is not None and not isinstance(replacement, str):
+            raise ValueError("replacementText 必须是字符串或 null")
+        with self.runtimes.lock:
+            thread = self.sessions.get_thread(thread_id)
+            if thread.get("archived"):
+                raise ValueError("归档会话不可编辑")
+            if thread_id in self.runtimes.active or thread_id in self._compaction_by_thread:
+                raise RpcError(-32004, "会话正在运行或整理摘要；请等待结束后再编辑")
+            result = self.context.context_edit(thread_id, item_id, replacement,
+                                               params.get("sourceDigest"))
+            self.events.emit("context/edited", {"threadId": thread_id, "itemId": item_id,
+                                                 "sourceDigest": result["sourceDigest"]})
+            return result
 
     def _compaction_reference(self, thread_id: str) -> dict[str, Any] | None:
         """Read under runtimes.lock; retain lifecycle ownership through provider cleanup."""

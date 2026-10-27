@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -59,6 +60,8 @@ def messages_from_items(items: list[dict]) -> tuple[ChatMessage, ...]:
 _SAFETY_TOKENS = 4096
 _ESTIMATE_METHOD = "characters/2+message-overhead"
 _BUDGET_MESSAGE = "完整模型请求估算超过输入预算；请通过 context/compact 提供可追溯摘要，或新建会话后明确继续。"
+_CONTEXT_EDIT_MAX_CHARS = 32_000
+_CONTEXT_EDIT_MAX_BYTES = 128 * 1024
 
 
 class ContextBudgetExceeded(ValueError):
@@ -197,7 +200,117 @@ class ContextService:
             if item.get("turnId") is not None and item["turnId"] != owner:
                 raise ValueError("回合条目的来源归属不一致")
             normalized.append({**item, "turnId": owner})
-        return normalized, owners
+        return self._apply_context_edits(normalized, entries), owners
+
+    @staticmethod
+    def _context_edit_entries(entries: list[dict]) -> dict[str, dict]:
+        edits: dict[str, dict] = {}
+        seen_items: set[str] = set()
+        for entry in entries:
+            if entry.get("type") == "item":
+                seen_items.add(entry.get("id"))
+                continue
+            if entry.get("type") != "context_edit":
+                continue
+            payload = entry.get("payload")
+            target = payload.get("targetItemId") if isinstance(payload, dict) else None
+            replacement = payload.get("replacementText") if isinstance(payload, dict) else object()
+            if (not isinstance(payload, dict) or set(payload) != {"targetItemId", "replacementText"}
+                    or not isinstance(target, str) or not target or target not in seen_items
+                    or (replacement is not None and not isinstance(replacement, str))
+                    or (isinstance(replacement, str) and
+                        (not replacement.strip() or len(replacement) > _CONTEXT_EDIT_MAX_CHARS
+                         or len(replacement.encode("utf-8")) > _CONTEXT_EDIT_MAX_BYTES))):
+                raise ValueError("会话上下文编辑记录无效；已停止生成模型上下文")
+            edits[target] = {"entryId": entry.get("id"), "replacementText": replacement}
+        return edits
+
+    @classmethod
+    def _apply_context_edits(cls, items: list[dict], entries: list[dict]) -> list[dict]:
+        edits = cls._context_edit_entries(entries)
+        by_id = {item["id"]: item for item in items}
+        if set(edits) - set(by_id):
+            raise ValueError("会话上下文编辑引用了不存在的条目；已停止生成模型上下文")
+        result = [dict(item) for item in items]
+        for item in result:
+            edit = edits.get(item["id"])
+            if edit is None:
+                continue
+            if item.get("kind") not in {"userMessage", "agentMessage"} or not isinstance(item.get("text"), str):
+                raise ValueError("会话上下文编辑目标无效；已停止生成模型上下文")
+            # originalInput duplicates the raw user text; it must not bypass the edit projection.
+            item.pop("originalInput", None)
+            item["text"] = edit["replacementText"] or ""
+            item["contextEdit"] = {"entryId": edit["entryId"],
+                                   "excluded": edit["replacementText"] is None}
+        return result
+
+    @staticmethod
+    def _context_edit_source_digest(item: dict, edit_entry_id: str | None) -> str:
+        value = {key: item.get(key) for key in ("id", "kind", "text", "turnId", "status")}
+        value["editEntryId"] = edit_entry_id
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @classmethod
+    def context_edit_states(cls, entries: list[dict]) -> dict[str, dict[str, Any]]:
+        return {target: {"entryId": edit["entryId"],
+                         "excluded": edit["replacementText"] is None}
+                for target, edit in cls._context_edit_entries(entries).items()}
+
+    def context_edit_read(self, thread_id: str, item_id: str, *,
+                          entries: list[dict] | None = None) -> dict[str, Any]:
+        entries = self._entries(thread_id, entries)
+        raw_items, owners = self._compaction_items(thread_id, [
+            entry for entry in entries if entry.get("type") != "context_edit"])
+        item = next((value for value in raw_items if value["id"] == item_id), None)
+        if item is None:
+            raise ValueError("会话消息不存在")
+        all_edits = self._context_edit_entries(entries)
+        edit = all_edits.get(item_id)
+        current_text = edit["replacementText"] if edit is not None else item.get("text")
+        if item.get("kind") not in {"userMessage", "agentMessage"} or not isinstance(item.get("text"), str):
+            raise ValueError("仅支持编辑用户消息或助手文本")
+        turns = self.sessions._turns(entries, thread_id)
+        owner = owners.get(item_id)
+        turn = next((value for value in turns if value["turnId"] == owner), None)
+        checkpoint = self._validated_checkpoint(thread_id, entries)
+        covered = set(checkpoint["payload"]["sourceItemIds"]) if checkpoint else set()
+        reason = None
+        if item_id in covered:
+            reason = "该消息已纳入摘要检查点；请从摘要之后的会话分支继续编辑。"
+        elif turn is None or turn.get("status") not in {"completed", "interrupted", "blocked", "error"}:
+            reason = "只能编辑已经结束回合中的消息。"
+        elif item.get("kind") == "agentMessage" and item.get("status") == "running":
+            reason = "不能编辑仍在生成的助手消息。"
+        digest = self._context_edit_source_digest(item, edit["entryId"] if edit else None)
+        return {"threadId": thread_id, "itemId": item_id, "sourceDigest": digest,
+                "originalText": item["text"], "currentText": current_text,
+                "excluded": edit is not None and edit["replacementText"] is None,
+                "canEdit": reason is None, "reason": reason}
+
+    def context_edit(self, thread_id: str, item_id: str, replacement_text: str | None,
+                     source_digest: str) -> dict[str, Any]:
+        if replacement_text is not None and (not isinstance(replacement_text, str)
+                or not replacement_text.strip() or len(replacement_text) > _CONTEXT_EDIT_MAX_CHARS
+                or len(replacement_text.encode("utf-8")) > _CONTEXT_EDIT_MAX_BYTES):
+            raise ValueError("替换文本必须为 1 到 32000 字符，且 UTF-8 不超过 128 KiB")
+        if not isinstance(source_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", source_digest):
+            raise ValueError("sourceDigest 格式无效")
+        if not isinstance(item_id, str) or not item_id:
+            raise ValueError("itemId 格式无效")
+        with self.sessions._lock, self.sessions._index.transaction() as connection:
+            entries = self.sessions.read_entries(thread_id)
+            current = self.context_edit_read(thread_id, item_id, entries=entries)
+            if not current["canEdit"]:
+                raise ValueError(current["reason"] or "该消息当前不可编辑")
+            if current["sourceDigest"] != source_digest:
+                raise ValueError("会话消息或编辑状态已变化，请重新读取后再提交")
+            entry = Entry(type="context_edit", parent_id=entries[-1]["id"] if entries else None,
+                          payload={"targetItemId": item_id, "replacementText": replacement_text})
+            self.sessions._append_line(self.sessions.path_for(thread_id), entry.to_dict())
+            self.sessions._index_thread(thread_id, connection)
+        return self.context_edit_read(thread_id, item_id)
 
     def _validated_checkpoint(self, thread_id: str, entries: list[dict], *,
                               items: list[dict] | None = None,
@@ -241,7 +354,7 @@ class ContextService:
         return checkpoint
 
     def _history_snapshot(self, thread_id: str, entries: list[dict]) -> tuple[list[dict], dict | None]:
-        items = self.sessions._project_items(thread_id, entries)
+        items, _ = self._compaction_items(thread_id, entries)
         try:
             checkpoint = self._validated_checkpoint(thread_id, entries)
         except ValueError:
@@ -357,6 +470,7 @@ class ContextService:
 
     @staticmethod
     def _history_projection(items: list[dict], checkpoint: dict | None) -> tuple[ChatMessage, ...]:
+        items = [item for item in items if not item.get("contextEdit", {}).get("excluded")]
         if checkpoint is None:
             return messages_from_items(items)
         covered = set(checkpoint["sourceItemIds"])

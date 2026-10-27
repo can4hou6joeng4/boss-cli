@@ -1,12 +1,13 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { IconCopy, IconThumbsUp, IconThumbsDown, IconRewind, IconSparkles, IconCheck, IconQuote, IconEdit, IconChevronDown, IconTerminal, IconHelp, IconClose, IconPanel, IconShield } from "../components/Icons";
 import { DiffCard } from "./DiffCard";
 import { Composer } from "./Composer";
 import { RichMarkdown } from "../components/RichMarkdown";
 import { ToolResultDetails } from "../components/ToolResultDetails";
 import { QueuePanel } from "./QueuePanel";
+import { ContextEditDialog } from "../components/ContextEditDialog";
 import type { QueueItem } from "@boss-cli/protocol";
-import type { SkillDescriptor } from "@boss-cli/protocol";
+import type { ContextEditReadResponse, SkillDescriptor } from "@boss-cli/protocol";
 import { type MessageItem, type ConversationMode } from "../data/mockData";
 import type { SkillCatalogState } from "../data/harnessBridge";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
@@ -19,6 +20,7 @@ export interface ConversationAreaProps {
   draft?: ComposerDraft; onDraftChange?: UpdateComposerDraft; simulateLocal?: boolean; running?: boolean; taskBlocked?: boolean;
   activeModelId?: string; onSelectModel?: (id: string) => void; onOpenSettings?: () => void; onInterrupt?: () => void;
   skills?: SkillDescriptor[]; skillCatalogState?: SkillCatalogState; onRefreshSkills?: () => void;
+  threadId?: string;
   configuredModelLabel?: string; readOnly?: boolean;
   sessionReasoning?: SessionReasoningControl;
   loginGuide?: React.ReactNode; onLogin?: () => void;
@@ -30,6 +32,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   running = false, taskBlocked = false, draft, onDraftChange, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, sessionReasoning,
   onInterrupt, onApprovalDecision, onReviewDiff, onRevertDiff, onOpenRewind, loginGuide, onLogin,
   skills = [], skillCatalogState = "unavailable", onRefreshSkills,
+  threadId,
 }) => {
   const [messages, setMessages] = useState<MessageItem[]>(initialMessages);
   const [localDraft, setLocalDraft] = useState(createComposerDraft);
@@ -47,6 +50,8 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const [feedback, setFeedback] = useState<Record<string, "up" | "down" | undefined>>({});
   const [approvalError, setApprovalError] = useState("");
   const [pendingApproval, setPendingApproval] = useState<string | null>(null);
+  const [contextEditItemId, setContextEditItemId] = useState<string | null>(null);
+  const [contextEditStates, setContextEditStates] = useState<Record<string, { excluded: boolean }>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -64,6 +69,12 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
     const last = [...messages].reverse().find(message => message.role === "user")?.content;
     if (last) onSendMessage(last);
   };
+  const recordContextEdit = useCallback((state: ContextEditReadResponse) => {
+    setContextEditStates(previous => ({ ...previous, [state.itemId]: { excluded: state.excluded } }));
+  }, []);
+  const contextEditFor = (item: MessageItem) => item.contextEdit ?? contextEditStates[item.id];
+  const canEditContext = (item: MessageItem) => !simulateLocal && !running && Boolean(threadId && item.turnId)
+    && (item.role === "user" ? typeof item.content === "string" : Boolean(item.paragraphs?.length));
   const handleApproval = async (msgId: string, decision: "approve" | "deny") => {
     const target = messages.find(message => message.id === msgId);
     const approval = target?.approval;
@@ -170,6 +181,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
               return (
                 <div key={item.id} className="msg-row-user" id={"message-" + item.id}>
                   <div className="user-bubble">{item.content}</div>
+                  {contextEditFor(item) && <span className={`context-edit-badge ${contextEditFor(item)?.excluded ? "excluded" : "replaced"}`}>{contextEditFor(item)?.excluded ? "后续模型上下文已排除；原始记录保留" : "后续模型上下文已替换；原始记录保留"}</span>}
                   <div className="user-msg-footer">
                     <button
                       className="user-msg-action-btn"
@@ -179,6 +191,13 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                     >
                       <IconEdit size={12} />
                     </button>
+                    {canEditContext(item) && <button
+                      className="user-msg-action-btn"
+                      type="button"
+                      title="编辑后续模型上下文"
+                      aria-label="编辑后续模型上下文"
+                      onClick={() => setContextEditItemId(item.id)}
+                    ><IconEdit size={12} /></button>}
                     <button
                       className="user-msg-action-btn"
                       type="button"
@@ -310,6 +329,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                 {item.paragraphs && item.paragraphs.length > 0 && (
                   <RichMarkdown content={item.paragraphs.join("\n\n")} />
                 )}
+                {contextEditFor(item) && <span className={`context-edit-badge ${contextEditFor(item)?.excluded ? "excluded" : "replaced"}`}>{contextEditFor(item)?.excluded ? "后续模型上下文已排除；原始记录保留" : "后续模型上下文已替换；原始记录保留"}</span>}
 
                 {/* 工具审批卡 ApprovalCard */}
                 {item.approval && (
@@ -483,6 +503,13 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                   >
                     <IconCopy size={13} />
                   </button>
+                  {canEditContext(item) && <button
+                    className="msg-action-btn"
+                    title="编辑后续模型上下文"
+                    aria-label="编辑后续模型上下文"
+                    type="button"
+                    onClick={() => setContextEditItemId(item.id)}
+                  ><IconEdit size={13} /></button>}
                   <button
                     className="msg-action-btn"
                     title="引用"
@@ -552,6 +579,15 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
           <IconChevronDown size={14} />
         </button>
       )}
+
+      {contextEditItemId && threadId && <ContextEditDialog
+        key={`${threadId}:${contextEditItemId}`}
+        threadId={threadId}
+        itemId={contextEditItemId}
+        title="后续模型上下文"
+        onClose={() => setContextEditItemId(null)}
+        onChanged={recordContextEdit}
+      />}
 
       <div className="thread-composer-wrapper">
         <div className="thread-composer-inner">
