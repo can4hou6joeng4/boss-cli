@@ -153,6 +153,7 @@ export interface QuestionData {
 export interface MessageItem {
   id: string;
   turnId?: string;
+  contextEdit?: { entryId?: string; excluded: boolean };
   role: "user" | "agent";
   content?: string;
   paragraphs?: string[];
