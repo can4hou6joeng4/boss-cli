@@ -1,5 +1,19 @@
 # 上游吸收记录
 
+## 第三十轮：真实会话上下文预算与手动摘要桌面闭环
+
+[Issue #76](https://github.com/can4hou6joeng4/boss-cli/issues/76) 接通既有内核预算、计划和后台摘要接口，让招聘会话用户核对长工具结果的上下文占用、保留近期完整回合，再显式整理较早历史。原 Cockpit 的其余运行指标继续标记示例；真实面板不把草稿外的默认预算称为下一请求完整预览。
+
+阅读 Pi 固定 commit `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）的 `packages/coding-agent/docs/compaction.md`、`src/core/agent-session.ts` 手动 `compact()` 和 `getContextUsage()`、`src/modes/interactive/interactive-mode.ts` 的 `/compact` 交互。采用手动与自动触发分责、明确用户动作、近期历史保留、进度和写入后刷新。独立适配既有 Python/JSON-RPC/Electron 生命周期，不复制源码或新增依赖。Pi 手动入口先 abort，本项目继续要求空闲，打开面板不隐式中断任务；不引入自定义摘要 hook 或实验性 durable 恢复。
+
+预算沿用完整请求分类估算与 usage 前缀校准，并展示容量与估算来源。规划不调用模型或工具；显式摘要绑定用户核对的范围和来源 digest，来源过期不绕过校验自动重试。成功追加 checkpoint 后重新读取当前预算，保留原始记录和工具、审批事实，不把摘要当作语义无损或操作授权。
+
+JSON-RPC 保持 `0.2.0`。`context/read` 仅增加可选非递归 `compactionJob` 引用，从现有有界任务缓存和会话占用索引定位活动或最近任务。`active` 表示执行责任，终态但收尾未结束时仍为真；空引用与旧服务缺字段分别表示本进程无保留记录和未知。详情按既有 jobId 读取并核对会话归属，完成结果中的预算只是历史快照。引用不构造 provider、不改变调度或持久化，不承诺跨进程恢复任务。
+
+桌面保存会话级已确认及未知开始责任，切换、关闭、晚到响应与断连不重复 start。开始回执和事件均丢失时通过新鲜引用及详情对账，旧终态任务不能冒充本次开始；重启或缓存淘汰只刷新持久事实，不重建摘要或重放外部动作。main 通过可序列化信封传递明确的 start RPC 拒绝，由 renderer bridge 解码，使过期来源拒绝与传输结果未知保持不同状态；自动摘要由业务回合控制，与手动取消明确区分。再次核对本仓库及 `jackwener/boss-cli` Issue/PR 后未发现重复开放事项；该业务上游的认证、沟通与分页事项继续作为独立边界，不移植到通用上下文执行器。
+
+本地验证：`npm run typecheck`、`npm run build`、`npm audit --audit-level=moderate`（0 漏洞）、Python `compileall` 和 `git diff --check` 通过；隔离 Python 3.12 环境运行 Harness 全套 339 项，339 通过、4 跳过。Electron 43.8.3 真实 main/preload/renderer 与隔离 stdio 后端通过 8 项流程验收，覆盖预算/计划、回执和事件丢失对账、会话隔离、终态收尾、过期来源拒绝、重启/无模型状态和 480px 布局；只有合成摘要请求（2 次），真实模型、平台、网络和业务子进程调用均为 0。测试、脚本及报告仅保留本地。独立桌面安装包、签名/公证、真实模型和招聘平台完整验收仍在后续范围。
+
 ## 第二十九轮：跨入口请求身份与队列关联
 
 [Issue #73](https://github.com/can4hou6joeng4/boss-cli/issues/73) 处理同一会话的直接发送与后续排队使用同一请求编号时，旧回合虽被去重但新队列长期停在 `delivering` 的既有缺口。`ce5a9c6` 与 `ecb0e50` 均有离线复现；旧回合仍运行、执行失败、仅有回合记录，以及反向从排队转为直接发送也需要按实际身份和持久事实处理，不能只修复正常完成分支。

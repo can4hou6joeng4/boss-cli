@@ -34,6 +34,7 @@ export interface AppShellProps {
   activeModelId?: string; onSelectModel?: (modelId: string) => void;
   configuredModelLabel?: string;
   onOpenCockpit: () => void; onOpenSideChat: () => void; onOpenRewind: () => void; onOpenShortcuts: () => void;
+  onOpenContext?: () => void;
   onReviewDiff: () => void; onRevertDiff: () => void;
   onCreateConnectionSession: () => Promise<SessionItem | null>;
 }
@@ -189,7 +190,7 @@ export function AppShell(props: AppShellProps) {
   };
   return <>
     <div className={`app-container ${window.boss ? "native-window" : "browser-window"} ${browserOpen ? `with-browser${login.expanded ? " browser-expanded" : ""}` : summaryOpen && hasConversation ? "with-summary" : ""}`}>
-      <TitleBar summaryAvailable={summaryAvailable && !browserOpen} hasConversation={hasConversation} title={title} isSidebarOpen={props.isSidebarOpen} isSummaryOpen={summaryOpen && !browserOpen} canGoBack={cursor > 0} canGoForward={cursor < history.length - 1} onBack={() => go(-1)} onForward={() => go(1)} onToggleSidebar={props.onToggleSidebar} onToggleSummary={() => setSummaryOpen(!summaryOpen)} onNewTask={newTask} onOpenSettings={() => openSettings()} onOpenRewind={props.onOpenRewind} onRename={() => { if (props.activeSession) { setRename(props.activeSession); setName(title); } }} onPin={() => { const id = props.activeSession?.id; if (id) setPinned(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]); }} isPinned={pinned.includes(props.activeSession?.id ?? "")} onExport={exportChat} browserOpen={browserOpen} onOpenBrowser={window.boss ? () => { if (browserOpen) login.closePanel(); else void loginEntry(); } : undefined} />
+      <TitleBar summaryAvailable={summaryAvailable && !browserOpen} hasConversation={hasConversation} title={title} isSidebarOpen={props.isSidebarOpen} isSummaryOpen={summaryOpen && !browserOpen} canGoBack={cursor > 0} canGoForward={cursor < history.length - 1} onBack={() => go(-1)} onForward={() => go(1)} onToggleSidebar={props.onToggleSidebar} onToggleSummary={() => setSummaryOpen(!summaryOpen)} onNewTask={newTask} onOpenSettings={() => openSettings()} onOpenRewind={props.onOpenRewind} onOpenContext={props.onOpenContext} onRename={() => { if (props.activeSession) { setRename(props.activeSession); setName(title); } }} onPin={() => { const id = props.activeSession?.id; if (id) setPinned(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]); }} isPinned={pinned.includes(props.activeSession?.id ?? "")} onExport={exportChat} browserOpen={browserOpen} onOpenBrowser={window.boss ? () => { if (browserOpen) login.closePanel(); else void loginEntry(); } : undefined} />
       <div className="workspace-layout">
         <NavigationRail page={page} isDark={props.isDark} harnessUp={props.harnessUp ?? false} onToggleTheme={props.onToggleTheme} onOpenShortcuts={props.onOpenShortcuts} onNavigate={next => next === "home" ? newTask() : openRoute({ page: next })} onOpenSettings={openSettings} onOpenCockpit={props.onOpenCockpit} onOpenSideChat={props.onOpenSideChat} />
         <div className="workspace-surface">

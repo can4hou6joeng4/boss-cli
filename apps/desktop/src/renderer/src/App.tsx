@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { AppShell } from "./shell/AppShell";
 import { CockpitModal } from "./components/CockpitModal";
+import { ContextPanel } from "./components/ContextPanel";
+import { useContextPanel } from "./data/useContextPanel";
 import { SideChatModal } from "./components/SideChatModal";
 import { RewindOverlay } from "./components/RewindOverlay";
 import { UnifiedDiffModal } from "./components/UnifiedDiffModal";
@@ -47,6 +49,8 @@ export function App(): JSX.Element {
   const [isCockpitOpen, setIsCockpitOpen] = useState(false), [isSideChatOpen, setIsSideChatOpen] = useState(false);
   const [isRewindOpen, setIsRewindOpen] = useState(false), [isDiffModalOpen, setIsDiffModalOpen] = useState(false);
   const [isRevertModalOpen, setIsRevertModalOpen] = useState(false), [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
+  const contextThreadId = activeSession?.projectId === HARNESS_PROJECT_ID && !isHomeView ? activeSession.id : null;
+  const contextPanel = useContextPanel(contextThreadId, harnessUp, runningThreadIds);
   const updateThread = useCallback((id: string, change: (previous: MessageItem[]) => MessageItem[]) => {
     const next = change(cache.current.get(id) ?? []);
     cache.current.set(id, next); versions.current.set(id, (versions.current.get(id) ?? 0) + 1);
@@ -330,10 +334,11 @@ export function App(): JSX.Element {
       onCreateConnectionSession={createConnectionSession}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession}
       onInterrupt={handleInterrupt} onApprovalDecision={handleApproval} onStartSessionWithPrompt={handleStartSessionWithPrompt} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel} onSelectModel={setActiveModelId}
-      onOpenCockpit={() => setIsCockpitOpen(true)} onOpenSideChat={() => setIsSideChatOpen(previous => !previous)} onOpenRewind={openRewind}
+      onOpenCockpit={() => setIsCockpitOpen(true)} onOpenSideChat={() => setIsSideChatOpen(previous => !previous)} onOpenRewind={openRewind} onOpenContext={contextThreadId ? contextPanel.open : undefined}
       onOpenShortcuts={() => setIsShortcutsOpen(true)} onReviewDiff={() => setIsDiffModalOpen(true)} onRevertDiff={() => setIsRevertModalOpen(true)} />
     {error && <div className="app-toast" role="alert"><span>{error}</span>{!harnessUp && window.boss && <button onClick={() => { void reconnectHarness(); }}>重新连接</button>}<button onClick={() => setError("")} aria-label="关闭提示"><IconClose size={14} /></button></div>}
     <CockpitModal isOpen={isCockpitOpen} onClose={() => setIsCockpitOpen(false)} />
+    <ContextPanel isOpen={contextPanel.isOpen} onClose={contextPanel.close} threadId={contextThreadId} title={activeSession?.title ?? ""} connected={harnessUp} busy={contextPanel.busy} state={contextPanel.state} onKeepRecentChange={contextPanel.changeKeepRecent} onRefresh={() => { void contextPanel.refresh(); }} onPlan={() => { void contextPanel.plan(); }} onStart={() => { void contextPanel.start(); }} onCancel={() => { void contextPanel.cancel(); }} />
     <SideChatModal isOpen={isSideChatOpen} onClose={() => setIsSideChatOpen(false)} />
     <RewindOverlay messages={messages} fork={!preview} isOpen={isRewindOpen} onClose={() => setIsRewindOpen(false)} onConfirmRewind={messageCount => {
       const id = activeRef.current?.id;

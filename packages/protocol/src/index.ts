@@ -493,6 +493,8 @@ export interface ContextReadResponse extends ContextBudget {
   usage: Record<string, unknown> | null;
   summaryUsage?: Record<string, unknown> | null;
   lastBudget?: ContextBudget & { turnId: string } | null;
+  /** Process-local discovery only. Missing means an older service; null means no retained job. */
+  compactionJob?: { jobId: string; status: ContextCompactionJobStatus; active: boolean } | null;
 }
 export type ConnectionTarget = "local" | "model" | "platform";
 export interface ConnectionCheck {
