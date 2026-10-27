@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { app, ipcMain, BrowserWindow, type IpcMainInvokeEvent } from "electron";
-import { HarnessHostManager, type HarnessHostConnection } from "@boss-cli/app-client";
+import { HarnessHostManager, HarnessRpcError, type HarnessHostConnection } from "@boss-cli/app-client";
 import type { JsonRpcNotification } from "@boss-cli/protocol";
 import { isTrustedRendererUrl, validateHarnessRequest, validateLoginContext } from "./security";
 import { PlatformLogin } from "./platformLogin";
@@ -92,7 +92,13 @@ function registerIPC(): void {
     trustedSender(event);
     const request = validateHarnessRequest(payload);
     if (!host) throw new Error("harness host is not attached");
-    return host.request(request.method, request.params);
+    try { return await host.request(request.method, request.params); }
+    catch (error) {
+      if (request.method === "context/compact/start" && error instanceof HarnessRpcError && error.code !== -32603) {
+        return { __harnessRpcError: { code: error.code, message: error.message, data: error.data } };
+      }
+      throw error;
+    }
   });
   ipcMain.handle("harness:status", (event) => {
     trustedSender(event);

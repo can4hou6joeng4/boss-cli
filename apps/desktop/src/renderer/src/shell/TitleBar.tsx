@@ -7,6 +7,7 @@ interface Props {
   onNewTask: () => void; onOpenSettings: () => void; onOpenRewind: () => void; onExport: () => void;
   onRename: () => void; onPin: () => void; isPinned: boolean;
   onOpenBrowser?: () => void; browserOpen?: boolean;
+  onOpenContext?: () => void;
 }
 export function TitleBar(props: Props) {
   const [menu, setMenu] = useState(false);
@@ -44,6 +45,7 @@ export function TitleBar(props: Props) {
           {copyState === "copied" && <div className="menu-note" role="status">聊天标题已复制</div>}
           {copyState === "failed" && <div className="menu-note" role="status">无法访问剪贴板，请检查权限后重试。</div>}
           <button disabled={!props.hasConversation} onClick={() => { props.onOpenRewind(); setMenu(false); }}><IconHistory />查看会话回溯</button>
+          {props.onOpenContext && <button disabled={!props.hasConversation} onClick={() => { props.onOpenContext?.(); setMenu(false); }}><IconPanelRight />会话上下文</button>}
           <div className="menu-divider" />
           <button onClick={() => { props.onOpenSettings(); setMenu(false); }}><IconSettings />设置<span className="menu-shortcut">⌘,</span></button>
         </Popover>

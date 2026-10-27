@@ -22,6 +22,12 @@ import {
   type SkillListResponse,
   type ConnectionReport,
   type ConnectionTarget,
+  type ContextReadResponse,
+  type ContextCompactPlan,
+  type ContextCompactPlanParams,
+  type ContextCompactStartParams,
+  type ContextCompactJob,
+  type ContextCompactAbortResponse,
 } from "@boss-cli/protocol";
 import { formatRelativeTime } from "@boss-cli/shared";
 import type { MessageItem, SessionItem } from "./mockData";
@@ -55,6 +61,31 @@ function bridge(): HarnessBridge | null {
   if (typeof window === "undefined") return null;
   return window.boss ?? null;
 }
+
+function contextRequest<T>(method: string, params: unknown): Promise<T> {
+  const api = bridge();
+  if (!api) return Promise.reject(new Error("本地 Harness 未连接"));
+  return api.request<unknown>(method, params).then(response => {
+    if (response && typeof response === "object" && "__harnessRpcError" in response) {
+      const rpc = (response as { __harnessRpcError?: { code?: unknown; message?: unknown; data?: unknown } }).__harnessRpcError;
+      if (rpc && typeof rpc.code === "number" && typeof rpc.message === "string") {
+        const error = new Error(rpc.message) as Error & { code: number; data: unknown; rpcError: true };
+        error.name = "HarnessRpcError";
+        error.code = rpc.code;
+        error.data = rpc.data;
+        error.rpcError = true;
+        throw error;
+      }
+    }
+    return response as T;
+  });
+}
+
+export const readContext = (threadId: string): Promise<ContextReadResponse> => contextRequest(ClientMethods.contextRead, { threadId });
+export const planContextCompaction = (params: ContextCompactPlanParams): Promise<ContextCompactPlan> => contextRequest(ClientMethods.contextCompactPlan, params);
+export const startContextCompaction = (params: ContextCompactStartParams): Promise<ContextCompactJob> => contextRequest(ClientMethods.contextCompactStart, params);
+export const readContextCompaction = (jobId: string): Promise<ContextCompactJob> => contextRequest(ClientMethods.contextCompactRead, { jobId });
+export const abortContextCompaction = (jobId: string): Promise<ContextCompactAbortResponse> => contextRequest(ClientMethods.contextCompactAbort, { jobId });
 
 /** 内核是否已连接（preload 未注入或进程未起时返回 false）。 */
 export async function isHarnessUp(): Promise<boolean> {

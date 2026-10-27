@@ -573,7 +573,8 @@ class ApplicationService:
                 runner = job["runner"]
                 metadata = self.context.read(thread_id)
                 if runner.last_preparation is not None:
-                    return {**metadata, **runner.last_preparation[1], "requestSource": "active"}
+                    return {**metadata, **runner.last_preparation[1], "requestSource": "active",
+                            "compactionJob": self._compaction_reference(thread_id)}
                 config, prompt, tools = runner.config, runner.system_prompt, runner.tool_specs()
             else:
                 config = self._model_config(thread, params)
@@ -591,7 +592,20 @@ class ApplicationService:
             result = self.context.read(thread_id, request=request,
                                        capabilities=self.model_catalog.resolve(config.provider, config.model),
                                        provider=config.provider)
-            return {**result, "provider": config.provider, "requestSource": "active" if job else "preview" if preview else "default"}
+            return {**result, "provider": config.provider, "requestSource": "active" if job else "preview" if preview else "default",
+                    "compactionJob": self._compaction_reference(thread_id)}
+
+    def _compaction_reference(self, thread_id: str) -> dict[str, Any] | None:
+        """Read under runtimes.lock; retain lifecycle ownership through provider cleanup."""
+        active_id = self._compaction_by_thread.get(thread_id)
+        if active_id is not None:
+            job = self._compaction_jobs.get(active_id)
+            if job is not None:
+                return {"jobId": job["jobId"], "status": job["status"], "active": True}
+        for job in reversed(self._compaction_jobs.values()):
+            if job["threadId"] == thread_id and job["status"] != "running":
+                return {"jobId": job["jobId"], "status": job["status"], "active": False}
+        return None
 
     @staticmethod
     def _source_digest(params: dict) -> str | None:
