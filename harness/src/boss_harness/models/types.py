@@ -93,6 +93,11 @@ ChatMessage = UserMessage | AssistantMessage | ToolResultsMessage
 # ---------- 用量与工具声明 ----------
 
 
+DEFAULT_MODEL_TOOL_RESULT_BYTES = 20 * 1024
+MIN_MODEL_TOOL_RESULT_BYTES = 8 * 1024
+MAX_MODEL_TOOL_RESULT_BYTES = 1024 * 1024
+
+
 @dataclass(frozen=True)
 class Usage:
     input: int = 0
@@ -111,6 +116,7 @@ class ToolSpec:
     name: str
     description: str
     input_schema: Mapping[str, Any]
+    max_model_result_bytes: int = DEFAULT_MODEL_TOOL_RESULT_BYTES
 
 
 # ---------- 请求与事件 ----------

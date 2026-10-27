@@ -31,6 +31,7 @@ from boss_harness.models import ModelConfig, Provider, resolve_config
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.capabilities import ModelCatalog
 from boss_harness.models.types import AssistantMessage, ModelRequest, UserMessage
+from boss_harness.model_tools import MODEL_RESULT_READ_TOOL, model_tool_specs
 from boss_harness.ownership import StateDirectoryOwner
 from boss_harness.resources import AttachmentStore, SkillCatalog, ToolRegistry
 from boss_harness.request_identity import resolve_request
@@ -150,6 +151,7 @@ class ApplicationService:
             raise ValueError("工具组合须提供有效 ToolBundle 和独立 bridge_factory")
         self.tool_bundle, self.bridge_factory = tool_bundle, bridge_factory
         self.registry = ToolRegistry(tool_bundle.tools)
+        model_tool_specs(self.registry.specs())
         self.provider_factory = provider_factory
         self.workspace = (workspace or Path.cwd()).resolve()
         if isinstance(lifecycle_hooks, LifecycleHooks):
@@ -747,7 +749,7 @@ class ApplicationService:
                 policy = self.compaction_policy
                 skill_text, _ = self.skills.load(params.get("skillIds"))
                 prompt = self._system_prompt(thread.get("toolPolicy") == "readOnly", skill_text)
-                tools = self.registry.specs(read_only=thread.get("toolPolicy") == "readOnly")
+                tools = model_tool_specs(self.registry.specs(read_only=thread.get("toolPolicy") == "readOnly"))
                 entries = self.sessions.read_entries(thread_id)
             messages = list(self.context.history(thread_id, entries=entries))
             if job is None:
@@ -1159,7 +1161,8 @@ class ApplicationService:
                 business_config = self._model_config(thread, {})
                 preview = ModelRequest(model=business_config.model, system=self._system_prompt(read_only, ""),
                     messages=self.context.compacted_history(thread_id, summary, plan),
-                    tools=self.registry.specs(read_only=read_only), max_tokens=business_config.max_tokens,
+                    tools=model_tool_specs(self.registry.specs(read_only=read_only)),
+                    max_tokens=business_config.max_tokens,
                     effort=business_config.effort, thinking=business_config.thinking)
                 try:
                     self.context.prepare(preview, self.model_catalog.resolve(business_config.provider, business_config.model),
@@ -1472,6 +1475,8 @@ class ApplicationService:
                 runner._tools = self.registry.specs(read_only=read_only)
 
                 def validate(name: str, arguments: dict) -> None:
+                    if name == MODEL_RESULT_READ_TOOL:
+                        return
                     if read_only and name not in allowed:
                         raise ValueError("只读会话禁止此工具；请新建需要逐次审批的会话")
                     self.registry.validate(name, arguments)

@@ -14,13 +14,17 @@ import json
 import re
 from typing import Any
 
-from boss_harness.rpc import RpcError
 from boss_harness.item_content import project_item_content
+from boss_harness.models.types import (
+    DEFAULT_MODEL_TOOL_RESULT_BYTES, MAX_MODEL_TOOL_RESULT_BYTES, MIN_MODEL_TOOL_RESULT_BYTES,
+)
+from boss_harness.rpc import RpcError
 
 MAX_INLINE_TOOL_RESULT_BYTES = 64 * 1024
 MAX_PAGE_BYTES = 1024 * 1024
 DEFAULT_RESULT_CHARS = 16_384
 MAX_RESULT_CHARS = 32_768
+MODEL_RESULT_READ_CHARS = 8_192
 
 
 def result_text(result: Any) -> str:
@@ -35,6 +39,69 @@ def result_reference(thread_id: str, item_id: str, text: str) -> dict:
             "characterLength": len(text)}
 
 
+def model_result_content(result: dict, item_id: str | None, *, source: dict | None,
+                         max_bytes: int, preview: str) -> str:
+    """Keep small results structured; replace oversized model payloads with a verifiable reference."""
+    if (type(max_bytes) is not int
+            or not MIN_MODEL_TOOL_RESULT_BYTES <= max_bytes <= MAX_MODEL_TOOL_RESULT_BYTES):
+        max_bytes = DEFAULT_MODEL_TOOL_RESULT_BYTES
+    payload = {**result, **({"source": source} if source is not None else {})}
+    encoded = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+    if len(encoded.encode("utf-8")) <= max_bytes:
+        return encoded
+
+    projected: dict[str, Any] = {
+        "ok": result.get("ok"),
+        "command": result.get("command"),
+        "resultOmitted": True,
+    }
+    if source is not None:
+        projected["source"] = source
+    if item_id is not None:
+        text = result_text(result)
+        reference = result_reference("", item_id, text)
+        projected["resultRef"] = {key: reference[key] for key in
+                                  ("itemId", "sha256", "byteLength", "characterLength")}
+    else:
+        projected["resultUnavailable"] = True
+
+    preview = preview if isinstance(preview, str) else ""
+    keep = min(len(preview), max_bytes // 2)
+    while True:
+        if keep:
+            projected["resultPreview"] = preview[:keep]
+        candidate = json.dumps(projected, ensure_ascii=False, allow_nan=False)
+        try:
+            if len(candidate.encode("utf-8")) <= max_bytes:
+                return candidate
+        except UnicodeEncodeError:
+            pass
+        projected.pop("resultPreview", None)
+        if keep <= 1:
+            return json.dumps(projected, ensure_ascii=True, allow_nan=False)
+        keep //= 2
+
+
+def model_result_for_item(item: dict) -> str:
+    """Bound legacy history projections without changing their durable source records."""
+    limit = item.get("modelResultLimitBytes", DEFAULT_MODEL_TOOL_RESULT_BYTES)
+    if type(limit) is not int or not MIN_MODEL_TOOL_RESULT_BYTES <= limit <= MAX_MODEL_TOOL_RESULT_BYTES:
+        limit = DEFAULT_MODEL_TOOL_RESULT_BYTES
+    existing = item.get("modelResult")
+    if isinstance(existing, str):
+        try:
+            if len(existing.encode("utf-8")) <= limit:
+                return existing
+        except UnicodeEncodeError:
+            pass
+    result = item.get("result")
+    if isinstance(result, dict) and isinstance(item.get("id"), str):
+        return model_result_content(result, item["id"], source=item.get("source"), max_bytes=limit,
+                                    preview=item.get("resultSummary", ""))
+    return model_result_content({}, None, source=None, max_bytes=limit,
+                                preview=item.get("resultSummary") or existing or "")
+
+
 def project_error(error: dict | None) -> dict | None:
     """An error preview must not reintroduce an omitted result's large body."""
     if error is None or wire_size(error) <= 4096:
@@ -46,7 +113,8 @@ def project_error(error: dict | None) -> dict | None:
 
 def project_item(thread_id: str, item: dict, *, snapshot_id: str | None = None) -> dict:
     """Never mutate durable/model history while preparing renderer-facing items."""
-    projected = {key: value for key, value in item.items() if key not in {"modelResult", "resultOmitted", "resultRef"}}
+    projected = {key: value for key, value in item.items()
+                 if key not in {"modelResult", "modelResultLimitBytes", "resultOmitted", "resultRef"}}
     projected = project_item_content(thread_id, projected, snapshot_id=snapshot_id)
     result = item.get("result")
     if isinstance(result, dict):
@@ -82,6 +150,17 @@ def read_result_chunk(thread_id: str, item: dict, *, sha256: str, cursor: str | 
     reference = result_reference(thread_id, str(item["id"]), text)
     if sha256 != reference["sha256"]:
         raise RpcError(-32011, "工具结果已变化，请重新读取条目并确认新结果引用", {"code": "STALE_RESULT"})
+    return read_result_text_chunk(thread_id, str(item["id"]), text, sha256=sha256,
+                                  cursor=cursor, limit=limit)
+
+
+def read_result_text_chunk(thread_id: str, item_id: str, text: str, *, sha256: str,
+                           cursor: str | None = None, limit: int = DEFAULT_RESULT_CHARS) -> dict:
+    if type(limit) is not int or not 1 <= limit <= MAX_RESULT_CHARS:
+        raise ValueError(f"limit 必须是 1 到 {MAX_RESULT_CHARS} 的整数")
+    reference = result_reference(thread_id, item_id, text)
+    if not isinstance(sha256, str) or sha256 != reference["sha256"]:
+        raise RpcError(-32011, "工具结果已变化，请重新读取条目并确认新结果引用", {"code": "STALE_RESULT"})
     offset = 0
     if cursor is not None:
         try:
@@ -90,7 +169,7 @@ def read_result_chunk(thread_id: str, item: dict, *, sha256: str, cursor: str | 
             encoded = cursor[4:]
             value = json.loads(base64.b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b"-_", validate=True))
             if (not isinstance(value, list) or len(value) != 4
-                    or value[:3] != [thread_id, str(item["id"]), reference["sha256"]]
+                    or value[:3] != [thread_id, item_id, reference["sha256"]]
                     or type(value[3]) is not int or not 0 <= value[3] < len(text)):
                 raise ValueError()
             offset = value[3]

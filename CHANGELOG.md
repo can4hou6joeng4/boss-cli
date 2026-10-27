@@ -4,6 +4,7 @@
 
 ### 新功能
 
+- 按工具配置模型可见结果的 UTF-8 字节预算，完整结果仍持久化；超限时向模型提供省略提示、摘要和 SHA-256，并新增只读 `read_session_tool_result` 内核工具分段读取，确保省略数据可按会话、条目和摘要校验后继续读取。
 - 模型终态错误通过 `session/error.errorInfo` 和持久错误记录保留经过筛选的 provider、来源、HTTP 状态、provider code 与可选请求级 retryable；终态事件同时区分是否已观察到输出。原始响应和响应头不持久化，retryable 不授权重放整回合，自动重试策略保持不变。
 - 新 checkpoint 以 `sourceItemCount` 持久化已覆盖前缀长度，避免每次摘要重复写入全部来源条目 ID；摘要请求也不再重复携带旧 checkpoint 的 ID 列表。旧 checkpoint 格式仍可读取，`context/read` 和 `context/compact/plan` 的 `sourceItemIds` 响应保持兼容。
 - 为自动、手动及溢出恢复摘要增加独立 provider、model、effort 配置；未配置时沿用会话设置。显式推理档位需由模型容量目录声明支持，摘要任务和 checkpoint 记录实际配置，并在提交前继续按业务模型校验完整请求预算。
