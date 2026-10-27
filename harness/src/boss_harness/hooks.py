@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+import json
 import math
 import re
 import queue
@@ -28,7 +29,14 @@ MAX_CONTEXT_STRING = 16_384
 MAX_CONTEXT_KEYS = 64
 MAX_CONTEXT_ITEMS = 128
 MAX_CONTEXT_DEPTH = 6
+# Leave room for the hook envelope around tool arguments (schema payloads cap at 1 MiB).
+MAX_POLICY_CONTEXT_BYTES = 1_052_672
+# Leave room for envelope fields/nesting beyond the bounded tool-argument JSON tree.
+MAX_POLICY_CONTEXT_NODES = 32_784
+MAX_POLICY_CONTEXT_DEPTH = 66
 _HOOK_FAILED = object()
+_HOOK_CONTEXT_TOO_LARGE = object()
+_HOOK_CONTEXT_INVALID = object()
 
 
 @dataclass(frozen=True)
@@ -86,6 +94,107 @@ def freeze_context(value: Mapping[str, Any]) -> Mapping[str, Any]:
         return item
 
     return freeze(_safe_value(dict(value)))
+
+
+class _PolicyContextError(ValueError):
+    def __init__(self, code: str) -> None:
+        self.code = code
+
+
+def freeze_policy_context(value: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Copy complete JSON policy input or reject it; never pass a partial view."""
+    size = 0
+    nodes = 0
+    active: set[int] = set()
+
+    def account(amount: int) -> None:
+        nonlocal size
+        size += amount
+        if size > MAX_POLICY_CONTEXT_BYTES:
+            raise _PolicyContextError("HOOK_CONTEXT_TOO_LARGE")
+
+    def account_json_string(text: str) -> None:
+        # Count compact ensure_ascii=False JSON bytes without allocating an escaped copy.
+        account(2)
+        for character in text:
+            codepoint = ord(character)
+            if character in ('"', "\\", "\b", "\t", "\n", "\f", "\r"):
+                amount = 2
+            elif codepoint < 0x20:
+                amount = 6
+            elif 0xD800 <= codepoint <= 0xDFFF:
+                raise _PolicyContextError("HOOK_CONTEXT_INVALID")
+            elif codepoint <= 0x7F:
+                amount = 1
+            elif codepoint <= 0x7FF:
+                amount = 2
+            elif codepoint <= 0xFFFF:
+                amount = 3
+            else:
+                amount = 4
+            account(amount)
+
+    def copy(item: Any, depth: int = 0) -> Any:
+        nonlocal nodes
+        nodes += 1
+        if depth > MAX_POLICY_CONTEXT_DEPTH or nodes > MAX_POLICY_CONTEXT_NODES:
+            raise _PolicyContextError("HOOK_CONTEXT_TOO_LARGE")
+        if type(item) is str:
+            account_json_string(item)
+            return item
+        if item is None or type(item) is bool:
+            account(4 if item is None or item else 5)
+            return item
+        if type(item) is int:
+            try:
+                account(len(str(item)))
+            except ValueError:
+                raise _PolicyContextError("HOOK_CONTEXT_TOO_LARGE") from None
+            return item
+        if type(item) is float:
+            if not math.isfinite(item):
+                raise _PolicyContextError("HOOK_CONTEXT_INVALID")
+            account(len(json.dumps(item, allow_nan=False)))
+            return item
+        if type(item) is dict or type(item) is list:
+            marker = id(item)
+            if marker in active:
+                raise _PolicyContextError("HOOK_CONTEXT_INVALID")
+            active.add(marker)
+            try:
+                is_object = type(item) is dict
+                account(2)
+                if is_object:
+                    result: dict[str, Any] = {}
+                    for index, (key, child) in enumerate(item.items()):
+                        if type(key) is not str:
+                            raise _PolicyContextError("HOOK_CONTEXT_INVALID")
+                        account_json_string(key)
+                        account(1 + bool(index))
+                        result[key] = copy(child, depth + 1)
+                    return result
+                result = []
+                for index, child in enumerate(item):
+                    if index:
+                        account(1)
+                    result.append(copy(child, depth + 1))
+                return result
+            finally:
+                active.remove(marker)
+        raise _PolicyContextError("HOOK_CONTEXT_INVALID")
+
+    if not isinstance(value, Mapping):
+        raise _PolicyContextError("HOOK_CONTEXT_INVALID")
+    copied = copy(value)
+
+    def freeze(item: Any) -> Any:
+        if isinstance(item, dict):
+            return MappingProxyType({key: freeze(child) for key, child in item.items()})
+        if isinstance(item, list):
+            return tuple(freeze(child) for child in item)
+        return item
+
+    return freeze(copied)
 
 
 @dataclass(frozen=True)
@@ -200,6 +309,14 @@ class LifecycleHooks:
         callback = getattr(hook, method, None)
         if not callable(callback):
             return None
+        try:
+            callback_context = (freeze_policy_context(context or {}) if method == "before_tool_call"
+                               else freeze_context(context or {}) if method == "on_event" else None)
+        except _PolicyContextError as exc:
+            message = ("策略 hook 输入超过内核上限；工具未执行" if exc.code == "HOOK_CONTEXT_TOO_LARGE"
+                       else "策略 hook 输入不是受支持的 JSON；工具未执行")
+            self._failure(hook, method, event, exc.code, message)
+            return _HOOK_CONTEXT_TOO_LARGE if exc.code == "HOOK_CONTEXT_TOO_LARGE" else _HOOK_CONTEXT_INVALID
         timeout = self.timeout
         if deadline is not None:
             timeout = min(timeout, max(0.0, deadline - time.monotonic()))
@@ -216,7 +333,7 @@ class LifecycleHooks:
 
         def run() -> None:
             try:
-                result.append(callback(freeze_context(context or {})) if method != "close" else callback())
+                result.append(callback(callback_context) if method != "close" else callback())
             except BaseException as exc:  # Hook code is trusted but isolated from the kernel.
                 error.append(exc)
             finally:
@@ -302,6 +419,10 @@ class LifecycleHooks:
             if not callable(getattr(hook, "before_tool_call", None)):
                 continue
             result = self._invoke(hook, "before_tool_call", {"phase": "before_tool_call", **dict(context)}, event=event)
+            if result is _HOOK_CONTEXT_TOO_LARGE:
+                return HookDecision(False, "HOOK_CONTEXT_TOO_LARGE", "策略输入超过内核上限；为保证策略检查完整，工具调用已暂停")
+            if result is _HOOK_CONTEXT_INVALID:
+                return HookDecision(False, "HOOK_CONTEXT_INVALID", "策略输入不是受支持的 JSON；为保证策略检查完整，工具调用已暂停")
             if result is _HOOK_FAILED:
                 return HookDecision(False, "HOOK_ERROR", "内核策略 hook 未能完成；为避免执行未核对的工具，当前回合已暂停")
             if result is None:
