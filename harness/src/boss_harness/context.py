@@ -344,8 +344,14 @@ class ContextService:
         return self._compaction_snapshot(thread_id, through_turn_id, keep_recent_tokens,
                                          _active_turn_id=_active_turn_id)[0]
 
-    def history(self, thread_id: str) -> tuple[ChatMessage, ...]:
-        entries = self.sessions.read_entries(thread_id)
+    def _entries(self, thread_id: str, entries: list[dict] | None) -> list[dict]:
+        if entries is None:
+            return self.sessions.read_entries(thread_id)
+        self.sessions.require_thread(thread_id)
+        return entries
+
+    def history(self, thread_id: str, *, entries: list[dict] | None = None) -> tuple[ChatMessage, ...]:
+        entries = self._entries(thread_id, entries)
         items, checkpoint = self._history_snapshot(thread_id, entries)
         return self._history_projection(items, checkpoint)
 
@@ -405,9 +411,9 @@ class ContextService:
             raise ValueError("上下文估算超过输入预算；请通过 context/compact 提供可追溯摘要，或新建会话。")
 
     def _apply_usage(self, thread_id: str, request: ModelRequest, provider: str,
-                     budget: dict[str, Any]) -> dict[str, Any]:
+                     budget: dict[str, Any], *, entries: list[dict] | None = None) -> dict[str, Any]:
         current_count = len(request.messages)
-        entries = self.sessions.read_entries(thread_id)
+        entries = self._entries(thread_id, entries)
         for entry in reversed(entries):
             if entry["type"] != "model_usage":
                 continue
@@ -448,15 +454,16 @@ class ContextService:
         return replace(request, max_tokens=budget["outputReserve"]), budget
 
     def read(self, thread_id: str, *, request: ModelRequest | None = None,
-             capabilities: ModelCapabilities | None = None, provider: str = "") -> dict[str, Any]:
+             capabilities: ModelCapabilities | None = None, provider: str = "",
+             entries: list[dict] | None = None) -> dict[str, Any]:
         if (request is None) != (capabilities is None):
             raise ValueError("request 和 capabilities 必须同时提供")
-        entries = self.sessions.read_entries(thread_id)
+        entries = self._entries(thread_id, entries)
         items, checkpoint = self._history_snapshot(thread_id, entries)
         if request is not None and capabilities is not None:
             budget = describe_request(request, capabilities, provider=provider)
             if provider:
-                budget = self._apply_usage(thread_id, request, provider, budget)
+                budget = self._apply_usage(thread_id, request, provider, budget, entries=entries)
         else:
             messages = self._history_projection(items, checkpoint)
             estimate = estimate_tokens(messages)

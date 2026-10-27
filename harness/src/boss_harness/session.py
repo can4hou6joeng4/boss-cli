@@ -784,11 +784,12 @@ class SessionStore:
         """Finalize abandoned work, including archived sessions; never execute a tool."""
         for thread in self.list_threads(include_archived=True):
             thread_id = thread["id"]
-            turns = self._turns(self.read_entries(thread_id), thread_id)
-            turn_by_item = {item["id"]: turn["turnId"] for turn in turns
-                            for item in self.get_turn(thread_id, turn["turnId"])["items"]}
+            entries = self.read_entries(thread_id)
+            turns = self._turns(entries, thread_id)
+            turn_by_item = self._item_owners(entries)
+            items = self._project_items(thread_id, entries)
             recovered_turns: set[str] = set()
-            for item in self.read_items(thread_id):
+            for item in items:
                 approval = item.get("approval")
                 if item.get("status") != "running" and not (approval and not approval.get("decision")):
                     continue
