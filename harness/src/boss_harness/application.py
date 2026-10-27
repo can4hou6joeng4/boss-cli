@@ -36,7 +36,7 @@ from boss_harness.resources import AttachmentStore, SkillCatalog, ToolRegistry
 from boss_harness.request_identity import resolve_request
 from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
-from boss_harness.session import Entry, SessionStore
+from boss_harness.session import CheckpointCommittedError, CheckpointCommitUncertain, Entry, SessionStore
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
 from boss_harness.tool_bundle import ToolBundle
 from boss_harness.summary import SUMMARY_MAX_REQUESTS, SummaryPlanner
@@ -832,12 +832,19 @@ class ApplicationService:
         with self.runtimes.lock:
             # Observer failures cannot undo an append-only committed checkpoint.
             if job["status"] == "completed":
+                self._compaction_committed_warning(job, error)
                 return
-            if job["cancel"].is_set():
+            if job["cancel"].is_set() and code != "COMPACTION_COMMIT_UNCERTAIN":
                 job.update(status="cancelled", code="COMPACTION_CANCELLED", message="摘要已取消")
             else:
                 job.update(status="failed", code=code, message=self._compaction_safe_error(job, error))
         self.events.emit("context/compactionFailed", self._compaction_public(job))
+
+    def _compaction_committed_warning(self, job: dict, error: Exception | str) -> None:
+        with self.runtimes.lock:
+            job.update(status="completed", code="COMPACTION_COMMITTED_REFRESH_FAILED",
+                       message="摘要已提交并生效，但后续状态刷新或通知失败；请重新读取上下文，不要重复生成。"
+                               + self._compaction_safe_error(job, error))
 
     def _compaction_provider(self, config: ModelConfig) -> Provider:
         if self.provider_factory is None:
@@ -1064,8 +1071,6 @@ class ApplicationService:
                     _on_committed=lambda: job.update(status="completed"))
                 result = self.on_context_read({"threadId": thread_id})
                 job.update(result=result)
-            self.events.emit("context/compactionCompleted", self._compaction_public(job))
-            self.events.emit("context/compacted", {"threadId": thread_id, "jobId": job["jobId"], "origin": "model"})
         except _CompactionCancelled:
             with self.runtimes.lock:
                 job.update(status="cancelled", code="COMPACTION_CANCELLED", message="摘要已取消")
@@ -1074,6 +1079,8 @@ class ApplicationService:
             self._compaction_failed(job, "COMPACTION_INPUT_TOO_LARGE", exc)
         except _CompactionFailure as exc:
             self._compaction_failed(job, exc.code, exc)
+        except CheckpointCommitUncertain as exc:
+            self._compaction_failed(job, exc.code, exc)
         except ValueError as exc:
             message = str(exc)
             code = "COMPACTION_SOURCE_CHANGED" if "来源" in message else "COMPACTION_FAILED"
@@ -1081,18 +1088,43 @@ class ApplicationService:
         except Exception as exc:
             self._compaction_failed(job, "COMPACTION_FAILED", exc)
         finally:
-            self._finish_compaction(job)
+            try:
+                if job["status"] == "completed":
+                    try:
+                        self.events.emit("context/compactionCompleted", self._compaction_public(job))
+                        self.events.emit("context/compacted", {"threadId": thread_id, "jobId": job["jobId"], "origin": "model"})
+                    except Exception as exc:
+                        self._compaction_committed_warning(job, exc)
+            finally:
+                self._finish_compaction(job)
 
     def on_context_compact(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")
-        with self.runtimes.lock:
-            self._idle(thread_id)
-            source_digest = self._source_digest(params or {})
-            self.context.compact(thread_id, _text(params, "summary", maximum=32_000),
-                                 _text(params, "throughTurnId"), source_digest)
-            result = self.on_context_read({"threadId": thread_id})
-        self.events.emit("context/compacted", {"threadId": thread_id})
-        return result
+        committed = False
+
+        def published() -> None:
+            nonlocal committed
+            committed = True
+
+        try:
+            with self.runtimes.lock:
+                self._idle(thread_id)
+                source_digest = self._source_digest(params or {})
+                self.context.compact(thread_id, _text(params, "summary", maximum=32_000),
+                                     _text(params, "throughTurnId"), source_digest, _on_committed=published)
+                result = self.on_context_read({"threadId": thread_id})
+            self.events.emit("context/compacted", {"threadId": thread_id})
+            return result
+        except (CheckpointCommittedError, CheckpointCommitUncertain) as exc:
+            raise RpcError(-32012, str(exc), {"code": exc.code, "threadId": thread_id,
+                           "checkpointId": exc.checkpoint_id,
+                           "checkpointCommitted": True if isinstance(exc, CheckpointCommittedError) else None}) from None
+        except Exception:
+            if committed:
+                raise RpcError(-32012, "摘要已提交并生效，但状态刷新或通知失败；请重新读取上下文，不要重复提交。",
+                               {"code": "COMPACTION_COMMITTED_REFRESH_FAILED", "threadId": thread_id,
+                                "checkpointCommitted": True}) from None
+            raise
 
     def on_context_compact_plan(self, params: dict | None) -> dict:
         with self.runtimes.lock:
@@ -1206,12 +1238,23 @@ class ApplicationService:
                 owned()
             return replacement
         except Exception as exc:
+            if isinstance(exc, CheckpointCommittedError) and job is not None:
+                self._compaction_committed_warning(job, exc)
+                try:
+                    self.events.emit("context/compactionCompleted", self._compaction_public(job))
+                    self.events.emit("context/compacted", {"threadId": thread_id, "jobId": job["jobId"],
+                                                           "origin": "model", "reason": reason})
+                except Exception:
+                    pass
+                raise ContextCompactionFailed(exc.code, runner.safe_error(exc)) from None
             if job is not None and job["status"] != "completed":
-                code = exc.code if isinstance(exc, (ContextCompactionFailed, _CompactionFailure)) else "COMPACTION_FAILED"
+                code = exc.code if isinstance(exc, (ContextCompactionFailed, _CompactionFailure, CheckpointCommitUncertain)) else "COMPACTION_FAILED"
                 try:
                     self._compaction_failed(job, code, exc)
                 except Exception:
                     pass  # Failure state is already set even if an observer cannot persist.
+            if isinstance(exc, CheckpointCommitUncertain):
+                raise ContextCompactionFailed(exc.code, runner.safe_error(exc)) from None
             if turn["cancel"].is_set() or self.runtimes.closed:
                 raise ContextCompactionFailed("COMPACTION_CANCELLED", "自动摘要已取消，本回合停止") from None
             if job is not None and job["status"] == "completed" and replacement is not None:

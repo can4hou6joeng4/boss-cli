@@ -12,8 +12,10 @@ import json
 import os
 import re
 import sqlite3
+import stat
 import threading
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -100,6 +102,26 @@ class Entry:
         return data
 
 
+class CheckpointCommitUncertain(RuntimeError):
+    """The checkpoint publication outcome could not be established."""
+
+    code = "COMPACTION_COMMIT_UNCERTAIN"
+
+    def __init__(self, checkpoint_id: str) -> None:
+        self.checkpoint_id = checkpoint_id
+        super().__init__(f"摘要检查点 {checkpoint_id} 的提交结果无法确认，可能已经生效；请先核对会话，避免自动重试。")
+
+
+class CheckpointCommittedError(RuntimeError):
+    """A published checkpoint must not be reported as an uncommitted failure."""
+
+    code = "COMPACTION_COMMITTED_REFRESH_FAILED"
+
+    def __init__(self, checkpoint_id: str) -> None:
+        self.checkpoint_id = checkpoint_id
+        super().__init__(f"摘要检查点 {checkpoint_id} 已经生效，但提交后的状态刷新失败；请重新读取会话，勿重复提交。")
+
+
 class SessionStore:
     def __init__(self, root: Path) -> None:
         self.root = Path(root).resolve()
@@ -182,6 +204,124 @@ class SessionStore:
             self._append_line(self.path_for(thread_id), entry.to_dict())
             self._index_thread(thread_id, connection)
         return entry
+
+    def append_checkpoint(self, thread_id: str, entry_factory: Callable[[], Entry], *,
+                          on_committed: Callable[[], None] | None = None) -> Entry:
+        """Publish a fully fsynced checkpoint copy on a local filesystem.
+
+        The writer transaction covers source validation and publication across
+        store instances. Replacement is the process-visible commit point; this
+        does not add a directory-fsync or power-loss durability guarantee.
+        """
+        if not callable(entry_factory) or (on_committed is not None and not callable(on_committed)):
+            raise ValueError("摘要提交回调必须可调用")
+        temporary: Path | None = None
+        entry: Entry | None = None
+        committed = False
+        try:
+            with self._lock, self._index.transaction() as connection:
+                path = self.path_for(thread_id)
+                original = path.lstat()
+                current_uid = getattr(os, "getuid", None)
+                if (not stat.S_ISREG(original.st_mode) or original.st_nlink != 1
+                        or current_uid is None or original.st_uid != current_uid()):
+                    raise ValueError("摘要仅支持当前用户拥有的普通单链接会话文件")
+                original_identity = (original.st_dev, original.st_ino)
+                original_signature = (original.st_dev, original.st_ino, original.st_size,
+                                      original.st_mtime_ns, original.st_ctime_ns,
+                                      original.st_mode, original.st_uid, original.st_gid, original.st_nlink)
+                with path.open("rb") as source:
+                    opened = os.fstat(source.fileno())
+                    opened_signature = (opened.st_dev, opened.st_ino, opened.st_size,
+                                        opened.st_mtime_ns, opened.st_ctime_ns,
+                                        opened.st_mode, opened.st_uid, opened.st_gid, opened.st_nlink)
+                    if opened_signature != original_signature or not stat.S_ISREG(opened.st_mode):
+                        raise ValueError("会话文件已变化，请重新读取摘要来源")
+                    self.require_thread(thread_id)
+                    # This callback must read/validate the final source without
+                    # opening a second SQLite writer transaction.
+                    entry = entry_factory()
+                    if not isinstance(entry, Entry) or entry.type != "context_checkpoint":
+                        raise ValueError("摘要提交必须构造 context_checkpoint 条目")
+                    encoded = (_json(entry.to_dict()) + "\n").encode("utf-8")
+                    candidate_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.checkpoint.tmp")
+                    descriptor = os.open(candidate_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    temporary = candidate_path
+                    with os.fdopen(descriptor, "wb") as target:
+                        last_byte = b""
+                        while chunk := source.read(1024 * 1024):
+                            target.write(chunk)
+                            last_byte = chunk[-1:]
+                        if last_byte and last_byte != b"\n":
+                            target.write(b"\n")
+                        target.write(encoded)
+                        target.flush()
+                        os.fchown(target.fileno(), -1, original.st_gid)
+                        os.fchmod(target.fileno(), stat.S_IMODE(original.st_mode))
+                        os.fsync(target.fileno())
+                        candidate = os.fstat(target.fileno())
+                        candidate_identity = (candidate.st_dev, candidate.st_ino)
+                    copied = os.fstat(source.fileno())
+                    copied_signature = (copied.st_dev, copied.st_ino, copied.st_size,
+                                        copied.st_mtime_ns, copied.st_ctime_ns,
+                                        copied.st_mode, copied.st_uid, copied.st_gid, copied.st_nlink)
+                    if copied_signature != original_signature:
+                        raise ValueError("会话文件在摘要复制期间变化，请重新读取摘要来源")
+                candidate_stat = temporary.lstat()
+                candidate_signature = (candidate_stat.st_dev, candidate_stat.st_ino,
+                                       candidate_stat.st_size, candidate_stat.st_mtime_ns,
+                                       candidate_stat.st_ctime_ns, candidate_stat.st_mode,
+                                       candidate_stat.st_uid, candidate_stat.st_gid, candidate_stat.st_nlink)
+                expected_candidate_signature = (candidate_identity[0], candidate_identity[1],
+                    candidate.st_size, candidate.st_mtime_ns, candidate.st_ctime_ns, candidate.st_mode,
+                    candidate.st_uid, candidate.st_gid, candidate.st_nlink)
+                if candidate_signature != expected_candidate_signature:
+                    raise ValueError("已同步的摘要候选文件在发布前变化")
+                visible_before_replace = path.lstat()
+                visible_signature = (visible_before_replace.st_dev, visible_before_replace.st_ino,
+                                     visible_before_replace.st_size, visible_before_replace.st_mtime_ns,
+                                     visible_before_replace.st_ctime_ns, visible_before_replace.st_mode,
+                                     visible_before_replace.st_uid, visible_before_replace.st_gid,
+                                     visible_before_replace.st_nlink)
+                if visible_signature != original_signature or not stat.S_ISREG(visible_before_replace.st_mode):
+                    raise ValueError("会话文件在摘要发布前变化，请重新读取摘要来源")
+                try:
+                    os.replace(temporary, path)
+                except Exception as exc:
+                    try:
+                        visible = path.lstat()
+                    except OSError:
+                        raise CheckpointCommitUncertain(entry.id) from exc
+                    visible_identity = (visible.st_dev, visible.st_ino)
+                    if visible_identity == original_identity:
+                        raise
+                    if visible_identity != candidate_identity or not stat.S_ISREG(visible.st_mode):
+                        raise CheckpointCommitUncertain(entry.id) from exc
+                    # This is identity with the already-fsynced inode, not a
+                    # content readback pretending that a failed fsync succeeded.
+                else:
+                    try:
+                        visible = path.lstat()
+                    except OSError as exc:
+                        raise CheckpointCommitUncertain(entry.id) from exc
+                    if ((visible.st_dev, visible.st_ino) != candidate_identity
+                            or not stat.S_ISREG(visible.st_mode)):
+                        raise CheckpointCommitUncertain(entry.id)
+                committed = True
+                if on_committed is not None:
+                    on_committed()
+                self._index_thread(thread_id, connection)
+            return entry
+        except Exception as exc:
+            if committed and entry is not None:
+                raise CheckpointCommittedError(entry.id) from exc
+            raise
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except Exception:
+                    pass  # Cleanup cannot undo or obscure the publication result.
 
     def last_entry_id(self, thread_id: str) -> str | None:
         entries = self.read_entries(thread_id)

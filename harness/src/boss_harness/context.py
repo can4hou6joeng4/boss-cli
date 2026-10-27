@@ -20,7 +20,7 @@ from boss_harness.models.types import (
     AssistantMessage, ChatMessage, ModelRequest, TextBlock, ThinkingBlock, ToolCallBlock,
     ToolResultItem, ToolResultsMessage, UserMessage,
 )
-from boss_harness.session import Entry, SessionStore
+from boss_harness.session import CheckpointCommittedError, Entry, SessionStore
 
 
 def messages_from_items(items: list[dict]) -> tuple[ChatMessage, ...]:
@@ -517,7 +517,11 @@ class ContextService:
             raise ValueError("压缩元数据必须是有限 JSON") from None
         if len(encoded_extra.encode()) > 4096:
             raise ValueError("压缩元数据过大")
-        with self.sessions._lock:
+        checkpoint_id: str | None = None
+        committed = False
+
+        def checkpoint() -> Entry:
+            nonlocal checkpoint_id
             plan = self.compaction_plan(thread_id, through_turn_id, _active_turn_id=_active_turn_id)
             if source_digest is not None and source_digest != plan["sourceDigest"]:
                 raise ValueError("压缩来源已变化，请重新读取压缩计划")
@@ -525,7 +529,22 @@ class ContextService:
                        "sourceItemIds": plan["sourceItemIds"], "sourceDigest": plan["sourceDigest"],
                        "digestVersion": plan["digestVersion"], "checkpointDigest": plan["checkpointDigest"],
                        "origin": origin, **extra}
-            self.sessions.append(thread_id, Entry(type="context_checkpoint", payload=payload))
+            entry = Entry(type="context_checkpoint", payload=payload)
+            checkpoint_id = entry.id
+            return entry
+
+        def published() -> None:
+            nonlocal committed
+            committed = True
             if _on_committed is not None:
                 _on_committed()
-        return self.read(thread_id)
+
+        try:
+            self.sessions.append_checkpoint(thread_id, checkpoint, on_committed=published)
+            return self.read(thread_id)
+        except CheckpointCommittedError:
+            raise
+        except Exception as exc:
+            if committed and checkpoint_id is not None:
+                raise CheckpointCommittedError(checkpoint_id) from exc
+            raise
