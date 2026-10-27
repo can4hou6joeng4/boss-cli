@@ -15,6 +15,11 @@ from collections.abc import Iterator, Sequence
 import anthropic
 
 from boss_harness.models.errors import anthropic_error_info
+from boss_harness.models.output_budget import (
+    OutputBudgetExceeded,
+    ToolArgumentBudget,
+    bounded_error,
+)
 from boss_harness.models.provider import ModelConfig
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.types import (
@@ -48,7 +53,7 @@ def _reject_json_constant(value: str) -> None:
 def _parse_tool_arguments(raw: str) -> dict[str, object] | None:
     try:
         parsed = json.loads(raw, parse_constant=_reject_json_constant)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return None
     return parsed if isinstance(parsed, dict) else None
 
@@ -92,16 +97,6 @@ def to_sdk_messages(messages: Sequence[ChatMessage]) -> list[dict[str, object]]:
     return out
 
 
-def _usage_from_sdk(usage: object) -> Usage:
-    get = lambda name: int(getattr(usage, name, 0) or 0)  # noqa: E731
-    return Usage(
-        input=get("input_tokens"),
-        output=get("output_tokens"),
-        cache_read=get("cache_read_input_tokens"),
-        cache_write=get("cache_creation_input_tokens"),
-    )
-
-
 class AnthropicProvider:
     id = "anthropic"
 
@@ -130,7 +125,7 @@ class AnthropicProvider:
 
     def _redact(self, text: object) -> str:
         """错误文本会被写进会话文件并推给外壳，落盘前先把凭据抹掉。"""
-        return redact_secrets(str(text), extra=(self._secret,))
+        return bounded_error("", redact_secrets(str(text), extra=(self._secret,)))
 
     # ---------- 请求参数 ----------
 
@@ -163,19 +158,31 @@ class AnthropicProvider:
         kwargs = self._request_kwargs(request)
         buffers: dict[int, list[str]] = {}
         tool_argument_buffers: dict[int, list[str]] = {}
+        tool_names: dict[int, str] = {}
+        tool_ids: dict[int, str] = {}
+        block_types: dict[int, str] = {}
+        started_tools: set[int] = set()
+        snapshot_only_tools: set[int] = set()
         closed_tool_blocks: set[int] = set()
+        budget = ToolArgumentBudget()
+        usage = {"input_tokens": 0, "output_tokens": 0,
+                 "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        stop_reason: str | None = None
+        saw_message_stop = False
 
         yield StreamEvent(type="start")
 
         try:
+            # The SDK's .stream() adapter accumulates and partially parses tool JSON before yielding.
             if self.server_side_fallback:
-                stream_ctx = self._client.beta.messages.stream(
+                stream_ctx = self._client.beta.messages.create(
                     **kwargs,  # type: ignore[arg-type]
                     betas=[_FALLBACK_BETA],
                     fallbacks="default",
+                    stream=True,
                 )
             else:
-                stream_ctx = self._client.messages.stream(**kwargs)  # type: ignore[arg-type]
+                stream_ctx = self._client.messages.create(**kwargs, stream=True)  # type: ignore[arg-type]
 
             with stream_ctx as stream:
                 self._active_stream = stream
@@ -184,16 +191,55 @@ class AnthropicProvider:
                         yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                         return
                     kind = getattr(event, "type", "")
-                    if kind == "content_block_start":
+                    if kind == "message_start":
+                        message = getattr(event, "message", None)
+                        start_usage = getattr(message, "usage", None)
+                        if start_usage is not None:
+                            for field in usage:
+                                usage[field] = int(getattr(start_usage, field, 0) or 0)
+                    elif kind == "message_delta":
+                        delta = getattr(event, "delta", None)
+                        stop_reason = getattr(delta, "stop_reason", None)
+                        delta_usage = getattr(event, "usage", None)
+                        if delta_usage is not None:
+                            for field in usage:
+                                value = getattr(delta_usage, field, None)
+                                if value is not None:
+                                    usage[field] = int(value or 0)
+                    elif kind == "message_stop":
+                        saw_message_stop = True
+                    elif kind == "content_block_start":
                         index = int(getattr(event, "index", 0))
+                        if index in block_types:
+                            raise ValueError("响应重复使用内容块索引")
                         buffers[index] = []
                         block_type = getattr(getattr(event, "content_block", None), "type", "")
+                        block_types[index] = str(block_type)
                         if block_type == "text":
                             yield StreamEvent(type="text_start", content_index=index)
+                            initial_text = str(getattr(event.content_block, "text", "") or "")
+                            if initial_text:
+                                buffers[index].append(initial_text)
+                                yield StreamEvent(type="text_delta", content_index=index, delta=initial_text)
                         elif block_type == "thinking":
                             yield StreamEvent(type="thinking_start", content_index=index)
+                            initial_thinking = str(getattr(event.content_block, "thinking", "") or "")
+                            if initial_thinking:
+                                buffers[index].append(initial_thinking)
+                                yield StreamEvent(type="thinking_delta", content_index=index, delta=initial_thinking)
                         elif block_type == "tool_use":
+                            block = event.content_block
+                            tool_names[index] = str(getattr(block, "name", "") or "")
+                            tool_ids[index] = str(getattr(block, "id", "") or "")
                             tool_argument_buffers[index] = []
+                            initial = getattr(block, "input", None)
+                            if initial not in (None, {}):
+                                if not isinstance(initial, dict):
+                                    raise ValueError("工具调用初始参数不是 JSON object")
+                                initial_json = budget.snapshot(index, initial)
+                                tool_argument_buffers[index].append(initial_json)
+                                snapshot_only_tools.add(index)
+                            started_tools.add(index)
                             yield StreamEvent(type="toolcall_start", content_index=index)
                     elif kind == "content_block_delta":
                         index = int(getattr(event, "index", 0))
@@ -208,22 +254,28 @@ class AnthropicProvider:
                             buffers.setdefault(index, []).append(text)
                             yield StreamEvent(type="thinking_delta", content_index=index, delta=text)
                         elif delta_type == "input_json_delta":
-                            tool_argument_buffers.setdefault(index, []).append(
-                                str(getattr(delta, "partial_json", ""))
-                            )
+                            if index not in started_tools or index in closed_tool_blocks:
+                                raise ValueError("工具参数增量没有对应的活动工具块")
+                            if index in snapshot_only_tools:
+                                raise ValueError("工具调用初始参数与增量来源冲突")
+                            fragment = str(getattr(delta, "partial_json", ""))
+                            budget.account(index, fragment)
+                            tool_argument_buffers[index].append(fragment)
                             yield StreamEvent(
                                 type="toolcall_delta",
                                 content_index=index,
-                                delta=str(getattr(delta, "partial_json", "")),
+                                delta=fragment,
                             )
                     elif kind == "content_block_stop":
                         index = int(getattr(event, "index", 0))
                         joined = "".join(buffers.get(index, []))
                         if joined:
-                            yield StreamEvent(type="text_end", content_index=index, text=joined)
+                            end_type = "thinking_end" if block_types.get(index) == "thinking" else "text_end"
+                            yield StreamEvent(type=end_type, content_index=index, text=joined)
                         if index in tool_argument_buffers:
                             closed_tool_blocks.add(index)
-                final = stream.get_final_message()
+                if not saw_message_stop:
+                    raise ValueError("模型流未正常结束")
         except anthropic.APIConnectionError as exc:
             yield StreamEvent(type="error", reason="error", error=self._redact(f"连接失败：{exc}"))
             return
@@ -241,14 +293,15 @@ class AnthropicProvider:
                 error_info=error_info,
             )
             return
+        except OutputBudgetExceeded:
+            yield StreamEvent(type="error", reason="error", error="模型工具参数超过本地字节上限")
+            return
         except Exception as exc:  # noqa: BLE001
-            # 兜底：`provider.py` 的契约要求「生成开始后不抛异常」。SDK 里还有不属于
-            # APIError 体系的异常（例如凭据无法解析时的 AnthropicError），漏掉它们会让
-            # 一次失败变成 JSON-RPC 的内部错误，丢掉上下文。
+            # SDK exceptions can contain the full malformed partial JSON payload.
             yield StreamEvent(
                 type="error",
                 reason="error",
-                error=self._redact(f"流处理异常（{type(exc).__name__}）：{exc}"),
+                error=f"模型流处理异常（{type(exc).__name__}）",
             )
             return
 
@@ -256,56 +309,54 @@ class AnthropicProvider:
             self._active_stream = None
 
         tool_arguments: dict[int, dict[str, object]] = {}
-        for index, block in enumerate(final.content):
-            if getattr(block, "type", "") != "tool_use":
-                continue
+        for index in sorted(started_tools):
             if index not in closed_tool_blocks:
                 yield StreamEvent(
                     type="error",
                     reason="error",
-                    error=f"工具调用参数流未完整结束：{getattr(block, 'name', '') or 'unknown'}",
+                    error=self._redact(f"工具调用参数流未完整结束：{tool_names.get(index) or 'unknown'}"),
                 )
                 return
             raw = "".join(tool_argument_buffers.get(index, []))
             parsed = {} if raw == "" else _parse_tool_arguments(raw)
             if parsed is None:
-                name = str(getattr(block, "name", "") or "")
+                name = tool_names.get(index, "")
                 yield StreamEvent(
                     type="error",
                     reason="error",
-                    error=f"工具调用参数不是完整 JSON object：{name or 'unknown'}",
+                    error=self._redact(f"工具调用参数不是完整 JSON object：{name or 'unknown'}"),
                 )
                 return
             tool_arguments[index] = parsed
 
         blocks: list[object] = []
-        for index, block in enumerate(final.content):
-            block_type = getattr(block, "type", "")
+        for index in sorted(block_types):
+            block_type = block_types[index]
             if block_type == "text":
-                blocks.append(TextBlock(text=str(block.text)))
+                blocks.append(TextBlock(text="".join(buffers[index])))
             elif block_type == "thinking":
-                blocks.append(ThinkingBlock(thinking=str(getattr(block, "thinking", ""))))
+                blocks.append(ThinkingBlock(thinking="".join(buffers[index])))
             elif block_type == "tool_use":
                 call = ToolCallBlock(
-                    id=str(block.id),
-                    name=str(block.name),
+                    id=tool_ids[index],
+                    name=tool_names[index],
                     arguments=tool_arguments[index],
                 )
                 blocks.append(call)
                 yield StreamEvent(type="toolcall_end", tool_call=call)
 
-        stop_reason = _STOP_REASONS.get(str(final.stop_reason or ""), "stop")
+        mapped_stop_reason = _STOP_REASONS.get(str(stop_reason or ""), "stop")
         message = AssistantMessage(
             blocks=tuple(blocks),  # type: ignore[arg-type]
-            stop_reason=stop_reason,  # type: ignore[arg-type]
-            usage=_usage_from_sdk(final.usage),
+            stop_reason=mapped_stop_reason,  # type: ignore[arg-type]
+            usage=Usage(input=usage["input_tokens"], output=usage["output_tokens"],
+                        cache_read=usage["cache_read_input_tokens"],
+                        cache_write=usage["cache_creation_input_tokens"]),
         )
-        if str(final.stop_reason) == "refusal":
-            details = getattr(final, "stop_details", None)
-            category = getattr(details, "category", None) or "unknown"
-            yield StreamEvent(type="error", reason="error", error=f"模型以安全原因拒绝（{category}）")
+        if str(stop_reason) == "refusal":
+            yield StreamEvent(type="error", reason="error", error="模型以安全原因拒绝")
             return
-        yield StreamEvent(type="done", reason=stop_reason, message=message)
+        yield StreamEvent(type="done", reason=mapped_stop_reason, message=message)
 
 
 def tool_result_payload(result: object) -> str:

@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第三十五轮：provider 工具参数字节预算
+
+[Issue #91](https://github.com/can4hou6joeng4/boss-cli/issues/91) 在 #89 修复完整性后继续核查资源边界：Anthropic SDK 先把 `partial_json` 累积并局部解析，OpenAI Responses 则可能从 added、delta、arguments.done 或 item.done 提供完整参数；事后 schema 检查仍允许超大原始输入进入持久层。固定参考 Pi 当前 main `db14038bd847c5bad57de217e0ac0c5ad1ae60ba`（MIT），开放 Issue [#11112](https://github.com/earendil-works/pi/issues/11112) 讨论工具参数解析失败钩子，[#11360](https://github.com/earendil-works/pi/issues/11360) 讨论子进程大输出边界，[#11386](https://github.com/earendil-works/pi/issues/11386) 讨论 MCP 输出限制。Pi issue 是问题来源，不复制实现；本项目 CLI 子进程 16 MiB 上限已由 #57 覆盖。当前 `jackwener/boss-cli` 开放 Issue 仍聚焦招聘业务、认证、平台权限与风控，没有通用 provider 参数预算契约可移植。
+
+Anthropic 使用官方 SDK `messages.create(stream=True)` / beta raw event stream，在 partial JSON SDK accumulator 之前检查工具参数；按协议逐事件保留文本、思考、停止原因及 usage，要求工具块关闭后严格解析完整 JSON object。OpenAI Responses 对 added 初始参数、delta、arguments.done、item.done 和 completed/incomplete response output 快照执行同一字节预算；一致的终态快照不重复扣预算，冲突则拒绝整轮。两家 provider 的工具参数每项及每次模型响应合计 UTF-8 wire budget 均为 1 MiB；超过时关闭流，发出不可重试错误，不产生成功终态，也不回显 SDK 异常所含的原始模型输入。Anthropic beta fallback 仍使用官方 beta messages 路径。
+
+原始 1 MiB 限制新增了对超多空白/JSON 转义的兼容边界，与既有 schema 对规范化 JSON 的 1 MiB 限制不同。已解码的初始对象采用有界结构预扫描，精确计算紧凑 JSON UTF-8 字节，再序列化；权威快照保留字节高水位、不退还预算。raw stream 不能阻止网络层先解码一个完整 SSE 帧，因此不声称硬 RSS 上限；文本/思考及完整 RPC 投影预算仍需独立处理。
+
+离线合成 `ApplicationService` 验收覆盖 40 种场景：Anthropic 恰好 1 MiB 合法 UTF-8 参数仍派发；超限、多字节越限拒绝且畸形大参数错误不回显；OpenAI added、delta、arguments.done、item.done 超限、多个工具合计超限、completed 快照超限/冲突、终态后 delta、无初始项 delta、重复输出索引及缺少 item.done 均整轮报错且 handler=0；合法空参数、完整 delta 回退和匹配快照保持兼容。网络、DNS 和 subprocess 尝试均为 0。独立复审另有 107 组 UTF-8/转义精确边界通过。官方 Anthropic SDK 标准/beta 与 OpenAI Responses 经 MockTransport → ApplicationService 的 26 项独立验收通过：17 项超限均仅请求一次、关闭底流、审批/handler/工具落盘项为 0，原文不进入状态或协议；3 项取消均 interrupted 并关闭流，正常文本/思考和工具对照通过。网络、DNS 和子进程尝试均为 0；OpenAI SDK 用户代理平台探测以合成内存值固定。预算专项 5 组验证初始快照在 dumps 前拒绝、高水位不退款、精确字节、非法 Unicode 诊断与深 JSON 受控错误。所有测试、脚本和报告仅留 ignored `.boss-cli/provider-tool-arguments-audit-20261027/` 与 `.boss-cli/provider-output-budget-20261027/`。
+
 ## 第三十四轮：provider 工具参数完整性
 
 [Issue #89](https://github.com/can4hou6joeng4/boss-cli/issues/89) 复核本项目 Anthropic/OpenAI 流式适配：不完整 JSON 可能被局部解析为可用字典，或最终工具项参数未被读取，导致未经完整性证明的参数进入 handler。参考 Pi 开放 [Issue #11112](https://github.com/earendil-works/pi/issues/11112) 对原始参数解析失败边界的讨论，独立实现，不复制代码或增加依赖。`jackwener/boss-cli` 当前开放 Issue/PR 仍聚焦招聘业务、平台权限与认证，没有通用 provider 工具参数流协议可移植。
