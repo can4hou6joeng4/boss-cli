@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第三十九轮：生命周期 hook 在途回调上限
+
+本项目 [Issue #99](https://github.com/can4hou6joeng4/boss-cli/issues/99) 在当前主线 `a0cb3efd22cb50158c13a5221bf017abec45033c` 上，由真实 `ApplicationService.on_thread_start -> EventHub.emit -> LifecycleHooks` 离线探针复现：12 个 10ms 超时观察回调仍同时在途，峰值和 `_active` 均为 12，而等待队列已空。释放本地同步闸门并关闭应用后 callback 归零；socket、DNS、子进程尝试均为 0。`MAX_PENDING_EVENTS=256` 只限制尚未启动的事件队列，不限制超时后仍运行的 callback 线程。
+
+对照 Pi 固定当前 `main` `b3a29f1111114fac696e2cfcd65acdb382a6ed5e`（MIT）：`packages/coding-agent/src/core/extensions/runner.ts` 的 `emitBoundary()` / `emit()` 对单次事件按序 await handler，没有 callback 线程池、超时或在途上限；单个挂起 handler 会阻塞该事件路径，因此不是此处“超时返回后继续启动线程”的同一机制。[Pi Issue #10928](https://github.com/earendil-works/pi/issues/10928)（OPEN）讨论 post-run hook 的取消 signal 与 abort/dispose 所有权，是相邻生命周期问题而非容量修复。`jackwener/boss-cli` 当前 `main` `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70` 的认证、Cookie、沟通和分页 Issue/PR 属于业务接入边界，其 GitHub license 字段为空；没有可适用的通用 callback 并发修复。本轮独立实现，未复制外部代码或新增依赖。
+
+生产修复为每个 `LifecycleHooks` 实例设置 16 个全局在途 callback worker 上限，并在同一条件锁内完成准入和 `Thread.start()`。超时不释放名额，callback 的 `finally` 才归还；线程启动失败会回滚。策略容量满时使用稳定 `HOOK_BUSY` 拒绝，审批和工具 handler 不运行；观察容量满时仅跳过观察回调并聚合诊断，不反压持久事件。所有测试与探针继续留在 ignored 本地目录。
+
 ## 第三十八轮：工具结果持久化对账与会话准入保护
 
 [Issue #97](https://github.com/can4hou6joeng4/boss-cli/issues/97) 在当前主线 `ca53655251d43e36c83471bc0aeef182bbc9c4fe` 上由真实 `ApplicationService` 离线注入复现：已批准 handler 成功返回后，completed revision 追加前一次 `OSError` 会留下 `running / executing` 项；回合报错并暂停队列，但仍接受新的手动模型回合，模型 history 跳过该已派发工具，fork 被阻止。重启时现有恢复才补为 `outcome_unknown`。正常控制组与“结果行已追加后上层抛错”保持原结果，handler 均只执行一次。
