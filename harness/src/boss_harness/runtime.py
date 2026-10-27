@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 from boss_harness.rpc import RpcError
+from boss_harness.request_identity import RequestIdentity, resolve_request
 from boss_harness.session import Entry, SessionStore
 from boss_harness.shutdown import TrackedAbort, join_until
 
@@ -167,6 +168,18 @@ class TurnQueue:
                 failed["inputPersisted"] = input_persisted
             return item if failed == item else self._save(thread_id, failed)
 
+    def _associate_request(self, thread_id: str, queue_id: str, identity: RequestIdentity) -> dict:
+        """Append a receipt for an existing turn without resuming its request."""
+        with self.lock:
+            item = self.get(thread_id, queue_id)
+            fields = identity.receipt()
+            if item["status"] not in {"queued", "delivering"}:
+                fields["status"] = item["status"]
+            associated = {key: value for key, value in item.items()
+                          if key not in {"failureCode", "executionStarted", "inputPersisted"}}
+            associated.update(fields)
+            return item if associated == item else self._save(thread_id, associated)
+
     def add(self, thread_id: str, text: str, *, kind: str = "followUp", turn_id: str | None = None,
             client_id: str | None = None) -> dict:
         if kind not in {"steering", "followUp"}:
@@ -211,9 +224,24 @@ class TurnQueue:
     def recover(self) -> None:
         for thread in self.sessions.list_threads(include_archived=True):
             thread_id = thread["id"]
-            delivered = {i.get("queueId") for i in self.sessions.read_items(thread_id)}
+            delivered = {item.get("queueId") for item in self.sessions.read_items(thread_id)
+                         if item.get("kind") == "userMessage"}
             with self.lock:
                 for item in self.list(thread_id):
                     if item["status"] in {"queued", "delivering"}:
-                        self.transition(thread_id, item["id"],
-                                        "delivered" if item["id"] in delivered else "paused")
+                        if item["kind"] == "steering":
+                            self.transition(thread_id, item["id"],
+                                            "delivered" if item["id"] in delivered else "paused")
+                            continue
+                        try:
+                            identity = resolve_request(self.sessions, thread_id,
+                                item.get("clientUserMessageId"), item["input"], queue_id=item["id"])
+                        except RpcError:
+                            # Inconsistent history is paused, never replayed or
+                            # described as a proven failure before execution.
+                            self.transition(thread_id, item["id"], "paused")
+                            continue
+                        if identity.turn is not None:
+                            self._associate_request(thread_id, item["id"], identity)
+                        else:
+                            self.transition(thread_id, item["id"], "paused")
