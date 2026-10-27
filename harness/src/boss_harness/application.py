@@ -1518,12 +1518,27 @@ class ApplicationService:
                     status = "interrupted"
                 try:
                     self.sessions.record_turn(thread_id, job["turnId"], status)
+                except (OSError, ValueError):
+                    status = "error"
+                    # The terminal row may be visible in JSONL even when fsync
+                    # fails. Append a correction when storage permits it.
+                    try:
+                        self.sessions.record_turn(thread_id, job["turnId"], "error",
+                                                  recoveryReason="terminalPersistenceFailure")
+                    except (OSError, ValueError):
+                        pass
+                try:
                     if status != "completed":
                         self.queue.pause(thread_id)
                     else:
                         self.queue.pause(thread_id, kind="steering")
                 except (OSError, ValueError):
                     status = "error"
+                    try:
+                        self.sessions.record_turn(thread_id, job["turnId"], "error",
+                                                  recoveryReason="queueSettlementFailure")
+                    except (OSError, ValueError):
+                        pass
                 finally:
                     self.runtimes.release(job)
             self.events.emit("turn/completed", {"threadId": thread_id, "turnId": job["turnId"], "status": status})
