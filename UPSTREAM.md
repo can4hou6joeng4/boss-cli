@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第三十二轮：显式会话生命周期 hooks
+
+[Issue #80](https://github.com/can4hou6joeng4/boss-cli/issues/80) 将 Pi 的 AgentSession 生命周期事件与具体交互模式分离的思路接入招聘内核。当前 Pi main 固定为 `6c384aa30f619d7b28963f2bab24d8dacbe73cb6`；核对 `packages/coding-agent/src/core/agent-session.ts` 的会话/工具/压缩事件、`src/core/event-bus.ts` 的订阅边界及 `docs/extensions.md`。Pi extension runtime 可动态注册工具、命令和 UI；本项目只实现宿主显式注入的生命周期观察与工具前拒绝策略，不复制代码、不引入运行依赖，也不加载 workspace 插件。
+
+`ApplicationService` 接受可选 `LifecycleHooks` 或 hook 对象序列。持久事件写入后进入容量 256 的有序队列，由独立 worker 分发，不在 EventHub 锁、JSON-RPC 调用线程或 runtime 锁中执行。观察上下文采用字段白名单，剔除消息/思考正文、参数、工具结果和审批细节；hook 故障以不递归观察的 `kernel/hookError` 事件记录。队列拥塞同样明确诊断，不反压模型流或丢弃底层持久事件。
+
+`before_tool_call` 在 schema 校验后、审批和 handler 之前运行。hook 只能拒绝；`allow` 不授予权限，写操作仍经过原审批闸门。hook 错误、无效返回或超时都 fail closed，调用记录为 `not_executed`，回合暂停，不调用 handler 或模型自动重试。每个回调在隔离 daemon worker 中受限等待，迟到响应不能修改回合状态；正常应用关闭等待观察队列及 hook close，但服从应用既有共享关闭 deadline。hooks 为可信宿主代码，不是沙箱；上下文限长和凭据形态脱敏不替代宿主对个人数据访问的授权。
+
+验证以真实 ApplicationService/RPC 和合成宿主 hook 检查：无 hook 兼容行为、持久事件顺序、正文投影隔离、工具拒绝/审批保持、策略异常与超时、慢观察不阻塞另一会话、关闭收尾和 hookError 不递归。测试、夹具和脚本仅保留本地；无模型、招聘平台或网络调用。
+
 ## 第三十轮：真实会话上下文预算与手动摘要桌面闭环
 
 [Issue #76](https://github.com/can4hou6joeng4/boss-cli/issues/76) 接通既有内核预算、计划和后台摘要接口，让招聘会话用户核对长工具结果的上下文占用、保留近期完整回合，再显式整理较早历史。原 Cockpit 的其余运行指标继续标记示例；真实面板不把草稿外的默认预算称为下一请求完整预览。
