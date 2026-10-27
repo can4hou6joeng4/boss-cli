@@ -145,6 +145,7 @@ export const ServerNotifications = {
   contextCompactionProgress: "context/compactionProgress",
   contextCompactionCompleted: "context/compactionCompleted",
   contextCompactionFailed: "context/compactionFailed",
+  kernelHookError: "kernel/hookError",
 } as const;
 
 export type ServerNotification =

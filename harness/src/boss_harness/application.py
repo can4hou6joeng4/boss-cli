@@ -43,6 +43,7 @@ from boss_harness.summary import SUMMARY_MAX_REQUESTS, SummaryPlanner
 from boss_harness.compaction import CompactionPolicy, ContextCompactionFailed
 from boss_harness.context import NoCompactionSource
 from boss_harness.shutdown import TrackedAbort, join_until
+from boss_harness.hooks import HookFailure, LifecycleHooks
 
 PROTOCOL_VERSION = "0.2.0"
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
@@ -76,13 +77,14 @@ def _text(params: dict | None, key: str, *, maximum: int = 100_000) -> str:
 
 
 class EventHub:
-    """Persist before publishing; a snapshot and its cursor share one ordering lock."""
-    def __init__(self, server: JsonRpcServer, sessions: SessionStore) -> None:
-        self.server, self.sessions = server, sessions
+    """Persist, publish, and enqueue observations in durable cursor order."""
+    def __init__(self, server: JsonRpcServer, sessions: SessionStore, lifecycle_hooks: LifecycleHooks) -> None:
+        self.server, self.sessions, self.lifecycle_hooks = server, sessions, lifecycle_hooks
         self.lock = threading.RLock()
         self.live: dict[str, dict[str, dict]] = {}
 
-    def emit(self, method: str, params: dict | None = None, *, publish: bool = True) -> dict:
+    def emit(self, method: str, params: dict | None = None, *, publish: bool = True,
+             observe: bool = True) -> dict:
         with self.lock:
             event = self.sessions.append_event(method, params or {})
             payload = event["params"]
@@ -100,7 +102,10 @@ class EventHub:
                     self.server.notify(method, payload)
                 except (ConnectionError, BrokenPipeError):
                     pass  # Durable state survives a disappearing observer.
-            return event
+            if observe:
+                # The bounded enqueue preserves cursor order; callbacks run on the hook worker.
+                self.lifecycle_hooks.observe_event(method, event["params"])
+        return event
 
     def items(self, thread_id: str) -> list[dict]:
         with self.lock:
@@ -113,7 +118,9 @@ class ApplicationService:
                  provider: Provider | None, *, provider_factory: Callable[[ModelConfig], Provider | None] | None = None,
                  workspace: Path | None = None, model_catalog: ModelCatalog | None = None,
                  tool_bundle: ToolBundle | None = None, bridge_factory: Callable[[], Any] | None = None,
-                 compaction_policy: CompactionPolicy | None = None) -> None:
+                 compaction_policy: CompactionPolicy | None = None,
+                 lifecycle_hooks: LifecycleHooks | tuple[Any, ...] | list[Any] | None = None,
+                 hook_timeout: float = 0.25) -> None:
         self.server, self.config, self.provider = server, config, provider
         if type(config.max_tokens) is not int or config.max_tokens <= 0:
             raise ValueError("max_tokens 必须是正整数")
@@ -134,6 +141,12 @@ class ApplicationService:
         self.registry = ToolRegistry(tool_bundle.tools)
         self.provider_factory = provider_factory
         self.workspace = (workspace or Path.cwd()).resolve()
+        if isinstance(lifecycle_hooks, LifecycleHooks):
+            if hook_timeout != 0.25:
+                raise ValueError("已构造 LifecycleHooks 时应在构造时设置 hook timeout")
+            self.lifecycle_hooks = lifecycle_hooks
+        else:
+            self.lifecycle_hooks = LifecycleHooks(lifecycle_hooks, timeout=hook_timeout)
         self.bridge_lifecycle = BridgeLifecycle()
         self._base_bridge_close_claimed = False
         self._base_bridge_close_owner: int | None = None
@@ -141,7 +154,8 @@ class ApplicationService:
         self._owner = StateDirectoryOwner(state_dir)
         try:
             self.sessions = SessionStore(state_dir / "sessions")
-            self.events = EventHub(server, self.sessions)
+            self.events = EventHub(server, self.sessions, self.lifecycle_hooks)
+            self.lifecycle_hooks.set_error_sink(self._record_hook_failure)
             self._restore_partial_streams()
             self.sessions.recover()
             self.queue = TurnQueue(self.sessions)
@@ -189,10 +203,17 @@ class ApplicationService:
                 self.connections.close()
             if hasattr(self, "tools"):
                 self.bridge_lifecycle.close(self.tools)
+            self.lifecycle_hooks.close()
             if hasattr(self, "sessions"):
                 self.sessions.close()
             self._owner.close()
             raise
+
+    def _record_hook_failure(self, failure: HookFailure) -> None:
+        events = getattr(self, "events", None)
+        if events is None:
+            return
+        events.emit("kernel/hookError", failure.as_dict(), observe=False)
 
     @property
     def _active_turn(self) -> dict | None:
@@ -258,6 +279,7 @@ class ApplicationService:
             approval_required=self.approval_required, approval_timeout=self.approval_timeout,
             tools=self.registry.specs(), system_prompt=self.tool_bundle.system_prompt,
             validate_arguments=self.registry.validate, pause_on_result=self.tool_bundle.pause_on_result,
+            lifecycle_hooks=self.lifecycle_hooks,
             history_provider=self.context.history,
             request_preparer=lambda request: self.context.prepare(request,
                 self.model_catalog.resolve(config.provider, request.model), provider=config.provider))
@@ -1453,7 +1475,8 @@ class ApplicationService:
         with self.runtimes.lock:
             if (not self.runtimes.closed or self._shutdown_preparing
                     or self.runtimes.jobs or self._compaction_by_thread
-                    or self._follow_up_workers or self._follow_up_dispatches or self._receipt_notices):
+                    or self._follow_up_workers or self._follow_up_dispatches or self._receipt_notices
+                    or not self.lifecycle_hooks.closed):
                 return
             if self._base_bridge_close_claimed:
                 wait_for_close = self._base_bridge_close_owner != threading.get_ident()
@@ -1744,6 +1767,12 @@ class ApplicationService:
         for dispatch in dispatches:
             if dispatch["owner"] != threading.get_ident():
                 dispatch["done"].wait(max(0, deadline - time.monotonic()))
+        if self.lifecycle_hooks.observes_events:
+            try:
+                self.events.emit("kernel/shutdown", {"state": "stopping"})
+            except Exception:
+                pass
+        self.lifecycle_hooks.close(deadline)
         self._close_application_resources_if_idle(deadline)
 
     def serve_forever(self) -> None:

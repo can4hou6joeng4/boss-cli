@@ -20,6 +20,7 @@ from typing import Any
 
 from boss_harness.context import ContextBudgetExceeded
 from boss_harness.compaction import ContextCompactionFailed
+from boss_harness.hooks import LifecycleHooks
 from boss_harness.models import (
     AssistantMessage,
     ToolCallBlock,
@@ -86,6 +87,7 @@ class TurnRunner:
         stage_steering: Callable[[], tuple[list[UserMessage], Callable[[], None]]] | None = None,
         request_preparer: Callable[[ModelRequest], tuple[ModelRequest, dict[str, Any]]] | None = None,
         recover_context: Callable[[ModelRequest], ModelRequest | None] | None = None,
+        lifecycle_hooks: LifecycleHooks | None = None,
     ) -> None:
         self.sessions = sessions
         self.tool_bridge = tool_bridge
@@ -113,6 +115,7 @@ class TurnRunner:
         self.request_preparer = request_preparer
         self.last_preparation: tuple[ModelRequest, dict[str, Any]] | None = None
         self.recover_context = recover_context
+        self.lifecycle_hooks = lifecycle_hooks
         self.context_abort: Callable[[], None] | None = None
         self.last_stream_error: ModelErrorInfo | None = None
         self.last_stream_recoverable = False
@@ -331,6 +334,23 @@ class TurnRunner:
                 self.validate_arguments(name, arguments)
         except ValueError as exc:
             invalid = ToolResult(ok=False, command=name, error={"code": "INVALID_PARAM", "message": str(exc)})
+        policy_denied = False
+        if invalid is None and self.lifecycle_hooks is not None:
+            decision = self.lifecycle_hooks.before_tool_call({
+                "threadId": thread_id,
+                "turnId": self.turn_id,
+                "toolCallId": call_id,
+                "toolName": name,
+                "arguments": arguments,
+                "requiresApproval": name in self.approval_required,
+            })
+            if decision is not None and not decision.allow:
+                policy_denied = True
+                invalid = ToolResult(ok=False, command=name, error={
+                    "code": decision.code,
+                    "message": self.safe_error(decision.message),
+                    "recovery_action": "检查宿主生命周期策略后，明确发起新回合。",
+                })
         if invalid is None and not self.cancelled() and name in self.approval_required:
             approval = {
                 "approvalId": uuid.uuid4().hex,
@@ -402,6 +422,8 @@ class TurnRunner:
             except Exception:
                 result = ToolResult(ok=False, command=name, error={"code": "TOOL_ERROR", "message": "工具暂停策略回调失败"})
                 pause = True
+        if policy_denied:
+            self._blocked = result
         if not result.ok and (pause
                               or (name in self.approval_required and (result.error or {}).get("code") not in {"INVALID_PARAM", "CANCELLED"})):
             self._blocked = result
@@ -410,7 +432,7 @@ class TurnRunner:
                        "CANCELLED", "TOOL_TIMEOUT", "TOOL_ERROR", "CLI_ERROR", "CLI_CONTRACT_ERROR", "CLI_OUTPUT_LIMIT", "INVALID_ENVELOPE",
                        "GREET_RESULT_UNKNOWN", "ACTION_UNCONFIRMED"})
         self.finish_tool_call(thread_id, entry, name, result, call_id, approval,
-                              "outcome_unknown" if unknown else None)
+                              "not_executed" if policy_denied else "outcome_unknown" if unknown else None)
         return ToolResultItem(
             tool_call_id=call_id or entry.id,
             content=model_result(result, source=tool_source(thread_id, entry, name)),
