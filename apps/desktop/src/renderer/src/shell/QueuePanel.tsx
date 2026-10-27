@@ -25,11 +25,15 @@ export function QueuePanel({ items, onRemove }: {
       {visibleItems.map(item => <li key={item.id}>
         <div className="turn-queue-item-copy">
           <span className={`turn-queue-kind is-${item.kind}`}>{item.kind === "steering" ? "当前回合" : "后续回合"}</span>
-          <span className="turn-queue-status">{item.status === "paused" && item.failureCode === "TURN_START_FAILED" ? "启动失败，未执行" : LABELS[item.status]}</span>
+          <span className="turn-queue-status">{item.status === "paused" && item.failureCode === "TURN_START_FAILED" ? "启动失败，未执行"
+            : item.status === "delivered" && item.deduplicated ? "已关联已有回合" : LABELS[item.status]}</span>
           <p title={item.input}>{item.input}</p>
           {item.status === "paused" && item.failureCode === "TURN_START_FAILED" && <p className="turn-queue-error">
             {item.inputPersisted === true ? "输入已保留在当前会话，核对后可发起新任务。" : item.inputPersisted === false
               ? "输入尚未写入当前会话，核对后可发起新任务。" : "请先核对当前会话，再决定是否发起新任务。"}
+          </p>}
+          {item.status === "paused" && item.deduplicated && item.failureCode !== "TURN_START_FAILED" && <p className="turn-queue-error">
+            已关联旧请求，请核对当前会话后决定是否发起新任务。
           </p>}
         </div>
         {(item.status === "queued" || item.status === "paused") && <button type="button" aria-label={`撤回排队消息：${item.input.slice(0, 80)}`} title={item.status === "paused" ? "取消暂停的队列消息" : "撤回排队消息"} disabled={pending !== null} onClick={async () => {

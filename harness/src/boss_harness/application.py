@@ -33,6 +33,7 @@ from boss_harness.models.capabilities import ModelCatalog
 from boss_harness.models.types import AssistantMessage, ModelRequest, UserMessage
 from boss_harness.ownership import StateDirectoryOwner
 from boss_harness.resources import AttachmentStore, SkillCatalog, ToolRegistry
+from boss_harness.request_identity import resolve_request
 from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
 from boss_harness.session import Entry, SessionStore
@@ -151,6 +152,7 @@ class ApplicationService:
             # owns the state directory until all follow-up bookkeeping ends.
             self._follow_up_workers: dict[str, threading.Thread] = {}
             self._follow_up_dispatches: dict[str, dict[str, Any]] = {}
+            self._receipt_notices: dict[str, dict[str, Any]] = {}
             # Compaction jobs are independent of business turns and never own a
             # tool bridge. The per-thread index prevents a new turn from
             # changing the source while a summary is being generated.
@@ -1093,6 +1095,7 @@ class ApplicationService:
             raise ValueError("clientUserMessageId 格式无效")
         runner = None
         job = None
+        receipt_notice = None
         request_digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
         try:
             with self.runtimes.lock:
@@ -1104,20 +1107,29 @@ class ApplicationService:
                 if thread_id in self._compaction_by_thread:
                     raise RpcError(-32004, "该会话正在生成摘要，请等待完成或先取消摘要")
                 if client_id:
-                    previous = next((i for i in self.sessions.read_items(thread_id) if i.get("clientUserMessageId") == client_id), None)
-                    if previous:
-                        if previous.get("originalInput", previous.get("text")) != text:
-                            raise ValueError("clientUserMessageId 已用于不同输入")
-                        return {"turnId": previous["turnId"], "deduplicated": True}
-                    # A failed start may have persisted a turn but no input.
-                    # Keep the request identity without saving another text copy.
-                    previous_turn = next((entry["payload"] for entry in reversed(self.sessions.read_entries(thread_id))
-                        if entry["type"] == "turn" and entry["payload"].get("clientUserMessageId") == client_id
-                        and entry["payload"].get("requestInputDigest")), None)
-                    if previous_turn is not None:
-                        if previous_turn["requestInputDigest"] != request_digest:
-                            raise ValueError("clientUserMessageId 已用于不同输入")
-                        return {"turnId": previous_turn["turnId"], "deduplicated": True}
+                    identity = resolve_request(self.sessions, thread_id, client_id, text,
+                                               queue_id=queue_item["id"] if queue_item else None)
+                    if identity.turn is not None:
+                        if identity.queue is not None:
+                            associated = self.queue._associate_request(thread_id, identity.queue["id"], identity)
+                            dispatch = self._follow_up_dispatches.get(thread_id)
+                            if queue_item is not None and dispatch is not None and dispatch["queueId"] == associated["id"]:
+                                dispatch["identity_reconciled"] = True
+                                dispatch["again"] = (identity.turn.get("status") == "completed"
+                                                     and associated["status"] == "delivered")
+                            if associated != identity.queue:
+                                receipt_notice = self._retain_receipt_notice_locked(thread_id, associated["id"])
+                        return {"turnId": identity.turn["turnId"], "clientUserMessageId": client_id, "deduplicated": True}
+                    if identity.queue is not None:
+                        current = identity.queue
+                        dispatch = self._follow_up_dispatches.get(thread_id)
+                        if not (queue_item is not None and current["id"] == queue_item["id"]
+                                and current["status"] == "delivering" and dispatch is not None
+                                and dispatch["queueId"] == current["id"]):
+                            pending = current["status"] in {"queued", "delivering"}
+                            raise RpcError(-32004, "消息已在队列中，请先核对队列状态" if pending else "旧请求需要核对，发起新任务请使用新请求编号",
+                                {"code": "REQUEST_ALREADY_QUEUED" if pending else "REQUEST_REQUIRES_REVIEW",
+                                 "queueId": current["id"], "status": current["status"]})
                 config = self._model_config(thread, params)
                 policy = (self.compaction_policy.override(params["autoCompaction"])
                           if "autoCompaction" in params else self.compaction_policy)
@@ -1203,6 +1215,9 @@ class ApplicationService:
                     except Exception:
                         pass
             raise
+        finally:
+            if receipt_notice is not None:
+                self._publish_receipt_notice(receipt_notice)
 
     def _settle_unstarted_turn_locked(self, job: dict) -> None:
         """Best-effort persistence; the original start error remains primary."""
@@ -1255,6 +1270,25 @@ class ApplicationService:
                 self.events.emit(method, params)
             except Exception:
                 pass  # Do not replay an event that may already be durable.
+
+    def _retain_receipt_notice_locked(self, thread_id: str, queue_id: str) -> dict:
+        notice = {"id": uuid.uuid4().hex, "threadId": thread_id, "queueId": queue_id,
+                  "owner": threading.get_ident(), "done": threading.Event()}
+        self._receipt_notices[notice["id"]] = notice
+        return notice
+
+    def _publish_receipt_notice(self, notice: dict, *, finish: bool = True) -> None:
+        try:
+            self.events.emit("queue/updated", {"threadId": notice["threadId"], "queueId": notice["queueId"]})
+        finally:
+            if finish:
+                self._finish_receipt_notice(notice)
+
+    def _finish_receipt_notice(self, notice: dict) -> None:
+        with self.runtimes.lock:
+            self._receipt_notices.pop(notice["id"], None)
+            notice["done"].set()
+        self._close_application_resources_if_idle()
 
     def _notify_runner(self, job: dict, method: str, params: dict | None = None) -> None:
         if method == "thread/updated":
@@ -1319,7 +1353,7 @@ class ApplicationService:
         with self.runtimes.lock:
             if (not self.runtimes.closed or self._shutdown_preparing
                     or self.runtimes.jobs or self._compaction_by_thread
-                    or self._follow_up_workers or self._follow_up_dispatches):
+                    or self._follow_up_workers or self._follow_up_dispatches or self._receipt_notices):
                 return
             if self._base_bridge_close_claimed:
                 wait_for_close = self._base_bridge_close_owner != threading.get_ident()
@@ -1458,15 +1492,28 @@ class ApplicationService:
 
     def on_queue_add(self, params: dict | None) -> dict:
         params = params or {}
-        thread_id = _text(params, "threadId")
+        thread_id, text = _text(params, "threadId"), _text(params, "input")
         with self.runtimes.lock:
             if self.runtimes.closed:
                 raise RpcError(-32003, "内核正在关闭")
             self.sessions.require_thread(thread_id)
-            item = self.queue.add(thread_id, _text(params, "input"), client_id=params.get("clientUserMessageId"))
-        self.events.emit("queue/updated", {"threadId": thread_id, "queueId": item["id"]})
-        self._start_follow_up(thread_id)
-        return {"queueItem": self.queue.get(thread_id, item["id"])}
+            identity = resolve_request(self.sessions, thread_id, params.get("clientUserMessageId"), text)
+            item = identity.queue or self.queue.add(thread_id, text, client_id=params.get("clientUserMessageId"))
+            if identity.turn is not None:
+                item = self.queue._associate_request(thread_id, item["id"], identity)
+            changed = item != identity.queue
+            # The final response reads the latest durable receipt after a
+            # synchronous dispatch. Keep storage through that bookkeeping too,
+            # including unchanged retries which do not publish another event.
+            notice = self._retain_receipt_notice_locked(thread_id, item["id"])
+        try:
+            if changed:
+                self._publish_receipt_notice(notice, finish=False)
+            if item["status"] == "queued":
+                self._start_follow_up(thread_id)
+            return {"queueItem": self.queue.get(thread_id, item["id"])}
+        finally:
+            self._finish_receipt_notice(notice)
 
     def on_queue_list(self, params: dict | None) -> dict:
         return {"items": self.queue.list(_text(params, "threadId"))}
@@ -1500,19 +1547,26 @@ class ApplicationService:
                 self.on_turn_start({"threadId": thread_id, "input": item["input"],
                     "clientUserMessageId": item.get("clientUserMessageId") or "queue-" + item["id"]}, queue_item=item)
                 started = True
-            except Exception:
+            except Exception as error:
                 # Reserved jobs settle and notify while retaining their own
                 # ownership. Only pre-reservation admission failures get here.
-                if not dispatch.get("start_failed"):
+                if dispatch.get("identity_reconciled"):
+                    started = True
+                elif not dispatch.get("start_failed"):
                     try:
                         with self.runtimes.lock:
-                            persisted = None
-                            try:
-                                persisted = any(entry.get("kind") == "userMessage" and entry.get("queueId") == item["id"]
-                                    for entry in self.sessions.read_items(thread_id))
-                            except Exception:
-                                pass
-                            self.queue._fail_start(thread_id, item["id"], input_persisted=persisted)
+                            if isinstance(error, RpcError) and isinstance(error.data, dict) and error.data.get("code") in {
+                                    "CLIENT_REQUEST_CONFLICT", "CLIENT_REQUEST_AMBIGUOUS", "REQUEST_REQUIRES_REVIEW"}:
+                                if self.queue.get(thread_id, item["id"])["status"] == "delivering":
+                                    self.queue.transition(thread_id, item["id"], "paused")
+                            else:
+                                persisted = None
+                                try:
+                                    persisted = any(entry.get("kind") == "userMessage" and entry.get("queueId") == item["id"]
+                                        for entry in self.sessions.read_items(thread_id))
+                                except Exception:
+                                    pass
+                                self.queue._fail_start(thread_id, item["id"], input_persisted=persisted)
                         self.events.emit("queue/updated", {"threadId": thread_id, "queueId": item["id"]})
                     except Exception:
                         pass
@@ -1585,6 +1639,7 @@ class ApplicationService:
         with self.runtimes.lock:
             follow_up_workers = list(self._follow_up_workers.values())
             dispatches = list(self._follow_up_dispatches.values())
+            dispatches.extend(self._receipt_notices.values())
         join_until(follow_up_workers, deadline)
         for dispatch in dispatches:
             if dispatch["owner"] != threading.get_ident():

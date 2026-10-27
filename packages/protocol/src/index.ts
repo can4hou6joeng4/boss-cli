@@ -297,7 +297,7 @@ export interface AutoCompactionPolicy {
 export interface TurnStartParams {
   threadId: string;
   input: string;
-  /** A client-created identity supports reconciliation after an unknown outcome. */
+  /** Per-thread identity shared by direct and follow-up submissions; retries retain the first input. */
   clientUserMessageId?: string;
   model?: string;
   attachmentIds?: string[];
@@ -375,6 +375,8 @@ export interface QueueItem {
   executionStarted?: false;
   turnId?: string;
   inputPersisted?: boolean;
+  /** Receipt linked to an existing request; delivery does not imply turn success. */
+  deduplicated?: boolean;
 }
 export interface TurnSteerParams {
   threadId: string;
