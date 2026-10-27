@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+import inspect
 import json
 import math
 import re
@@ -40,6 +41,38 @@ _HOOK_FAILED = object()
 _HOOK_BUSY = object()
 _HOOK_CONTEXT_TOO_LARGE = object()
 _HOOK_CONTEXT_INVALID = object()
+_HOOK_CANCELLED = object()
+
+
+class HookCancellationSignal:
+    """Read-only view of the active turn's cooperative cancellation signal."""
+
+    __slots__ = ("__event",)
+
+    def __init__(self, event: threading.Event) -> None:
+        self.__event = event
+
+    @property
+    def aborted(self) -> bool:
+        return self.__event.is_set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self.__event.wait(timeout)
+
+
+def _signal_mode(callback: Callable[..., Any]) -> str | None:
+    try:
+        parameters = inspect.signature(callback).parameters
+    except (TypeError, ValueError):
+        return None
+    signal = parameters.get("signal")
+    if signal is not None:
+        if signal.kind == inspect.Parameter.POSITIONAL_ONLY:
+            return "positional"
+        if signal.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY):
+            return "keyword"
+        return None
+    return "keyword" if any(item.kind == inspect.Parameter.VAR_KEYWORD for item in parameters.values()) else None
 
 
 @dataclass(frozen=True)
@@ -231,6 +264,9 @@ class LifecycleHooks:
         Deny a tool call before approval or handler dispatch.  Returning
         ``HookDecision(allow=True)`` is only an observation; it never bypasses
         the normal approval policy.
+        New callbacks may also declare a ``signal`` keyword parameter to
+        cooperatively stop when the turn is cancelled; one-argument callbacks
+        remain supported.
     ``close()``
         Release host resources after all kernel workers have stopped.
 
@@ -311,7 +347,9 @@ class LifecycleHooks:
                 pass
 
     def _invoke(self, hook: Any, method: str, context: Mapping[str, Any] | None,
-                *, event: str | None = None, deadline: float | None = None) -> Any:
+                *, event: str | None = None, deadline: float | None = None,
+                cancel_event: threading.Event | None = None,
+                signal: HookCancellationSignal | None = None) -> Any:
         callback = getattr(hook, method, None)
         if not callable(callback):
             return None
@@ -323,6 +361,8 @@ class LifecycleHooks:
                        else "策略 hook 输入不是受支持的 JSON；工具未执行")
             self._failure(hook, method, event, exc.code, message)
             return _HOOK_CONTEXT_TOO_LARGE if exc.code == "HOOK_CONTEXT_TOO_LARGE" else _HOOK_CONTEXT_INVALID
+        if cancel_event is not None and cancel_event.is_set():
+            return _HOOK_CANCELLED
         timeout = self.timeout
         if deadline is not None:
             timeout = min(timeout, max(0.0, deadline - time.monotonic()))
@@ -332,10 +372,21 @@ class LifecycleHooks:
         result: list[Any] = []
         error: list[BaseException] = []
         finished = threading.Event()
+        signal_mode = (_signal_mode(callback)
+                       if method == "before_tool_call" and signal is not None else None)
 
         def run() -> None:
             try:
-                result.append(callback(callback_context) if method != "close" else callback())
+                if cancel_event is not None and cancel_event.is_set():
+                    return
+                if method == "close":
+                    result.append(callback())
+                elif signal_mode == "positional":
+                    result.append(callback(callback_context, signal))
+                elif signal_mode == "keyword":
+                    result.append(callback(callback_context, signal=signal))
+                else:
+                    result.append(callback(callback_context))
             except BaseException as exc:  # Hook code is trusted but isolated from the kernel.
                 error.append(exc)
             finally:
@@ -369,9 +420,19 @@ class LifecycleHooks:
         if start_error is not None:
             self._failure(hook, method, event, "HOOK_START_FAILED", str(start_error))
             return _HOOK_FAILED
-        if not finished.wait(timeout):
-            self._failure(hook, method, event, "HOOK_TIMEOUT", "生命周期 hook 超时", timed_out=True)
-            return _HOOK_FAILED
+        end = time.monotonic() + timeout
+        while not finished.is_set():
+            if cancel_event is not None and cancel_event.is_set():
+                return _HOOK_CANCELLED
+            remaining = end - time.monotonic()
+            if remaining <= 0:
+                if cancel_event is not None and cancel_event.is_set():
+                    return _HOOK_CANCELLED
+                self._failure(hook, method, event, "HOOK_TIMEOUT", "生命周期 hook 超时", timed_out=True)
+                return _HOOK_FAILED
+            finished.wait(min(0.025, remaining))
+        if cancel_event is not None and cancel_event.is_set():
+            return _HOOK_CANCELLED
         if error:
             self._failure(hook, method, event, "HOOK_ERROR", str(error[0]))
             return _HOOK_FAILED
@@ -444,14 +505,25 @@ class LifecycleHooks:
                 with self._lock:
                     self._lock.notify_all()
 
-    def before_tool_call(self, context: Mapping[str, Any]) -> HookDecision | None:
+    def before_tool_call(self, context: Mapping[str, Any], *,
+                         cancel_event: threading.Event | None = None) -> HookDecision | None:
         if not self._hooks:
             return None
         event = "toolCall/before"
+        signal = HookCancellationSignal(cancel_event) if cancel_event is not None else None
         for hook in self._hooks:
             if not callable(getattr(hook, "before_tool_call", None)):
                 continue
-            result = self._invoke(hook, "before_tool_call", {"phase": "before_tool_call", **dict(context)}, event=event)
+            result = self._invoke(
+                hook,
+                "before_tool_call",
+                {"phase": "before_tool_call", **dict(context)},
+                event=event,
+                cancel_event=cancel_event,
+                signal=signal,
+            )
+            if result is _HOOK_CANCELLED:
+                return None
             if result is _HOOK_CONTEXT_TOO_LARGE:
                 return HookDecision(False, "HOOK_CONTEXT_TOO_LARGE", "策略输入超过内核上限；为保证策略检查完整，工具调用已暂停")
             if result is _HOOK_CONTEXT_INVALID:

@@ -352,7 +352,9 @@ class TurnRunner:
                 "toolName": name,
                 "arguments": arguments,
                 "requiresApproval": name in self.approval_required,
-            })
+            }, cancel_event=self._cancel)
+            if self.cancelled():
+                decision = None
             if decision is not None and not decision.allow:
                 policy_denied = True
                 invalid = ToolResult(ok=False, command=name, error={
@@ -411,12 +413,16 @@ class TurnRunner:
         dispatched = False
         dispatch_persistence_failed = False
         if self.cancelled():
+            cancelled_before_dispatch = True
             result = ToolResult(ok=False, command=name, error={"code": "CANCELLED", "message": "操作已取消，未执行工具"})
         elif invalid is not None:
+            cancelled_before_dispatch = False
             result = invalid
         elif handler is None:
+            cancelled_before_dispatch = False
             result = ToolResult(ok=False, command=name, error={"code": "NOT_SUPPORTED", "message": f"未知工具 {name}"})
         else:
+            cancelled_before_dispatch = False
             try:
                 self._tool_phase(thread_id, entry, "executing", approval)
                 dispatched = True
@@ -451,7 +457,7 @@ class TurnRunner:
                        "GREET_RESULT_UNKNOWN", "ACTION_UNCONFIRMED"})
         try:
             recovered_persistence = self.finish_tool_call(thread_id, entry, name, result, call_id, approval,
-                "not_executed" if policy_denied or dispatch_persistence_failed
+                "not_executed" if policy_denied or dispatch_persistence_failed or cancelled_before_dispatch
                 else "outcome_unknown" if unknown else None)
             if recovered_persistence:
                 self._blocked = ToolResult(ok=False, command=name, error={
