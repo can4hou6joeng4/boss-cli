@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第四十轮：降低大型会话 JSONL 读取峰值内存
+
+本项目 [Issue #103](https://github.com/can4hou6joeng4/boss-cli/issues/103) 在 `041b03b59b305b6ef009bc6d38196371563c2fca` 上，以 parser-only tracemalloc 测量复现单次 JSONL 全量读取的额外峰值：10,481,439 字节输入峰值 31,844,977 字节；52,426,470 字节输入峰值 159,275,712 字节。候选方案在锁内捕获原始 bytes snapshot，锁外通过标准 `TextIOWrapper` 逐行解码；两种尺寸峰值分别为 21,378,034 与 106,761,186 字节，约降低 33%。LF/CRLF/CR、坏 JSON、坏 UTF-8、尾部无换行、空行与类型筛选的记录投影相同；快照完成后追加及原子替换均不改变该次结果。
+
+刷新 Pi 当前 `main` `b3a29f1111114fac696e2cfcd65acdb382a6ed5e`（MIT）：开放 Issue #11360 的子进程超限由本项目 #57 覆盖；#11433 的 pipe reader/waiter 创建失败属于进程管道生命周期，已在本项目完成线程启动故障注入清理验证，不是 JSONL parser 同类问题。没有找到直接对应的 Pi JSONL parser 内存 Issue/PR；本轮依据本地分配测量独立优化，不复制上游代码。`jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70` 的 GitHub license 字段为 null，开放事项仍属招聘业务认证与平台操作，本轮不采用其代码。
+
+此优化保持 append-only JSONL、session header/entry 筛选、JSON 错行跳过和同一文件快照边界；不改变 JSON-RPC、checkpoint sourceDigest 或工具/队列语义。生产 `ApplicationService` 在 10,068,706 字节历史上的 `context/read` 峰值为 20,584,879 字节、恢复峰值为 20,604,349 字节，日志哈希、505 个条目 ID 和 checkpoint 前后相同。全量 Harness 339 项通过、4 项跳过；compileall、typecheck、desktop build、npm audit（0 漏洞）、Python wheel/sdist build 与 `git diff --check` 通过。探针和测试材料仅留在 ignored 本地目录。
+
 ## 第三十九轮：生命周期 hook 在途回调上限
 
 本项目 [Issue #99](https://github.com/can4hou6joeng4/boss-cli/issues/99) 在当前主线 `a0cb3efd22cb50158c13a5221bf017abec45033c` 上，由真实 `ApplicationService.on_thread_start -> EventHub.emit -> LifecycleHooks` 离线探针复现：12 个 10ms 超时观察回调仍同时在途，峰值和 `_active` 均为 12，而等待队列已空。释放本地同步闸门并关闭应用后 callback 归零；socket、DNS、子进程尝试均为 0。`MAX_PENDING_EVENTS=256` 只限制尚未启动的事件队列，不限制超时后仍运行的 callback 线程。

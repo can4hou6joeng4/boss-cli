@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import io
 import json
 import os
 import re
@@ -418,18 +419,19 @@ class SessionStore:
     def read_entries(self, thread_id: str) -> list[dict]:
         with self._lock:
             self.require_thread(thread_id)
-            content = self.path_for(thread_id).read_text(encoding="utf-8", errors="replace")
+            content = self.path_for(thread_id).read_bytes()
         out: list[dict] = []
-        for line in content.split("\n"):
-            if not line.strip():
-                continue
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if (isinstance(data, dict) and data.get("type") != "session"
-                    and isinstance(data.get("id"), str) and isinstance(data.get("payload"), dict)):
-                out.append(data)
+        with io.TextIOWrapper(io.BytesIO(content), encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if (isinstance(data, dict) and data.get("type") != "session"
+                        and isinstance(data.get("id"), str) and isinstance(data.get("payload"), dict)):
+                    out.append(data)
         return out
 
     def read(self, thread_id: str) -> list[dict]:
