@@ -41,6 +41,18 @@ _STOP_REASONS = {
 }
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"非法 JSON 常量: {value}")
+
+
+def _parse_tool_arguments(raw: str) -> dict[str, object] | None:
+    try:
+        parsed = json.loads(raw, parse_constant=_reject_json_constant)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def to_sdk_messages(messages: Sequence[ChatMessage]) -> list[dict[str, object]]:
     """把内部消息翻成 SDK 形状。
 
@@ -150,6 +162,8 @@ class AnthropicProvider:
         self._abort_requested = False
         kwargs = self._request_kwargs(request)
         buffers: dict[int, list[str]] = {}
+        tool_argument_buffers: dict[int, list[str]] = {}
+        closed_tool_blocks: set[int] = set()
 
         yield StreamEvent(type="start")
 
@@ -179,6 +193,7 @@ class AnthropicProvider:
                         elif block_type == "thinking":
                             yield StreamEvent(type="thinking_start", content_index=index)
                         elif block_type == "tool_use":
+                            tool_argument_buffers[index] = []
                             yield StreamEvent(type="toolcall_start", content_index=index)
                     elif kind == "content_block_delta":
                         index = int(getattr(event, "index", 0))
@@ -193,6 +208,9 @@ class AnthropicProvider:
                             buffers.setdefault(index, []).append(text)
                             yield StreamEvent(type="thinking_delta", content_index=index, delta=text)
                         elif delta_type == "input_json_delta":
+                            tool_argument_buffers.setdefault(index, []).append(
+                                str(getattr(delta, "partial_json", ""))
+                            )
                             yield StreamEvent(
                                 type="toolcall_delta",
                                 content_index=index,
@@ -203,6 +221,8 @@ class AnthropicProvider:
                         joined = "".join(buffers.get(index, []))
                         if joined:
                             yield StreamEvent(type="text_end", content_index=index, text=joined)
+                        if index in tool_argument_buffers:
+                            closed_tool_blocks.add(index)
                 final = stream.get_final_message()
         except anthropic.APIConnectionError as exc:
             yield StreamEvent(type="error", reason="error", error=self._redact(f"连接失败：{exc}"))
@@ -235,8 +255,31 @@ class AnthropicProvider:
         finally:
             self._active_stream = None
 
+        tool_arguments: dict[int, dict[str, object]] = {}
+        for index, block in enumerate(final.content):
+            if getattr(block, "type", "") != "tool_use":
+                continue
+            if index not in closed_tool_blocks:
+                yield StreamEvent(
+                    type="error",
+                    reason="error",
+                    error=f"工具调用参数流未完整结束：{getattr(block, 'name', '') or 'unknown'}",
+                )
+                return
+            raw = "".join(tool_argument_buffers.get(index, []))
+            parsed = {} if raw == "" else _parse_tool_arguments(raw)
+            if parsed is None:
+                name = str(getattr(block, "name", "") or "")
+                yield StreamEvent(
+                    type="error",
+                    reason="error",
+                    error=f"工具调用参数不是完整 JSON object：{name or 'unknown'}",
+                )
+                return
+            tool_arguments[index] = parsed
+
         blocks: list[object] = []
-        for block in final.content:
+        for index, block in enumerate(final.content):
             block_type = getattr(block, "type", "")
             if block_type == "text":
                 blocks.append(TextBlock(text=str(block.text)))
@@ -246,7 +289,7 @@ class AnthropicProvider:
                 call = ToolCallBlock(
                     id=str(block.id),
                     name=str(block.name),
-                    arguments=dict(block.input or {}),
+                    arguments=tool_arguments[index],
                 )
                 blocks.append(call)
                 yield StreamEvent(type="toolcall_end", tool_call=call)
