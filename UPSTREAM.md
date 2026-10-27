@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第四十五轮：独立摘要模型与推理档位
+
+在本项目主线 `b39b680ab3af51d22bd292729777853270b35ca7` 上，`CompactionPolicy` 原先只有启用状态、触发比例和保留 token 数；手动摘要通过会话 `_model_config()` 选择模型，自动及溢出摘要则复制业务回合配置。用户无法将摘要的成本、推理档位或上下文窗口与日常业务请求分开。
+
+参考 Pi 开放 Issue [#7553](https://github.com/earendil-works/pi/issues/7553) 和开放 PR [#11255](https://github.com/earendil-works/pi/pull/11255)（head `8351961f89bad9e442c5c5cd2a5bd7a51118b840`；截至 2026-10-28 为 OPEN；Pi 当前 main `bb65e3e49710fbd14f10c7792d0eaa6e2b2c5923`；许可证 MIT）。PR 为 compaction 配置独立 provider/model/thinking level，并在摘要路径校验显式模型。这里只吸收其配置边界与显式解析原则，未复制源码或引入依赖；Pi 的 branch summary 在本项目没有对应路径。
+
+同步检查 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70` 及当前开放 Issue/PR（GitHub license 字段为空）。其招聘分页、消息写入和 Cookie/Keychain 认证事项与通用摘要执行配置无直接关系，不移植业务代码或认证逻辑。
+
+`BOSS_HARNESS_COMPACTION` 可为手动、阈值/预算自动和溢出恢复摘要设置 provider、model、effort；省略时延续原会话配置。显式 effort 只有在本机 `ModelCatalog` 为精确 provider/model 声明支持时才接受。摘要仍由独立 `provider_factory` 实例执行，使用摘要模型自己的容量与输入预算，不带招聘工具；摘要生成后继续用业务模型校验完整下一次请求预算，验证通过才写 checkpoint。任务状态与 checkpoint 持久化实际摘要 provider/model/effort，便于重启后审计。
+
+本地验收覆盖配置解析与拒绝无效档位/线路、手动与自动摘要请求采用独立模型设置、保存中的业务 reasoning 不被跨 provider 手动摘要覆盖模型误判、业务会话 reasoning 未被修改、摘要模型预算准入，以及 checkpoint 按业务模型复核；全部使用合成 provider 和临时会话，不调用真实模型或招聘平台。测试材料仅保留本地。
+
 ## 第四十三轮：追加式会话上下文编辑
 
 本项目 [Issue #107](https://github.com/can4hou6joeng4/boss-cli/issues/107) 对照主线 `4cd485e7a833a004d4be3eb88b49da0fe96211f`，确认上下文仅由普通逻辑条目与一个经来源核验的摘要 checkpoint 投影而成，不能针对单条历史文本调整后续模型可见内容。影响用户纠正过期事实、排除误输入，同时又要求保留原始审计记录的场景。

@@ -367,6 +367,15 @@ export interface AutoCompactionPolicy {
   enabled: boolean;
   triggerPercent: number;
   keepRecentTokens: number;
+  provider: string | null;
+  model: string | null;
+  effort: string | null;
+}
+
+export interface TurnAutoCompactionOverride {
+  enabled: boolean;
+  triggerPercent: number;
+  keepRecentTokens: number;
 }
 
 export interface TurnStartParams {
@@ -377,7 +386,7 @@ export interface TurnStartParams {
   model?: string;
   attachmentIds?: string[];
   skillIds?: string[];
-  autoCompaction?: Partial<AutoCompactionPolicy>;
+  autoCompaction?: Partial<TurnAutoCompactionOverride>;
 }
 
 export interface TurnStartResponse {
@@ -540,6 +549,9 @@ export interface ContextCompactJob {
   retainedItemCount?: number;
   firstKeptItemId?: string | null;
   estimatedRetainedTokens?: number;
+  summaryProvider?: string;
+  summaryModel?: string;
+  summaryEffort?: string | null;
 }
 export interface ContextCompactAbortResponse extends ContextCompactJob { aborted: boolean }
 export interface ContextBudget {
@@ -567,7 +579,12 @@ export interface ContextReadResponse extends ContextBudget {
   threadId: string;
   turnId?: string;
   requestSource: "active" | "preview" | "default";
-  checkpoint: Record<string, unknown> | null;
+  summaryAvailable?: boolean;
+  checkpoint: (Record<string, unknown> & {
+    summaryProvider?: string;
+    summaryModel?: string;
+    summaryEffort?: string | null;
+  }) | null;
   usage: Record<string, unknown> | null;
   summaryUsage?: Record<string, unknown> | null;
   lastBudget?: ContextBudget & { turnId: string } | null;

@@ -27,7 +27,7 @@ from boss_harness.agent import TurnRunner
 from boss_harness.bridge_lifecycle import BridgeLifecycle
 from boss_harness.context import ContextBudgetExceeded, ContextService, request_fingerprint
 from boss_harness.connections import ConnectionChecks
-from boss_harness.models import ModelConfig, Provider
+from boss_harness.models import ModelConfig, Provider, resolve_config
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.capabilities import ModelCatalog
 from boss_harness.models.types import AssistantMessage, ModelRequest, UserMessage
@@ -735,11 +735,16 @@ class ApplicationService:
                 entries = self.sessions.read_entries(thread_id)
                 metadata = self.context.read(thread_id, entries=entries)
                 if runner.last_preparation is not None:
+                    policy = job["compactionPolicy"]
+                    summary_provider = policy.provider or runner.config.provider
                     return {**metadata, **runner.last_preparation[1], "requestSource": "active",
+                            "summaryAvailable": self.provider_factory is not None and summary_provider != "none",
                             "compactionJob": self._compaction_reference(thread_id)}
                 config, prompt, tools = runner.config, runner.system_prompt, runner.tool_specs()
+                policy = job["compactionPolicy"]
             else:
                 config = self._model_config(thread, params)
+                policy = self.compaction_policy
                 skill_text, _ = self.skills.load(params.get("skillIds"))
                 prompt = self._system_prompt(thread.get("toolPolicy") == "readOnly", skill_text)
                 tools = self.registry.specs(read_only=thread.get("toolPolicy") == "readOnly")
@@ -756,7 +761,9 @@ class ApplicationService:
             result = self.context.read(thread_id, request=request,
                                        capabilities=self.model_catalog.resolve(config.provider, config.model),
                                        provider=config.provider, entries=entries)
+            summary_provider = policy.provider or config.provider
             return {**result, "provider": config.provider, "requestSource": "active" if job else "preview" if preview else "default",
+                    "summaryAvailable": self.provider_factory is not None and summary_provider != "none",
                     "compactionJob": self._compaction_reference(thread_id)}
 
     def on_context_edit_read(self, params: dict | None) -> dict:
@@ -820,7 +827,8 @@ class ApplicationService:
                   "throughTurnId": job["throughTurnId"], "sourceDigest": job["sourceDigest"],
                   "status": job["status"]}
         for key in ("code", "message", "result", "modelRequestCount", "processedCharacters", "totalCharacters",
-                    "retainedItemCount", "firstKeptItemId", "estimatedRetainedTokens", "reason", "turnId"):
+                    "retainedItemCount", "firstKeptItemId", "estimatedRetainedTokens", "reason", "turnId",
+                    "summaryProvider", "summaryModel", "summaryEffort"):
             if key in job and job[key] is not None:
                 result[key] = job[key]
         return result
@@ -909,6 +917,51 @@ class ApplicationService:
             raise ValueError("模型摘要必须使用独立于主回合的 provider 实例")
         return provider
 
+    def _compaction_model_config(self, policy: CompactionPolicy, base: ModelConfig,
+                                 *, model_override: str | None = None,
+                                 session_effort: str | None = None) -> ModelConfig:
+        provider = policy.provider or base.provider
+        if provider == "none":
+            raise RpcError(-32013, "摘要不能使用 none 模型线路",
+                           {"code": "COMPACTION_MODEL_UNAVAILABLE", "provider": provider})
+        if provider == base.provider:
+            route = base
+        else:
+            environ = dict(os.environ)
+            for name in ("BOSS_HARNESS_PROVIDER", "BOSS_HARNESS_MODEL", "BOSS_HARNESS_EFFORT"):
+                environ.pop(name, None)
+            configured_model = environ.get(f"BOSS_HARNESS_{provider.upper()}_MODEL")
+            if policy.model is not None:
+                environ["BOSS_HARNESS_MODEL"] = policy.model
+            elif configured_model:
+                environ["BOSS_HARNESS_MODEL"] = configured_model
+            if provider == "anthropic" and not (
+                environ.get("ANTHROPIC_API_KEY") or environ.get("ANTHROPIC_AUTH_TOKEN")
+            ):
+                raise RpcError(-32013, "本机没有可用的摘要模型线路配置",
+                               {"code": "COMPACTION_MODEL_UNAVAILABLE", "provider": provider})
+            try:
+                route = resolve_config(environ=environ, provider=provider)
+            except (OSError, TypeError, ValueError):
+                raise RpcError(-32013, "本机没有可用的摘要模型线路配置",
+                               {"code": "COMPACTION_MODEL_UNAVAILABLE", "provider": provider}) from None
+
+        model = model_override or policy.model or route.model
+        capabilities = self.model_catalog.resolve(provider, model)
+        if policy.effort is not None:
+            if policy.effort not in capabilities.reasoning_efforts:
+                raise RpcError(-32012, "摘要模型未声明支持该推理档位",
+                               {"code": "COMPACTION_EFFORT_UNSUPPORTED", "provider": provider,
+                                "model": model, "available": list(capabilities.reasoning_efforts)})
+            effort = policy.effort
+        else:
+            effort = session_effort if session_effort is not None else base.effort
+            if effort is None:
+                effort = route.effort
+            if capabilities.reasoning_efforts and effort not in capabilities.reasoning_efforts:
+                effort = route.effort if route.effort in capabilities.reasoning_efforts else None
+        return replace(route, model=model, effort=effort)
+
     def _compaction_plan(self, params: dict) -> dict:
         through = _text(params, "throughTurnId") if "throughTurnId" in params else None
         keep = params.get("keepRecentTokens")
@@ -929,7 +982,9 @@ class ApplicationService:
             plan = self._compaction_plan(params)
             through_turn_id = plan["throughTurnId"]
             _, source = self.context.compaction_material(thread_id, through_turn_id, source_digest or plan["sourceDigest"])
-            config = self._model_config(self.sessions.get_thread(thread_id), params)
+            config = self._model_config(self.sessions.get_thread(thread_id), {})
+            config = self._compaction_model_config(self.compaction_policy, config,
+                                                   model_override=params.get("model"))
             active_manual = sum(1 for existing in self._compaction_jobs.values()
                                 if existing["status"] == "running" and "turnId" not in existing)
             if active_manual >= self.runtimes.capacity:
@@ -943,6 +998,8 @@ class ApplicationService:
             job_id = uuid.uuid4().hex
             job = {"jobId": job_id, "threadId": thread_id, "throughTurnId": through_turn_id,
                    "sourceDigest": plan["sourceDigest"], "config": config, "provider": provider,
+                   "summaryProvider": config.provider, "summaryModel": config.model,
+                   "summaryEffort": config.effort,
                    "cancel": threading.Event(), "status": "running", "modelRequestCount": 0,
                    "processedCharacters": 0, "totalCharacters": len(source),
                    "retainedItemCount": plan["retainedItemCount"], "firstKeptItemId": plan["firstKeptItemId"],
@@ -1060,9 +1117,7 @@ class ApplicationService:
         for index in range(1, SUMMARY_MAX_REQUESTS + 1):
             if job["cancel"].is_set():
                 raise _CompactionCancelled
-            with self.runtimes.lock:
-                effort = self._effective_reasoning_effort(self.sessions.get_thread(thread_id), config.provider, config.model)
-                planner.config = replace(config, effort=effort)
+            planner.config = config
             fragment = planner.fragment(offset, summary, index)
             prepared, budget = self.context.prepare(fragment.request, capabilities, provider=config.provider)
             with self.runtimes.lock:
@@ -1115,7 +1170,8 @@ class ApplicationService:
                 self.context.compact(
                     thread_id, summary, job["throughTurnId"], plan["sourceDigest"], origin="model",
                     metadata={"summaryJobId": job["jobId"], "summaryProvider": config.provider,
-                              "summaryModel": config.model, "modelRequestCount": job["modelRequestCount"],
+                              "summaryModel": config.model, "summaryEffort": config.effort,
+                              "modelRequestCount": job["modelRequestCount"],
                               "sourceCharacters": len(source), "sourceTextDigest": planner.source_digest},
                     _on_committed=lambda: job.update(status="completed"))
                 result = self.on_context_read({"threadId": thread_id})
@@ -1213,7 +1269,8 @@ class ApplicationService:
     def _compact_during_turn(self, turn: dict, request: ModelRequest, reason: str,
                              *, required: bool) -> ModelRequest | None:
         runner, thread_id = turn["runner"], turn["threadId"]
-        config = replace(runner.config, effort=request.effort)
+        config = self._compaction_model_config(turn["compactionPolicy"], runner.config,
+                                               session_effort=request.effort)
         job: dict | None = None
         replacement: ModelRequest | None = None
 
@@ -1250,6 +1307,8 @@ class ApplicationService:
                 job = {"jobId": job_id, "threadId": thread_id, "turnId": turn["turnId"],
                     "throughTurnId": plan["throughTurnId"], "sourceDigest": plan["sourceDigest"],
                     "config": config, "provider": provider, "cancel": turn["cancel"],
+                    "summaryProvider": config.provider, "summaryModel": config.model,
+                    "summaryEffort": config.effort,
                     "worker": turn["worker"], "status": "running", "reason": reason,
                     "modelRequestCount": 0, "processedCharacters": 0, "totalCharacters": len(source),
                     "retainedItemCount": plan["retainedItemCount"], "firstKeptItemId": plan["firstKeptItemId"],
@@ -1276,7 +1335,8 @@ class ApplicationService:
                 owned()
                 self.context.compact(thread_id, summary, plan["throughTurnId"], plan["sourceDigest"],
                     origin="model", metadata={"summaryJobId": job_id, "summaryProvider": config.provider,
-                        "summaryModel": config.model, "reason": reason, "turnId": turn["turnId"],
+                        "summaryModel": config.model, "summaryEffort": config.effort,
+                        "reason": reason, "turnId": turn["turnId"],
                         "modelRequestCount": job["modelRequestCount"], "sourceCharacters": len(source),
                         "sourceTextDigest": planner.source_digest},
                     _active_turn_id=turn["turnId"], _on_committed=lambda: job.update(status="completed"))
@@ -1297,7 +1357,9 @@ class ApplicationService:
                     pass
                 raise ContextCompactionFailed(exc.code, runner.safe_error(exc)) from None
             if job is not None and job["status"] != "completed":
-                code = exc.code if isinstance(exc, (ContextCompactionFailed, _CompactionFailure, CheckpointCommitUncertain)) else "COMPACTION_FAILED"
+                code = exc.code if isinstance(exc, (ContextCompactionFailed, _CompactionFailure, CheckpointCommitUncertain)) else (
+                    exc.data.get("code", "COMPACTION_FAILED") if isinstance(exc, RpcError)
+                    and isinstance(exc.data, dict) else "COMPACTION_FAILED")
                 try:
                     self._compaction_failed(job, code, exc)
                 except Exception:
