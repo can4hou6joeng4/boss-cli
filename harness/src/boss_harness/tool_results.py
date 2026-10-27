@@ -15,6 +15,7 @@ import re
 from typing import Any
 
 from boss_harness.rpc import RpcError
+from boss_harness.item_content import project_item_content
 
 MAX_INLINE_TOOL_RESULT_BYTES = 64 * 1024
 MAX_PAGE_BYTES = 1024 * 1024
@@ -43,9 +44,10 @@ def project_error(error: dict | None) -> dict | None:
     return {**preview, "detailsOmitted": True}
 
 
-def project_item(thread_id: str, item: dict) -> dict:
+def project_item(thread_id: str, item: dict, *, snapshot_id: str | None = None) -> dict:
     """Never mutate durable/model history while preparing renderer-facing items."""
     projected = {key: value for key, value in item.items() if key not in {"modelResult", "resultOmitted", "resultRef"}}
+    projected = project_item_content(thread_id, projected, snapshot_id=snapshot_id)
     result = item.get("result")
     if isinstance(result, dict):
         text = result_text(result)

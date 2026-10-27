@@ -12,6 +12,8 @@ export interface HarnessEvent {
     result?: ThreadItem["result"];
     resultOmitted?: boolean;
     resultRef?: ThreadItem["resultRef"];
+    textOmitted?: boolean; textRef?: ThreadItem["textRef"];
+    thinkingOmitted?: boolean; thinkingRef?: ThreadItem["thinkingRef"];
     source?: ThreadItem["source"];
     approvalId?: string; summary?: string; params?: Record<string, unknown>;
     consequential?: boolean; approval?: ApprovalState;
@@ -38,7 +40,9 @@ export function reduceHarnessEvent(previous: MessageItem[], event: HarnessEvent)
       break;
     case "item/completed": {
       if (params.kind !== "agentMessage" && params.kind !== "userMessage") return previous;
-      const message = toMessage({ id, threadId: params.threadId ?? "", turnId: params.turnId, kind: params.kind, text: params.text, thinking: params.thinking });
+      const message = toMessage({ id, threadId: params.threadId ?? "", turnId: params.turnId,
+        kind: params.kind, text: params.text ?? before?.paragraphs?.join(""),
+        thinking: params.thinking ?? before?.thinkingContent });
       item = { ...item, ...message };
       break;
     }

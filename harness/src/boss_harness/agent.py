@@ -30,8 +30,9 @@ from boss_harness.models import (
     UserMessage,
 )
 from boss_harness.models.provider import ModelConfig, Provider
+from boss_harness.models.output_budget import OutputBudgetExceeded, ResponseTextBudget, utf8_chunks
 from boss_harness.models.secret import redact_secrets
-from boss_harness.models.types import ChatMessage, ModelRequest, ModelErrorInfo, TextBlock
+from boss_harness.models.types import ChatMessage, ModelRequest, ModelErrorInfo, TextBlock, ThinkingBlock
 from boss_harness.session import Entry, SessionStore
 from boss_harness.toolkit import ToolResult, snapshot_result
 from boss_harness.tool_results import project_error, project_item
@@ -709,6 +710,9 @@ class TurnRunner:
         entry: Entry | None = None
         chunks: list[str] = []
         thinking: list[str] = []
+        text_blocks: dict[int, str] = {}
+        thinking_blocks: dict[int, str] = {}
+        output_budget = ResponseTextBudget()
         assistant: AssistantMessage | None = None
         interrupted = False
         error: str | None = None
@@ -746,24 +750,88 @@ class TurnRunner:
 
                 if event.type in ("thinking_start", "thinking_delta", "thinking_end"):
                     if event.delta:
+                        try:
+                            output_budget.account(("thinking", event.content_index), event.delta)
+                        except OutputBudgetExceeded as exc:
+                            error = str(exc)
+                            break
                         thinking.append(event.delta)
-                        self.notify(
-                            N_AGENT_THINKING_DELTA,
-                            {"threadId": thread_id, "itemId": ensure_entry().id, "delta": event.delta},
+                        thinking_blocks[event.content_index] = (
+                            thinking_blocks.get(event.content_index, "") + event.delta
                         )
+                        for delta in utf8_chunks(event.delta):
+                            self.notify(N_AGENT_THINKING_DELTA, {
+                                "threadId": thread_id, "itemId": ensure_entry().id, "delta": delta,
+                            })
+                    if event.type == "thinking_end":
+                        try:
+                            output_budget.reconcile(("thinking", event.content_index), event.text)
+                        except OutputBudgetExceeded as exc:
+                            error = str(exc)
+                            break
+                        previous = thinking_blocks.get(event.content_index, "")
+                        thinking_blocks[event.content_index] = event.text
+                        if not previous:
+                            thinking.append(event.text)
+                            for delta in utf8_chunks(event.text):
+                                self.notify(N_AGENT_THINKING_DELTA, {
+                                    "threadId": thread_id, "itemId": ensure_entry().id, "delta": delta,
+                                })
                     continue
                 if event.type == "text_delta":
+                    try:
+                        output_budget.account(("text", event.content_index), event.delta)
+                    except OutputBudgetExceeded as exc:
+                        error = str(exc)
+                        break
                     chunks.append(event.delta)
-                    self.notify(
-                        N_AGENT_MESSAGE_DELTA,
-                        {"threadId": thread_id, "itemId": ensure_entry().id, "delta": event.delta},
-                    )
+                    text_blocks[event.content_index] = text_blocks.get(event.content_index, "") + event.delta
+                    for delta in utf8_chunks(event.delta):
+                        self.notify(N_AGENT_MESSAGE_DELTA, {
+                            "threadId": thread_id, "itemId": ensure_entry().id, "delta": delta,
+                        })
+                elif event.type == "text_end":
+                    try:
+                        output_budget.reconcile(("text", event.content_index), event.text)
+                    except OutputBudgetExceeded as exc:
+                        error = str(exc)
+                        break
+                    previous = text_blocks.get(event.content_index, "")
+                    text_blocks[event.content_index] = event.text
+                    if not previous:
+                        chunks.append(event.text)
+                        for delta in utf8_chunks(event.text):
+                            self.notify(N_AGENT_MESSAGE_DELTA, {
+                                "threadId": thread_id, "itemId": ensure_entry().id, "delta": delta,
+                            })
                 elif event.type == "done":
-                    assistant = event.message
+                    candidate = event.message
+                    try:
+                        if candidate is not None:
+                            final_parts = [
+                                block.text if isinstance(block, TextBlock) else block.thinking
+                                for block in candidate.blocks
+                                if isinstance(block, (TextBlock, ThinkingBlock))
+                            ]
+                            if not any(isinstance(block, TextBlock) for block in candidate.blocks):
+                                final_parts.extend(text_blocks.values())
+                            if not any(isinstance(block, ThinkingBlock) for block in candidate.blocks):
+                                final_parts.extend(thinking_blocks.values())
+                            output_budget.reconcile_response(final_parts)
+                    except OutputBudgetExceeded as exc:
+                        error = str(exc)
+                        break
+                    assistant = candidate
                     output_observed = output_observed or bool(assistant and assistant.blocks)
-                    if assistant is not None and assistant.text():
-                        ensure_entry()
-                        chunks = [assistant.text()]
+                    if assistant is not None:
+                        chunks = ([assistant.text()]
+                                  if any(isinstance(block, TextBlock) for block in assistant.blocks)
+                                  else [text_blocks[index] for index in sorted(text_blocks)])
+                        thinking = ([block.thinking for block in assistant.blocks if isinstance(block, ThinkingBlock)]
+                                    if any(isinstance(block, ThinkingBlock) for block in assistant.blocks)
+                                    else [thinking_blocks[index] for index in sorted(thinking_blocks)])
+                        if any(chunks) or any(thinking):
+                            ensure_entry()
                     break
                 elif event.type == "error":
                     error = self.safe_error(event.error or "未知错误")
@@ -813,6 +881,9 @@ class TurnRunner:
                     usage_entry["messageCount"] = len(request.messages)
             self.sessions.append(thread_id, Entry(type="model_usage", payload=usage_entry))
         if entry is not None:
+            if assistant is None:
+                chunks = ["".join(text_blocks[index] for index in sorted(text_blocks))]
+                thinking = ["".join(thinking_blocks[index] for index in sorted(thinking_blocks))]
             text = "".join(chunks)
             truncated = assistant is not None and assistant.stop_reason == "length"
             payload = {"kind": "agentMessage", "text": text, "thinking": "".join(thinking),

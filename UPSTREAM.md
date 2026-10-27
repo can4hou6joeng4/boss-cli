@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第三十六轮：文本与思考的持久化及恢复预算
+
+[Issue #93](https://github.com/can4hou6joeng4/boss-cli/issues/93) 沿 #91 的资源边界审计发现独立缺口：工具参数已受限，但 provider 文本/思考可先累积到会话与事件日志，再因 8 MiB RPC 帧限制发送失败。真实离线 ApplicationService 复现单个 5 MiB LF 增量与 96 个各 100 KiB 增量：已持久化正文无法通过 1 MiB 条目或事件分页恢复。问题由本项目代码与合成探针确认，外部 Issue 标题不作为复现证据。
+
+方向参考 Pi 固定 MIT commit `db14038bd847c5bad57de217e0ac0c5ad1ae60ba` 及开放 [Issue #11360](https://github.com/earendil-works/pi/issues/11360)、[Issue #11386](https://github.com/earendil-works/pi/issues/11386) 的输出与通知边界。前者的子进程问题已有本项目 #57 处理，后者的 MCP transport 在本项目不可达；这里只采用逐层检查资源预算的思路，独立实现，不复制代码或新增依赖。`jackwener/boss-cli` 的登录、Cookie 与招聘平台风控议题仍属于业务接入，未移入通用 provider。
+
+本次在 provider 与执行器两层于追加、合并和通知前限制每响应 text+thinking 合计 1 MiB 原始 UTF-8 字节，权威快照保留高水位。超限整轮错误、关闭流，不审批或执行该响应工具、不自动重试或续跑队列，保留已接受前缀为 failed。持久增量拆为 32 KiB；64 KiB 以上 Agent 字段投影为引用，新增只读 `thread/item/content/read`，按 Unicode 码点分页、SHA-256 与长度核验。冻结快照绑定其原文；完成事件存引用，实时通知保留预算内全文与原 eventId/eventCursor。桌面在快照展示前恢复内容，迟到读取不覆盖新快照或事件，失败可见。
+
+协议仍为 `0.2.0`，内容引用是新增可选字段；自定义恢复客户端需实现新读取方法。新响应内容在最坏 JSON 字符串转义下仍能通过 8 MiB RPC 帧，但不承诺单个 SSE 解码、provider 元数据、事件总数量或进程 RSS 的全局上限。历史超预算事件可能仍需通过快照恢复，原始历史不重写。最终离线回归 339 项中 335 通过、4 跳过；真实 stdio 10/10、应用矩阵 18/18 通过。官方 SDK MockTransport 经 ApplicationService 的两套组合（Anthropic 1.15.0 / OpenAI 3.35.1，与 2.3.0 / 3.39.0）各 35/35，覆盖 standard/beta、精确边界、初始/终态快照、取消和异常 SSE 关闭；两套 socket、DNS、子进程尝试均为 0。独立复审 20 项覆盖保留通道合计预算、跨类型索引、权威替换、重复 ID 拒绝、终态工具零执行及 renderer 迟到读取和无效引用。Electron 43.8.3 生产 main/preload/renderer 与隔离 stdio 后端的内容恢复 8/8 通过，覆盖历史引用、Unicode/摘要、9 项 IPC 拒绝、实时完成、重连、失败提示、重开恢复及超限前缀；该桌面探针运行 2 次合成 provider、2 个计划内本地后端进程，后端网络、DNS 和业务子进程尝试为 0。typecheck/build、compileall、npm audit（0 漏洞）及 diff 检查通过。测试、夹具和报告仅保留本地 ignored 目录，远端 CI 只运行源码构建；以上不是实际模型或招聘平台验收。
+
 ## 第三十五轮：provider 工具参数字节预算
 
 [Issue #91](https://github.com/can4hou6joeng4/boss-cli/issues/91) 在 #89 修复完整性后继续核查资源边界：Anthropic SDK 先把 `partial_json` 累积并局部解析，OpenAI Responses 则可能从 added、delta、arguments.done 或 item.done 提供完整参数；事后 schema 检查仍允许超大原始输入进入持久层。固定参考 Pi 当前 main `db14038bd847c5bad57de217e0ac0c5ad1ae60ba`（MIT），开放 Issue [#11112](https://github.com/earendil-works/pi/issues/11112) 讨论工具参数解析失败钩子，[#11360](https://github.com/earendil-works/pi/issues/11360) 讨论子进程大输出边界，[#11386](https://github.com/earendil-works/pi/issues/11386) 讨论 MCP 输出限制。Pi issue 是问题来源，不复制实现；本项目 CLI 子进程 16 MiB 上限已由 #57 覆盖。当前 `jackwener/boss-cli` 开放 Issue 仍聚焦招聘业务、认证、平台权限与风控，没有通用 provider 参数预算契约可移植。

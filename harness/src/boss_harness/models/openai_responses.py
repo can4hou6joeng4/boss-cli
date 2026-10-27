@@ -25,7 +25,9 @@ import openai
 
 from boss_harness.models.errors import openai_error_info
 from boss_harness.models.output_budget import (
+    MAX_RESPONSE_TEXT_BYTES,
     OutputBudgetExceeded,
+    ResponseTextBudget,
     ToolArgumentBudget,
     bounded_error,
 )
@@ -314,16 +316,20 @@ class OpenAIResponsesProvider:
         kwargs = self._request_kwargs(request)
         #: output_index -> 已完成的块（按 Responses 的输出项下标保序）
         blocks: dict[int, object] = {}
+        text_buffers: dict[int, list[str]] = {}
+        thinking_buffers: dict[int, list[str]] = {}
         #: output_index -> function_call 的参数 JSON 缓冲
         json_buffers: dict[int, str] = {}
         #: output_index -> arguments.done 中的权威原始 JSON
         arguments_done: dict[int, str | None] = {}
         #: output_index -> function_call 的 call_id（回填工具结果要靠它）
         call_ids: dict[int, str] = {}
+        item_ids: dict[str, int] = {}
         started_function_calls: set[int] = set()
         final_argument_sources: dict[int, str] = {}
         final_items_seen: set[int] = set()
         budget = ToolArgumentBudget()
+        text_budget = ResponseTextBudget()
         #: 参数不是完整 JSON 的 function_call（用名字记），收尾时按失败处理
         broken: list[str] = []
         #: 是否已经发出过思考增量（没有内容时不补空行）
@@ -348,14 +354,27 @@ class OpenAIResponsesProvider:
                     if kind == "response.output_item.added":
                         item = getattr(event, "item", None)
                         item_type = str(getattr(item, "type", "") or "")
+                        item_id = str(getattr(item, "id", "") or "")
+                        if item_id:
+                            if item_id in item_ids:
+                                raise ValueError("响应重复使用输出项标识")
+                            item_ids[item_id] = index
                         if item_type == "reasoning":
                             # 每个 reasoning 项自成一段：不清零的话，上一项遗留的待分隔标记会被
                             # 下一项的首个增量吃掉，凭空插进一个空行。
                             saw_delta = False
                             pending_break = False
+                            text = _reasoning_text(item, text_budget, index)
+                            thinking_buffers[index] = [text] if text else []
                             yield StreamEvent(type="thinking_start", content_index=index)
+                            if text:
+                                yield StreamEvent(type="thinking_delta", content_index=index, delta=text)
                         elif item_type == "message":
+                            text = _message_text(item, text_budget, index)
+                            text_buffers[index] = [text] if text else []
                             yield StreamEvent(type="text_start", content_index=index)
+                            if text:
+                                yield StreamEvent(type="text_delta", content_index=index, delta=text)
                         elif item_type == "function_call":
                             if index in started_function_calls:
                                 raise ValueError("响应重复使用工具调用索引")
@@ -373,10 +392,14 @@ class OpenAIResponsesProvider:
                         if delta:
                             if pending_break:
                                 pending_break = False
+                                text_budget.account(("thinking", index), "\n\n")
+                                thinking_buffers.setdefault(index, []).append("\n\n")
                                 yield StreamEvent(
                                     type="thinking_delta", content_index=index, delta="\n\n"
                                 )
                             saw_delta = True
+                            text_budget.account(("thinking", index), delta)
+                            thinking_buffers.setdefault(index, []).append(delta)
                             yield StreamEvent(type="thinking_delta", content_index=index, delta=delta)
 
                     elif kind == "response.reasoning_summary_part.done":
@@ -388,6 +411,8 @@ class OpenAIResponsesProvider:
                     elif kind in _TEXT_DELTA_EVENTS:
                         delta = str(getattr(event, "delta", "") or "")
                         if delta:
+                            text_budget.account(("text", index), delta)
+                            text_buffers.setdefault(index, []).append(delta)
                             yield StreamEvent(type="text_delta", content_index=index, delta=delta)
 
                     elif kind == "response.function_call_arguments.delta":
@@ -426,14 +451,18 @@ class OpenAIResponsesProvider:
                     elif kind == "response.output_item.done":
                         item = getattr(event, "item", None)
                         item_type = str(getattr(item, "type", "") or "")
+                        item_id = str(getattr(item, "id", "") or "")
+                        item_index = item_ids.get(item_id, index) if item_id else index
                         if item_type == "reasoning":
-                            text = _reasoning_text(item)
-                            blocks[index] = ThinkingBlock(thinking=text)
-                            yield StreamEvent(type="thinking_end", content_index=index, text=text)
+                            text = _reasoning_text(item, text_budget, item_index)
+                            thinking_buffers[item_index] = [text]
+                            blocks[item_index] = ThinkingBlock(thinking=text)
+                            yield StreamEvent(type="thinking_end", content_index=item_index, text=text)
                         elif item_type == "message":
-                            text = _message_text(item)
-                            blocks[index] = TextBlock(text=text)
-                            yield StreamEvent(type="text_end", content_index=index, text=text)
+                            text = _message_text(item, text_budget, item_index)
+                            text_buffers[item_index] = [text]
+                            blocks[item_index] = TextBlock(text=text)
+                            yield StreamEvent(type="text_end", content_index=item_index, text=text)
                         elif item_type == "function_call":
                             if index not in started_function_calls or index in final_items_seen:
                                 raise ValueError("工具调用终态没有对应的唯一初始项")
@@ -485,18 +514,38 @@ class OpenAIResponsesProvider:
 
                     elif kind in ("response.completed", "response.incomplete"):
                         terminal = getattr(event, "response", None)
+                        terminal_ids: set[str] = set()
                         for output_index, item in enumerate(getattr(terminal, "output", None) or []):
-                            if str(getattr(item, "type", "") or "") != "function_call":
+                            item_type = str(getattr(item, "type", "") or "")
+                            item_id = str(getattr(item, "id", "") or "")
+                            if item_id:
+                                if item_id in terminal_ids:
+                                    raise ValueError("响应终态重复使用输出项标识")
+                                terminal_ids.add(item_id)
+                            item_index = item_ids.get(item_id, output_index) if item_id else output_index
+                            if item_type == "reasoning":
+                                text = _reasoning_text(item, text_budget, item_index)
+                                thinking_buffers[item_index] = [text]
+                                blocks[item_index] = ThinkingBlock(thinking=text)
+                                yield StreamEvent(type="thinking_end", content_index=item_index, text=text)
                                 continue
-                            if output_index not in final_items_seen:
+                            if item_type == "message":
+                                text = _message_text(item, text_budget, item_index)
+                                text_buffers[item_index] = [text]
+                                blocks[item_index] = TextBlock(text=text)
+                                yield StreamEvent(type="text_end", content_index=item_index, text=text)
+                                continue
+                            if item_type != "function_call":
+                                continue
+                            if item_index not in final_items_seen:
                                 raise ValueError("工具调用缺少完整的 output_item.done 事件")
                             raw = getattr(item, "arguments", None)
                             if raw is None:
                                 continue
                             if not isinstance(raw, str):
                                 raise ValueError("工具调用终态参数不是文本")
-                            previous_final = final_argument_sources.get(output_index)
-                            budget.reconcile(output_index, raw)
+                            previous_final = final_argument_sources.get(item_index)
+                            budget.reconcile(item_index, raw)
                             if previous_final is not None and raw != previous_final:
                                 expected = _parse_arguments(previous_final)
                                 actual = _parse_arguments(raw)
@@ -539,9 +588,9 @@ class OpenAIResponsesProvider:
                 if started_function_calls != final_items_seen:
                     raise ValueError("工具调用缺少完整的 output_item.done 事件")
 
-        except OutputBudgetExceeded:
+        except OutputBudgetExceeded as exc:
             self._last_error_retryable = False
-            yield StreamEvent(type="error", reason="error", error="模型工具参数超过本地字节上限")
+            yield StreamEvent(type="error", reason="error", error=self._redact(exc))
             return
         except openai.APIStatusError as exc:
             error_info = openai_error_info(exc.body, source="http_error", status_code=exc.status_code)
@@ -577,6 +626,12 @@ class OpenAIResponsesProvider:
             )
             return
 
+        for index, parts in text_buffers.items():
+            if index not in blocks:
+                blocks[index] = TextBlock(text=text_budget.reconcile_parts(("text", index), parts))
+        for index, parts in thinking_buffers.items():
+            if index not in blocks:
+                blocks[index] = ThinkingBlock(thinking=text_budget.reconcile_parts(("thinking", index), parts))
         ordered: list[object] = [blocks[key] for key in sorted(blocks)]
         calls = tuple(block for block in ordered if isinstance(block, ToolCallBlock))
         # 参数 JSON 没解析成功时，视为这一轮未完成，交由调用方报错而不是带着空参数执行。
@@ -599,32 +654,43 @@ class OpenAIResponsesProvider:
         yield StreamEvent(type="done", reason=stop_reason, message=message)
 
 
-def _reasoning_text(item: object) -> str:
+def _reasoning_text(item: object, budget: ResponseTextBudget | None = None, index: int = 0) -> str:
     """把 reasoning 项的 summary/content 拼成一段文本。"""
     parts: list[str] = []
+    size = 0
     summary = getattr(item, "summary", None) or []
     for part in summary:
         text = str(getattr(part, "text", "") or "")
         if text:
+            if budget:
+                size += budget.size(text, MAX_RESPONSE_TEXT_BYTES - size)
+                budget.ensure_size(("thinking", index), size + (2 * max(0, len(parts))))
             parts.append(text)
     if not parts:
         for part in getattr(item, "content", None) or []:
             text = str(getattr(part, "text", "") or "")
             if text:
+                if budget:
+                    size += budget.size(text, MAX_RESPONSE_TEXT_BYTES - size)
+                    budget.ensure_size(("thinking", index), size + (2 * max(0, len(parts))))
                 parts.append(text)
-    return "\n\n".join(parts)
+    return budget.reconcile_parts(("thinking", index), parts, separator="\n\n") if budget else "\n\n".join(parts)
 
 
-def _message_text(item: object) -> str:
+def _message_text(item: object, budget: ResponseTextBudget | None = None, index: int = 0) -> str:
     """把 message 项的 output_text / refusal 片段拼起来。"""
     parts: list[str] = []
+    size = 0
     for part in getattr(item, "content", None) or []:
         text = getattr(part, "text", None)
         if text is None:
             text = getattr(part, "refusal", None)
         if text:
+            if budget:
+                size += budget.size(str(text), MAX_RESPONSE_TEXT_BYTES - size)
+                budget.ensure_size(("text", index), size)
             parts.append(str(text))
-    return "".join(parts)
+    return budget.reconcile_parts(("text", index), parts) if budget else "".join(parts)
 
 
 def _parse_arguments(raw: str | None) -> dict[str, Any] | None:

@@ -44,6 +44,7 @@ from boss_harness.compaction import CompactionPolicy, ContextCompactionFailed
 from boss_harness.context import NoCompactionSource
 from boss_harness.shutdown import TrackedAbort, join_until
 from boss_harness.hooks import HookFailure, LifecycleHooks
+from boss_harness.item_content import read_item_content
 
 PROTOCOL_VERSION = "0.2.0"
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
@@ -86,8 +87,17 @@ class EventHub:
     def emit(self, method: str, params: dict | None = None, *, publish: bool = True,
              observe: bool = True) -> dict:
         with self.lock:
-            event = self.sessions.append_event(method, params or {})
+            notification = params or {}
+            stored_params = notification
+            if method == "item/completed" and notification.get("kind") == "agentMessage":
+                stored_params = project_item(str(notification.get("threadId") or ""), {
+                    "id": str(notification.get("itemId") or ""), **notification,
+                })
+                stored_params.pop("id", None)
+            event = self.sessions.append_event(method, stored_params)
             payload = event["params"]
+            live_payload = {**notification, "eventId": payload["eventId"],
+                            "eventCursor": payload["eventCursor"]}
             thread_id, item_id = payload.get("threadId"), payload.get("itemId")
             if thread_id and item_id:
                 current = self.live.setdefault(thread_id, {})
@@ -99,12 +109,12 @@ class EventHub:
                     current.pop(item_id, None)
             if publish:
                 try:
-                    self.server.notify(method, payload)
+                    self.server.notify(method, live_payload)
                 except (ConnectionError, BrokenPipeError):
                     pass  # Durable state survives a disappearing observer.
             if observe:
                 # The bounded enqueue preserves cursor order; callbacks run on the hook worker.
-                self.lifecycle_hooks.observe_event(method, event["params"])
+                self.lifecycle_hooks.observe_event(method, payload)
         return event
 
     def items(self, thread_id: str) -> list[dict]:
@@ -295,6 +305,7 @@ class ApplicationService:
             "thread/reasoning/set": self.on_thread_reasoning_set,
             "thread/turns/list": self.on_turn_list, "thread/items/list": self.on_items_list,
             "thread/item/result/read": self.on_tool_result_read,
+            "thread/item/content/read": self.on_item_content_read,
             "turn/start": self.on_turn_start, "turn/interrupt": self.on_turn_interrupt,
             "turn/steer": self.on_turn_steer, "turn/read": self.on_turn_read,
             "approval/respond": self.on_approval_respond, "event/list": self.on_event_list,
@@ -426,7 +437,10 @@ class ApplicationService:
         with self.events.lock:
             thread = self.sessions.get_thread(thread_id)
             job = self.runtimes.active.get(thread_id)
-            items = [] if exclude and not paged else [project_item(thread_id, item) for item in self.events.items(thread_id)]
+            canonical_items = [] if exclude and not paged else self.events.items(thread_id)
+            snapshot_id = uuid.uuid4().hex if paged else None
+            items = [project_item(thread_id, item, snapshot_id=snapshot_id)
+                     for item in canonical_items]
             result = {"thread": thread, "items": [] if exclude or paged else items,
                     "turns": None if exclude else self.sessions.list_turns(thread_id)["turns"],
                     "activeTurnId": job["turnId"] if job else None,
@@ -436,8 +450,7 @@ class ApplicationService:
                                         if value[2] > time.monotonic()}
                 if len(self._snapshot_pages) >= 16:
                     self._snapshot_pages.pop(next(iter(self._snapshot_pages)))
-                snapshot_id = uuid.uuid4().hex
-                self._snapshot_pages[snapshot_id] = (thread_id, items, time.monotonic() + 120)
+                self._snapshot_pages[snapshot_id] = (thread_id, canonical_items, time.monotonic() + 120)
                 result.update(snapshotId=snapshot_id, itemCount=len(items), items=[])
             self._check_response_budget(result)
             return result
@@ -491,12 +504,14 @@ class ApplicationService:
                 raise ValueError("会话快照已过期；请重新 resume")
             items = snapshot[1]
         else:
-            items = [project_item(thread_id, item) for item in self.events.items(thread_id)]
+            items = self.events.items(thread_id)
         if offset > len(items):
             raise ValueError("条目分页游标超出结果范围")
         page = []
         result = {"items": page, "nextCursor": None}
-        for item in items[offset:offset + limit]:
+        for raw_item in items[offset:offset + limit]:
+            item = project_item(thread_id, raw_item,
+                                snapshot_id=snapshot_id if isinstance(snapshot_id, str) else None)
             candidate = page + [item]
             next_offset = offset + len(candidate)
             next_cursor = (base64.urlsafe_b64encode(json.dumps([scope_id, next_offset]).encode()).decode()
@@ -521,6 +536,38 @@ class ApplicationService:
             raise ValueError("条目不属于该会话或不存在")
         return read_result_chunk(thread_id, item, sha256=_text(params, "sha256", maximum=64),
                                  cursor=params.get("cursor"), limit=params.get("limit", 16_384))
+
+    def on_item_content_read(self, params: dict | None) -> dict:
+        params = params or {}
+        allowed = {"threadId", "itemId", "part", "sha256", "snapshotId", "cursor", "limit"}
+        if set(params) - allowed:
+            raise ValueError("会话内容读取包含未知参数")
+        thread_id = _text(params, "threadId")
+        item_id = _text(params, "itemId", maximum=128)
+        part = params.get("part")
+        if not isinstance(part, str) or part not in {"text", "thinking"}:
+            raise ValueError("part 必须是 text 或 thinking")
+        snapshot_id = params.get("snapshotId")
+        if snapshot_id is not None and (not isinstance(snapshot_id, str)
+                or not re.fullmatch(r"[a-f0-9]{32}", snapshot_id)):
+            raise ValueError("snapshotId 格式无效")
+        self.sessions.require_thread(thread_id)
+        with self.events.lock:
+            if snapshot_id is not None:
+                snapshot = self._snapshot_pages.get(snapshot_id)
+                if snapshot is None or snapshot[0] != thread_id or snapshot[2] <= time.monotonic():
+                    raise ValueError("会话快照已过期；请重新 resume")
+                items = snapshot[1]
+            else:
+                items = self.events.items(thread_id)
+            item = next((value for value in items if value.get("id") == item_id), None)
+        if item is None:
+            raise ValueError("条目不属于该会话或不存在")
+        response = read_item_content(thread_id, item, part=part,
+            sha256=_text(params, "sha256", maximum=64), cursor=params.get("cursor"),
+            limit=params.get("limit", 16_384), snapshot_id=snapshot_id)
+        self._check_response_budget(response)
+        return response
 
     def on_thread_fork(self, params: dict | None) -> dict:
         params = params or {}

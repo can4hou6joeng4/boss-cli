@@ -78,7 +78,7 @@ export function loginCaptureReadiness(url: string, cookies: Record<string, strin
 
 const RENDERER_METHODS = new Set([
   "thread/start", "thread/list", "thread/read", "thread/resume", "thread/fork",
-  "thread/archive", "thread/unarchive", "thread/name/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read",
+  "thread/archive", "thread/unarchive", "thread/name/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
   "turn/start", "turn/interrupt", "turn/steer", "turn/read", "queue/list", "queue/add", "queue/remove",
   "event/list", "model/list", "config/read", "skills/list", "tool/list", "attachment/add", "attachment/read",
   "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "approval/respond",
@@ -86,7 +86,7 @@ const RENDERER_METHODS = new Set([
 ]);
 const THREAD_METHODS = new Set([
   "thread/read", "thread/resume", "thread/fork", "thread/archive", "thread/unarchive", "thread/name/set",
-  "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "turn/start", "turn/interrupt", "turn/steer", "turn/read",
+  "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read", "turn/start", "turn/interrupt", "turn/steer", "turn/read",
   "queue/list", "queue/add", "queue/remove", "context/read", "context/compact/plan", "context/compact/start", "context/compact",
 ]);
 
@@ -153,6 +153,19 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
       (params.cursor !== undefined && (typeof params.cursor !== "string" || !params.cursor.startsWith("tr1_") || params.cursor.length > 2048)) ||
       (params.limit !== undefined && (typeof params.limit !== "number" || !Number.isSafeInteger(params.limit) || params.limit < 1 || params.limit > 32768))) {
       throw new Error("invalid tool result read");
+    }
+    return { method: payload.method, params };
+  }
+  if (payload.method === "thread/item/content/read") {
+    const allowed = new Set(["threadId", "itemId", "part", "sha256", "cursor", "limit", "snapshotId"]);
+    if (!params || Object.keys(params).some(key => !allowed.has(key)) ||
+      ![params.threadId, params.itemId].every(value => typeof value === "string" && /^[a-zA-Z0-9_-]{1,200}$/.test(value)) ||
+      (params.part !== "text" && params.part !== "thinking") ||
+      typeof params.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(params.sha256) ||
+      (params.cursor !== undefined && (typeof params.cursor !== "string" || !params.cursor.startsWith("ic1_") || params.cursor.length > 2048)) ||
+      (params.snapshotId !== undefined && (typeof params.snapshotId !== "string" || !/^[a-f0-9]{32}$/.test(params.snapshotId))) ||
+      (params.limit !== undefined && (typeof params.limit !== "number" || !Number.isSafeInteger(params.limit) || params.limit < 1 || params.limit > 32768))) {
+      throw new Error("invalid item content read");
     }
     return { method: payload.method, params };
   }
