@@ -982,7 +982,7 @@ class ApplicationService:
             plan = self._compaction_plan(params)
             through_turn_id = plan["throughTurnId"]
             _, source = self.context.compaction_material(thread_id, through_turn_id, source_digest or plan["sourceDigest"])
-            config = self._model_config(self.sessions.get_thread(thread_id), params)
+            config = self._model_config(self.sessions.get_thread(thread_id), {})
             config = self._compaction_model_config(self.compaction_policy, config,
                                                    model_override=params.get("model"))
             active_manual = sum(1 for existing in self._compaction_jobs.values()
