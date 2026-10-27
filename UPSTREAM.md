@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第四十二轮：策略 hook 的协作式回合取消
+
+在主线 `4461a392b1f496aa5456a58a24b977b18687bd61` 上，真实 `TurnRunner` 配合合成 provider 和临时 `SessionStore` 可复现：模型产出工具调用后进入 `before_tool_call`，回合取消只能等到 hook 完成或超时，hook 本身也不知道取消已到达。该缺口位于内核策略等待与回合中断之间，不涉及招聘平台操作。
+
+参考 Pi 开放 [Issue #10928](https://github.com/earendil-works/pi/issues/10928)（OPEN；报告涉及 `agent_before_settle` 缺少 abort signal）。复核 Pi 当前 `main` `b3a29f1111114fac696e2cfcd65acdb382a6ed5e`（MIT）：`packages/agent/src/types.ts` 为 `beforeToolCall` 与 `afterToolCall` 提供 `AbortSignal`。本项目问题发生在工具前置策略 hook，机制相邻但并非同一缺陷；独立定义 Python 只读 signal 与取消等待，不复制 Pi 源码或新增依赖。
+
+同步检查 `jackwener/boss-cli` 当前 `main` `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`（GitHub license 字段为 null）：开放 [Issue #35](https://github.com/jackwener/boss-cli/issues/35)、[#34](https://github.com/jackwener/boss-cli/issues/34) 和 [PR #37](https://github.com/jackwener/boss-cli/pull/37)、[#29](https://github.com/jackwener/boss-cli/pull/29) 仍属于招聘业务、认证与分页，不提供可移植的通用 hook 取消契约；本轮不采用其代码。
+
+`TurnRunner` 将当前回合取消事件交给 `LifecycleHooks`。宿主策略可选择在 `before_tool_call(context, *, signal)` 使用 `signal.aborted` 或 `signal.wait(timeout)` 协作收尾；原有 `before_tool_call(context)` 保持兼容。取消会在最多 25ms 的轮询间隔内唤醒内核等待，忽略迟到 allow/deny，并将当前工具以 `CANCELLED / not_executed` 持久化，不触发审批或 handler。若 callback 不合作，其线程仍运行到实际返回并继续占用在途名额，关闭期限、并发上限与现有迟到回调隔离保持不变；signal 不能强制终止 Python 线程。
+
+本地 Python 3.12 离线运行器探针覆盖协作 hook 和旧式非协作一参数 hook：两种都令回合及时以 `interrupted` 结束，当前工具结果为 `not_executed`，handler 与审批均为 0；非协作 hook 的名额保持占用直至退出，迟到拒绝不改变已持久状态。探针使用合成 provider、工具、临时会话，无真实模型、网络或招聘平台调用；测试代码仅留本地 ignored 目录，没有提交测试文件。
+
 ## 第四十一轮：Anthropic SDK 流取消的句柄登记窗口
 
 本项目主线 `587a9eca32b26547efee92de61a694fc2c386a0b` 的 `AnthropicProvider.stream()` 在 SDK context manager 返回 stream 后才登记 `_active_stream`。本地离线 `MockTransport` 将响应 handler 阻塞在句柄返回前，另一线程调用 `request_abort()` 时活动句柄为空；放行响应后，原实现仍进入 body 读取并阻塞。独立复现证明了本项目自己的竞态，不把外部 Issue 描述当作本地证据。
