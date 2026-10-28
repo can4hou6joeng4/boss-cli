@@ -5,6 +5,7 @@
 ### 内核
 
 - 参考 Pi Issue [#11043](https://github.com/earendil-works/pi/issues/11043)，允许宿主配置每回合 1–64 次业务模型请求硬上限，默认仍为 6；单次 `turn/start.maxModelRequests` 只能收紧上限，工具循环、steering 和上下文恢复统一计数。上限随回合持久化，耗尽继续暂停未投递队列，不重放工具或审批。
+- [Issue #121](https://github.com/can4hou6joeng4/boss-cli/issues/121)：将 `before_request` 统一覆盖业务请求、每个摘要分片和模型连接检查；摘要策略拒绝不调用对应 provider、不提交新 checkpoint，也不继续业务请求。脱敏原因与请求身份进入持久错误/终态通知或连接报告；关闭中的策略及迟到允许结果保持 fail closed，取消仍优先。
 
 ## 0.2.0-rc.10 - 2026-10-28
 
@@ -12,12 +13,13 @@
 
 ### 新功能
 
-- 参考 Pi Issue [#11055](https://github.com/earendil-works/pi/issues/11055)，嵌入宿主可通过 `before_request` 在完整请求预算准备后拒绝模型请求。拒绝以 `error` 终止当前回合，保留脱敏原因，不调用 provider、不执行工具、不申请审批，也不进入上下文恢复或自动重试。
+- 参考 Pi Issue [#11055](https://github.com/earendil-works/pi/issues/11055)，嵌入宿主可通过 `before_request` 在完整业务请求预算准备后拒绝模型请求。拒绝以 `error` 终止当前回合，保留脱敏原因，不调用该业务 provider、不执行工具、不申请审批，也不进入上下文恢复或自动重试。
 
 ### 验证与限制
 
 - 本地离线探针覆盖首次请求、工具循环第二轮和上下文恢复重试；Python 3.14 编译、Harness wheel/sdist 构建、TypeScript 类型检查、桌面源码构建及产物内容检查通过。
 - 未调用真实模型或招聘平台；本候选继续交付私有源码与 Python wheel/sdist，不含独立桌面安装包。
+- rc.10 的 `before_request` 仅覆盖业务模型请求；摘要和模型连接检查的覆盖缺口在未发布的 Issue #121 修复中补齐。
 
 ## 0.2.0-rc.9 - 2026-10-28
 

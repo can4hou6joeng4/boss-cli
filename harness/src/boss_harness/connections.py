@@ -21,9 +21,11 @@ import weakref
 from typing import Callable
 
 from boss_harness.bridge_lifecycle import BridgeLifecycle
+from boss_harness.hooks import LifecycleHooks
 from boss_harness.models import ModelConfig, Provider, build_provider
 from boss_harness.models.types import ModelRequest, UserMessage
 from boss_harness.rpc import RpcError
+from boss_harness.request_policy import ModelRequestRejected, check_model_request
 from boss_harness.shutdown import join_until
 from boss_harness.tools import BossCliTool, should_pause
 from boss_harness.tools.boss_cli import PAUSE_CODES
@@ -58,11 +60,14 @@ class ConnectionChecks:
                  provider_factory: Callable[[ModelConfig], Provider | None] = build_provider,
                  timeout: float = 25.0,
                  request_preparer: Callable[[ModelRequest], ModelRequest] | None = None,
+                 request_budget: Callable[[ModelRequest], dict] | None = None,
+                 lifecycle_hooks: LifecycleHooks | None = None,
                  browser_source_policy: str | None = None,
                  bridge_lifecycle: BridgeLifecycle | None = None) -> None:
         self.config, self.bridge_factory = config, bridge_factory
         self.provider_factory, self.timeout = provider_factory, timeout
         self.request_preparer = request_preparer
+        self.request_budget, self.lifecycle_hooks = request_budget, lifecycle_hooks
         self.browser_source_policy = browser_source_policy
         self.bridge_lifecycle = bridge_lifecycle or BridgeLifecycle()
         self.lock = threading.RLock()
@@ -126,6 +131,7 @@ class ConnectionChecks:
                 any(k in self.active for k in ("cli", "platform", "login")) or self.login["state"] in {"waiting", "saving"}))
             if self.closed or busy or self.report[key]["state"] == "disabled":
                 return self.read()
+            self.report[key].pop("requestRejected", None)
             self._set(key, state="checking", summary="检查中…", code=None, checkedAt=None)
             cancel = threading.Event()
             try:
@@ -368,6 +374,11 @@ class ConnectionChecks:
                     request = self.request_preparer(request)
                 if cancel.is_set():
                     return
+                budget = self.request_budget(request) if self.request_budget is not None else {}
+                check_model_request(self.lifecycle_hooks, config, request, budget,
+                    purpose="connection_check", request_index=0, cancel_event=cancel)
+                if cancel.is_set():
+                    return
                 provider = self.provider_factory(replace(config, max_tokens=request.max_tokens))
                 if provider is None:
                     raise ValueError("no provider")
@@ -414,6 +425,12 @@ class ConnectionChecks:
                 active = self.active.get(key)
                 if active is not None and active[1] is cancel and not cancel.is_set():
                     self._set(key, **outcome, checkedAt=_now())
+        except ModelRequestRejected as exc:
+            with self.lock:
+                active = self.active.get(key)
+                if active is not None and active[1] is cancel and not cancel.is_set():
+                    self._set(key, state="failed", code=exc.code, summary=str(exc),
+                              requestRejected=True, checkedAt=_now())
         except Exception:
             with self.lock:
                 active = self.active.get(key)

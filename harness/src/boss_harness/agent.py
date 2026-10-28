@@ -20,7 +20,8 @@ from typing import Any
 
 from boss_harness.context import ContextBudgetExceeded
 from boss_harness.compaction import ContextCompactionFailed
-from boss_harness.hooks import HookDecision, LifecycleHooks
+from boss_harness.hooks import LifecycleHooks
+from boss_harness.request_policy import ModelRequestRejected, check_model_request, record_model_rejection
 from boss_harness.models import (
     AssistantMessage,
     ToolCallBlock,
@@ -666,21 +667,15 @@ class TurnRunner:
                         return "blocked"
                     except ContextCompactionFailed as exc:
                         return self._context_failed(thread_id, exc)
+                    except ModelRequestRejected as exc:
+                        return self._request_rejected(thread_id, exc)
                     self._record_preparation(thread_id, request, request_budget)
-                if self.lifecycle_hooks is not None:
-                    decision = self.lifecycle_hooks.before_request({
-                        "threadId": thread_id,
-                        "turnId": self.turn_id,
-                        "requestIndex": _round,
-                        "maxModelRequests": max_model_requests,
-                        "provider": self.config.provider,
-                        "model": request.model,
-                        "messageCount": len(request.messages),
-                        "toolCount": len(request.tools),
-                        "budget": request_budget,
-                    }, cancel_event=self._cancel)
-                    if decision is not None and not decision.allow:
-                        return self._request_rejected(thread_id, request, decision)
+                try:
+                    check_model_request(self.lifecycle_hooks, self.config, request, request_budget,
+                        purpose="turn", request_index=_round, cancel_event=self._cancel,
+                        thread_id=thread_id, turn_id=self.turn_id, max_model_requests=max_model_requests)
+                except ModelRequestRejected as exc:
+                    return self._request_rejected(thread_id, exc)
                 if self.cancelled():
                     return "interrupted"
                 if self.request_preparer is not None:
@@ -701,6 +696,8 @@ class TurnRunner:
                             replacement = self.recover_context(request)
                         except ContextCompactionFailed as exc:
                             return self._context_failed(thread_id, exc)
+                        except ModelRequestRejected as exc:
+                            return self._request_rejected(thread_id, exc)
                         if self.cancelled():
                             return "interrupted"
                         if replacement is not None:
@@ -793,26 +790,17 @@ class TurnRunner:
         self.notify(N_SESSION_ERROR, {"threadId": thread_id, "code": error.code, "message": message})
         return "blocked"
 
-    def _request_rejected(self, thread_id: str, request: ModelRequest,
-                          decision: HookDecision) -> str:
+    def _request_rejected(self, thread_id: str, error: ModelRequestRejected) -> str:
         """Persist a terminal policy rejection without entering provider/recovery paths."""
         if self.cancelled():
             return "interrupted"
-        message = self.safe_error(decision.message)
-        self.append_agent(thread_id, f"模型请求已拒绝（{decision.code}）：{message}")
-        self.sessions.append(thread_id, Entry(type="model_error", payload={
-            "turnId": self.turn_id,
-            "model": request.model,
-            "provider": self.config.provider,
-            "message": message,
-            "errorInfo": {"source": "request_policy", "code": decision.code},
-            "outputObserved": False,
-            "contextRecoveryEligible": False,
-            "requestRejected": True,
-        }))
+        message = self.safe_error(error)
+        record_model_rejection(self.sessions, thread_id, error)
+        self.append_agent(thread_id, f"模型请求已拒绝（{error.code}）：{message}")
         self.notify(N_SESSION_ERROR, {
+            **error.context,
             "threadId": thread_id,
-            "code": decision.code,
+            "code": error.code,
             "message": message,
             "outputObserved": False,
             "requestRejected": True,
