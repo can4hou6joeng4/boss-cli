@@ -157,6 +157,38 @@ export const ServerNotifications = {
 export type ServerNotification =
   (typeof ServerNotifications)[keyof typeof ServerNotifications];
 
+/** Sanitized provider facts attached to terminal model failures. */
+export interface ProviderFailureInfo {
+  provider: "openai" | "anthropic";
+  source: "http_error" | "stream_error" | "transport_error";
+  /** Harness classification; only CONTEXT_OVERFLOW permits context recovery. */
+  code?: "CONTEXT_OVERFLOW";
+  providerCode?: string;
+  statusCode?: number;
+  /** Adapter transient-failure classification, not permission to replay a turn. */
+  retryable?: boolean;
+}
+
+export interface SessionErrorNotification {
+  threadId?: string;
+  turnId?: string;
+  message: string;
+  code?: string;
+  recoveryAttempted?: boolean;
+  outputObserved?: boolean;
+  /** The host refused this request before provider dispatch. */
+  requestRejected?: boolean;
+  purpose?: "turn" | "compaction" | "connection_check";
+  provider?: string;
+  model?: string;
+  requestIndex?: number;
+  jobId?: string;
+  /** Business request cap and exhausted count for TURN_ROUND_LIMIT. */
+  maxModelRequests?: number;
+  modelRequestCount?: number;
+  errorInfo?: ProviderFailureInfo;
+}
+
 /* ---------- 领域模型：thread / turn / item ---------- */
 
 export type ItemKind = "userMessage" | "agentMessage" | "toolCall" | "system";
@@ -358,6 +390,7 @@ export interface ToolDescriptor {
   readOnly: boolean;
   requiresApproval: boolean;
   inputSchema: Record<string, unknown>;
+  maxModelResultBytes?: number;
 }
 
 export interface ToolListResponse {
@@ -377,6 +410,15 @@ export interface AutoCompactionPolicy {
   enabled: boolean;
   triggerPercent: number;
   keepRecentTokens: number;
+  provider: string | null;
+  model: string | null;
+  effort: string | null;
+}
+
+export interface TurnAutoCompactionOverride {
+  enabled: boolean;
+  triggerPercent: number;
+  keepRecentTokens: number;
 }
 
 export interface TurnStartParams {
@@ -387,7 +429,9 @@ export interface TurnStartParams {
   model?: string;
   attachmentIds?: string[];
   skillIds?: string[];
-  autoCompaction?: Partial<AutoCompactionPolicy>;
+  autoCompaction?: Partial<TurnAutoCompactionOverride>;
+  /** Tightens the host cap for this turn only; integer from 1 to the configured maximum. */
+  maxModelRequests?: number;
 }
 
 export interface TurnStartResponse {
@@ -439,7 +483,7 @@ export interface ToolApprovalResponse { approved: boolean }
 
 export interface PageParams { cursor?: string | null; limit?: number }
 export interface ThreadListParams extends PageParams { archived?: boolean; projectId?: string }
-export interface TurnSummary { turnId: string; threadId: string; status: TurnStatus; model?: string; startedAt?: string; updatedAt?: string }
+export interface TurnSummary { turnId: string; threadId: string; status: TurnStatus; model?: string; startedAt?: string; updatedAt?: string; maxModelRequests?: number }
 export interface TurnListResponse { turns: TurnSummary[]; nextCursor: string | null }
 export interface ItemListResponse { items: ThreadItem[]; nextCursor: string | null }
 
@@ -550,6 +594,10 @@ export interface ContextCompactJob {
   retainedItemCount?: number;
   firstKeptItemId?: string | null;
   estimatedRetainedTokens?: number;
+  summaryProvider?: string;
+  summaryModel?: string;
+  summaryEffort?: string | null;
+  requestRejected?: boolean;
 }
 export interface ContextCompactAbortResponse extends ContextCompactJob { aborted: boolean }
 export interface ContextBudget {
@@ -577,7 +625,12 @@ export interface ContextReadResponse extends ContextBudget {
   threadId: string;
   turnId?: string;
   requestSource: "active" | "preview" | "default";
-  checkpoint: Record<string, unknown> | null;
+  summaryAvailable?: boolean;
+  checkpoint: (Record<string, unknown> & {
+    summaryProvider?: string;
+    summaryModel?: string;
+    summaryEffort?: string | null;
+  }) | null;
   usage: Record<string, unknown> | null;
   summaryUsage?: Record<string, unknown> | null;
   lastBudget?: ContextBudget & { turnId: string } | null;
@@ -595,6 +648,7 @@ export interface ConnectionCheck {
   authState?: string;
   binarySource?: string;
   browserSourcePolicy?: "inherit" | "auto" | "existing-browser" | "stored-cookie";
+  requestRejected?: boolean;
 }
 export interface ConnectionReport { cli: ConnectionCheck; model: ConnectionCheck; platform: ConnectionCheck }
 /** Login control contains no credentials; cookie transport is private to the host. */

@@ -4,12 +4,128 @@
 
 ### 新功能
 
+- [Issue #138](https://github.com/can4hou6joeng4/boss-cli/issues/138)：增加同步 `after_tool_call` 宿主回调，覆盖已持久化的成功、失败、拒绝、未执行和结果未知工具终态；结果内容默认隐藏，需嵌入端显式 opt-in，回调只读且不能改写执行事实。
+
 - 参考 Pi 开放 PR [#11368](https://github.com/earendil-works/pi/pull/11368) 的 provider/model 定义拆分，为本机可用线路增加模型目录和会话级 provider/model 选择；选择追加到会话历史并随 fork 继承，旧会话继续继承启动默认线路。
+
+### 修复
+
+- [Issue #136](https://github.com/can4hou6joeng4/boss-cli/issues/136)：OpenAI Responses 流在响应句柄登记前收到取消时，登记后立即复查取消标志并退出 SDK context manager，避免已取消回合继续读取响应 body。
+
+### 兼容与验证
+
+- 保持 OpenAI Responses 的正常事件、回合终态和重试边界不变；Anthropic 线路不变。使用 OpenAI SDK `3.35.0`（项目最低兼容版本）与 `3.35.1`、httpx2 `2.13.1/2.16.0` 的隔离合成流验证 headers gate/body gate、正常流、重复/迟到取消与 provider 复用；网络尝试为零。探针仅保留本地，未调用真实模型或招聘平台。
+
+## 0.2.0-rc.13 - 2026-10-28
+
+第十三次私有源码与 Python 内核候选发布，修复摘要期间的后续回合派发竞态，并完善会话存储目录、文件及 macOS ACL 的隐私保护。
+
+### 修复
+
+- [Issue #127](https://github.com/can4hou6joeng4/boss-cli/issues/127)（[PR #128](https://github.com/can4hou6joeng4/boss-cli/pull/128)）：摘要运行期间排入的后续回合保持 `queued`，不再因会话暂时占用被误判为 `TURN_START_FAILED`；摘要与已领取但尚未启动的后续回合互斥，成功后恢复派发，手动摘要失败或取消则暂停旧输入。
+- [Issue #129](https://github.com/can4hou6joeng4/boss-cli/issues/129)（[PR #130](https://github.com/can4hou6joeng4/boss-cli/pull/130)）：新建会话目录限制为 owner-only `0700`，不随宽松 umask 暴露目录项。
+- [Issue #131](https://github.com/can4hou6joeng4/boss-cli/issues/131)（[PR #132](https://github.com/can4hou6joeng4/boss-cli/pull/132)）：独立初始化 `SessionStore` 时，私有创建承载 SQLite 索引和事件日志的新父目录。
+- [Issue #133](https://github.com/can4hou6joeng4/boss-cli/issues/133)（[PR #134](https://github.com/can4hou6joeng4/boss-cli/pull/134)）：新建会话持久化文件限制为 `0600`，清除 macOS 继承 ACL；启动时收紧当前用户拥有的旧文件，覆盖 SQLite/WAL/SHM、checkpoint、附件、repair 备份、manifest 和状态锁。已有目录 mode/ACL 保持不变，不安全的目录或不支持的权限平台在创建状态前拒绝初始化。
+
+### 兼容与验证
+
+- npm 工作区统一为 `0.2.0-rc.13`，Python 内核为等价 PEP 440 版本 `0.2.0rc13`；JSON-RPC 保持 `0.2.0`。状态文件权限后端支持 Linux 与 macOS；Windows 和其他平台需要独立的权限后端，当前拒绝创建状态。
+- 本地 Python 3.14/APFS 探针覆盖新旧文件、继承 ACL、可搜索目录拒绝、checkpoint、活跃 WAL/SHM、repair 备份与 manifest、状态锁、符号链接/FIFO 和不支持平台；内容 hash 与已有目录权限保持不变。类型检查、桌面源码构建、Python 编译及 wheel/sdist 构建通过；功能 PR #128/#130/#132/#134 的 Source build 与 GitGuardian 检查通过。
+- 探针只保留本地；未调用真实模型或招聘平台，未进行桌面 UI 验收，不含独立桌面安装包。
+
+## 0.2.0-rc.12 - 2026-10-28
+
+第十二次私有源码与 Python 内核候选发布，收敛 OpenAI Responses 流式输出与权威终态之间的差异，避免执行已撤回的工具调用。
+
+### 修复
+
+- 参考 Pi Issue [#11043](https://github.com/earendil-works/pi/issues/11043)，OpenAI Responses 适配器现在以 `response.completed` / `response.incomplete` 的权威 `output` 集合收敛最终内容；流中出现但终态撤回的工具调用不会再进入执行器，缺失或重复终态集合会返回错误并停止派发。
+
+### 兼容与验证
+
+- npm 组件统一为 `0.2.0-rc.12`，Python 内核为等价 PEP 440 版本 `0.2.0rc12`；JSON-RPC 保持 `0.2.0`。
+- 本地离线终态一致性探针覆盖撤回工具、缺失 `output`、重复索引和有效工具保留四种路径，4/4 通过；Python 3.14 编译、类型检查、桌面源码构建、Harness wheel/sdist 构建和 PR #125 的 Source build、GitGuardian 检查通过。
+- 未调用真实模型或招聘平台；候选交付私有源码与 Python wheel/sdist，不含独立桌面安装包。
+
+## 0.2.0-rc.11 - 2026-10-28
+
+第十一次私有源码与 Python 内核候选发布，提供宿主控制的回合请求上限，并补齐摘要与连接检查的模型请求策略。
+
+### 新功能
+
+- 参考 Pi Issue [#11043](https://github.com/earendil-works/pi/issues/11043)，宿主可通过 `max_model_requests` 或 `BOSS_HARNESS_MAX_MODEL_REQUESTS` 设置每回合 1–64 次业务请求硬上限，默认仍为 6；`turn/start.maxModelRequests` 只能为本回合收紧。工具循环、steering 和上下文恢复共享额度，耗尽后保留结果并暂停队列。
+
+### 修复
+
+- [Issue #121](https://github.com/can4hou6joeng4/boss-cli/issues/121)：`before_request` 统一覆盖业务请求、每个摘要分片和模型连接检查；摘要拒绝不调用对应 provider、不提交新 checkpoint、不继续业务请求。持久错误、终态通知与连接报告保留脱敏原因和请求身份，已关闭策略和迟到允许结果保持拒绝，取消优先。
+
+### 兼容与验证
+
+- npm 组件统一为 `0.2.0-rc.11`，Python 内核为等价 PEP 440 版本 `0.2.0rc11`；JSON-RPC 保持 `0.2.0`，新增协议字段可选。业务请求上限不统计 provider/SDK 内部传输重试，摘要仍有独立的 32 次生成上限。
+- 本地请求上限、策略拒绝、持久化异常、取消及队列专项探针通过；Python 3.10/3.12 编译、Python 3.10 专项验证、类型检查、桌面源码构建与 wheel/sdist 构建通过。功能 PR #122/#123 的 Source build 与 GitGuardian 均成功；探针只保留本地。
+- 未调用真实模型或招聘平台；候选交付私有源码与 Python wheel/sdist，不含独立桌面安装包。
+
+## 0.2.0-rc.10 - 2026-10-28
+
+第十次私有源码与 Python 内核候选发布，增加模型请求前策略拒绝闸门。
+
+### 新功能
+
+- 参考 Pi Issue [#11055](https://github.com/earendil-works/pi/issues/11055)，嵌入宿主可通过 `before_request` 在完整业务请求预算准备后拒绝模型请求。拒绝以 `error` 终止当前回合，保留脱敏原因，不调用该业务 provider、不执行工具、不申请审批，也不进入上下文恢复或自动重试。
+
+### 验证与限制
+
+- 本地离线探针覆盖首次请求、工具循环第二轮和上下文恢复重试；Python 3.14 编译、Harness wheel/sdist 构建、TypeScript 类型检查、桌面源码构建及产物内容检查通过。
+- 未调用真实模型或招聘平台；本候选继续交付私有源码与 Python wheel/sdist，不含独立桌面安装包。
+- rc.10 的 `before_request` 仅覆盖业务模型请求；摘要和模型连接检查的覆盖缺口在 rc.11 的 Issue #121 修复中补齐。
+
+## 0.2.0-rc.9 - 2026-10-28
+
+第九次私有源码与 Python 内核候选发布，补齐 OpenAI-compatible llama.cpp 解码阶段上下文耗尽的恢复分类。
+
+### 修复
+
+- 参考 Pi Issue [#10885](https://github.com/earendil-works/pi/issues/10885)，识别 OpenAI-compatible llama.cpp 在解码阶段返回的有界 `Context size has been exceeded.`，使上下文恢复路径能够处理 KV pool 耗尽，而不扩大对任意错误文本的匹配。
+
+### 验证与限制
+
+- 本地离线分类探针、Python 3.13 编译、Harness wheel/sdist 构建及包内容检查通过；PR #117 的 Source build、GitGuardian 与合并后 main Build 均通过。
+- 未调用真实模型、llama.cpp 服务或招聘平台；本候选继续交付私有源码与 Python wheel/sdist，不含独立桌面安装包。
+
+## 0.2.0-rc.8 - 2026-10-28
+
+第八次私有源码与 Python 内核候选发布，修复模型将嵌套 object/array 参数额外编码为 JSON 字符串时的工具调用兼容性。
+
+### 修复
+
+- 参考 Pi PR [#9569](https://github.com/earendil-works/pi/pull/9569)，按显式工具 schema 解码被额外 JSON 编码的嵌套 object/array 参数；解码结果仍须通过同一 schema 校验，且 schema 允许字符串时保留原字符串。
+
+### 验证与限制
+
+- 本地离线 schema 边界探针、Python 3.11 编译、Harness wheel/sdist 构建及包内容检查通过；PR #115 的 Source build 与 GitGuardian 检查通过。
+- 未调用真实模型或招聘平台；本候选继续交付私有源码与 Python wheel/sdist，不含独立桌面安装包。
+
+## 0.2.0-rc.7 - 2026-10-28
+
+第七次私有源码与 Python 内核候选发布，限制模型上下文中的大型工具结果，并持续完善会话摘要、provider 错误诊断与内核可靠性。
+
+### 兼容变化
+
+- npm 组件统一为 `0.2.0-rc.7`，Python 内核为等价 PEP 440 版本 `0.2.0rc7`；JSON-RPC 保持 `0.2.0`。
+- `ToolDescriptor.maxModelResultBytes` 为可选字段；自定义工具默认使用 20 KiB 模型结果预算，可设置 8 KiB 至 1 MiB。
+
+### 新功能
+
+- 按工具配置模型可见结果的 UTF-8 字节预算，完整结果仍持久化；超限时向模型提供省略提示、摘要和 SHA-256，并新增只读 `read_session_tool_result` 内核工具分段读取，确保省略数据可按会话、条目和摘要校验后继续读取。
+- 模型终态错误通过 `session/error.errorInfo` 和持久错误记录保留经过筛选的 provider、来源、HTTP 状态、provider code 与可选请求级 retryable；终态事件同时区分是否已观察到输出。原始响应和响应头不持久化，retryable 不授权重放整回合，自动重试策略保持不变。
+- 新 checkpoint 以 `sourceItemCount` 持久化已覆盖前缀长度，避免每次摘要重复写入全部来源条目 ID；摘要请求也不再重复携带旧 checkpoint 的 ID 列表。旧 checkpoint 格式仍可读取，`context/read` 和 `context/compact/plan` 的 `sourceItemIds` 响应保持兼容。
+- 为自动、手动及溢出恢复摘要增加独立 provider、model、effort 配置；未配置时沿用会话设置。显式推理档位需由模型容量目录声明支持，摘要任务和 checkpoint 记录实际配置，并在提交前继续按业务模型校验完整请求预算。
 - 参考 Pi 的 hook 取消信号边界，为 `before_tool_call` 增加可选协作式 `signal`，并在回合取消时立即结束内核等待；旧的一参数 hook 保持兼容，迟到决策不触发审批或工具派发。
 - [Issue #107](https://github.com/can4hou6joeng4/boss-cli/issues/107)：增加追加式会话上下文编辑，允许替换或排除已结束回合中的用户/助手文本；原始日志不变，编辑参与请求预算与摘要来源，并按 fork 历史继承。
 
 ### 修复
 
+- 手动摘要的单次 `model` 覆盖只按摘要线路解析；当业务会话保存的推理档位不被跨 provider 摘要模型支持时，不再错误地按业务模型拒绝摘要请求。
 - [Issue #99](https://github.com/can4hou6joeng4/boss-cli/issues/99)：为生命周期 hook callback 增加 16 个在途 worker 上限；超时线程在实际退出前继续占用容量，策略容量耗尽时以 `HOOK_BUSY` 拒绝工具调用，观察事件过载则跳过并合并诊断。
 - [Issue #97](https://github.com/can4hou6joeng4/boss-cli/issues/97)：工具结果追加异常时按稳定条目身份对账，确认缺失后最多重试同一结果一次；不重跑 handler 或审批。恢复写入会停止当前工具批次，结果无法确认时记录 `outcome_unknown`，连未知状态也无法持久化时阻止该会话继续请求模型。
 - [Issue #95](https://github.com/can4hou6joeng4/boss-cli/issues/95)：摘要 checkpoint 在同一写锁内重新核验来源，并先同步完整临时日志再原子发布；公开前失败保留原文件与旧摘要，公开后故障明确区分已提交与替换结果不确定，避免后续上下文静默采用写入失败的摘要。
@@ -18,6 +134,11 @@
 - [Issue #89](https://github.com/can4hou6joeng4/boss-cli/issues/89)：严格验证 Anthropic 和 OpenAI Responses 的最终工具参数是完整 JSON object；截断、非对象、非标准 JSON 常量或终态来源冲突时不派发工具，保留合法空对象调用。
 - [Issue #91](https://github.com/can4hou6joeng4/boss-cli/issues/91)：Anthropic 与 OpenAI Responses 的工具参数在增量、初始值和终态快照入口按 UTF-8 原始字节检查；每项和每次模型响应合计上限均为 1 MiB。超限、终态缺失或来源冲突时整轮报错，不派发工具且错误不回显输入。
 - [Issue #93](https://github.com/can4hou6joeng4/boss-cli/issues/93)：将每响应文本与思考合计限制为 1 MiB UTF-8，超限在持久化前报错并阻止工具与队列继续；拆分增量事件，并用内容引用和冻结快照分段恢复大 Agent 字段。
+
+### 验证与限制
+
+- 本地 Python 3.10/3.12 编译、TypeScript 类型检查、桌面源码构建、干净 Git archive wheel/sdist 构建和结果预算专项探针通过；PR #113 的 Source build 与 GitGuardian 检查通过。探针未加入仓库。
+- 未调用真实模型或招聘平台。此候选继续交付私有源码与 Python wheel/sdist，不含独立桌面安装包；签名/公证、完整 Python 依赖锁及真实模型/平台完整验收仍未完成。
 
 ## 0.2.0-rc.6 - 2026-10-27
 

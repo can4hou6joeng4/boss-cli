@@ -337,6 +337,10 @@ class OpenAIResponsesProvider:
         #: 是否有一段思考待分隔：延后到下一段真正开始时再发，避免尾部分隔符
         pending_break = False
         terminal: object | None = None
+        #: response.completed / response.incomplete 的 output 是权威集合。
+        #: 流中曾出现、但终态已撤回的块不能继续落入最终 AssistantMessage，
+        #: 否则调用方会把已撤回的工具调用交给执行器。
+        terminal_indexes: set[int] | None = None
 
         yield StreamEvent(type="start")
 
@@ -347,6 +351,12 @@ class OpenAIResponsesProvider:
             # 而本项目本来就在自己维护状态（累积块、算停止原因），不需要它的状态机。
             with self._client.responses.create(**kwargs, stream=True) as stream:
                 self._active_stream = stream
+                # `request_abort()` 可能发生在 SDK context manager 建立响应的窗口；
+                # 此前没有可关闭的句柄，因此必须在登记后重新检查。否则即使取消标志
+                # 已经置上，仍会进入 body iterator，把一个已取消的回合卡在传输读取上。
+                if self._abort_requested:
+                    yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+                    return
                 for event in stream:
                     kind = str(getattr(event, "type", ""))
                     index = int(getattr(event, "output_index", 0) or 0)
@@ -514,8 +524,14 @@ class OpenAIResponsesProvider:
 
                     elif kind in ("response.completed", "response.incomplete"):
                         terminal = getattr(event, "response", None)
+                        if terminal is None:
+                            raise ValueError("响应终态缺少 response 对象")
+                        terminal_output = getattr(terminal, "output", None)
+                        if terminal_output is None:
+                            raise ValueError("响应终态缺少 output 集合")
+                        terminal_indexes = set()
                         terminal_ids: set[str] = set()
-                        for output_index, item in enumerate(getattr(terminal, "output", None) or []):
+                        for output_index, item in enumerate(terminal_output):
                             item_type = str(getattr(item, "type", "") or "")
                             item_id = str(getattr(item, "id", "") or "")
                             if item_id:
@@ -523,6 +539,9 @@ class OpenAIResponsesProvider:
                                     raise ValueError("响应终态重复使用输出项标识")
                                 terminal_ids.add(item_id)
                             item_index = item_ids.get(item_id, output_index) if item_id else output_index
+                            if item_index in terminal_indexes:
+                                raise ValueError("响应终态重复使用输出项索引")
+                            terminal_indexes.add(item_index)
                             if item_type == "reasoning":
                                 text = _reasoning_text(item, text_budget, item_index)
                                 thinking_buffers[item_index] = [text]
@@ -564,8 +583,10 @@ class OpenAIResponsesProvider:
                         )
                         error_type = str(getattr(error, "type", "") or "")
                         message = str(getattr(error, "message", "") or "") or "响应失败"
-                        error_info = openai_error_info(error, source="stream_error")
-                        self._last_error_retryable = error_info is None and _looks_transient(code, f"{error_type} {message}")
+                        error_info = openai_error_info(error, source="stream_error", status_code=200)
+                        self._last_error_retryable = not (
+                            error_info is not None and error_info.code == "CONTEXT_OVERFLOW"
+                        ) and _looks_transient(code, f"{error_type} {message}")
                         yield StreamEvent(
                             type="error", reason="error", error=self._redact(f"接口错误 {code}：{message}"),
                             error_info=error_info,
@@ -575,8 +596,10 @@ class OpenAIResponsesProvider:
                     elif kind == "error":
                         code = str(getattr(event, "code", "") or "unknown")
                         message = str(getattr(event, "message", "") or "")
-                        error_info = openai_error_info(event, source="stream_error")
-                        self._last_error_retryable = error_info is None and _looks_transient(code, message)
+                        error_info = openai_error_info(event, source="stream_error", status_code=200)
+                        self._last_error_retryable = not (
+                            error_info is not None and error_info.code == "CONTEXT_OVERFLOW"
+                        ) and _looks_transient(code, message)
                         yield StreamEvent(
                             type="error", reason="error", error=self._redact(f"接口错误 {code}：{message}"),
                             error_info=error_info,
@@ -594,7 +617,9 @@ class OpenAIResponsesProvider:
             return
         except openai.APIStatusError as exc:
             error_info = openai_error_info(exc.body, source="http_error", status_code=exc.status_code)
-            self._last_error_retryable = error_info is None and exc.status_code in _RETRYABLE_STATUS
+            self._last_error_retryable = not (
+                error_info is not None and error_info.code == "CONTEXT_OVERFLOW"
+            ) and exc.status_code in _RETRYABLE_STATUS
             self._last_error_retry_after = _retry_after_seconds(exc)
             yield StreamEvent(
                 type="error",
@@ -606,7 +631,9 @@ class OpenAIResponsesProvider:
         except openai.APIConnectionError as exc:
             # 连接被掐断通常是瞬时的（网关抖动、代理换路），值得重试。
             self._last_error_retryable = True
-            yield StreamEvent(type="error", reason="error", error=self._redact(f"连接失败：{exc}"))
+            error_info = openai_error_info(None, source="transport_error", retryable=True)
+            yield StreamEvent(type="error", reason="error", error=self._redact(f"连接失败：{exc}"),
+                              error_info=error_info)
             return
         except openai.APIError as exc:
             self._last_error_retryable = False
@@ -627,11 +654,13 @@ class OpenAIResponsesProvider:
             return
 
         for index, parts in text_buffers.items():
-            if index not in blocks:
+            if index not in blocks and (terminal_indexes is None or index in terminal_indexes):
                 blocks[index] = TextBlock(text=text_budget.reconcile_parts(("text", index), parts))
         for index, parts in thinking_buffers.items():
-            if index not in blocks:
+            if index not in blocks and (terminal_indexes is None or index in terminal_indexes):
                 blocks[index] = ThinkingBlock(thinking=text_budget.reconcile_parts(("thinking", index), parts))
+        if terminal_indexes is not None:
+            blocks = {index: block for index, block in blocks.items() if index in terminal_indexes}
         ordered: list[object] = [blocks[key] for key in sorted(blocks)]
         calls = tuple(block for block in ordered if isinstance(block, ToolCallBlock))
         # 参数 JSON 没解析成功时，视为这一轮未完成，交由调用方报错而不是带着空参数执行。

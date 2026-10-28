@@ -6,12 +6,15 @@ import fcntl
 import os
 from pathlib import Path
 
+from boss_harness.private_files import ensure_private_directory, open_private_file
+
 
 class StateDirectoryOwner:
     def __init__(self, root: Path) -> None:
-        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.root = Path(root).resolve()
+        ensure_private_directory(self.root)
         self._fd: int | None = None
-        self._fd = os.open(root / ".owner.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        self._fd = open_private_file(self.root / ".owner.lock", os.O_RDWR)
         try:
             fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

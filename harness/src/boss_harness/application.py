@@ -31,9 +31,11 @@ from boss_harness.models import ModelConfig, Provider, resolve_config
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.capabilities import ModelCatalog
 from boss_harness.models.types import AssistantMessage, ModelRequest, UserMessage
+from boss_harness.model_tools import MODEL_RESULT_READ_TOOL, model_tool_specs
 from boss_harness.ownership import StateDirectoryOwner
 from boss_harness.resources import AttachmentStore, SkillCatalog, ToolRegistry
 from boss_harness.request_identity import resolve_request
+from boss_harness.request_policy import ModelRequestRejected, check_model_request, record_model_rejection
 from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
 from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUncertain, Entry,
@@ -46,6 +48,7 @@ from boss_harness.context import NoCompactionSource
 from boss_harness.shutdown import TrackedAbort, join_until
 from boss_harness.hooks import HookFailure, LifecycleHooks
 from boss_harness.item_content import read_item_content
+from boss_harness.turn_limits import model_request_limit, model_request_limit_from_environment
 
 PROTOCOL_VERSION = "0.2.0"
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
@@ -131,8 +134,12 @@ class ApplicationService:
                  tool_bundle: ToolBundle | None = None, bridge_factory: Callable[[], Any] | None = None,
                  compaction_policy: CompactionPolicy | None = None,
                  lifecycle_hooks: LifecycleHooks | tuple[Any, ...] | list[Any] | None = None,
-                 hook_timeout: float = 0.25) -> None:
+                 hook_timeout: float = 0.25,
+                 expose_tool_results_to_hooks: bool = False,
+                 max_model_requests: int | None = None) -> None:
         self.server, self.config, self.provider = server, config, provider
+        self.max_model_requests = (model_request_limit_from_environment() if max_model_requests is None
+                                   else model_request_limit(max_model_requests))
         if type(config.max_tokens) is not int or config.max_tokens <= 0:
             raise ValueError("max_tokens 必须是正整数")
         self.model_catalog = model_catalog if model_catalog is not None else ModelCatalog.from_environment()
@@ -150,15 +157,17 @@ class ApplicationService:
             raise ValueError("工具组合须提供有效 ToolBundle 和独立 bridge_factory")
         self.tool_bundle, self.bridge_factory = tool_bundle, bridge_factory
         self.registry = ToolRegistry(tool_bundle.tools)
+        model_tool_specs(self.registry.specs())
         self.provider_factory = provider_factory
         self._model_configs = self._discover_model_configs()
         self.workspace = (workspace or Path.cwd()).resolve()
         if isinstance(lifecycle_hooks, LifecycleHooks):
-            if hook_timeout != 0.25:
-                raise ValueError("已构造 LifecycleHooks 时应在构造时设置 hook timeout")
+            if hook_timeout != 0.25 or expose_tool_results_to_hooks:
+                raise ValueError("已构造 LifecycleHooks 时应在构造时设置 hook timeout 和结果访问权限")
             self.lifecycle_hooks = lifecycle_hooks
         else:
-            self.lifecycle_hooks = LifecycleHooks(lifecycle_hooks, timeout=hook_timeout)
+            self.lifecycle_hooks = LifecycleHooks(lifecycle_hooks, timeout=hook_timeout,
+                                                  expose_tool_results=expose_tool_results_to_hooks)
         self.bridge_lifecycle = BridgeLifecycle()
         self._base_bridge_close_claimed = False
         self._base_bridge_close_owner: int | None = None
@@ -193,6 +202,9 @@ class ApplicationService:
             self.tools = self._new_bridge()
             self.connections = ConnectionChecks(config, request_preparer=lambda request: self.context.prepare(
                 request, self.model_catalog.resolve(config.provider, request.model), provider=config.provider)[0],
+                request_budget=lambda request: self.context.prepare(request,
+                    self.model_catalog.resolve(config.provider, request.model), provider=config.provider)[1],
+                lifecycle_hooks=self.lifecycle_hooks,
                 bridge_factory=self._new_bridge if self._business_services else None,
                 browser_source_policy=getattr(self.tools, "browser_source_policy", None),
                 bridge_lifecycle=self.bridge_lifecycle)
@@ -294,6 +306,7 @@ class ApplicationService:
             validate_arguments=self.registry.validate, pause_on_result=self.tool_bundle.pause_on_result,
             lifecycle_hooks=self.lifecycle_hooks,
             persistence_fence=self._fence_tool_persistence,
+            max_model_requests=self.max_model_requests,
             history_provider=self.context.history,
             request_preparer=lambda request: self.context.prepare(request,
                 self.model_catalog.resolve(config.provider, request.model), provider=config.provider))
@@ -411,6 +424,7 @@ class ApplicationService:
         return {"protocolVersion": PROTOCOL_VERSION, "workspace": str(self.workspace),
                 "provider": self.config.provider, "model": self.config.model,
                 "maxOutputTokens": self.config.max_tokens, "parallelThreads": self.runtimes.capacity,
+                "maxModelRequests": self.max_model_requests,
                 "modelCapabilities": self.model_catalog.resolve(self.config.provider, self.config.model).describe(),
                 "toolBundleId": self.tool_bundle.id,
                 "autoCompaction": self.compaction_policy.describe(),
@@ -663,6 +677,8 @@ class ApplicationService:
             raise RpcError(-32004, "请先中断该会话的运行回合")
         if thread_id in self._compaction_by_thread:
             raise RpcError(-32004, "该会话正在生成摘要，请等待完成或先取消摘要")
+        if thread_id in self._follow_up_dispatches:
+            raise RpcError(-32004, "该会话正在启动后续回合，请等待启动完成")
 
     def on_thread_archive(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")
@@ -831,14 +847,19 @@ class ApplicationService:
                 entries = self.sessions.read_entries(thread_id)
                 metadata = self.context.read(thread_id, entries=entries)
                 if runner.last_preparation is not None:
+                    policy = job["compactionPolicy"]
+                    summary_provider = policy.provider or runner.config.provider
                     return {**metadata, **runner.last_preparation[1], "requestSource": "active",
+                            "summaryAvailable": self.provider_factory is not None and summary_provider != "none",
                             "compactionJob": self._compaction_reference(thread_id)}
                 config, prompt, tools = runner.config, runner.system_prompt, runner.tool_specs()
+                policy = job["compactionPolicy"]
             else:
                 config = self._model_config(thread, params)
+                policy = self.compaction_policy
                 skill_text, _ = self.skills.load(params.get("skillIds"))
                 prompt = self._system_prompt(thread.get("toolPolicy") == "readOnly", skill_text)
-                tools = self.registry.specs(read_only=thread.get("toolPolicy") == "readOnly")
+                tools = model_tool_specs(self.registry.specs(read_only=thread.get("toolPolicy") == "readOnly"))
                 entries = self.sessions.read_entries(thread_id)
             messages = list(self.context.history(thread_id, entries=entries))
             if job is None:
@@ -852,7 +873,9 @@ class ApplicationService:
             result = self.context.read(thread_id, request=request,
                                        capabilities=self.model_catalog.resolve(config.provider, config.model),
                                        provider=config.provider, entries=entries)
+            summary_provider = policy.provider or config.provider
             return {**result, "provider": config.provider, "requestSource": "active" if job else "preview" if preview else "default",
+                    "summaryAvailable": self.provider_factory is not None and summary_provider != "none",
                     "compactionJob": self._compaction_reference(thread_id)}
 
     def on_context_edit_read(self, params: dict | None) -> dict:
@@ -916,7 +939,8 @@ class ApplicationService:
                   "throughTurnId": job["throughTurnId"], "sourceDigest": job["sourceDigest"],
                   "status": job["status"]}
         for key in ("code", "message", "result", "modelRequestCount", "processedCharacters", "totalCharacters",
-                    "retainedItemCount", "firstKeptItemId", "estimatedRetainedTokens", "reason", "turnId"):
+                    "retainedItemCount", "firstKeptItemId", "estimatedRetainedTokens", "reason", "turnId",
+                    "summaryProvider", "summaryModel", "summaryEffort", "requestRejected"):
             if key in job and job[key] is not None:
                 result[key] = job[key]
         return result
@@ -943,22 +967,53 @@ class ApplicationService:
                     self._compaction_jobs.pop(expired_id, None)
 
     def _finish_compaction(self, job: dict) -> None:
+        wake_follow_up = False
         with self.runtimes.lock:
             job["_shutdown_worker_done"] = True
-            self._retire_compaction_locked(job)
+            if (job.get("status") in {"failed", "cancelled"}
+                    and self.runtimes.active.get(job["threadId"]) is None):
+                try:
+                    self.queue.pause(job["threadId"], kind="followUp")
+                except Exception:
+                    # TurnQueue records an in-memory pending pause before
+                    # persistence, so future admission still settles it first.
+                    pass
+            released = self._retire_compaction_locked(job)
+            # A successful checkpoint is the only compaction outcome that may
+            # resume a queued user request. Failed/cancelled compaction keeps
+            # the queue untouched so no new model or external action starts
+            # without an explicit retry.
+            wake_follow_up = released and job.get("status") == "completed"
+        if wake_follow_up:
+            try:
+                self._start_follow_up(job["threadId"])
+            except Exception:
+                # The queue item remains durable and queued; a transient
+                # dispatch/observer failure must not rewrite the compaction
+                # result or turn it into a start failure.
+                pass
         self._close_application_resources_if_idle()
 
-    def _retire_compaction_locked(self, job: dict) -> None:
+    def _retire_compaction_locked(self, job: dict) -> bool:
         abort = job.get("_shutdown_abort")
         if not job.get("_shutdown_worker_done") or (abort is not None and not abort.done.is_set()):
-            return
+            return False
+        released = self._compaction_by_thread.get(job["threadId"]) == job["jobId"]
         if self._compaction_by_thread.get(job["threadId"]) == job["jobId"]:
             self._compaction_by_thread.pop(job["threadId"], None)
         self._remember_compaction_terminal(job)
+        return released
 
     def _compaction_abort_done(self, job: dict) -> None:
+        wake_follow_up = False
         with self.runtimes.lock:
-            self._retire_compaction_locked(job)
+            released = self._retire_compaction_locked(job)
+            wake_follow_up = released and job.get("status") == "completed"
+        if wake_follow_up:
+            try:
+                self._start_follow_up(job["threadId"])
+            except Exception:
+                pass
         self._close_application_resources_if_idle()
 
     @staticmethod
@@ -1005,6 +1060,51 @@ class ApplicationService:
             raise ValueError("模型摘要必须使用独立于主回合的 provider 实例")
         return provider
 
+    def _compaction_model_config(self, policy: CompactionPolicy, base: ModelConfig,
+                                 *, model_override: str | None = None,
+                                 session_effort: str | None = None) -> ModelConfig:
+        provider = policy.provider or base.provider
+        if provider == "none":
+            raise RpcError(-32013, "摘要不能使用 none 模型线路",
+                           {"code": "COMPACTION_MODEL_UNAVAILABLE", "provider": provider})
+        if provider == base.provider:
+            route = base
+        else:
+            environ = dict(os.environ)
+            for name in ("BOSS_HARNESS_PROVIDER", "BOSS_HARNESS_MODEL", "BOSS_HARNESS_EFFORT"):
+                environ.pop(name, None)
+            configured_model = environ.get(f"BOSS_HARNESS_{provider.upper()}_MODEL")
+            if policy.model is not None:
+                environ["BOSS_HARNESS_MODEL"] = policy.model
+            elif configured_model:
+                environ["BOSS_HARNESS_MODEL"] = configured_model
+            if provider == "anthropic" and not (
+                environ.get("ANTHROPIC_API_KEY") or environ.get("ANTHROPIC_AUTH_TOKEN")
+            ):
+                raise RpcError(-32013, "本机没有可用的摘要模型线路配置",
+                               {"code": "COMPACTION_MODEL_UNAVAILABLE", "provider": provider})
+            try:
+                route = resolve_config(environ=environ, provider=provider)
+            except (OSError, TypeError, ValueError):
+                raise RpcError(-32013, "本机没有可用的摘要模型线路配置",
+                               {"code": "COMPACTION_MODEL_UNAVAILABLE", "provider": provider}) from None
+
+        model = model_override or policy.model or route.model
+        capabilities = self.model_catalog.resolve(provider, model)
+        if policy.effort is not None:
+            if policy.effort not in capabilities.reasoning_efforts:
+                raise RpcError(-32012, "摘要模型未声明支持该推理档位",
+                               {"code": "COMPACTION_EFFORT_UNSUPPORTED", "provider": provider,
+                                "model": model, "available": list(capabilities.reasoning_efforts)})
+            effort = policy.effort
+        else:
+            effort = session_effort if session_effort is not None else base.effort
+            if effort is None:
+                effort = route.effort
+            if capabilities.reasoning_efforts and effort not in capabilities.reasoning_efforts:
+                effort = route.effort if route.effort in capabilities.reasoning_efforts else None
+        return replace(route, model=model, effort=effort)
+
     def _compaction_plan(self, params: dict) -> dict:
         through = _text(params, "throughTurnId") if "throughTurnId" in params else None
         keep = params.get("keepRecentTokens")
@@ -1025,7 +1125,9 @@ class ApplicationService:
             plan = self._compaction_plan(params)
             through_turn_id = plan["throughTurnId"]
             _, source = self.context.compaction_material(thread_id, through_turn_id, source_digest or plan["sourceDigest"])
-            config = self._model_config(self.sessions.get_thread(thread_id), params)
+            config = self._model_config(self.sessions.get_thread(thread_id), {})
+            config = self._compaction_model_config(self.compaction_policy, config,
+                                                   model_override=params.get("model"))
             active_manual = sum(1 for existing in self._compaction_jobs.values()
                                 if existing["status"] == "running" and "turnId" not in existing)
             if active_manual >= self.runtimes.capacity:
@@ -1039,6 +1141,8 @@ class ApplicationService:
             job_id = uuid.uuid4().hex
             job = {"jobId": job_id, "threadId": thread_id, "throughTurnId": through_turn_id,
                    "sourceDigest": plan["sourceDigest"], "config": config, "provider": provider,
+                   "summaryProvider": config.provider, "summaryModel": config.model,
+                   "summaryEffort": config.effort,
                    "cancel": threading.Event(), "status": "running", "modelRequestCount": 0,
                    "processedCharacters": 0, "totalCharacters": len(source),
                    "retainedItemCount": plan["retainedItemCount"], "firstKeptItemId": plan["firstKeptItemId"],
@@ -1156,11 +1260,22 @@ class ApplicationService:
         for index in range(1, SUMMARY_MAX_REQUESTS + 1):
             if job["cancel"].is_set():
                 raise _CompactionCancelled
-            with self.runtimes.lock:
-                effort = self._effective_reasoning_effort(self.sessions.get_thread(thread_id), config.provider, config.model)
-                planner.config = replace(config, effort=effort)
+            planner.config = config
             fragment = planner.fragment(offset, summary, index)
             prepared, budget = self.context.prepare(fragment.request, capabilities, provider=config.provider)
+            try:
+                check_model_request(self.lifecycle_hooks, config, prepared, budget,
+                    purpose="compaction", request_index=index - 1, cancel_event=job["cancel"],
+                    thread_id=thread_id, turn_id=job.get("turnId"), job_id=job["jobId"])
+            except ModelRequestRejected as exc:
+                if job["cancel"].is_set():
+                    raise _CompactionCancelled from None
+                record_model_rejection(self.sessions, thread_id, exc)
+                with self.runtimes.lock:
+                    job["requestRejected"] = True
+                raise
+            if job["cancel"].is_set():
+                raise _CompactionCancelled
             with self.runtimes.lock:
                 job["modelRequestCount"] = index
             assistant = self._stream_compaction(job["provider"], prepared, job["cancel"],
@@ -1200,7 +1315,8 @@ class ApplicationService:
                 business_config = self._model_config(thread, {})
                 preview = ModelRequest(model=business_config.model, system=self._system_prompt(read_only, ""),
                     messages=self.context.compacted_history(thread_id, summary, plan),
-                    tools=self.registry.specs(read_only=read_only), max_tokens=business_config.max_tokens,
+                    tools=model_tool_specs(self.registry.specs(read_only=read_only)),
+                    max_tokens=business_config.max_tokens,
                     effort=business_config.effort, thinking=business_config.thinking)
                 try:
                     self.context.prepare(preview, self.model_catalog.resolve(business_config.provider, business_config.model),
@@ -1211,7 +1327,8 @@ class ApplicationService:
                 self.context.compact(
                     thread_id, summary, job["throughTurnId"], plan["sourceDigest"], origin="model",
                     metadata={"summaryJobId": job["jobId"], "summaryProvider": config.provider,
-                              "summaryModel": config.model, "modelRequestCount": job["modelRequestCount"],
+                              "summaryModel": config.model, "summaryEffort": config.effort,
+                              "modelRequestCount": job["modelRequestCount"],
                               "sourceCharacters": len(source), "sourceTextDigest": planner.source_digest},
                     _on_committed=lambda: job.update(status="completed"))
                 result = self.on_context_read({"threadId": thread_id})
@@ -1223,6 +1340,8 @@ class ApplicationService:
         except ContextBudgetExceeded as exc:
             self._compaction_failed(job, "COMPACTION_INPUT_TOO_LARGE", exc)
         except _CompactionFailure as exc:
+            self._compaction_failed(job, exc.code, exc)
+        except ModelRequestRejected as exc:
             self._compaction_failed(job, exc.code, exc)
         except CheckpointCommitUncertain as exc:
             self._compaction_failed(job, exc.code, exc)
@@ -1309,7 +1428,8 @@ class ApplicationService:
     def _compact_during_turn(self, turn: dict, request: ModelRequest, reason: str,
                              *, required: bool) -> ModelRequest | None:
         runner, thread_id = turn["runner"], turn["threadId"]
-        config = replace(runner.config, effort=request.effort)
+        config = self._compaction_model_config(turn["compactionPolicy"], runner.config,
+                                               session_effort=request.effort)
         job: dict | None = None
         replacement: ModelRequest | None = None
 
@@ -1346,6 +1466,8 @@ class ApplicationService:
                 job = {"jobId": job_id, "threadId": thread_id, "turnId": turn["turnId"],
                     "throughTurnId": plan["throughTurnId"], "sourceDigest": plan["sourceDigest"],
                     "config": config, "provider": provider, "cancel": turn["cancel"],
+                    "summaryProvider": config.provider, "summaryModel": config.model,
+                    "summaryEffort": config.effort,
                     "worker": turn["worker"], "status": "running", "reason": reason,
                     "modelRequestCount": 0, "processedCharacters": 0, "totalCharacters": len(source),
                     "retainedItemCount": plan["retainedItemCount"], "firstKeptItemId": plan["firstKeptItemId"],
@@ -1372,7 +1494,8 @@ class ApplicationService:
                 owned()
                 self.context.compact(thread_id, summary, plan["throughTurnId"], plan["sourceDigest"],
                     origin="model", metadata={"summaryJobId": job_id, "summaryProvider": config.provider,
-                        "summaryModel": config.model, "reason": reason, "turnId": turn["turnId"],
+                        "summaryModel": config.model, "summaryEffort": config.effort,
+                        "reason": reason, "turnId": turn["turnId"],
                         "modelRequestCount": job["modelRequestCount"], "sourceCharacters": len(source),
                         "sourceTextDigest": planner.source_digest},
                     _active_turn_id=turn["turnId"], _on_committed=lambda: job.update(status="completed"))
@@ -1393,7 +1516,10 @@ class ApplicationService:
                     pass
                 raise ContextCompactionFailed(exc.code, runner.safe_error(exc)) from None
             if job is not None and job["status"] != "completed":
-                code = exc.code if isinstance(exc, (ContextCompactionFailed, _CompactionFailure, CheckpointCommitUncertain)) else "COMPACTION_FAILED"
+                code = exc.code if isinstance(exc, (ContextCompactionFailed, _CompactionFailure,
+                                                    CheckpointCommitUncertain, ModelRequestRejected)) else (
+                    exc.data.get("code", "COMPACTION_FAILED") if isinstance(exc, RpcError)
+                    and isinstance(exc.data, dict) else "COMPACTION_FAILED")
                 try:
                     self._compaction_failed(job, code, exc)
                 except Exception:
@@ -1402,6 +1528,8 @@ class ApplicationService:
                 raise ContextCompactionFailed(exc.code, runner.safe_error(exc)) from None
             if turn["cancel"].is_set() or self.runtimes.closed:
                 raise ContextCompactionFailed("COMPACTION_CANCELLED", "自动摘要已取消，本回合停止") from None
+            if isinstance(exc, ModelRequestRejected):
+                raise
             if job is not None and job["status"] == "completed" and replacement is not None:
                 with self.runtimes.lock:
                     owned()
@@ -1493,10 +1621,13 @@ class ApplicationService:
                 config = self._model_config(thread, params)
                 policy = (self.compaction_policy.override(params["autoCompaction"])
                           if "autoCompaction" in params else self.compaction_policy)
+                max_model_requests = model_request_limit(params.get("maxModelRequests", self.max_model_requests),
+                                                         ceiling=self.max_model_requests)
                 model = config.model
                 skill_text, skills = self.skills.load(params.get("skillIds"))
                 attachment_text, attachments = self.attachments.context(thread_id, params.get("attachmentIds"))
                 runner = self._runner_for(config)
+                runner.max_model_requests = max_model_requests
                 if any(compaction["status"] == "running" and compaction.get("provider") is runner.provider
                        for compaction in self._compaction_jobs.values()):
                     raise RpcError(-32005, "模型供应商实例正在执行摘要任务，请稍后重试")
@@ -1505,10 +1636,12 @@ class ApplicationService:
                 allowed = self.registry.allowed_names(read_only=read_only)
                 runner._tools = self.registry.specs(read_only=read_only)
 
-                def validate(name: str, arguments: dict) -> None:
+                def validate(name: str, arguments: dict) -> dict | None:
+                    if name == MODEL_RESULT_READ_TOOL:
+                        return None
                     if read_only and name not in allowed:
                         raise ValueError("只读会话禁止此工具；请新建需要逐次审批的会话")
-                    self.registry.validate(name, arguments)
+                    return self.registry.validate(name, arguments)
 
                 runner.validate_arguments = validate
                 job = self.runtimes.reserve(thread_id, text, runner)
@@ -1527,6 +1660,7 @@ class ApplicationService:
                 try:
                     self.sessions.record_turn(thread_id, job["turnId"], "running", model=model, provider=config.provider,
                         reasoningEffort=config.effort,
+                        maxModelRequests=max_model_requests,
                         skillIds=[s["id"] for s in skills], toolPolicy=thread.get("toolPolicy", "approval"),
                         clientUserMessageId=client_id, requestInputDigest=request_digest, queueId=job["queueId"])
                     user = runner.append_user(thread_id, text + ("\n\n" + attachment_text if attachment_text else ""),
@@ -1917,6 +2051,12 @@ class ApplicationService:
         while True:
             with self.runtimes.lock:
                 if self.runtimes.closed or thread_id in self.runtimes.active:
+                    return
+                # A compaction owns the session admission boundary. Leave a
+                # queued follow-up untouched until a successful checkpoint
+                # releases that ownership; otherwise the temporary busy error
+                # would be misclassified as TURN_START_FAILED.
+                if thread_id in self._compaction_by_thread:
                     return
                 if thread_id in self._tool_persistence_fences:
                     return

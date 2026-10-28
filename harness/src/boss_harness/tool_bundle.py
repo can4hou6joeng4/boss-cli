@@ -14,7 +14,9 @@ from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
-from boss_harness.models.types import ToolSpec
+from boss_harness.models.types import (
+    DEFAULT_MODEL_TOOL_RESULT_BYTES, MAX_MODEL_TOOL_RESULT_BYTES, MIN_MODEL_TOOL_RESULT_BYTES, ToolSpec,
+)
 from boss_harness.tool_schema import canonical_schema, validated_arguments
 from boss_harness.toolkit import ToolResult
 
@@ -32,20 +34,26 @@ class ToolDefinition:
     description: str
     handler: ToolHandler = field(repr=False)
     requires_approval: bool
+    max_model_result_bytes: int
     validate_arguments: ArgumentValidator | None = field(default=None, repr=False)
     _schema_json: str = field(default="", repr=False)
 
     def __init__(self, name: str, description: str, input_schema: Mapping[str, Any],
                  handler: ToolHandler, requires_approval: bool,
-                 validate_arguments: ArgumentValidator | None = None) -> None:
+                 validate_arguments: ArgumentValidator | None = None,
+                 max_model_result_bytes: int = DEFAULT_MODEL_TOOL_RESULT_BYTES) -> None:
         if (not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name) is None
                 or not isinstance(description, str) or not description.strip()
                 or not callable(handler) or type(requires_approval) is not bool
+                or type(max_model_result_bytes) is not int
+                or not MIN_MODEL_TOOL_RESULT_BYTES <= max_model_result_bytes <= MAX_MODEL_TOOL_RESULT_BYTES
                 or (validate_arguments is not None and not callable(validate_arguments))):
             raise ValueError(_DEFINITION_ERROR)
         schema_json = canonical_schema(input_schema)
         for key, value in (("name", name), ("description", description), ("handler", handler),
-                           ("requires_approval", requires_approval), ("validate_arguments", validate_arguments),
+                           ("requires_approval", requires_approval),
+                           ("max_model_result_bytes", max_model_result_bytes),
+                           ("validate_arguments", validate_arguments),
                            ("_schema_json", schema_json)):
             object.__setattr__(self, key, value)
 
@@ -54,16 +62,19 @@ class ToolDefinition:
         return json.loads(self._schema_json)
 
     def spec(self) -> ToolSpec:
-        return ToolSpec(name=self.name, description=self.description, input_schema=self.input_schema)
+        return ToolSpec(name=self.name, description=self.description, input_schema=self.input_schema,
+                        max_model_result_bytes=self.max_model_result_bytes)
 
-    def validate(self, arguments: dict[str, Any]) -> None:
+    def validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         copied = validated_arguments(self._schema_json, arguments)
         if self.validate_arguments is not None:
             try:
-                if self.validate_arguments(copied) is not None:
+                callback_copy = json.loads(json.dumps(copied, ensure_ascii=False))
+                if self.validate_arguments(callback_copy) is not None:
                     raise ValueError
             except Exception:
                 raise ValueError(_ARGUMENT_ERROR) from None
+        return copied
 
 
 def _definitions(tools: tuple[ToolDefinition, ...]) -> tuple[ToolDefinition, ...]:
@@ -118,10 +129,11 @@ class ToolRegistry:
     def describe(self, read_only: bool = False) -> list[dict[str, Any]]:
         allowed = self.allowed_names(read_only)
         return [{"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema,
+                 "maxModelResultBytes": tool.max_model_result_bytes,
                  "readOnly": not tool.requires_approval, "requiresApproval": tool.requires_approval}
                 for tool in self.definitions if tool.name in allowed]
 
-    def validate(self, name: str, arguments: dict[str, Any]) -> None:
+    def validate(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(name, str) or name not in self._by_name:
             raise ValueError("工具不在注册表中")
-        self._by_name[name].validate(arguments)
+        return self._by_name[name].validate(arguments)

@@ -93,6 +93,11 @@ ChatMessage = UserMessage | AssistantMessage | ToolResultsMessage
 # ---------- 用量与工具声明 ----------
 
 
+DEFAULT_MODEL_TOOL_RESULT_BYTES = 20 * 1024
+MIN_MODEL_TOOL_RESULT_BYTES = 8 * 1024
+MAX_MODEL_TOOL_RESULT_BYTES = 1024 * 1024
+
+
 @dataclass(frozen=True)
 class Usage:
     input: int = 0
@@ -111,6 +116,7 @@ class ToolSpec:
     name: str
     description: str
     input_schema: Mapping[str, Any]
+    max_model_result_bytes: int = DEFAULT_MODEL_TOOL_RESULT_BYTES
 
 
 # ---------- 请求与事件 ----------
@@ -129,16 +135,31 @@ class ModelRequest:
 
 @dataclass(frozen=True)
 class ModelErrorInfo:
-    """供应商已确认的错误分类；不包含原始响应、请求或凭据。
+    """来自供应商终态错误的有限诊断信息，不包含原始响应或凭据。
 
-    分类只说明当前请求失败的原因，是否允许恢复由执行内核判断。
+    ``code`` 仅表示 Harness 已确认的语义分类；状态码、provider code 和
+    ``retryable`` 不能单独授权执行内核重试或恢复。
     """
 
-    code: Literal["CONTEXT_OVERFLOW"]
     provider: Literal["openai", "anthropic"]
-    source: Literal["http_error", "stream_error"]
+    source: Literal["http_error", "stream_error", "transport_error"]
+    code: Literal["CONTEXT_OVERFLOW"] | None = None
     provider_code: str | None = None
     status_code: int | None = None
+    retryable: bool | None = None
+
+    def event_payload(self) -> dict[str, Any]:
+        """Return the camelCase public notification shape, omitting unknown facts."""
+        payload: dict[str, Any] = {"provider": self.provider, "source": self.source}
+        if self.code is not None:
+            payload["code"] = self.code
+        if self.provider_code is not None:
+            payload["providerCode"] = self.provider_code
+        if self.status_code is not None:
+            payload["statusCode"] = self.status_code
+        if self.retryable is not None:
+            payload["retryable"] = self.retryable
+        return payload
 
 
 @dataclass(frozen=True)

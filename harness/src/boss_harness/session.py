@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from boss_harness.persistence import PersistenceIndex
+from boss_harness.private_files import ensure_private_directory, open_private_file, restrict_private_file
 from boss_harness.models.capabilities import REASONING_EFFORTS
 
 _THREAD_ID = re.compile(r"[a-f0-9]{12}\Z")
@@ -134,10 +135,19 @@ class ToolRevisionPersistenceError(OSError):
 class SessionStore:
     def __init__(self, root: Path) -> None:
         self.root = Path(root).resolve()
-        self.root.mkdir(parents=True, exist_ok=True)
+        ensure_private_directory(self.root.parent)
+        ensure_private_directory(self.root)
         self._lock = threading.RLock()
         self.database_path = self.root.parent / "state.sqlite3"
         self.events_path = self.root.parent / "events.jsonl"
+        for path in (self.database_path.with_name(self.database_path.name + "-wal"),
+                     self.database_path.with_name(self.database_path.name + "-shm"), self.events_path,
+                     *self.root.glob("*.jsonl"), *self.root.glob(".*.tmp")):
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                continue
+            restrict_private_file(path)
         self._index = PersistenceIndex(self.database_path)
         self._refresh_threads()
         self._sync_events()
@@ -167,7 +177,8 @@ class SessionStore:
     @staticmethod
     def _append_line(path: Path, value: dict) -> None:
         encoded = (_json(value) + "\n").encode("utf-8")
-        with path.open("ab+") as handle:
+        descriptor = open_private_file(path, os.O_RDWR | os.O_APPEND)
+        with os.fdopen(descriptor, "a+b") as handle:
             handle.seek(0, 2)
             if handle.tell():
                 handle.seek(-1, 2)
@@ -187,7 +198,8 @@ class SessionStore:
             # Publish a complete rollout only after fsync. Hard-link creation is
             # atomic and refuses to overwrite an existing thread on an ID collision.
             try:
-                with temporary.open("xb") as handle:
+                descriptor = open_private_file(temporary, os.O_WRONLY | os.O_EXCL)
+                with os.fdopen(descriptor, "wb") as handle:
                     handle.write(encoded)
                     handle.flush()
                     os.fsync(handle.fileno())
@@ -334,7 +346,7 @@ class SessionStore:
                         raise ValueError("摘要提交必须构造 context_checkpoint 条目")
                     encoded = (_json(entry.to_dict()) + "\n").encode("utf-8")
                     candidate_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.checkpoint.tmp")
-                    descriptor = os.open(candidate_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    descriptor = open_private_file(candidate_path, os.O_WRONLY | os.O_EXCL)
                     temporary = candidate_path
                     with os.fdopen(descriptor, "wb") as target:
                         last_byte = b""
@@ -346,7 +358,7 @@ class SessionStore:
                         target.write(encoded)
                         target.flush()
                         os.fchown(target.fileno(), -1, original.st_gid)
-                        os.fchmod(target.fileno(), stat.S_IMODE(original.st_mode))
+                        os.fchmod(target.fileno(), 0o600)
                         os.fsync(target.fileno())
                         candidate = os.fstat(target.fileno())
                         candidate_identity = (candidate.st_dev, candidate.st_ino)

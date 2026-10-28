@@ -103,7 +103,7 @@ def resolve_config(
 
     return ModelConfig(
         provider=resolved,
-    model=(env.get("BOSS_HARNESS_MODEL")
+        model=(env.get("BOSS_HARNESS_MODEL")
                or env.get("BOSS_HARNESS_ANTHROPIC_MODEL")
                or DEFAULT_MODEL).strip() or DEFAULT_MODEL,
         max_tokens=int(env.get("BOSS_HARNESS_MAX_TOKENS") or DEFAULT_MAX_TOKENS),
