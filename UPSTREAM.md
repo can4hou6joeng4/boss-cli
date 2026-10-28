@@ -1,5 +1,11 @@
 # 上游吸收记录
 
+## 第六十二轮：识别代理 HTTP 413 请求体上限
+
+本项目 [Issue #144](https://github.com/can4hou6joeng4/boss-cli/issues/144) 基于文本附件/较长会话的字节体积复现：本地 token 估算仍在容量内时，前置代理仍可因 HTTP body 上限拒绝请求。Pi 开放 [Issue #10879](https://github.com/earendil-works/pi/issues/10879) 报告相同故障；核对时仍为 OPEN。Pi main `bdb68f750ed7724a7718237895b98604f7f2c114`（MIT）在 `packages/ai/src/utils/overflow.ts` 将通用 HTTP 413 文本和 Cerebras 无正文 400/413 都归为 overflow，范围比本项目允许的恢复信号更宽。
+
+本项目 OpenAI Responses 与 Anthropic 适配器都在可信 HTTP 异常边界获得结构化响应体和状态码。共享分类器只接受状态码 413 且 `message` 不超过 512 字符、完整匹配 `Request body too large` 或 `payload too large`（忽略大小写，允许末尾句点）；不要求任何供应商专属 code。裸 413、其他响应文本、HTTP 400、HTTP 200 流内错误和传输错误均不分类。实现不复制 Pi 正则或增加依赖，现有无输出/未取消/预算足够/每回合一次恢复闸门保持不变。
+
 ## 第六十一轮：识别 LiteLLM HTTP 400 上下文窗口拒绝
 
 本项目 [Issue #140](https://github.com/can4hou6joeng4/boss-cli/issues/140) 以 Pi Issue [#11492](https://github.com/earendil-works/pi/issues/11492) 的原始 LiteLLM 响应复现了上下文分类缺口：HTTP 400 的 `litellm.ContextWindowExceededError` 被 `openai_error_info()` 当作普通请求错误，因此现有自动摘要恢复无法处理。Pi [PR #11494](https://github.com/earendil-works/pi/pull/11494) 已合并，固定 merge commit `d3398f826ae2654b52a7988830d533a354754c13`；核对时 Pi main 为 `fa16851520f8c5edf930d14ca04cdb4cb71d7a67`，许可证 MIT。
