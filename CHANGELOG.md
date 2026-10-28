@@ -1,6 +1,8 @@
 # 变更记录
 
-## 未发布
+## 0.2.0-rc.14 - 2026-10-29
+
+第十四次私有源码与 Python 内核候选发布，累计纳入 rc.13 后合入的十四项功能与修复，并补足持久摘要任务的崩溃恢复状态。
 
 ### 新功能
 
@@ -24,6 +26,10 @@
 
 ### 兼容与验证
 
+- npm 工作区统一为 `0.2.0-rc.14`，Python 内核为等价 PEP 440 版本 `0.2.0rc14`；JSON-RPC 保持 `0.2.0`。
+- 本地永久删除探针覆盖 session、intent 和 events 硬链接崩溃窗口恢复，以及意外外部硬链接拒绝；逐会话准入并发探针通过。PR #161 的 Source build、GitGuardian 与合并后 main Build 均通过。
+- Issue #158 恢复探针 4 项通过，覆盖未提交 checkpoint、已提交 checkpoint、最近 64 个终态及已移除会话；重启不重放 provider、网络或子进程。现有本地内核回归 45 项通过。
+- 类型检查、Electron 源码构建、Python wheel/sdist 构建及 `git diff --check` 通过；PR #159/#160/#161 的 GitGuardian 与 Source build，以及相关合入 main 后的 Build 均通过。离线探针保留在本地，未调用真实模型或招聘平台，也未进行桌面 UI 验收。
 - OpenAI 与 Anthropic 共享相同的窄 HTTP 413 消息分类；既有无输出、未取消、自动压缩启用、预算足够及每回合只恢复一次的条件不变。Pi Issue #10879 的通用 413 检测不直接移植。
 - Anthropic `message_stop` 后的后续事件令本次 provider stream 失败，不产生 `done`，因此不会调用工具或申请审批；JSON-RPC、OpenAI Responses 流与重试策略不变。
 - Anthropic thinking continuation metadata 仅用于兼容请求重建，不进入 RPC、event、hook、摘要材料或工具结果投影；签名按官方 SDK 语义替换而非拼接。离线探针覆盖流式捕获、同回合/重开/fork 续接、缺签名工具阻断、前缀失配、上下文编辑、压缩尾部和崩溃后的连续工具前缀恢复。真实 Anthropic 服务、第三方网关跨模型兼容性及省略后缀 `tool_use` 的远端行为未验收。
