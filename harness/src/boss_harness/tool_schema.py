@@ -1,9 +1,9 @@
-"""显式工具参数使用的受限 JSON Schema 校验，不执行转换或填默认值。
+"""显式工具参数使用的受限 JSON Schema 校验；仅按 schema 解码结构化字符串，不填默认值。
 
 支持 type（单类型）、properties、required、additionalProperties（布尔）、enum、
 anyOf、数值上下界、字符串长度及 Python re.search pattern、items、数组长度与
 uniqueItems。description/title/default 仅为注释；其余关键字在注册时拒绝。
-不支持引用、隐式类型转换或完整 JSON Schema 方言。
+不支持引用、隐式标量转换或完整 JSON Schema 方言。
 """
 from __future__ import annotations
 
@@ -21,7 +21,9 @@ _MAX_ARGUMENT_BYTES = 1024 * 1024
 _MAX_JSON_DEPTH = 64
 _MAX_JSON_NODES = 32768
 _MAX_SCHEMA_DEPTH = 32
+_MAX_NORMALIZATION_VISITS = _MAX_JSON_NODES * 2
 _TYPES = frozenset({"string", "integer", "number", "boolean", "null", "object", "array"})
+_INVALID_STRUCTURED_JSON = object()
 _KEYWORDS = frozenset({"type", "properties", "required", "additionalProperties", "enum", "anyOf",
     "minimum", "maximum", "minLength", "maxLength", "pattern", "items", "minItems", "maxItems",
     "uniqueItems", "description", "title", "default"})
@@ -201,14 +203,89 @@ def _matches(rule: dict[str, Any], value: Any) -> bool:
     return True
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"非法 JSON 常量: {value}")
+
+
+def _account_decoded_nodes(value: Any, state: dict[str, Any], depth: int = 0) -> None:
+    state["decoded_nodes"] += 1
+    if depth > _MAX_JSON_DEPTH or state["decoded_nodes"] > _MAX_JSON_NODES:
+        raise ValueError
+    if type(value) is dict:
+        for child in value.values():
+            _account_decoded_nodes(child, state, depth + 1)
+    elif type(value) is list:
+        for child in value:
+            _account_decoded_nodes(child, state, depth + 1)
+
+
+def _normalize_structured_value(rule: dict[str, Any], value: Any, state: dict[str, Any],
+                                schema_depth: int = 0) -> Any:
+    """Decode only JSON strings whose schema-selected object/array form validates."""
+    state["visits"] += 1
+    if state["visits"] > _MAX_NORMALIZATION_VISITS:
+        raise ValueError
+    if schema_depth > _MAX_SCHEMA_DEPTH:
+        raise ValueError
+
+    branches = rule.get("anyOf")
+    if branches is not None:
+        if _matches(rule, value):
+            return value
+        for branch in branches:
+            candidate = _normalize_structured_value(branch, value, state, schema_depth + 1)
+            if _matches(rule, candidate):
+                return candidate
+        return value
+
+    kind = rule.get("type")
+    if type(value) is str:
+        if _matches(rule, value) or kind not in {"object", "array"}:
+            return value
+        text = value.strip()
+        expected_prefix = "{" if kind == "object" else "["
+        if not text.startswith(expected_prefix):
+            return value
+        parsed_values = state["parsed_values"]
+        if text not in parsed_values:
+            try:
+                parsed = json.loads(text, parse_constant=_reject_json_constant)
+                _account_decoded_nodes(parsed, state)
+                parsed_values[text] = parsed
+            except (TypeError, ValueError, RecursionError):
+                parsed_values[text] = _INVALID_STRUCTURED_JSON
+        parsed = parsed_values[text]
+        if parsed is _INVALID_STRUCTURED_JSON:
+            return value
+        expected_type = dict if kind == "object" else list
+        if type(parsed) is not expected_type:
+            return value
+        candidate = _normalize_structured_value(rule, parsed, state, schema_depth)
+        return candidate if _matches(rule, candidate) else value
+
+    if type(value) is dict:
+        properties = rule.get("properties", {})
+        return {key: (_normalize_structured_value(properties[key], child, state, schema_depth + 1)
+                      if key in properties else child)
+                for key, child in value.items()}
+    if type(value) is list and "items" in rule:
+        return [_normalize_structured_value(rule["items"], child, state, schema_depth + 1)
+                for child in value]
+    return value
+
+
 def validated_arguments(schema_json: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    """Return an independent validated JSON copy; never mutate caller arguments."""
+    """Return an independent schema-validated copy, decoding required structures only."""
     try:
         if type(arguments) is not dict:
             raise ValueError
         copied = json.loads(_json_snapshot(arguments, maximum=_MAX_ARGUMENT_BYTES))
-        if not _matches(json.loads(schema_json), copied):
+        schema = json.loads(schema_json)
+        state: dict[str, Any] = {"decoded_nodes": 0, "parsed_values": {}, "visits": 0}
+        normalized = _normalize_structured_value(schema, copied, state)
+        validated = json.loads(_json_snapshot(normalized, maximum=_MAX_ARGUMENT_BYTES))
+        if not _matches(schema, validated):
             raise ValueError
-        return copied
+        return validated
     except Exception:
         raise ValueError(_ARGUMENT_ERROR) from None

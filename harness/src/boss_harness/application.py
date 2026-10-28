@@ -1474,12 +1474,12 @@ class ApplicationService:
                 allowed = self.registry.allowed_names(read_only=read_only)
                 runner._tools = self.registry.specs(read_only=read_only)
 
-                def validate(name: str, arguments: dict) -> None:
+                def validate(name: str, arguments: dict) -> dict | None:
                     if name == MODEL_RESULT_READ_TOOL:
-                        return
+                        return None
                     if read_only and name not in allowed:
                         raise ValueError("只读会话禁止此工具；请新建需要逐次审批的会话")
-                    self.registry.validate(name, arguments)
+                    return self.registry.validate(name, arguments)
 
                 runner.validate_arguments = validate
                 job = self.runtimes.reserve(thread_id, text, runner)

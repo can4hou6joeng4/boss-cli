@@ -65,14 +65,16 @@ class ToolDefinition:
         return ToolSpec(name=self.name, description=self.description, input_schema=self.input_schema,
                         max_model_result_bytes=self.max_model_result_bytes)
 
-    def validate(self, arguments: dict[str, Any]) -> None:
+    def validate(self, arguments: dict[str, Any]) -> dict[str, Any]:
         copied = validated_arguments(self._schema_json, arguments)
         if self.validate_arguments is not None:
             try:
-                if self.validate_arguments(copied) is not None:
+                callback_copy = json.loads(json.dumps(copied, ensure_ascii=False))
+                if self.validate_arguments(callback_copy) is not None:
                     raise ValueError
             except Exception:
                 raise ValueError(_ARGUMENT_ERROR) from None
+        return copied
 
 
 def _definitions(tools: tuple[ToolDefinition, ...]) -> tuple[ToolDefinition, ...]:
@@ -131,7 +133,7 @@ class ToolRegistry:
                  "readOnly": not tool.requires_approval, "requiresApproval": tool.requires_approval}
                 for tool in self.definitions if tool.name in allowed]
 
-    def validate(self, name: str, arguments: dict[str, Any]) -> None:
+    def validate(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(name, str) or name not in self._by_name:
             raise ValueError("工具不在注册表中")
-        self._by_name[name].validate(arguments)
+        return self._by_name[name].validate(arguments)

@@ -92,7 +92,7 @@ class TurnRunner:
         approval_timeout: float = DEFAULT_APPROVAL_TIMEOUT_SECONDS,
         tools: tuple[ToolSpec, ...] = (),
         system_prompt: str = "根据用户任务调用已注册工具，尊重中断与审批裁决。",
-        validate_arguments: Callable[[str, dict[str, Any]], None] | None = None,
+        validate_arguments: Callable[[str, dict[str, Any]], dict[str, Any] | None] | None = None,
         pause_on_result: Callable[[ToolResult], bool] | None = None,
         history_provider: Callable[[str], tuple[ChatMessage, ...]] | None = None,
         context_check: Callable[[list[ChatMessage], str], None] | None = None,
@@ -360,7 +360,11 @@ class TurnRunner:
             if name == MODEL_RESULT_READ_TOOL:
                 arguments = validate_model_result_read(arguments)
             elif self.validate_arguments is not None:
-                self.validate_arguments(name, arguments)
+                normalized = self.validate_arguments(name, arguments)
+                if normalized is not None:
+                    if type(normalized) is not dict:
+                        raise ValueError("工具参数校验器返回了无效结果")
+                    arguments = normalized
         except ValueError as exc:
             invalid = ToolResult(ok=False, command=name, error={"code": "INVALID_PARAM", "message": str(exc)})
         policy_denied = False
