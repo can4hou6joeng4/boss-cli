@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第六十四轮：连接与登录 worker 的启动失败责任
+
+Pi 开放 [Issue #11433](https://github.com/earendil-works/pi/issues/11433) 报告 pi-env 在 pipe reader/waiter 线程创建失败时，调用方永久等待且子进程未被回收；核对时 Pi main 为 `c3d8ce44d3231c7e46071d2d859f41ca7d39d21b`，许可证 MIT。本项目的子进程输出与 I/O 线程失败已在第二十一轮覆盖，本轮以相同的“启动失败必须明确结算，真实运行任务仍需持有责任”原则审计连接服务，未复制 Pi 实现或引入依赖。
+
+本项目 [Issue #148](https://github.com/can4hou6joeng4/boss-cli/issues/148) 在 main `974e760b6ce837cacd9083684051b67f7669d102` 上用合成 bridge 与线程故障注入复现：登录 worker 构造失败后 login 仍为 `saving`；实际启动前失败还会留下未启动的 active worker，取消与关闭后仍无法退休。普通连接检查及模型 abort 则在启动包装层已创建真实 worker 后抛错时过早释放责任，允许后续操作与旧任务重叠。
+
+独立修复按 worker 是否已有 `ident` 区分启动事实。未启动的连接检查返回既有 `CHECK_FAILED`；未启动的登录保存返回固定 `LOGIN_SAVE_START_FAILED`，清理槽位并在连接锁外通知 idle，不返回原异常或 Cookie。已启动的检查、登录与模型 abort 保留原取消信号和所有权，直到实际 worker 清理结束，不自动重试。关闭或取消已被观察后，迟到返回的 bridge 工厂、可用性检查或本地认证结果不再触发后续 CLI 调用；已发生的登录保存不声称撤销。
+
+本地专项 18/18 通过，覆盖登录构造/未启动失败、启动后抛错、取消和关闭，以及 local/model/platform 检查的三种启动状态、关闭期间不追加调用和慢模型 abort 的真实责任。另有独立 `ApplicationService` 所有权验收 7/7 通过，确认实际 worker 或 abort 未结束时新应用不能接管状态目录，完成后可接管。Python 3.13 编译、类型检查、桌面源码构建、wheel/sdist 构建与内容检查及 `git diff --check` 通过。故障注入仅使用合成登录字段、bridge/provider 和临时状态，网络与子进程尝试为零；这不证明真实系统线程资源耗尽、模型或平台登录已验收。测试材料仅保留本地。
+
+同步检查 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`，GitHub license 字段仍为空；开放 Issue/PR 聚焦 Cookie/Keychain、认证、招聘沟通、分页和 recruiter 业务，没有对应的通用 worker 生命周期实现，本轮不迁移其登录或认证逻辑。
+
 ## 第六十三轮：保留 Anthropic extended thinking 签名续接元数据
 
 本项目 [Issue #146](https://github.com/can4hou6joeng4/boss-cli/issues/146) 复现了 Anthropic extended thinking 在流式解析、工具续请求和重开会话时丢失 `signature` 的问题：模型返回的 thinking block 仍带有工具调用，但后续请求没有原样回放签名，服务端会拒绝请求；若继续执行工具，则可能在请求事实未被确认时产生外部副作用。

@@ -123,6 +123,7 @@ class ConnectionChecks:
         if not isinstance(target, str) or target not in {"local", "model", "platform"}:
             raise ValueError("target 必须是 local、model 或 platform")
         key = "cli" if target == "local" else target
+        failed_start = False
         with self.lock:
             if key != "model" and self.bridge_factory is None:
                 return self.read()
@@ -134,6 +135,7 @@ class ConnectionChecks:
             self.report[key].pop("requestRejected", None)
             self._set(key, state="checking", summary="检查中…", code=None, checkedAt=None)
             cancel = threading.Event()
+            worker = None
             try:
                 worker = threading.Thread(target=self._run, args=(key, cancel), daemon=True, name=f"connection-{key}")
                 self.active[key] = worker, cancel
@@ -141,11 +143,19 @@ class ConnectionChecks:
                     self._model_check = _ModelCheck(cancel)
                 worker.start()
             except Exception:
-                self.active.pop(key, None)
-                if key == "model":
-                    self._model_check = None
-                self._set(key, state="failed", code="CHECK_FAILED", summary="检查失败，请核对本机配置后重试", checkedAt=_now())
-            return self.read()
+                # A wrapped start() can raise after creating the real worker.
+                # Keep its cancellation and cleanup ownership until it exits.
+                if worker is None or worker.ident is None:
+                    cancel.set()
+                    self.active.pop(key, None)
+                    if key == "model":
+                        self._model_check = None
+                    self._set(key, state="failed", code="CHECK_FAILED", summary="检查失败，请核对本机配置后重试", checkedAt=_now())
+                    failed_start = True
+            result = self.read()
+        if failed_start:
+            self._notify_idle()
+        return result
 
     def _current_model_locked(self, job: _ModelCheck) -> bool:
         active = self.active.get("model")
@@ -184,6 +194,7 @@ class ConnectionChecks:
         if not self._current_model_locked(job) or job.provider is None or job.abort_started:
             return
         job.abort_started = job.abort_pending = True
+        worker = None
         try:
             worker = threading.Thread(target=self._abort_model, args=(job, job.provider),
                                       daemon=True, name="connection-model-abort")
@@ -191,8 +202,9 @@ class ConnectionChecks:
             worker.start()
         except Exception:
             # No synchronous fallback: a provider's abort may itself block.
-            job.abort_started = job.abort_pending = False
-            job.abort_worker = None
+            if worker is None or worker.ident is None:
+                job.abort_started = job.abort_pending = False
+                job.abort_worker = None
 
     def _expire_model(self, job: _ModelCheck) -> None:
         with self.lock:
@@ -272,6 +284,7 @@ class ConnectionChecks:
             raise ValueError("官方登录态超过大小限制")
         # This is parsed as data by the upstream; no shell or curl is executed.
         payload = "curl https://www.zhipin.com/ --cookie " + shlex.quote(cookie_header) + " --user-agent " + shlex.quote(user_agent)
+        failed_start = False
         with self.lock:
             if self.closed or params.get("id") != self.login.get("id") or self.login["state"] != "waiting":
                 raise ValueError("扫码登录已结束，请重新打开官方登录窗口")
@@ -279,18 +292,35 @@ class ConnectionChecks:
             assert cancel is not None
             self.login.update(state="saving", summary="已检测到扫码登录，正在通过上游验证并保存…")
             self._set("platform", state="checking", code=None, checkedAt=None, summary="正在验证新的官方登录态…")
-            worker = threading.Thread(target=self._save_login, args=(payload, cancel), daemon=True, name="platform-login")
-            self.active["login"] = worker, cancel
-            worker.start()
-            return self.read_login()
+            worker = None
+            try:
+                worker = threading.Thread(target=self._save_login, args=(payload, cancel), daemon=True, name="platform-login")
+                self.active["login"] = worker, cancel
+                worker.start()
+            except Exception:
+                if worker is None or worker.ident is None:
+                    cancel.set()
+                    self.active.pop("login", None)
+                    self.login.update(state="failed", code="LOGIN_SAVE_START_FAILED",
+                                      summary="登录保存任务未启动，请重新打开官方登录窗口")
+                    self._set("platform", state="failed", code="LOGIN_SAVE_START_FAILED",
+                              summary=self.login["summary"], checkedAt=_now())
+                    failed_start = True
+            result = self.read_login()
+        # The application's idle callback acquires other lifecycle locks.
+        if failed_start:
+            self._notify_idle()
+        return result
 
     def _save_login(self, payload: str, cancel: threading.Event) -> None:
         bridge = None
         try:
-            if self.bridge_factory is None:
+            if self.bridge_factory is None or cancel.is_set():
                 return
             bridge = self._new_bridge()
             bridge.cancel_event = cancel
+            if cancel.is_set():
+                return
             result = bridge.call("login", "--curl-file", "-", stdin=payload, timeout=20)
             payload = ""
             if cancel.is_set():
@@ -321,14 +351,20 @@ class ConnectionChecks:
             if bridge is not None:
                 self.bridge_lifecycle.close(bridge)
             with self.lock:
-                self.active.pop("login", None)
+                active = self.active.get("login")
+                if active is not None and active[1] is cancel:
+                    self.active.pop("login", None)
             self._notify_idle()
 
-    def _local_auth(self, bridge) -> bool:
+    def _local_auth(self, bridge, cancel: threading.Event) -> bool:
+        if cancel.is_set():
+            return False
         if self.bridge_factory is None:
             self._set("platform", **_disabled())
             return False
         result = bridge.call("status", timeout=15)
+        if cancel.is_set():
+            return False
         if not result.ok:
             self._set("platform", **self._error(result), authState="unknown", checkedAt=_now())
             return False
@@ -406,17 +442,26 @@ class ConnectionChecks:
                 outcome = {"state": "ready", "summary": "真实模型已完成一次小请求"} if success else {
                     "state": "failed", "code": "MODEL_CHECK_FAILED", "summary": "模型未完成有效响应，请核对供应商、模型与网络"}
             else:
+                if cancel.is_set():
+                    return
                 bridge = self._new_bridge()
                 bridge.cancel_event = cancel
-                if not bridge.available():
+                if cancel.is_set():
+                    return
+                available = bridge.available()
+                if cancel.is_set():
+                    return
+                if not available:
                     outcome = {"state": "failed", "code": "CLI_UNAVAILABLE", "summary": "上游 CLI 不可执行，请检查 BOSS_CLI_BIN"}
                 elif key == "cli":
                     # A local schema check validates the seven-key process contract.
                     result = bridge.call("schema", "--format", "mcp-tools", timeout=15)
                     outcome = {"state": "ready", "summary": "CLI 可执行，v1 JSON 契约有效", "binarySource": bridge.source} if result.ok else self._error(result)
                     if result.ok:
-                        self._local_auth(bridge)
-                elif self._local_auth(bridge):
+                        self._local_auth(bridge, cancel)
+                elif self._local_auth(bridge, cancel):
+                    if cancel.is_set():
+                        return
                     result = bridge.call("status", "--live", timeout=20)
                     outcome = {"state": "ready", "summary": "已完成一次平台只读在线验证"} if result.ok else self._error(result)
                 else:
