@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第五十一轮：模型请求前策略拒绝
+
+Pi 开放 [Issue #11055](https://github.com/earendil-works/pi/issues/11055)（截至 2026-10-28 为 OPEN；Pi main `a92283056d915c758799fcd904948ff0cb42628c`；仓库许可证 MIT）。该 issue 指出 `beforeRequest` 可以改写请求，却不能在 provider 调用前拒绝请求；用异常绕过会进入不清晰的 abort/重试路径，无法表达预算、账户策略或 kill switch 的明确终态。
+
+本项目在现有嵌入式 `LifecycleHooks` 中增加 `before_request(context)`，沿用有界、深只读 JSON 策略输入和可选协作式 `signal`。它运行在完整 `request_preparer`（包括 system、消息、工具、thinking 与预算）之后、provider stream 之前；返回 `HookDecision(False, code, message)` 时，运行器将拒绝原因脱敏后写入 `model_error` 并发出 `session/error`，以 `error` 终止当前回合，不调用 provider、不执行工具、不申请审批，也不进入上下文恢复或自动重试。每个工具回路和 overflow recovery 都重新经过该闸门。
+
+拒绝上下文只包含 thread/turn、请求序号、provider/model、消息与工具数量及预算快照，不包含消息正文、工具参数或凭据。hook 错误、超时、并发耗尽、无效返回和输入越界均 fail closed；取消或迟到结果不会改写回合。兼容现有 `before_tool_call` 与一参数 hook，未复制 Pi 源码或引入依赖。
+
+同步检查 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`：开放事项仍为招聘认证、Cookie/Keychain、沟通与 recruiter 业务，没有通用模型请求策略契约；本轮不迁移其业务代码。
+
+本地离线探针覆盖首次请求、工具第二轮和上下文恢复请求的拒绝；确认 provider、handler、审批和 `recover_context` 均未被触发，终态为 `error`，拒绝原因进入持久错误记录与通知。未调用真实模型或招聘平台。
+
 ## 第五十轮：识别 llama.cpp 解码阶段的上下文耗尽
 
 Pi 开放 [Issue #10885](https://github.com/earendil-works/pi/issues/10885)（截至 2026-10-28 为 OPEN；报告对应 llama.cpp `Context size has been exceeded.`；Pi main `a92283056d915c758799fcd904948ff0cb42628c`；仓库许可证 MIT）。该错误来自 llama.cpp 解码阶段 KV pool 耗尽，不带 `context_length_exceeded` 结构化 code，因此若只检查供应商 code，自动上下文恢复不会触发。
