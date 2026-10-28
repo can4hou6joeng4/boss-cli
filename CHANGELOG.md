@@ -2,10 +2,23 @@
 
 ## 未发布
 
-### 内核
+## 0.2.0-rc.11 - 2026-10-28
 
-- 参考 Pi Issue [#11043](https://github.com/earendil-works/pi/issues/11043)，允许宿主配置每回合 1–64 次业务模型请求硬上限，默认仍为 6；单次 `turn/start.maxModelRequests` 只能收紧上限，工具循环、steering 和上下文恢复统一计数。上限随回合持久化，耗尽继续暂停未投递队列，不重放工具或审批。
-- [Issue #121](https://github.com/can4hou6joeng4/boss-cli/issues/121)：将 `before_request` 统一覆盖业务请求、每个摘要分片和模型连接检查；摘要策略拒绝不调用对应 provider、不提交新 checkpoint，也不继续业务请求。脱敏原因与请求身份进入持久错误/终态通知或连接报告；关闭中的策略及迟到允许结果保持 fail closed，取消仍优先。
+第十一次私有源码与 Python 内核候选发布，提供宿主控制的回合请求上限，并补齐摘要与连接检查的模型请求策略。
+
+### 新功能
+
+- 参考 Pi Issue [#11043](https://github.com/earendil-works/pi/issues/11043)，宿主可通过 `max_model_requests` 或 `BOSS_HARNESS_MAX_MODEL_REQUESTS` 设置每回合 1–64 次业务请求硬上限，默认仍为 6；`turn/start.maxModelRequests` 只能为本回合收紧。工具循环、steering 和上下文恢复共享额度，耗尽后保留结果并暂停队列。
+
+### 修复
+
+- [Issue #121](https://github.com/can4hou6joeng4/boss-cli/issues/121)：`before_request` 统一覆盖业务请求、每个摘要分片和模型连接检查；摘要拒绝不调用对应 provider、不提交新 checkpoint、不继续业务请求。持久错误、终态通知与连接报告保留脱敏原因和请求身份，已关闭策略和迟到允许结果保持拒绝，取消优先。
+
+### 兼容与验证
+
+- npm 组件统一为 `0.2.0-rc.11`，Python 内核为等价 PEP 440 版本 `0.2.0rc11`；JSON-RPC 保持 `0.2.0`，新增协议字段可选。业务请求上限不统计 provider/SDK 内部传输重试，摘要仍有独立的 32 次生成上限。
+- 本地请求上限、策略拒绝、持久化异常、取消及队列专项探针通过；Python 3.10/3.12 编译、Python 3.10 专项验证、类型检查、桌面源码构建与 wheel/sdist 构建通过。功能 PR #122/#123 的 Source build 与 GitGuardian 均成功；探针只保留本地。
+- 未调用真实模型或招聘平台；候选交付私有源码与 Python wheel/sdist，不含独立桌面安装包。
 
 ## 0.2.0-rc.10 - 2026-10-28
 
@@ -19,7 +32,7 @@
 
 - 本地离线探针覆盖首次请求、工具循环第二轮和上下文恢复重试；Python 3.14 编译、Harness wheel/sdist 构建、TypeScript 类型检查、桌面源码构建及产物内容检查通过。
 - 未调用真实模型或招聘平台；本候选继续交付私有源码与 Python wheel/sdist，不含独立桌面安装包。
-- rc.10 的 `before_request` 仅覆盖业务模型请求；摘要和模型连接检查的覆盖缺口在未发布的 Issue #121 修复中补齐。
+- rc.10 的 `before_request` 仅覆盖业务模型请求；摘要和模型连接检查的覆盖缺口在 rc.11 的 Issue #121 修复中补齐。
 
 ## 0.2.0-rc.9 - 2026-10-28
 
