@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第六十六轮：只覆盖默认系统提示身份段
+
+参考 Pi 已关闭 [PR #11315](https://github.com/earendil-works/pi/pull/11315) 与开放 [Issue #11317](https://github.com/earendil-works/pi/issues/11317)：SDK 宿主希望改变 opening identity 时保留默认 tools、rules 和 docs sections。核对时 Pi main 为 `c3d8ce44d3231c7e46071d2d859f41ca7d39d21b`，许可证 MIT。本项目独立实现结构化默认招聘提示入口，不复制 Pi 的 prompt 组装代码。
+
+本项目 [Issue #152](https://github.com/can4hou6joeng4/boss-cli/issues/152) 在 `f19746361ae9fc2b586bec3205ce0e21c9fbe7e1` 上复现：默认 `ToolBundle` 只有完整 `system_prompt`，宿主复制 bundle 后替换整段身份会丢失工具说明与十条招聘规则；显式传入复制 bundle 还会使 `ApplicationService` 判定为自定义组合，关闭默认平台检查与登录 host 能力。
+
+`create_boss_bundle(prompt_preamble=...)` 现在将默认 `SYSTEM_PREAMBLE` 与不可变 `SYSTEM_INSTRUCTIONS` 分段组装；`ApplicationService(prompt_preamble=...)` 只在默认 bundle 路径启用该覆盖，因此保留默认工具、平台检查、登录、技能和只读后缀。身份文本必须非空、无控制字符且不超过 16 KiB；该文本只存在于内存中的最终请求 prompt，不写入会话或事件。自定义 `ToolBundle` 的任意完整 prompt 没有可推断的分段，同时传入覆盖参数时明确拒绝，避免静默丢失安全规则。
+
+本地组合探针 5/5 通过：默认 prompt 逐字兼容、覆盖后工具说明/规则保留、默认 ApplicationService 仍保留平台能力、自定义 bundle 冲突拒绝和输入边界。网络与子进程尝试为零；类型检查、Python 编译、桌面构建、wheel/sdist 内容检查及 `git diff --check` 通过。未调用真实模型或招聘平台，测试材料仅保留本地。
+
+同步核对 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`，GitHub license 字段为空；其开放 Issue/PR 聚焦招聘认证、Cookie、沟通、分页和 recruiter 业务，没有可移植的系统提示分段契约，本轮不迁移其业务代码。
+
 ## 第六十五轮：保留被拒摘要的终态用量归因
 
 Pi 开放 [Issue #11090](https://github.com/earendil-works/pi/issues/11090) 要求为模型工具、压缩和分支摘要的每次物理调用保留 provider/model 归因；核对时 Pi main 为 `c3d8ce44d3231c7e46071d2d859f41ca7d39d21b`，许可证 MIT。当前项目成功摘要已经按分片保存 `context_summary_usage`，并在 checkpoint 中记录摘要 provider/model；本轮补齐“provider 已返回终态 usage、但摘要内容不合格”这一相邻缺口，不复制 Pi 代码或引入依赖。
