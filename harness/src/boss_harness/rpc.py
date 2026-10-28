@@ -75,7 +75,12 @@ class JsonRpcServer:
         except Exception as exc:
             self.cancel_request(request_id, exc)
             raise
-        timer.start()
+        try:
+            timer.start()
+        except Exception:
+            # The request is already visible to the client, but an approval
+            # without a working deadline must fail closed and leave no waiter.
+            self.cancel_request(request_id, TimeoutError("客户端请求计时器未能启动"))
         return ServerRequest(request_id, future)
 
     def cancel_request(self, request_id: str, error: Exception | None = None) -> bool:
