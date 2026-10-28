@@ -1,5 +1,11 @@
 # 上游吸收记录
 
+## 第五十七轮：私有创建会话存储父目录
+
+本项目 Issue [#131](https://github.com/can4hou6joeng4/boss-cli/issues/131) 复现了独立初始化 `SessionStore` 时的权限遗漏：会话目录显式为 `0700`，但 `state.sqlite3` 与 `events.jsonl` 位于其父目录；当该父目录也需要由递归 `mkdir` 新建时，它按宽松 `umask 022` 得到 `0755`，持久化文件则为 `0644`。Pi [Issue #10770](https://github.com/earendil-works/pi/issues/10770) 确认会话存储需要 owner-only 目录边界；本轮结合本地存储布局，将同一隐私默认扩展到新建的索引/事件目录。
+
+`SessionStore` 现在先以 `mode=0o700` 确保新建数据父目录，再以相同权限创建会话子目录。`mkdir(..., exist_ok=True)` 不会改写已存在目录；SQLite、事件与 JSONL 文件的打开方式和模式、数据库格式、事件游标及恢复语义均不变。正式 `Harness` 已通过 `StateDirectoryOwner` 预建 state root，本修复也覆盖直接初始化 `SessionStore` 的调用方。未复制 Pi 源码或增加依赖。
+
 ## 第五十六轮：限制新会话目录权限
 
 本项目 Issue [#129](https://github.com/can4hou6joeng4/boss-cli/issues/129) 记录招聘会话 JSONL 目录的权限边界。`SessionStore` 原先调用未指定 mode 的 `mkdir`；在 `umask 022` 下，本地真实初始化得到 `0755`，让同机其他用户能够枚举会话文件名及元信息。本轮只验证并收紧新目录权限，不对单个 JSONL 文件的权限作结论，也不改变其创建方式。

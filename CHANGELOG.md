@@ -4,6 +4,7 @@
 
 ### 修复
 
+- [Issue #131](https://github.com/can4hou6joeng4/boss-cli/issues/131)：独立初始化 `SessionStore` 时，私有创建承载 SQLite 索引和事件日志的新父目录；已有目录权限不变。
 - [Issue #129](https://github.com/can4hou6joeng4/boss-cli/issues/129)：新建会话目录限制为 owner-only `0700`，不随宽松 umask 暴露目录项；已有目录权限不被自动改写。
 - [Issue #127](https://github.com/can4hou6joeng4/boss-cli/issues/127)：摘要运行期间排入的后续回合保持 `queued`，不再被暂时的会话占用误判为 `TURN_START_FAILED`；摘要与已领取但尚未启动的后续回合互斥，成功后恢复派发，手动摘要失败或取消则暂停旧输入。
 
