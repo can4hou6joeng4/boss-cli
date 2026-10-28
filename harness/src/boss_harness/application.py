@@ -605,6 +605,8 @@ class ApplicationService:
             raise RpcError(-32004, "请先中断该会话的运行回合")
         if thread_id in self._compaction_by_thread:
             raise RpcError(-32004, "该会话正在生成摘要，请等待完成或先取消摘要")
+        if thread_id in self._follow_up_dispatches:
+            raise RpcError(-32004, "该会话正在启动后续回合，请等待启动完成")
 
     def on_thread_archive(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")
