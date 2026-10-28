@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import io
 import json
 import os
@@ -22,13 +23,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from boss_harness.persistence import PersistenceIndex
+from boss_harness.persistence import PersistenceIndex, SCHEMA_VERSION
 from boss_harness.private_files import ensure_private_directory, open_private_file, restrict_private_file
 from boss_harness.models.capabilities import REASONING_EFFORTS
 
 _THREAD_ID = re.compile(r"[a-f0-9]{12}\Z")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _EVENT_ID = re.compile(r"[a-f0-9]{32}\Z")
+_ATTACHMENT_DIGEST = re.compile(r"[a-f0-9]{64}\Z")
+_DELETE_INTENT = re.compile(r"\.delete-([a-f0-9]{12})\.json\Z")
 _TERMINAL = frozenset({"completed", "interrupted", "blocked", "error"})
 
 
@@ -88,6 +91,14 @@ def _read_page_cursor(cursor: str | None, kind: str, scope: dict) -> list | None
     return payload["key"]
 
 
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 @dataclass
 class Entry:
     type: str
@@ -132,23 +143,31 @@ class ToolRevisionPersistenceError(OSError):
         super().__init__("工具结果无法确认已持久化")
 
 
+class ThreadNotFound(ValueError):
+    pass
+
+
 class SessionStore:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, attachments_root: Path | None = None) -> None:
         self.root = Path(root).resolve()
         ensure_private_directory(self.root.parent)
         ensure_private_directory(self.root)
+        self.attachments_root = Path(attachments_root or self.root.parent / "attachments").absolute()
         self._lock = threading.RLock()
         self.database_path = self.root.parent / "state.sqlite3"
         self.events_path = self.root.parent / "events.jsonl"
         for path in (self.database_path.with_name(self.database_path.name + "-wal"),
                      self.database_path.with_name(self.database_path.name + "-shm"), self.events_path,
-                     *self.root.glob("*.jsonl"), *self.root.glob(".*.tmp")):
+                     *self.root.glob("*.jsonl"), *self.root.glob(".*.tmp"),
+                     *self.root.glob(".delete-*.json"),
+                     *self.root.parent.glob(".events.jsonl.delete-*.tmp")):
             try:
                 path.lstat()
             except FileNotFoundError:
                 continue
             restrict_private_file(path)
         self._index = PersistenceIndex(self.database_path)
+        self._recover_deletions()
         self._refresh_threads()
         self._sync_events()
 
@@ -160,9 +179,72 @@ class SessionStore:
             raise ValueError("threadId 格式无效")
         return self.root / f"{thread_id}.jsonl"
 
+    def _delete_intent_path(self, thread_id: str) -> Path:
+        self.path_for(thread_id)
+        return self.root / f".delete-{thread_id}.json"
+
+    def has_pending_deletion(self, thread_id: str) -> bool:
+        return self._delete_intent_path(thread_id).exists()
+
+    def _read_delete_intent(self, path: Path) -> dict[str, Any]:
+        match = _DELETE_INTENT.fullmatch(path.name)
+        if match is None:
+            raise ValueError("会话删除标记名称无效")
+        descriptor = open_private_file(path, os.O_RDONLY)
+        with os.fdopen(descriptor, "rb") as handle:
+            value = json.loads(handle.read().decode("utf-8"))
+        thread_id = match.group(1)
+        if (not isinstance(value, dict) or set(value) != {"version", "threadId", "attachmentDigests", "eventId"}
+                or value.get("version") != 1 or value.get("threadId") != thread_id
+                or not isinstance(value.get("attachmentDigests"), list)
+                or any(not isinstance(item, str) or not _ATTACHMENT_DIGEST.fullmatch(item)
+                       for item in value["attachmentDigests"])
+                or not isinstance(value.get("eventId"), str)
+                or not _EVENT_ID.fullmatch(value["eventId"])):
+            raise ValueError("会话删除标记损坏；状态恢复已停止")
+        value["attachmentDigests"] = sorted(set(value["attachmentDigests"]))
+        return value
+
+    def _pending_deletion_ids(self) -> set[str]:
+        pending: set[str] = set()
+        for path in self.root.glob(".delete-*.json"):
+            intent = self._read_delete_intent(path)
+            pending.add(intent["threadId"])
+        return pending
+
+    def _write_delete_intent(self, thread_id: str, entries: list[dict]) -> dict[str, Any]:
+        path = self._delete_intent_path(thread_id)
+        if path.exists():
+            return self._read_delete_intent(path)
+        digests = sorted({entry.get("payload", {}).get("digest") for entry in entries
+                          if entry.get("type") == "attachment"
+                          and isinstance(entry.get("payload", {}).get("digest"), str)
+                          and _ATTACHMENT_DIGEST.fullmatch(entry["payload"]["digest"])})
+        intent = {"version": 1, "threadId": thread_id,
+                  "attachmentDigests": digests, "eventId": uuid.uuid4().hex}
+        temporary = self.root / f".delete-{thread_id}.{uuid.uuid4().hex}.tmp"
+        descriptor = open_private_file(temporary, os.O_WRONLY | os.O_EXCL)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write((_json(intent) + "\n").encode("utf-8"))
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.link(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+        _fsync_directory(self.root)
+        return intent
+
+    def _recover_deletions(self) -> None:
+        for path in sorted(self.root.glob(".delete-*.json")):
+            intent = self._read_delete_intent(path)
+            self._finish_deletion(intent)
+
     def require_thread(self, thread_id: str) -> dict:
         path = self.path_for(thread_id)
         with self._lock:
+            if self._delete_intent_path(thread_id).exists():
+                raise ValueError("会话正在删除，暂不可读取")
             try:
                 with path.open(encoding="utf-8", errors="replace") as handle:
                     header = json.loads(handle.readline())
@@ -653,12 +735,374 @@ class SessionStore:
     archive = archive_thread
     unarchive = unarchive_thread
 
-    def list_threads(self, *, include_archived: bool = False) -> list[dict]:
-        self._refresh_threads()
+    def delete_thread(self, thread_id: str) -> dict:
+        """Permanently remove a rollout and its private event/attachment data."""
+        with self._lock:
+            intent_path = self._delete_intent_path(thread_id)
+            if intent_path.exists():
+                intent = self._read_delete_intent(intent_path)
+            else:
+                with self._index.transaction() as connection:
+                    try:
+                        self.require_thread(thread_id)
+                    except ValueError:
+                        if self.path_for(thread_id).exists():
+                            raise
+                        prior = self._previous_deletion_event(connection, thread_id)
+                        if prior is not None:
+                            return prior
+                        raise ThreadNotFound("会话不存在") from None
+                    entries = self.read_entries(thread_id)
+                    intent = self._write_delete_intent(thread_id, entries)
+                    connection.execute("UPDATE checkpoints SET value='' WHERE name='events'")
+            return self._finish_deletion(intent)
+
+    @staticmethod
+    def _previous_deletion_event(connection: sqlite3.Connection, thread_id: str) -> dict | None:
+        for row in connection.execute("SELECT method,params_json FROM events WHERE method='thread/deleted'"):
+            params = json.loads(row["params_json"])
+            if params.get("deletedThreadId") == thread_id:
+                return {"method": row["method"], "params": params}
+        return None
+
+    def _finish_deletion(self, intent: dict[str, Any]) -> dict:
+        thread_id = intent["threadId"]
+        with self._lock, self._index.transaction() as connection:
+            connection.execute("PRAGMA secure_delete=ON")
+            self._remove_thread_files(thread_id)
+            event = self._rewrite_events_for_deletion(connection, intent)
+            self._purge_unreferenced_attachments(intent["attachmentDigests"])
+            self._purge_repair_backups(thread_id)
+            connection.execute("DELETE FROM events WHERE thread_id=?", (thread_id,))
+            connection.execute("DELETE FROM threads WHERE id=?", (thread_id,))
+            self._index_deletion_event(connection, event)
+            stat_result = self.events_path.stat()
+            connection.execute("INSERT INTO checkpoints(name,value) VALUES('events',?) "
+                               "ON CONFLICT(name) DO UPDATE SET value=excluded.value",
+                               (f"{stat_result.st_size}:{stat_result.st_mtime_ns}",))
+        self._checkpoint_and_truncate_wal()
+        intent_path = self._delete_intent_path(thread_id)
+        if intent_path.exists():
+            restrict_private_file(intent_path)
+            intent_path.unlink()
+            _fsync_directory(self.root)
+        return event
+
+    def _remove_private_temporaries(self, paths: list[Path], target: Path) -> None:
+        current_uid = getattr(os, "getuid", lambda: -1)()
+        for path in paths:
+            try:
+                original = path.lstat()
+            except FileNotFoundError:
+                continue
+            if not stat.S_ISREG(original.st_mode) or original.st_uid != current_uid:
+                raise ValueError("会话删除遇到非私有普通文件，清理已暂停")
+            if original.st_nlink == 2:
+                try:
+                    target_stat = target.lstat()
+                except FileNotFoundError:
+                    target_stat = None
+                if (target_stat is None or not stat.S_ISREG(target_stat.st_mode)
+                        or target_stat.st_uid != current_uid or target_stat.st_nlink != 2
+                        or (original.st_dev, original.st_ino) != (target_stat.st_dev, target_stat.st_ino)):
+                    raise ValueError("会话删除遇到无法确认的硬链接临时文件，清理已暂停")
+            elif original.st_nlink != 1:
+                raise ValueError("会话删除遇到非私有普通文件，清理已暂停")
+            restrict_private_file(path)
+            path.unlink()
+        if paths:
+            _fsync_directory(paths[0].parent)
+
+    def _remove_thread_files(self, thread_id: str) -> None:
+        session_path = self.path_for(thread_id)
+        self._remove_private_temporaries(list(self.root.glob(f".{thread_id}.jsonl.*.tmp")), session_path)
+        self._remove_private_temporaries(list(self.root.glob(f".delete-{thread_id}.*.tmp")),
+                                         self._delete_intent_path(thread_id))
+        self._remove_private_temporaries(
+            list(self.root.parent.glob(f".events.jsonl.delete-{thread_id}.*.tmp")), self.events_path)
+
+        try:
+            original = session_path.lstat()
+        except FileNotFoundError:
+            return
+        current_uid = getattr(os, "getuid", lambda: -1)()
+        if (not stat.S_ISREG(original.st_mode) or original.st_nlink != 1 or original.st_uid != current_uid):
+            raise ValueError("会话删除遇到非私有普通文件，清理已暂停")
+        restrict_private_file(session_path)
+        session_path.unlink()
+        _fsync_directory(self.root)
+
+    @staticmethod
+    def _event_high_water(connection: sqlite3.Connection) -> int:
+        maximum = int(connection.execute("SELECT COALESCE(MAX(cursor),0) FROM events").fetchone()[0])
+        try:
+            sequence = connection.execute("SELECT seq FROM sqlite_sequence WHERE name='events'").fetchone()
+        except sqlite3.OperationalError:
+            sequence = None
+        return max(maximum, int(sequence[0]) if sequence else 0)
+
+    def _rewrite_events_for_deletion(self, connection: sqlite3.Connection,
+                                     intent: dict[str, Any]) -> dict:
+        thread_id = intent["threadId"]
+        target = self.events_path
+        try:
+            original = target.lstat()
+        except FileNotFoundError:
+            original = None
+        source_signature = None
+        source_handle = None
+        if original is not None:
+            if not stat.S_ISREG(original.st_mode) or original.st_nlink != 1:
+                raise ValueError("事件日志不是普通私有文件，清理已暂停")
+            restrict_private_file(target)
+            descriptor = open_private_file(target, os.O_RDONLY)
+            source_handle = os.fdopen(descriptor, "rb")
+            opened = os.fstat(descriptor)
+            source_signature = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns,
+                                opened.st_ctime_ns, opened.st_mode, opened.st_uid, opened.st_gid,
+                                opened.st_nlink)
+            visible = target.lstat()
+            if (visible.st_dev, visible.st_ino) != (opened.st_dev, opened.st_ino):
+                source_handle.close()
+                raise ValueError("事件日志在删除期间变化，清理已暂停")
+
+        temporary = target.with_name(f".events.jsonl.delete-{thread_id}.{uuid.uuid4().hex}.tmp")
+        descriptor = open_private_file(temporary, os.O_WRONLY | os.O_EXCL)
+        event: dict | None = None
+        event_count = 0
+        maximum_cursor = self._event_high_water(connection)
+        last_byte = b"\n"
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                if source_handle is not None:
+                    for raw_line in source_handle:
+                        try:
+                            record = json.loads(raw_line)
+                        except (json.JSONDecodeError, UnicodeDecodeError):
+                            raise ValueError("事件日志损坏，无法安全删除会话") from None
+                        if (not isinstance(record, dict) or record.get("type") != "event"
+                                or not isinstance(record.get("method"), str)
+                                or not isinstance(record.get("params"), dict)):
+                            raise ValueError("事件日志格式无效，无法安全删除会话")
+                        params = record["params"]
+                        cursor = _event_cursor(params.get("eventCursor"))
+                        event_id = params.get("eventId")
+                        if cursor < 1 or not isinstance(event_id, str) or not _EVENT_ID.fullmatch(event_id):
+                            raise ValueError("事件日志游标无效，无法安全删除会话")
+                        maximum_cursor = max(maximum_cursor, cursor)
+                        if event_id == intent["eventId"]:
+                            event_count += 1
+                            if (record["method"] != "thread/deleted"
+                                    or params.get("deletedThreadId") != thread_id
+                                    or "threadId" in params):
+                                raise ValueError("会话删除事件与恢复标记冲突")
+                            event = {"method": record["method"], "params": params}
+                            output.write(raw_line)
+                            last_byte = raw_line[-1:] or last_byte
+                        elif params.get("threadId") != thread_id:
+                            output.write(raw_line)
+                            last_byte = raw_line[-1:] or last_byte
+                if event_count > 1:
+                    raise ValueError("事件日志含重复的会话删除事件")
+                if event is None:
+                    if maximum_cursor >= 2**63 - 1:
+                        raise ValueError("事件游标已耗尽，无法完成会话删除")
+                    params = {"deletedThreadId": thread_id, "eventId": intent["eventId"],
+                              "eventCursor": str(maximum_cursor + 1)}
+                    event = {"method": "thread/deleted", "params": params}
+                    if last_byte != b"\n":
+                        output.write(b"\n")
+                    output.write((_json({"type": "event", "timestamp": _now(), **event}) + "\n").encode("utf-8"))
+                output.flush()
+                os.fsync(output.fileno())
+            if source_handle is not None:
+                opened = os.fstat(source_handle.fileno())
+                current_signature = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns,
+                                     opened.st_ctime_ns, opened.st_mode, opened.st_uid, opened.st_gid,
+                                     opened.st_nlink)
+                if current_signature != source_signature:
+                    raise ValueError("事件日志在删除期间变化，清理已暂停")
+                visible = target.lstat()
+                if (visible.st_dev, visible.st_ino) != source_signature[:2]:
+                    raise ValueError("事件日志在删除期间变化，清理已暂停")
+            if original is None:
+                os.link(temporary, target)
+                temporary.unlink()
+            else:
+                os.replace(temporary, target)
+            _fsync_directory(target.parent)
+        finally:
+            if source_handle is not None:
+                source_handle.close()
+            temporary.unlink(missing_ok=True)
+        if event is None:
+            raise RuntimeError("删除事件未能生成")
+        return event
+
+    @staticmethod
+    def _index_deletion_event(connection: sqlite3.Connection, event: dict) -> None:
+        params = event["params"]
+        existing = connection.execute("SELECT cursor,method,thread_id,params_json FROM events WHERE event_id=?",
+                                      (params["eventId"],)).fetchone()
+        if existing is not None:
+            if (existing["cursor"] != int(params["eventCursor"]) or existing["method"] != event["method"]
+                    or existing["thread_id"] is not None or json.loads(existing["params_json"]) != params):
+                raise ValueError("会话删除事件索引与日志冲突")
+            return
+        collision = connection.execute("SELECT event_id FROM events WHERE cursor=?",
+                                       (int(params["eventCursor"]),)).fetchone()
+        if collision is not None:
+            raise ValueError("会话删除事件游标与现有事件冲突")
+        connection.execute("INSERT INTO events(cursor,event_id,method,thread_id,params_json) VALUES(?,?,?,?,?)",
+                           (int(params["eventCursor"]), params["eventId"], event["method"], None,
+                            _json(params)))
+
+    def _purge_unreferenced_attachments(self, digests: list[str]) -> None:
+        candidates = set(digests)
+        if not candidates:
+            return
+        try:
+            directory_stat = self.attachments_root.lstat()
+        except FileNotFoundError:
+            return
+        current_uid = getattr(os, "getuid", lambda: -1)()
+        if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != current_uid:
+            raise ValueError("附件目录不可信，清理已暂停")
+        referenced: set[str] = set()
+        for session_path in self.root.glob("*.jsonl"):
+            if session_path.stem in self._pending_deletion_ids():
+                continue
+            original = session_path.lstat()
+            if not stat.S_ISREG(original.st_mode) or original.st_uid != current_uid or original.st_nlink != 1:
+                raise ValueError("会话文件不可信，无法确认共享附件引用")
+            restrict_private_file(session_path)
+            with session_path.open(encoding="utf-8") as handle:
+                for line in handle:
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        raise ValueError("会话记录损坏，无法确认共享附件引用") from None
+                    if (isinstance(entry, dict) and entry.get("type") == "attachment"
+                            and isinstance(entry.get("payload"), dict)):
+                        digest = entry["payload"].get("digest")
+                        if isinstance(digest, str) and _ATTACHMENT_DIGEST.fullmatch(digest):
+                            referenced.add(digest)
+        changed = False
+        for digest in candidates - referenced:
+            path = self.attachments_root / digest
+            try:
+                original = path.lstat()
+            except FileNotFoundError:
+                continue
+            if (not stat.S_ISREG(original.st_mode) or original.st_uid != current_uid
+                    or original.st_nlink != 1):
+                raise ValueError("附件文件不可信，清理已暂停")
+            restrict_private_file(path)
+            path.unlink()
+            changed = True
+        if changed:
+            _fsync_directory(self.attachments_root)
+
+    def _purge_repair_backups(self, thread_id: str) -> None:
+        repair_root = self.root.parent / "repairs"
+        try:
+            root_stat = repair_root.lstat()
+        except FileNotFoundError:
+            return
+        current_uid = getattr(os, "getuid", lambda: -1)()
+        if not stat.S_ISDIR(root_stat.st_mode) or root_stat.st_uid != current_uid:
+            raise ValueError("修复备份目录不可信，清理已暂停")
+        for database_path in sorted(repair_root.rglob("state.sqlite3")):
+            original = database_path.lstat()
+            if (not stat.S_ISREG(original.st_mode) or original.st_uid != current_uid
+                    or original.st_nlink != 1):
+                raise ValueError("修复备份不是私有普通文件，清理已暂停")
+            restrict_private_file(database_path)
+            backup = sqlite3.connect(database_path, timeout=10, isolation_level=None)
+            try:
+                backup.execute("PRAGMA busy_timeout=10000")
+                backup.execute("PRAGMA foreign_keys=ON")
+                backup.execute("PRAGMA synchronous=FULL")
+                backup.execute("PRAGMA secure_delete=ON")
+                version = int(backup.execute("PRAGMA user_version").fetchone()[0])
+                if version > SCHEMA_VERSION:
+                    raise ValueError("修复备份包含较新索引，无法安全删除会话")
+                tables = {row[0] for row in backup.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+                backup.execute("BEGIN IMMEDIATE")
+                try:
+                    if "events" in tables:
+                        backup.execute("DELETE FROM events WHERE thread_id=?", (thread_id,))
+                    if "turns" in tables:
+                        backup.execute("DELETE FROM turns WHERE thread_id=?", (thread_id,))
+                    if "threads" in tables:
+                        backup.execute("DELETE FROM threads WHERE id=?", (thread_id,))
+                    backup.commit()
+                except BaseException:
+                    backup.rollback()
+                    raise
+                backup.execute("VACUUM")
+                result = backup.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if result and result[0] != 0:
+                    raise OSError("修复备份 WAL 尚未收敛")
+            finally:
+                backup.close()
+            backup_directory = database_path.parent
+            for sidecar in (database_path.with_name(database_path.name + "-wal"),
+                            database_path.with_name(database_path.name + "-shm")):
+                try:
+                    sidecar_stat = sidecar.lstat()
+                except FileNotFoundError:
+                    continue
+                if (not stat.S_ISREG(sidecar_stat.st_mode) or sidecar_stat.st_uid != current_uid
+                        or sidecar_stat.st_nlink != 1):
+                    raise ValueError("修复备份 sidecar 不可信，清理已暂停")
+                restrict_private_file(sidecar)
+                sidecar.unlink()
+            _fsync_directory(backup_directory)
+            manifest_path = backup_directory / "manifest.json"
+            if manifest_path.exists():
+                restrict_private_file(manifest_path)
+                try:
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    raise ValueError("修复备份清单损坏，清理已暂停") from None
+                if not isinstance(manifest, list) or any(not isinstance(item, dict) for item in manifest):
+                    raise ValueError("修复备份清单格式无效，清理已暂停")
+                updated = []
+                for item in manifest:
+                    if item.get("name") in {"state.sqlite3-wal", "state.sqlite3-shm"}:
+                        continue
+                    if item.get("name") == "state.sqlite3":
+                        item = {**item, "bytes": database_path.stat().st_size,
+                                "sha256": hashlib.sha256(database_path.read_bytes()).hexdigest()}
+                    updated.append(item)
+                temporary = manifest_path.with_name(f".manifest.{uuid.uuid4().hex}.tmp")
+                descriptor = open_private_file(temporary, os.O_WRONLY | os.O_EXCL)
+                try:
+                    with os.fdopen(descriptor, "wb") as output:
+                        output.write((json.dumps(updated, indent=2) + "\n").encode("utf-8"))
+                        output.flush()
+                        os.fsync(output.fileno())
+                    os.replace(temporary, manifest_path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+                _fsync_directory(backup_directory)
+
+    def _checkpoint_and_truncate_wal(self) -> None:
         with self._index.connection() as connection:
-            rows = connection.execute("SELECT metadata_json FROM threads" +
-                ("" if include_archived else " WHERE archived=0") + " ORDER BY updated_at DESC,id DESC").fetchall()
-        return [json.loads(row["metadata_json"]) for row in rows]
+            result = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if result and result[0] != 0:
+            raise OSError("会话索引 WAL 尚未收敛；删除会在下次启动时继续")
+
+    def list_threads(self, *, include_archived: bool = False) -> list[dict]:
+        with self._lock:
+            self._refresh_threads()
+            pending = self._pending_deletion_ids()
+            with self._index.connection() as connection:
+                rows = connection.execute("SELECT metadata_json FROM threads" +
+                    ("" if include_archived else " WHERE archived=0") + " ORDER BY updated_at DESC,id DESC").fetchall()
+        return [thread for row in rows if (thread := json.loads(row["metadata_json"]))["id"] not in pending]
 
     def list_threads_page(self, *, cursor: str | None = None, limit: int = 50,
                           archived: bool = False, project_id: str | None = None) -> dict:
@@ -681,11 +1125,16 @@ class SessionStore:
                 raise ValueError("会话分页游标无效") from None
             query += " AND (updated_at<? OR (updated_at=? AND id<?))"
             parameters.extend([key[0], key[0], key[1]])
-        query += " ORDER BY updated_at DESC,id DESC LIMIT ?"
-        parameters.append(limit + 1)
-        self._refresh_threads()
-        with self._index.connection() as connection:
-            rows = connection.execute(query, parameters).fetchall()
+        with self._lock:
+            self._refresh_threads()
+            pending = sorted(self._pending_deletion_ids())
+            if pending:
+                query += " AND id NOT IN (" + ",".join("?" for _ in pending) + ")"
+                parameters.extend(pending)
+            query += " ORDER BY updated_at DESC,id DESC LIMIT ?"
+            parameters.append(limit + 1)
+            with self._index.connection() as connection:
+                rows = connection.execute(query, parameters).fetchall()
         page = rows[:limit]
         next_cursor = (_page_cursor("threads", scope, [page[-1]["updated_at"], page[-1]["id"]])
                        if len(rows) > limit else None)
@@ -835,6 +1284,9 @@ class SessionStore:
             self._index_events(connection)
 
     def _index_events(self, connection: sqlite3.Connection) -> None:
+        pending = self._pending_deletion_ids()
+        for thread_id in pending:
+            connection.execute("DELETE FROM events WHERE thread_id=?", (thread_id,))
         if not self.events_path.exists():
             return
         stat = self.events_path.stat()
@@ -857,6 +1309,8 @@ class SessionStore:
                     continue
                 if thread_id is not None:
                     self.path_for(thread_id)
+                    if thread_id in pending:
+                        continue
                 previous = connection.execute("SELECT event_id FROM events WHERE cursor=?", (cursor,)).fetchone()
                 if previous and previous["event_id"] != event_id:
                     raise ValueError("事件日志存在重复游标，请保留原文件后恢复")
@@ -877,10 +1331,10 @@ class SessionStore:
         if {"eventId", "eventCursor"} & set(payload):
             raise ValueError("eventId 与 eventCursor 由存储层生成")
         thread_id = payload.get("threadId")
-        if thread_id is not None:
-            self.require_thread(thread_id)
         _json(payload)
         with self._lock, self._index.transaction() as connection:
+            if thread_id is not None:
+                self.require_thread(thread_id)
             self._index_events(connection)
             event_id = uuid.uuid4().hex
             inserted = connection.execute("INSERT INTO events(event_id,method,thread_id,params_json) VALUES(?,?,?,'{}')", (event_id, method, thread_id))
@@ -912,9 +1366,16 @@ class SessionStore:
             parameters.extend(methods)
         query += " ORDER BY cursor LIMIT ?"
         parameters.append(limit + 1)
-        self._sync_events()
-        with self._index.connection() as connection:
-            rows = connection.execute(query, parameters).fetchall()
+        with self._lock:
+            pending = sorted(self._pending_deletion_ids()) if thread_id is None else []
+            if pending:
+                query = query.replace(" ORDER BY cursor LIMIT ?",
+                    " AND (thread_id IS NULL OR thread_id NOT IN (" + ",".join("?" for _ in pending)
+                    + ")) ORDER BY cursor LIMIT ?")
+                parameters[-1:-1] = pending
+            self._sync_events()
+            with self._index.connection() as connection:
+                rows = connection.execute(query, parameters).fetchall()
         page = rows[:limit]
         return {"events": [{"method": row["method"], "params": json.loads(row["params_json"])} for row in page],
                 "nextCursor": str(page[-1]["cursor"]) if page else str(position), "hasMore": len(rows) > limit}

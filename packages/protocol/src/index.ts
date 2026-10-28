@@ -85,6 +85,7 @@ export const ClientMethods = {
   threadResume: "thread/resume",
   threadFork: "thread/fork",
   threadArchive: "thread/archive",
+  threadDelete: "thread/delete",
   threadUnarchive: "thread/unarchive",
   threadNameSet: "thread/name/set",
   threadReasoningRead: "thread/reasoning/read",
@@ -140,6 +141,7 @@ export const ServerNotifications = {
   connectionStatus: "harness/connectionStatus",
   threadCreated: "thread/created",
   threadArchived: "thread/archived",
+  threadDeleted: "thread/deleted",
   threadUnarchived: "thread/unarchived",
   threadRenamed: "thread/renamed",
   threadReasoningUpdated: "thread/reasoning/updated",
@@ -371,6 +373,21 @@ export interface ThreadReadResponse {
   queue?: QueueItem[];
   snapshotId?: string;
   itemCount?: number;
+}
+
+export interface ThreadDeleteParams {
+  threadId: string;
+}
+
+export interface ThreadDeleteResponse {
+  threadId: string;
+  deleted: true;
+}
+
+export interface ThreadDeletedNotification {
+  deletedThreadId: string;
+  eventId: string;
+  eventCursor: string;
 }
 
 /** 内核允许清单中的工具；写操作需要逐次批准。 */

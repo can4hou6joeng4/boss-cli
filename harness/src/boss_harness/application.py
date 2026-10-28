@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from contextlib import contextmanager
 import hashlib
 from collections import deque
 from dataclasses import asdict, replace
@@ -20,7 +21,7 @@ import threading
 import time
 import uuid
 import weakref
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from boss_harness import __version__
 from boss_harness.agent import TurnRunner
@@ -39,7 +40,7 @@ from boss_harness.request_policy import ModelRequestRejected, check_model_reques
 from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
 from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUncertain, Entry,
-                                  SessionStore, ToolRevisionPersistenceError)
+                                  SessionStore, ThreadNotFound, ToolRevisionPersistenceError)
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
 from boss_harness.tool_bundle import ToolBundle
 from boss_harness.summary import SUMMARY_MAX_REQUESTS, SummaryPlanner
@@ -68,6 +69,33 @@ class _CompactionFailure(Exception):
 
 class _CompactionCancelled(Exception):
     pass
+
+
+class _ThreadAdmission:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entries: dict[str, list[Any]] = {}
+
+    @contextmanager
+    def hold(self, thread_id: str) -> Iterator[None]:
+        with self._lock:
+            entry = self._entries.get(thread_id)
+            if entry is None:
+                entry = [threading.RLock(), 0]
+                self._entries[thread_id] = entry
+            entry[1] += 1
+        acquired = False
+        try:
+            entry[0].acquire()
+            acquired = True
+            yield
+        finally:
+            if acquired:
+                entry[0].release()
+            with self._lock:
+                entry[1] -= 1
+                if entry[1] == 0 and self._entries.get(thread_id) is entry:
+                    del self._entries[thread_id]
 
 
 def _approval_timeout() -> float:
@@ -125,6 +153,15 @@ class EventHub:
                 self.lifecycle_hooks.observe_event(method, payload)
         return event
 
+    def publish_persisted(self, event: dict) -> None:
+        with self.lock:
+            method, payload = event["method"], event["params"]
+            try:
+                self.server.notify(method, payload)
+            except (ConnectionError, BrokenPipeError):
+                pass
+            self.lifecycle_hooks.observe_event(method, payload)
+
     def items(self, thread_id: str) -> list[dict]:
         with self.lock:
             return [{**item, **(self.live.get(thread_id, {}).get(item["id"], {}) if item.get("status") == "running" else {})}
@@ -178,9 +215,10 @@ class ApplicationService:
         self._base_bridge_close_claimed = False
         self._base_bridge_close_owner: int | None = None
         self._base_bridge_close_done = threading.Event()
+        self._thread_admission = _ThreadAdmission()
         self._owner = StateDirectoryOwner(state_dir)
         try:
-            self.sessions = SessionStore(state_dir / "sessions")
+            self.sessions = SessionStore(state_dir / "sessions", attachments_root=state_dir / "attachments")
             self.events = EventHub(server, self.sessions, self.lifecycle_hooks)
             self.lifecycle_hooks.set_error_sink(self._record_hook_failure)
             self._restore_partial_streams()
@@ -192,6 +230,7 @@ class ApplicationService:
             # Queue dispatch can outlive provider ownership. Its worker still
             # owns the state directory until all follow-up bookkeeping ends.
             self._follow_up_workers: dict[str, threading.Thread] = {}
+            self._follow_up_worker_threads: dict[str, str] = {}
             self._follow_up_dispatches: dict[str, dict[str, Any]] = {}
             self._receipt_notices: dict[str, dict[str, Any]] = {}
             self._follow_up_admission_lock = threading.RLock()
@@ -328,6 +367,7 @@ class ApplicationService:
             "thread/start": self.on_thread_start, "thread/list": self.on_thread_list,
             "thread/read": self.on_thread_read, "thread/resume": self.on_thread_resume,
             "thread/fork": self.on_thread_fork, "thread/archive": self.on_thread_archive,
+            "thread/delete": self.on_thread_delete,
             "thread/unarchive": self.on_thread_unarchive, "thread/name/set": self.on_thread_name,
             "thread/reasoning/read": self.on_thread_reasoning_read,
             "thread/reasoning/set": self.on_thread_reasoning_set,
@@ -360,7 +400,13 @@ class ApplicationService:
             "shutdown": self.on_shutdown,
         }
         for method, handler in methods.items():
-            self.server.register(method, handler)
+            def guarded(params: dict | None, handler: Callable = handler) -> Any:
+                thread_id = params.get("threadId") if isinstance(params, dict) else None
+                if isinstance(thread_id, str):
+                    with self._thread_admission.hold(thread_id):
+                        return handler(params)
+                return handler(params)
+            self.server.register(method, guarded)
 
     def _check_ready(self, method: str) -> None:
         if method == "initialize" or method == "shutdown":
@@ -517,6 +563,7 @@ class ApplicationService:
     def on_items_list(self, params: dict | None) -> dict:
         params = params or {}
         thread_id = _text(params, "threadId")
+        self.sessions.require_thread(thread_id)
         limit = params.get("limit", 100)
         if type(limit) is not int or not 1 <= limit <= 200:
             raise ValueError("limit 必须是 1 到 200 的整数")
@@ -630,6 +677,59 @@ class ApplicationService:
             thread = self.sessions.archive_thread(thread_id)
         self.events.emit("thread/archived", {"threadId": thread_id})
         return {"thread": thread}
+
+    def on_thread_delete(self, params: dict | None) -> dict:
+        thread_id = _text(params, "threadId")
+        with self._thread_admission.hold(thread_id), self._follow_up_admission_lock, self.runtimes.lock:
+            if thread_id in self.runtimes.active:
+                reason = "turn"
+            elif any(job.get("threadId") == thread_id for job in self.runtimes.jobs.values()):
+                reason = "cleanup"
+            elif thread_id in self._compaction_by_thread:
+                reason = "compaction"
+            elif thread_id in self._follow_up_dispatches:
+                reason = "dispatch"
+            elif thread_id in self._follow_up_worker_threads.values():
+                reason = "cleanup"
+            elif any(notice.get("threadId") == thread_id for notice in self._receipt_notices.values()):
+                reason = "cleanup"
+            else:
+                reason = None
+            if reason is not None:
+                raise RpcError(-32004, "会话仍由运行任务持有，暂不能删除",
+                               {"code": "THREAD_BUSY", "threadId": thread_id, "reason": reason})
+            with self.events.lock:
+                notify_deleted = (self.sessions.has_pending_deletion(thread_id)
+                                  or self.sessions.path_for(thread_id).exists())
+                self.events.live.pop(thread_id, None)
+                self._snapshot_pages = {key: value for key, value in self._snapshot_pages.items()
+                                        if value[0] != thread_id}
+                removed_jobs = {job_id for job_id, job in self._compaction_jobs.items()
+                                if job.get("threadId") == thread_id}
+                for job_id in removed_jobs:
+                    self._compaction_jobs.pop(job_id, None)
+                    self._compaction_terminal_ids.discard(job_id)
+                if removed_jobs:
+                    self._compaction_terminal_order = deque(
+                        job_id for job_id in self._compaction_terminal_order if job_id not in removed_jobs)
+                try:
+                    event = self.sessions.delete_thread(thread_id)
+                except ThreadNotFound:
+                    raise RpcError(-32011, "会话不存在",
+                                   {"code": "THREAD_NOT_FOUND", "threadId": thread_id}) from None
+                except Exception:
+                    if self.sessions.has_pending_deletion(thread_id):
+                        raise RpcError(-32012, "会话删除尚未完成；该会话已隐藏，内核重启后会继续清理",
+                                       {"code": "THREAD_DELETE_INCOMPLETE", "threadId": thread_id}) from None
+                    raise
+                self._tool_persistence_fences.discard(thread_id)
+                self._capacity_waiter_ids.discard(thread_id)
+                self._capacity_waiters = deque(value for value in self._capacity_waiters if value != thread_id)
+                with self.queue.lock:
+                    self.queue._pending_pauses.pop(thread_id, None)
+                if notify_deleted:
+                    self.events.publish_persisted(event)
+        return {"threadId": thread_id, "deleted": True}
 
     def on_thread_unarchive(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")
@@ -1853,6 +1953,7 @@ class ApplicationService:
                 if status == "completed":
                     with self.runtimes.lock:
                         self._follow_up_workers[job["turnId"]] = threading.current_thread()
+                        self._follow_up_worker_threads[job["turnId"]] = job["threadId"]
                 try:
                     if job["runner"] is not self.runner:
                         self.bridge_lifecycle.close(job["runner"].tool_bridge)
@@ -1869,6 +1970,7 @@ class ApplicationService:
         finally:
             with self.runtimes.lock:
                 self._follow_up_workers.pop(job["turnId"], None)
+                self._follow_up_worker_threads.pop(job["turnId"], None)
             self._close_application_resources_if_idle()
 
     def _close_application_resources_if_idle(self, deadline: float | None = None) -> None:
