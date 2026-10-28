@@ -1,7 +1,7 @@
 {
   "name": "boss-cli",
   "private": true,
-  "version": "0.2.0-rc.11",
+  "version": "0.2.0-rc.12",
   "description": "BOSS-CLI：面向招聘任务的 Agent Harness（桌面端）",
   "engines": {
     "node": ">=24"
