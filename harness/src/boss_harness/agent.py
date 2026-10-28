@@ -327,6 +327,18 @@ class TurnRunner:
             payload["approval"] = approval
         revision = Entry(type="item", parent_id=self.sessions.last_entry_id(thread_id), payload=payload)
         _, recovered = self.sessions.append_tool_revision(thread_id, revision)
+        if self.lifecycle_hooks is not None:
+            self.lifecycle_hooks.after_tool_call({
+                "threadId": thread_id,
+                "turnId": self.turn_id,
+                "itemId": entry.id,
+                "toolCallId": call_id or entry.id,
+                "toolName": name,
+                "status": status,
+                "executionState": payload["executionState"],
+                "ok": result.ok,
+                "errorCode": (result.error or {}).get("code"),
+            }, payload["result"], cancel_event=self._cancel)
         # Keep canonical result data durable; model context uses its own bounded projection.
         # Observers get a separate bounded projection and content-addressed read route.
         try:
@@ -431,7 +443,8 @@ class TurnRunner:
                 denied = ToolResult(
                     ok=False, command=name, error={"code": "NOT_APPROVED", "message": message}
                 )
-                self.finish_tool_call(thread_id, entry, name, denied, call_id, approval)
+                self.finish_tool_call(thread_id, entry, name, denied, call_id, approval,
+                                      "not_approved")
                 return ToolResultItem(
                     tool_call_id=call_id or entry.id,
                     content=model_result(denied, source=tool_source(thread_id, entry, name),
@@ -487,10 +500,12 @@ class TurnRunner:
                    and (result.error or {}).get("code") in {
                        "CANCELLED", "TOOL_TIMEOUT", "TOOL_ERROR", "CLI_ERROR", "CLI_CONTRACT_ERROR", "CLI_OUTPUT_LIMIT", "INVALID_ENVELOPE",
                        "GREET_RESULT_UNKNOWN", "ACTION_UNCONFIRMED"})
+        execution_state = ("not_executed" if policy_denied or dispatch_persistence_failed
+                           or cancelled_before_dispatch or invalid is not None or handler is None
+                           else "outcome_unknown" if unknown else None)
         try:
             recovered_persistence = self.finish_tool_call(thread_id, entry, name, result, call_id, approval,
-                "not_executed" if policy_denied or dispatch_persistence_failed or cancelled_before_dispatch
-                else "outcome_unknown" if unknown else None)
+                execution_state)
             if recovered_persistence:
                 self._blocked = ToolResult(ok=False, command=name, error={
                     "code": "TOOL_RESULT_PERSISTENCE_RECOVERED",
