@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第七十轮：审批请求计时器启动失败时收敛 pending waiter
+
+Pi 开放 [Issue #11433](https://github.com/earendil-works/pi/issues/11433) 报告子进程管道 reader/waiter 线程无法创建时请求挂起、取消失效且子进程残留。核对时 issue 仍为 OPEN；Pi main 为 `02a2b2532d8f6ea7b26da578a6844a1fcfd50e03`，仓库许可证为 MIT。本项目的问题范围不同：在 main `8f7f2158fc4d769b470fcd381ab7a9c54bbc4035` 上，故障注入使 `threading.Timer.start()` 失败后，`JsonRpcServer.request()` 已发出审批请求但把 future 留在 `_pending`，且调用方未能注册审批完成回调。两者共同揭示线程启动失败也必须结算对应的等待所有权；本轮不复制 Pi 的 Rust 子进程实现。
+
+本项目独立收敛策略是在 timer 启动失败时立即通过既有 `cancel_request()` 完成 future 并移除 `_pending`，随后返回已完成的 `ServerRequest`。现有审批完成回调将其解释为超时/未批准，继续持久化工具终态而不派发 handler；晚到客户端响应按未知请求忽略。JSON-RPC 字段、正常超时、成功审批路径与依赖均不变。
+
+本地临时故障注入覆盖 timer 在未启动和启动后抛错、pending 清理、future 失败、晚到审批回复忽略及正常 timer 路径；未调用真实模型、招聘 CLI 或平台。测试材料仅保留本地，不进入提交和 Python 产物。
+
 ## 第六十九轮：从持久事件恢复摘要任务终态而不重放
 
 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 讨论任务执行所有权、是否阻塞新输入与是否响应 abort 应由独立属性表达；核对时 issue 仍开放。Pi 关闭 [Issue #11141](https://github.com/earendil-works/pi/issues/11141) 后增加 `afterRun` task，但 #11332 的 checkpoint 用例仍指出任务若只存在进程运行时，异常退出后缺少可恢复的可观察终态。本轮不引入 Pi 的 task API；仅沿用“持久任务状态与当前进程执行所有权分离”的设计目标。
