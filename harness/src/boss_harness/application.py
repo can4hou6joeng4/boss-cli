@@ -140,7 +140,8 @@ class ApplicationService:
                  lifecycle_hooks: LifecycleHooks | tuple[Any, ...] | list[Any] | None = None,
                  hook_timeout: float = 0.25,
                  expose_tool_results_to_hooks: bool = False,
-                 max_model_requests: int | None = None) -> None:
+                 max_model_requests: int | None = None,
+                 prompt_preamble: str | None = None) -> None:
         self.server, self.config, self.provider = server, config, provider
         self.max_model_requests = (model_request_limit_from_environment() if max_model_requests is None
                                    else model_request_limit(max_model_requests))
@@ -153,10 +154,12 @@ class ApplicationService:
         self._business_services = tool_bundle is None
         if tool_bundle is None:
             from boss_harness.tools.bundle import create_boss_bundle
-            tool_bundle = create_boss_bundle()
+            tool_bundle = create_boss_bundle(prompt_preamble=prompt_preamble)
             if bridge_factory is None:
                 from boss_harness.tools import BossCliTool
                 bridge_factory = BossCliTool
+        elif prompt_preamble is not None:
+            raise ValueError("prompt_preamble 只能用于默认招聘工具组合")
         if not isinstance(tool_bundle, ToolBundle) or not callable(bridge_factory):
             raise ValueError("工具组合须提供有效 ToolBundle 和独立 bridge_factory")
         self.tool_bundle, self.bridge_factory = tool_bundle, bridge_factory
