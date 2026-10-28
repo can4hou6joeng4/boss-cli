@@ -134,6 +134,8 @@ Pi 通过宽泛短语匹配解决其 overflow detector 的问题。本项目只�
 
 2026-10-29 复核：Pi Issue #11211 仍 OPEN；Pi main 更新为 `a87b742ff4ce262c07b7830a25c73c1442dab41`，许可证 MIT。当前本项目 main `11142f783e1751c066a0ea920469971b1e9f82ec` 的 Anthropic provider 在迭代前登记 SDK stream，`request_abort()` 调用其 `close()`；回合、摘要及连接检查消费者均在 `finally` 关闭流。使用本地 Anthropic 2.3.0、httpx2 2.16.0 和 `MockTransport` 验证：body 在提供 `message_start` 后阻塞等待下一帧，调用 `request_abort()` 后 SDK 调用 body `close()`，迭代器立即退出；畸形 SSE 在 SDK context manager 退出时同样关闭 body。无网络或模型请求。Pi 报告中的 caller-provided client 不受 abort signal 控制与本项目不同：`AnthropicProvider` 不公开注入 client 的配置入口。合成传输没有验证操作系统 socket 的唤醒行为，因此不据此推断网络栈所有故障都能立即取消；在本项目支持的接入路径中未复现可修复缺口，本轮不改运行时代码。
 
+同日评估 Pi [PR #11545](https://github.com/earendil-works/pi/pull/11545)：核对时仍为 DRAFT/OPEN，feature commit `1a35b9c29dd37f66279dced4a64c3d5a6aa48687`、head `a33c171262590a0fe375e1e99bb617187be92240`，基于 Pi main `a87b742ff4ce262c07b7830a25c73c1442dab41`，许可证 MIT。该提案为 Anthropic message-threads beta 保存服务端 continuation，前缀不匹配或服务端拒绝时回退完整请求；文档声明 token 数和 prompt cache 行为不变，收益主要是减少重复请求载荷。本项目每次请求都从本地 append-only 历史重建完整上下文，`ModelRequest` 没有 session 身份，也没有跨请求 provider continuation 状态。直接采用还需明确 thread 与本地分支、上下文编辑、摘要 checkpoint、重启和删除之间的关联及并发恢复；上游的进程内 `cleanupSessionResources(sessionId)` 不等同于 provider 端线程删除，远端保留/删除契约尚未核实。当前没有本地长会话载荷或延迟测量证明该取舍有实际收益，因此暂不移植；若后续评估，先测量典型会话请求体并核实官方 endpoint 的远端状态清理语义。
+
 ## 第五十八轮：保护会话持久化文件 mode
 
 本项目 Issue [#133](https://github.com/can4hou6joeng4/boss-cli/issues/133) 的本机合成复现发现：旧版 `0755` state 目录中，新 session JSONL、event JSONL、SQLite/WAL/SHM 会随 `umask 022` 以 `0644` 创建；附件则先以该 mode 创建再 chmod `0600`。此前的新目录权限修复无法约束旧 state 根目录内的文件。
