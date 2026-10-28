@@ -605,6 +605,8 @@ class ApplicationService:
             raise RpcError(-32004, "请先中断该会话的运行回合")
         if thread_id in self._compaction_by_thread:
             raise RpcError(-32004, "该会话正在生成摘要，请等待完成或先取消摘要")
+        if thread_id in self._follow_up_dispatches:
+            raise RpcError(-32004, "该会话正在启动后续回合，请等待启动完成")
 
     def on_thread_archive(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")
@@ -867,22 +869,53 @@ class ApplicationService:
                     self._compaction_jobs.pop(expired_id, None)
 
     def _finish_compaction(self, job: dict) -> None:
+        wake_follow_up = False
         with self.runtimes.lock:
             job["_shutdown_worker_done"] = True
-            self._retire_compaction_locked(job)
+            if (job.get("status") in {"failed", "cancelled"}
+                    and self.runtimes.active.get(job["threadId"]) is None):
+                try:
+                    self.queue.pause(job["threadId"], kind="followUp")
+                except Exception:
+                    # TurnQueue records an in-memory pending pause before
+                    # persistence, so future admission still settles it first.
+                    pass
+            released = self._retire_compaction_locked(job)
+            # A successful checkpoint is the only compaction outcome that may
+            # resume a queued user request. Failed/cancelled compaction keeps
+            # the queue untouched so no new model or external action starts
+            # without an explicit retry.
+            wake_follow_up = released and job.get("status") == "completed"
+        if wake_follow_up:
+            try:
+                self._start_follow_up(job["threadId"])
+            except Exception:
+                # The queue item remains durable and queued; a transient
+                # dispatch/observer failure must not rewrite the compaction
+                # result or turn it into a start failure.
+                pass
         self._close_application_resources_if_idle()
 
-    def _retire_compaction_locked(self, job: dict) -> None:
+    def _retire_compaction_locked(self, job: dict) -> bool:
         abort = job.get("_shutdown_abort")
         if not job.get("_shutdown_worker_done") or (abort is not None and not abort.done.is_set()):
-            return
+            return False
+        released = self._compaction_by_thread.get(job["threadId"]) == job["jobId"]
         if self._compaction_by_thread.get(job["threadId"]) == job["jobId"]:
             self._compaction_by_thread.pop(job["threadId"], None)
         self._remember_compaction_terminal(job)
+        return released
 
     def _compaction_abort_done(self, job: dict) -> None:
+        wake_follow_up = False
         with self.runtimes.lock:
-            self._retire_compaction_locked(job)
+            released = self._retire_compaction_locked(job)
+            wake_follow_up = released and job.get("status") == "completed"
+        if wake_follow_up:
+            try:
+                self._start_follow_up(job["threadId"])
+            except Exception:
+                pass
         self._close_application_resources_if_idle()
 
     @staticmethod
@@ -1920,6 +1953,12 @@ class ApplicationService:
         while True:
             with self.runtimes.lock:
                 if self.runtimes.closed or thread_id in self.runtimes.active:
+                    return
+                # A compaction owns the session admission boundary. Leave a
+                # queued follow-up untouched until a successful checkpoint
+                # releases that ownership; otherwise the temporary busy error
+                # would be misclassified as TURN_START_FAILED.
+                if thread_id in self._compaction_by_thread:
                     return
                 if thread_id in self._tool_persistence_fences:
                     return
