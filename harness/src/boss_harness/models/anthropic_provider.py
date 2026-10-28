@@ -225,6 +225,8 @@ class AnthropicProvider:
                     if self._abort_requested:
                         yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                         return
+                    if saw_message_stop:
+                        raise ValueError("message_stop 之后收到额外模型流事件")
                     kind = getattr(event, "type", "")
                     if kind == "message_start":
                         message = getattr(event, "message", None)

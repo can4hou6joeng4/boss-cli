@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第六十七轮：拒绝 Anthropic 消息终态后的流事件
+
+参考 Pi 已关闭 [Issue #11506](https://github.com/earendil-works/pi/issues/11506)，其场景是 Anthropic-compatible relay 在完整流终止前省略 `message_delta.stop_reason`；这与本轮发现相邻，但不是相同故障。核对时 Pi main 为 `ad702637fdf6fbd3f965c5dba0b14bae100b74eb`，许可证 MIT。Pi 当前 `anthropic-messages.ts` 检查了 `message_stop` 是否出现，但不会因此停止解析器向调用方传递后续 SSE 事件；本轮不复制实现，而是按本项目“工具只能来自完整 provider 终态”的契约独立加固。
+
+本项目 [Issue #154](https://github.com/can4hou6joeng4/boss-cli/issues/154) 在 main `1151f7dd` 上通过合成 SDK stream 和真实 `TurnRunner` 复现：`message_start`、正常 `message_delta`、`message_stop` 之后追加完整 `tool_use` 时，provider 仍产出包含该调用的 `done`，回合返回 `completed` 并调用注册 handler。普通 Anthropic 流按 `message_stop` 收尾，不应继续含有新的消息内容块。
+
+`AnthropicProvider.stream()` 收到 `message_stop` 后若迭代器再交付任何事件（包括重复 `message_stop`），立即按流处理错误结束。终态后的文本、思考或工具事件都不能修改响应，也不会产出 `done`；正常终态前的 block 顺序、usage 和工具回路不变。OpenAI Responses、JSON-RPC、审批规则、provider 重试及持久化格式均不变。
+
+同步核对 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`，GitHub license 字段为空；近期开放事项仍集中招聘认证、Cookie、沟通、分页和 recruiter 业务，没有可移植的通用 provider stream terminal 契约，本轮不迁移其代码。
+
+本地 `TurnRunner` 故障注入覆盖终态后追加工具、重复终态以及正常工具续回合：2 个探针用例 / 3 个路径通过，后置工具 handler 调用数为零，正常路径仍调用一次；既有 Anthropic thinking continuation 5 项回归通过。Python 编译、TypeScript 检查、Electron 源码构建、`uv build` wheel/sdist 与产物内容扫描、`git diff --check` 均通过。探针及模拟 SDK 仅保留本地，无真实模型、招聘平台或桌面 UI 验收。
+
 ## 第六十六轮：只覆盖默认系统提示身份段
 
 参考 Pi 已关闭 [PR #11315](https://github.com/earendil-works/pi/pull/11315) 与开放 [Issue #11317](https://github.com/earendil-works/pi/issues/11317)：SDK 宿主希望改变 opening identity 时保留默认 tools、rules 和 docs sections。核对时 Pi main 为 `c3d8ce44d3231c7e46071d2d859f41ca7d39d21b`，许可证 MIT。本项目独立实现结构化默认招聘提示入口，不复制 Pi 的 prompt 组装代码。

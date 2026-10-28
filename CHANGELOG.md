@@ -9,6 +9,7 @@
 
 ### 修复
 
+- [Issue #154](https://github.com/can4hou6joeng4/boss-cli/issues/154)：Anthropic 流到达 `message_stop` 后拒绝任何额外事件，避免终态之后追加的工具调用进入已完成响应并派发；正常终态前的响应处理不变。
 - [Issue #150](https://github.com/can4hou6joeng4/boss-cli/issues/150)：摘要 provider 已返回终态并带有 token usage、但摘要内容因停止原因、空文本、工具调用或超长被拒绝时，仍保存不可用但可追溯的 `context_summary_usage`（含拒绝 code）；不写检查点、不重试，也不伪造没有终态或 usage 的记录。
 - [Issue #148](https://github.com/can4hou6joeng4/boss-cli/issues/148)：登录保存 worker 未启动时返回 `LOGIN_SAVE_START_FAILED` 并回收忙状态；连接检查、登录和模型 abort 的启动包装层在实际启动后抛错时保留真实 worker 所有权。已观察取消的桥接任务不追加后续 CLI 调用，不自动重试登录保存。
 - [Issue #146](https://github.com/can4hou6joeng4/boss-cli/issues/146)：保留 Anthropic extended thinking 的 opaque `signature` 与 `redacted_thinking` 数据，支持同回合工具续请求、历史重建、关闭后恢复和 fork；含工具响应的签名缺失或出现不受支持的 fallback block 时 fail closed，不执行工具，前缀 digest 不一致时丢弃失效 thinking block，不发送其签名。
@@ -20,6 +21,7 @@
 ### 兼容与验证
 
 - OpenAI 与 Anthropic 共享相同的窄 HTTP 413 消息分类；既有无输出、未取消、自动压缩启用、预算足够及每回合只恢复一次的条件不变。Pi Issue #10879 的通用 413 检测不直接移植。
+- Anthropic `message_stop` 后的后续事件令本次 provider stream 失败，不产生 `done`，因此不会调用工具或申请审批；JSON-RPC、OpenAI Responses 流与重试策略不变。
 - Anthropic thinking continuation metadata 仅用于兼容请求重建，不进入 RPC、event、hook、摘要材料或工具结果投影；签名按官方 SDK 语义替换而非拼接。离线探针覆盖流式捕获、同回合/重开/fork 续接、缺签名工具阻断、前缀失配、上下文编辑、压缩尾部和崩溃后的连续工具前缀恢复。真实 Anthropic 服务、第三方网关跨模型兼容性及省略后缀 `tool_use` 的远端行为未验收。
 - 本地 7 项离线探针覆盖两个 provider 的精确匹配、裸/其他/超长 HTTP 413、其他状态和错误来源、既有结构化 overflow，以及 TurnRunner 的单次恢复、输出、取消和请求上限门禁。Python 3.11 编译、类型检查、Electron 源码构建、wheel/sdist 构建及 `git diff --check` 通过；wheel/sdist 仅含 Harness 产品源码。探针只保留本地，未调用真实模型或招聘平台。
 - OpenAI Responses 正常事件、回合终态和重试边界保持不变；Anthropic 流协议与现有 prompt 窗口分类保持不变。本轮未执行真实服务、招聘平台或桌面 UI 验收。
