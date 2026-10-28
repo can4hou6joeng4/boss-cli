@@ -11,10 +11,16 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Iterator, Sequence
+from dataclasses import replace
 
 import anthropic
 
 from boss_harness.models.errors import anthropic_error_info
+from boss_harness.models.continuation import (
+    MAX_ANTHROPIC_SIGNATURE_BYTES,
+    MAX_ANTHROPIC_SIGNATURE_TOTAL_BYTES,
+    anthropic_prefix_digest,
+)
 from boss_harness.models.output_budget import (
     OutputBudgetExceeded,
     ResponseTextBudget,
@@ -59,11 +65,9 @@ def _parse_tool_arguments(raw: str) -> dict[str, object] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def to_sdk_messages(messages: Sequence[ChatMessage]) -> list[dict[str, object]]:
-    """把内部消息翻成 SDK 形状。
-
-    注意：ThinkingBlock 在回放时被丢弃（我们没有可回传的签名），这不影响对话有效性。
-    """
+def to_sdk_messages(messages: Sequence[ChatMessage], *, system: str | None = None,
+                    tools: object = None) -> list[dict[str, object]]:
+    """把内部消息翻成 SDK 形状，并原样回放已签名的 thinking blocks。"""
     out: list[dict[str, object]] = []
     for message in messages:
         if isinstance(message, ToolResultsMessage):
@@ -84,9 +88,19 @@ def to_sdk_messages(messages: Sequence[ChatMessage]) -> list[dict[str, object]]:
             continue
         if isinstance(message, AssistantMessage):
             blocks: list[dict[str, object]] = []
+            prefix_digest = anthropic_prefix_digest(system, tools, out) if system is not None else None
             for block in message.blocks:
                 if isinstance(block, TextBlock):
                     blocks.append({"type": "text", "text": block.text})
+                elif isinstance(block, ThinkingBlock):
+                    if (prefix_digest is not None and block.prefix_digest is not None
+                            and block.prefix_digest != prefix_digest):
+                        continue
+                    if block.redacted_data is not None:
+                        blocks.append({"type": "redacted_thinking", "data": block.redacted_data})
+                    elif block.signature is not None:
+                        blocks.append({"type": "thinking", "thinking": block.thinking,
+                                       "signature": block.signature})
                 elif isinstance(block, ToolCallBlock):
                     blocks.append(
                         {"type": "tool_use", "id": block.id, "name": block.name, "input": dict(block.arguments)}
@@ -131,21 +145,18 @@ class AnthropicProvider:
     # ---------- 请求参数 ----------
 
     def _request_kwargs(self, request: ModelRequest) -> dict[str, object]:
+        tools = [
+            {"name": spec.name, "description": spec.description, "input_schema": dict(spec.input_schema)}
+            for spec in request.tools
+        ]
         kwargs: dict[str, object] = {
             "model": request.model,
             "max_tokens": request.max_tokens,
             "system": request.system,
-            "messages": to_sdk_messages(request.messages),
+            "messages": to_sdk_messages(request.messages, system=request.system, tools=tools),
         }
         if request.tools:
-            kwargs["tools"] = [
-                {
-                    "name": spec.name,
-                    "description": spec.description,
-                    "input_schema": dict(spec.input_schema),
-                }
-                for spec in request.tools
-            ]
+            kwargs["tools"] = tools
         if request.thinking:
             kwargs["thinking"] = dict(request.thinking)
         if request.effort:
@@ -157,7 +168,11 @@ class AnthropicProvider:
     def stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
         self._abort_requested = False
         kwargs = self._request_kwargs(request)
+        prefix_digest = anthropic_prefix_digest(request.system, kwargs.get("tools"), kwargs["messages"])
         buffers: dict[int, list[str]] = {}
+        signatures: dict[int, str] = {}
+        signature_sizes: dict[int, int] = {}
+        redacted_data: dict[int, str] = {}
         tool_argument_buffers: dict[int, list[str]] = {}
         tool_names: dict[int, str] = {}
         tool_ids: dict[int, str] = {}
@@ -165,12 +180,27 @@ class AnthropicProvider:
         started_tools: set[int] = set()
         snapshot_only_tools: set[int] = set()
         closed_tool_blocks: set[int] = set()
+        closed_blocks: set[int] = set()
         budget = ToolArgumentBudget()
         text_budget = ResponseTextBudget()
+        signature_bytes = 0
         usage = {"input_tokens": 0, "output_tokens": 0,
                  "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
         stop_reason: str | None = None
         saw_message_stop = False
+        request_has_private = any(
+            isinstance(message, AssistantMessage)
+            and any(isinstance(block, ThinkingBlock)
+                    and (block.signature is not None or block.redacted_data is not None)
+                    for block in message.blocks)
+            for message in request.messages
+        )
+
+        def has_private() -> bool:
+            return request_has_private or bool(signatures or redacted_data)
+
+        def private_error_info(info):
+            return replace(info, provider_code=None) if has_private() else info
 
         yield StreamEvent(type="start")
 
@@ -234,6 +264,29 @@ class AnthropicProvider:
                                 text_budget.account(index, initial_thinking)
                                 buffers[index].append(initial_thinking)
                                 yield StreamEvent(type="thinking_delta", content_index=index, delta=initial_thinking)
+                            initial_signature = getattr(event.content_block, "signature", None)
+                            if initial_signature:
+                                if not isinstance(initial_signature, str):
+                                    raise ValueError("思考初始签名无效")
+                                size = len(initial_signature.encode("utf-8"))
+                                if (size > MAX_ANTHROPIC_SIGNATURE_BYTES
+                                        or signature_bytes + size > MAX_ANTHROPIC_SIGNATURE_TOTAL_BYTES):
+                                    raise ValueError("思考签名超过私有续接预算")
+                                signature_bytes += size
+                                signatures[index] = initial_signature
+                                signature_sizes[index] = size
+                        elif block_type == "redacted_thinking":
+                            data = getattr(event.content_block, "data", None)
+                            if not isinstance(data, str) or not data:
+                                raise ValueError("加密思考块无效")
+                            size = len(data.encode("utf-8"))
+                            if (size > MAX_ANTHROPIC_SIGNATURE_BYTES
+                                    or signature_bytes + size > MAX_ANTHROPIC_SIGNATURE_TOTAL_BYTES):
+                                raise ValueError("加密思考块超过私有续接预算")
+                            signature_bytes += size
+                            redacted_data[index] = data
+                        elif block_type == "fallback":
+                            raise ValueError("当前内核不支持服务端 fallback 续接块")
                         elif block_type == "tool_use":
                             block = event.content_block
                             tool_names[index] = str(getattr(block, "name", "") or "")
@@ -262,6 +315,20 @@ class AnthropicProvider:
                             text_budget.account(index, text)
                             buffers.setdefault(index, []).append(text)
                             yield StreamEvent(type="thinking_delta", content_index=index, delta=text)
+                        elif delta_type == "signature_delta":
+                            if block_types.get(index) != "thinking" or index in closed_blocks:
+                                raise ValueError("思考签名增量没有唯一的活动 thinking block")
+                            signature = getattr(delta, "signature", None)
+                            if not isinstance(signature, str) or not signature:
+                                raise ValueError("思考签名增量无效")
+                            size = len(signature.encode("utf-8"))
+                            additional = max(0, size - signature_sizes.get(index, 0))
+                            if (size > MAX_ANTHROPIC_SIGNATURE_BYTES
+                                    or signature_bytes + additional > MAX_ANTHROPIC_SIGNATURE_TOTAL_BYTES):
+                                raise ValueError("思考签名超过私有续接预算")
+                            signature_bytes += additional
+                            signature_sizes[index] = max(size, signature_sizes.get(index, 0))
+                            signatures[index] = signature
                         elif delta_type == "input_json_delta":
                             if index not in started_tools or index in closed_tool_blocks:
                                 raise ValueError("工具参数增量没有对应的活动工具块")
@@ -277,6 +344,9 @@ class AnthropicProvider:
                             )
                     elif kind == "content_block_stop":
                         index = int(getattr(event, "index", 0))
+                        if index in closed_blocks:
+                            raise ValueError("响应重复关闭内容块")
+                        closed_blocks.add(index)
                         joined = "".join(buffers.get(index, []))
                         if joined:
                             end_type = "thinking_end" if block_types.get(index) == "thinking" else "text_end"
@@ -285,25 +355,34 @@ class AnthropicProvider:
                             closed_tool_blocks.add(index)
                 if not saw_message_stop:
                     raise ValueError("模型流未正常结束")
+                if started_tools and any(
+                        index not in signatures or index not in closed_blocks
+                        for index, value in block_types.items() if value == "thinking"):
+                    raise ValueError("工具响应缺少完整的 thinking 签名")
         except anthropic.APIConnectionError as exc:
-            error_info = anthropic_error_info(None, source="transport_error")
-            yield StreamEvent(type="error", reason="error", error=self._redact(f"连接失败：{exc}"),
+            error_info = private_error_info(anthropic_error_info(None, source="transport_error"))
+            message = "模型连接失败" if has_private() else f"连接失败：{exc}"
+            yield StreamEvent(type="error", reason="error", error=self._redact(message),
                               error_info=error_info)
             return
         except anthropic.RateLimitError as exc:
             status_code = getattr(exc, "status_code", 429)
-            error_info = anthropic_error_info(exc.body, source="http_error", status_code=status_code)
-            yield StreamEvent(type="error", reason="error", error=self._redact(f"被限流：{exc}"),
+            error_info = private_error_info(
+                anthropic_error_info(exc.body, source="http_error", status_code=status_code))
+            message = "模型请求被限流" if has_private() else f"被限流：{exc}"
+            yield StreamEvent(type="error", reason="error", error=self._redact(message),
                               error_info=error_info)
             return
         except anthropic.APIStatusError as exc:
-            error_info = anthropic_error_info(exc.body,
+            error_info = private_error_info(anthropic_error_info(exc.body,
                 source="stream_error" if exc.status_code == 200 else "http_error",
-                status_code=exc.status_code)
+                status_code=exc.status_code))
+            message = (f"接口错误 {exc.status_code}" if has_private()
+                       else f"接口错误 {exc.status_code}：{exc.message}")
             yield StreamEvent(
                 type="error",
                 reason="error",
-                error=self._redact(f"接口错误 {exc.status_code}：{exc.message}"),
+                error=self._redact(message),
                 error_info=error_info,
             )
             return
@@ -349,7 +428,10 @@ class AnthropicProvider:
             if block_type == "text":
                 blocks.append(TextBlock(text="".join(buffers[index])))
             elif block_type == "thinking":
-                blocks.append(ThinkingBlock(thinking="".join(buffers[index])))
+                blocks.append(ThinkingBlock(thinking="".join(buffers[index]),
+                                            signature=signatures.get(index), prefix_digest=prefix_digest))
+            elif block_type == "redacted_thinking":
+                blocks.append(ThinkingBlock(redacted_data=redacted_data[index], prefix_digest=prefix_digest))
             elif block_type == "tool_use":
                 call = ToolCallBlock(
                     id=tool_ids[index],
