@@ -1,9 +1,9 @@
 """Explicit, bounded lifecycle hooks for embedded kernel hosts.
 
 The hook boundary is deliberately smaller than Pi's interactive extension
-runtime.  Hosts may observe durable events, deny model requests, and deny a tool
-call before the existing approval gate, but hooks cannot add tools, approve operations, or
-rewrite persisted facts.  Hooks are injected by the embedding application;
+runtime. Hosts may observe durable events and tool outcomes, deny model
+requests, and deny a tool call before the existing approval gate, but hooks
+cannot add tools, approve operations, or rewrite persisted facts. Hooks are injected by the embedding application;
 this module never scans or imports files from a workspace.
 """
 from __future__ import annotations
@@ -273,6 +273,12 @@ class LifecycleHooks:
         before the provider is called. ``purpose`` distinguishes business turns,
         summary fragments and connection checks. A denial terminates that work
         without authorizing a retry or a context-recovery request.
+    ``after_tool_call(context)``
+        Observe a persisted terminal tool outcome before the turn can request
+        another model response. A callback may also declare ``signal`` to
+        cooperatively stop after the turn is cancelled. Result contents are
+        omitted unless the embedding host explicitly enables
+        ``expose_tool_results``.
     ``close()``
         Release host resources after all kernel workers have stopped.
 
@@ -288,6 +294,7 @@ class LifecycleHooks:
         hooks: Iterable[Any] | None = None,
         *,
         timeout: float = DEFAULT_HOOK_TIMEOUT_SECONDS,
+        expose_tool_results: bool = False,
         error_sink: Callable[[HookFailure], None] | None = None,
     ) -> None:
         if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= MAX_HOOK_TIMEOUT_SECONDS:
@@ -299,12 +306,15 @@ class LifecycleHooks:
                 values = tuple(hooks)
             except TypeError:
                 raise ValueError("lifecycle_hooks 必须是可迭代对象") from None
+        if type(expose_tool_results) is not bool:
+            raise ValueError("expose_tool_results 必须是布尔值")
         for hook in values:
             if not any(callable(getattr(hook, name, None)) for name in
-                       ("on_event", "before_tool_call", "before_request", "close")):
-                raise ValueError("生命周期 hook 至少提供 on_event、before_tool_call、before_request 或 close")
+                       ("on_event", "before_tool_call", "before_request", "after_tool_call", "close")):
+                raise ValueError("生命周期 hook 至少提供一种受支持的回调")
         self._hooks = values
         self.timeout = float(timeout)
+        self.expose_tool_results = expose_tool_results
         self._error_sink = error_sink
         self._lock = threading.Condition(threading.RLock())
         self._active = 0
@@ -361,22 +371,28 @@ class LifecycleHooks:
         if not callable(callback):
             return None
         policy = method in {"before_tool_call", "before_request"}
-        if cancel_event is not None and cancel_event.is_set():
+        if policy and cancel_event is not None and cancel_event.is_set():
             return _HOOK_CANCELLED
         with self._lock:
             if policy and (self._closing or self._closed):
                 return _HOOK_CLOSED
         try:
-            callback_context = (freeze_policy_context(context or {}) if method in {"before_tool_call", "before_request"}
+            callback_context = (freeze_policy_context(context or {}) if method in {
+                                   "before_tool_call", "before_request", "after_tool_call"}
                                else freeze_context(context or {}) if method == "on_event" else None)
         except _PolicyContextError as exc:
-            subject = "模型请求" if method == "before_request" else "工具"
-            message = (f"策略 hook 输入超过内核上限；{subject}已拒绝"
-                       if exc.code == "HOOK_CONTEXT_TOO_LARGE"
-                       else f"策略 hook 输入不是受支持的 JSON；{subject}已拒绝")
+            if method == "after_tool_call":
+                message = ("工具结果超过观察 hook 上下文上限；结果已持久化，回调未执行"
+                           if exc.code == "HOOK_CONTEXT_TOO_LARGE"
+                           else "工具结果不是观察 hook 支持的 JSON；结果已持久化，回调未执行")
+            else:
+                subject = "模型请求" if method == "before_request" else "工具"
+                message = (f"策略 hook 输入超过内核上限；{subject}已拒绝"
+                           if exc.code == "HOOK_CONTEXT_TOO_LARGE"
+                           else f"策略 hook 输入不是受支持的 JSON；{subject}已拒绝")
             self._failure(hook, method, event, exc.code, message)
             return _HOOK_CONTEXT_TOO_LARGE if exc.code == "HOOK_CONTEXT_TOO_LARGE" else _HOOK_CONTEXT_INVALID
-        if cancel_event is not None and cancel_event.is_set():
+        if policy and cancel_event is not None and cancel_event.is_set():
             return _HOOK_CANCELLED
         timeout = self.timeout
         if deadline is not None:
@@ -388,11 +404,12 @@ class LifecycleHooks:
         error: list[BaseException] = []
         finished = threading.Event()
         signal_mode = (_signal_mode(callback)
-                       if method in {"before_tool_call", "before_request"} and signal is not None else None)
+                       if method in {"before_tool_call", "before_request", "after_tool_call"}
+                       and signal is not None else None)
 
         def run() -> None:
             try:
-                if cancel_event is not None and cancel_event.is_set():
+                if policy and cancel_event is not None and cancel_event.is_set():
                     return
                 if method == "close":
                     result.append(callback())
@@ -438,15 +455,21 @@ class LifecycleHooks:
         end = time.monotonic() + timeout
         while not finished.is_set():
             if cancel_event is not None and cancel_event.is_set():
+                if method == "after_tool_call":
+                    self._failure(hook, method, event, "HOOK_CANCELLED", "工具终态观察已因回合取消而停止等待")
                 return _HOOK_CANCELLED
             remaining = end - time.monotonic()
             if remaining <= 0:
                 if cancel_event is not None and cancel_event.is_set():
+                    if method == "after_tool_call":
+                        self._failure(hook, method, event, "HOOK_CANCELLED", "工具终态观察已因回合取消而停止等待")
                     return _HOOK_CANCELLED
                 self._failure(hook, method, event, "HOOK_TIMEOUT", "生命周期 hook 超时", timed_out=True)
                 return _HOOK_FAILED
             finished.wait(min(0.025, remaining))
         if cancel_event is not None and cancel_event.is_set():
+            if method == "after_tool_call":
+                self._failure(hook, method, event, "HOOK_CANCELLED", "工具终态观察已因回合取消而停止等待")
             return _HOOK_CANCELLED
         with self._lock:
             if policy and (self._closing or self._closed):
@@ -601,6 +624,32 @@ class LifecycleHooks:
             if not result.allow:
                 return result
         return None
+
+    def after_tool_call(self, context: Mapping[str, Any], result: Mapping[str, Any], *,
+                        cancel_event: threading.Event | None = None) -> None:
+        """Notify trusted hosts after a tool outcome is durably persisted."""
+        if not self._hooks:
+            return
+        signal = HookCancellationSignal(cancel_event or threading.Event())
+        payload = dict(context)
+        if self.expose_tool_results:
+            payload["result"] = dict(result)
+        internal_results = (_HOOK_CANCELLED, _HOOK_FAILED, _HOOK_BUSY, _HOOK_CONTEXT_TOO_LARGE,
+                            _HOOK_CONTEXT_INVALID, _HOOK_CLOSED)
+        for hook in self._hooks:
+            if not callable(getattr(hook, "after_tool_call", None)):
+                continue
+            returned = self._invoke(
+                hook,
+                "after_tool_call",
+                {"phase": "after_tool_call", **payload},
+                event="toolCall/completed",
+                cancel_event=cancel_event,
+                signal=signal,
+            )
+            if returned is not None and not any(returned is value for value in internal_results):
+                self._failure(hook, "after_tool_call", "toolCall/completed", "HOOK_RESULT_INVALID",
+                              "after_tool_call 仅用于观察，不能返回改写结果")
 
     def close(self, deadline: float | None = None) -> None:
         end = time.monotonic() + self.timeout if deadline is None else deadline

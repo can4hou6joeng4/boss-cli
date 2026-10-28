@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第六十轮：工具终态宿主观察回调
+
+参考 Pi 开放 [Issue #11043](https://github.com/earendil-works/pi/issues/11043) 的 `afterTool` 提案（Pi main `a92283056d915c758799fcd904948ff0cb42628c`，MIT）。本项目第五十二轮已吸收其中 `maxTurns` 请求上限，但有意未引入可改写工具结果的 `afterTool`。本轮重新按本项目招聘宿主需求限定为同步只读观察：嵌入工作台需要在每个工具终态后、下一次模型请求前记录工具实际执行状态；异步 `on_event` 的有限队列可能丢弃事件，而且白名单不暴露结果正文。
+
+`LifecycleHooks.after_tool_call()` 在 `append_tool_revision()` 确认终态写入后调用一次，覆盖 handler 完成/失败、参数或策略拒绝、用户审批拒绝/超时、未知工具、派发前取消及 `_skip_calls()` 批次终止的未执行调用。取消时仍进入观察回调并传入 `signal.aborted=true`；内核可停止等待并写入取消诊断。若工具结果终态无法确认已持久化，则不声称已回调。宿主上下文默认只包含 thread/turn/item/tool 标识、状态、执行状态、成功标志和错误码；只有显式设置 `expose_tool_results_to_hooks=True` / `LifecycleHooks(expose_tool_results=True)` 才暴露完整结构化结果。结果可能含候选人个人信息，因此访问选择由嵌入端明确承担。
+
+回调使用限时隔离 worker、统一在途上限和可选协作取消 signal。返回值被忽略，快照深只读；异常、超时、容量满和无效返回只记录 `kernel/hookError`，不会改写已持久化结果、审批或模型可见输出，也不重放工具/审批。完整结果快照复用策略上下文 JSON 边界；超大或非 JSON 结果拒绝交给回调并记录诊断。Pi 回调可以转换结果的行为没有照搬，以保留本项目对已发生外部事实的权威记录。未增加依赖。
+
 ## 第五十九轮：OpenAI Responses 流取消的句柄登记窗口
 
 本项目 Issue [#136](https://github.com/can4hou6joeng4/boss-cli/issues/136) 在基线 `99a3249ad96374d1352a44327e9bf5b9d5f7b096` 上由隔离 `MockTransport` 复现：`OpenAIResponsesProvider._stream_once()` 只有在官方 SDK 的 `responses.create(..., stream=True)` context manager 返回后才登记 `_active_stream`，登记后也没有重新检查 `_abort_requested`。响应建立期间用户取消时没有可关闭句柄；响应随后返回仍会进入 body iterator，传输若等待数据会让回合 worker 和状态目录所有权滞留。

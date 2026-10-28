@@ -135,6 +135,7 @@ class ApplicationService:
                  compaction_policy: CompactionPolicy | None = None,
                  lifecycle_hooks: LifecycleHooks | tuple[Any, ...] | list[Any] | None = None,
                  hook_timeout: float = 0.25,
+                 expose_tool_results_to_hooks: bool = False,
                  max_model_requests: int | None = None) -> None:
         self.server, self.config, self.provider = server, config, provider
         self.max_model_requests = (model_request_limit_from_environment() if max_model_requests is None
@@ -160,11 +161,12 @@ class ApplicationService:
         self.provider_factory = provider_factory
         self.workspace = (workspace or Path.cwd()).resolve()
         if isinstance(lifecycle_hooks, LifecycleHooks):
-            if hook_timeout != 0.25:
-                raise ValueError("已构造 LifecycleHooks 时应在构造时设置 hook timeout")
+            if hook_timeout != 0.25 or expose_tool_results_to_hooks:
+                raise ValueError("已构造 LifecycleHooks 时应在构造时设置 hook timeout 和结果访问权限")
             self.lifecycle_hooks = lifecycle_hooks
         else:
-            self.lifecycle_hooks = LifecycleHooks(lifecycle_hooks, timeout=hook_timeout)
+            self.lifecycle_hooks = LifecycleHooks(lifecycle_hooks, timeout=hook_timeout,
+                                                  expose_tool_results=expose_tool_results_to_hooks)
         self.bridge_lifecycle = BridgeLifecycle()
         self._base_bridge_close_claimed = False
         self._base_bridge_close_owner: int | None = None
