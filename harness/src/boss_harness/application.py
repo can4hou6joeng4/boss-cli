@@ -123,34 +123,48 @@ class EventHub:
     def emit(self, method: str, params: dict | None = None, *, publish: bool = True,
              observe: bool = True) -> dict:
         with self.lock:
-            notification = params or {}
-            stored_params = notification
-            if method == "item/completed" and notification.get("kind") == "agentMessage":
-                stored_params = project_item(str(notification.get("threadId") or ""), {
-                    "id": str(notification.get("itemId") or ""), **notification,
-                })
-                stored_params.pop("id", None)
-            event = self.sessions.append_event(method, stored_params)
-            payload = event["params"]
-            live_payload = {**notification, "eventId": payload["eventId"],
-                            "eventCursor": payload["eventCursor"]}
-            thread_id, item_id = payload.get("threadId"), payload.get("itemId")
-            if thread_id and item_id:
-                current = self.live.setdefault(thread_id, {})
-                if method in {"agentMessage/delta", "agentThinking/delta"}:
-                    item = current.setdefault(item_id, {"text": "", "thinking": ""})
-                    key = "text" if method == "agentMessage/delta" else "thinking"
-                    item[key] += payload.get("delta", "")
-                elif method == "item/completed":
-                    current.pop(item_id, None)
-            if publish:
-                try:
-                    self.server.notify(method, live_payload)
-                except (ConnectionError, BrokenPipeError):
-                    pass  # Durable state survives a disappearing observer.
-            if observe:
-                # The bounded enqueue preserves cursor order; callbacks run on the hook worker.
-                self.lifecycle_hooks.observe_event(method, payload)
+            return self._emit_locked(method, params, publish=publish, observe=observe)
+
+    def emit_until(self, method: str, params: dict | None = None, *, deadline: float,
+                   publish: bool = True, observe: bool = True) -> dict | None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not self.lock.acquire(timeout=remaining):
+            return None
+        try:
+            return self._emit_locked(method, params, publish=publish, observe=observe)
+        finally:
+            self.lock.release()
+
+    def _emit_locked(self, method: str, params: dict | None, *, publish: bool,
+                     observe: bool) -> dict:
+        notification = params or {}
+        stored_params = notification
+        if method == "item/completed" and notification.get("kind") == "agentMessage":
+            stored_params = project_item(str(notification.get("threadId") or ""), {
+                "id": str(notification.get("itemId") or ""), **notification,
+            })
+            stored_params.pop("id", None)
+        event = self.sessions.append_event(method, stored_params)
+        payload = event["params"]
+        live_payload = {**notification, "eventId": payload["eventId"],
+                        "eventCursor": payload["eventCursor"]}
+        thread_id, item_id = payload.get("threadId"), payload.get("itemId")
+        if thread_id and item_id:
+            current = self.live.setdefault(thread_id, {})
+            if method in {"agentMessage/delta", "agentThinking/delta"}:
+                item = current.setdefault(item_id, {"text": "", "thinking": ""})
+                key = "text" if method == "agentMessage/delta" else "thinking"
+                item[key] += payload.get("delta", "")
+            elif method == "item/completed":
+                current.pop(item_id, None)
+        if publish:
+            try:
+                self.server.notify(method, live_payload)
+            except (ConnectionError, BrokenPipeError):
+                pass  # Durable state survives a disappearing observer.
+        if observe:
+            # The bounded enqueue preserves cursor order; callbacks run on the hook worker.
+            self.lifecycle_hooks.observe_event(method, payload)
         return event
 
     def publish_persisted(self, event: dict) -> None:
@@ -215,6 +229,7 @@ class ApplicationService:
         self._base_bridge_close_claimed = False
         self._base_bridge_close_owner: int | None = None
         self._base_bridge_close_done = threading.Event()
+        self._shutdown_deadline: float | None = None
         self._thread_admission = _ThreadAdmission()
         self._owner = StateDirectoryOwner(state_dir)
         try:
@@ -287,7 +302,11 @@ class ApplicationService:
         events = getattr(self, "events", None)
         if events is None:
             return
-        events.emit("kernel/hookError", failure.as_dict(), observe=False)
+        deadline = self._shutdown_deadline
+        if deadline is None:
+            events.emit("kernel/hookError", failure.as_dict(), observe=False)
+        else:
+            events.emit_until("kernel/hookError", failure.as_dict(), deadline=deadline, observe=False)
 
     @property
     def _active_turn(self) -> dict | None:
@@ -2362,6 +2381,8 @@ class ApplicationService:
         deadline = time.monotonic() + 2
         with self.runtimes.lock:
             self._state = "stopped"
+            self._shutdown_deadline = (deadline if self._shutdown_deadline is None
+                                       else min(self._shutdown_deadline, deadline))
             self._shutdown_preparing += 1
             self.runtimes.cancel_all(interrupt=False)
             self._cancel_compaction_jobs()
@@ -2391,7 +2412,7 @@ class ApplicationService:
                 dispatch["done"].wait(max(0, deadline - time.monotonic()))
         if self.lifecycle_hooks.observes_events:
             try:
-                self.events.emit("kernel/shutdown", {"state": "stopping"})
+                self.events.emit_until("kernel/shutdown", {"state": "stopping"}, deadline=deadline)
             except Exception:
                 pass
         self.lifecycle_hooks.close(deadline)
