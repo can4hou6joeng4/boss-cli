@@ -305,6 +305,7 @@ class ApplicationService:
             validate_arguments=self.registry.validate, pause_on_result=self.tool_bundle.pause_on_result,
             lifecycle_hooks=self.lifecycle_hooks,
             persistence_fence=self._fence_tool_persistence,
+            dispatch_lock=self.runtimes.lock,
             max_model_requests=self.max_model_requests,
             history_provider=self.context.history,
             request_preparer=lambda request: self.context.prepare(request,

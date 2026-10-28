@@ -105,6 +105,7 @@ class TurnRunner:
         recover_context: Callable[[ModelRequest], ModelRequest | None] | None = None,
         lifecycle_hooks: LifecycleHooks | None = None,
         persistence_fence: Callable[[str], None] | None = None,
+        dispatch_lock: Any | None = None,
         max_model_requests: int = DEFAULT_MAX_MODEL_REQUESTS,
     ) -> None:
         self.sessions = sessions
@@ -138,6 +139,8 @@ class TurnRunner:
         self.recover_context = recover_context
         self.lifecycle_hooks = lifecycle_hooks
         self.persistence_fence = persistence_fence
+        # The application shares this lock with interrupt acceptance.
+        self._dispatch_lock = dispatch_lock or threading.Lock()
         self.context_abort: Callable[[], None] | None = None
         self.last_stream_error: ModelErrorInfo | None = None
         self.last_stream_recoverable = False
@@ -160,8 +163,9 @@ class TurnRunner:
 
     def interrupt(self) -> None:
         """请求取消当前回合。会在下一个取消点生效，并顺带打断卡住的流。"""
-        if self._cancel is not None:
-            self._cancel.set()
+        with self._dispatch_lock:
+            if self._cancel is not None:
+                self._cancel.set()
         # 流卡住时下游的 for/next 不会返回，取消点也就轮不到；这里主动把连接关掉，
         # 让阻塞中的读取立刻抛错退出。provider 不实现这个方法时只依赖取消点。
         abort = getattr(self.provider, "request_abort", None)
@@ -470,8 +474,14 @@ class TurnRunner:
             cancelled_before_dispatch = False
             try:
                 self._tool_phase(thread_id, entry, "executing", approval)
-                dispatched = True
-                result = snapshot_result(handler(self.tool_bridge, arguments))
+                with self._dispatch_lock:
+                    cancelled_before_dispatch = self.cancelled()
+                    dispatched = not cancelled_before_dispatch
+                if cancelled_before_dispatch:
+                    result = ToolResult(ok=False, command=name,
+                        error={"code": "CANCELLED", "message": "操作已取消，未执行工具"})
+                else:
+                    result = snapshot_result(handler(self.tool_bridge, arguments))
             except Exception as exc:
                 if dispatched:
                     result = ToolResult(ok=False, command=name, error={"code": "TOOL_ERROR", "message": self.safe_error(exc)})
