@@ -4,6 +4,7 @@
 
 ### 新功能
 
+- 参考 Pi Durable [Issue #11026](https://github.com/earendil-works/pi/issues/11026)：新增宿主 JSON-RPC `thread/delete`，可恢复地清理会话 JSONL、共享事件、SQLite 投影、索引修复备份及无引用附件；活动或收尾中的会话拒绝删除，父会话分支保持独立。
 - [Issue #152](https://github.com/can4hou6joeng4/boss-cli/issues/152)：`ApplicationService(prompt_preamble=...)` 只覆盖默认招聘提示的身份段，保留工具说明、招聘规则、技能与只读后缀；默认工具组合和平台检查/登录 host 能力继续启用。自定义 `ToolBundle` 不猜测提示分段，不能同时传入该参数。
 - [Issue #138](https://github.com/can4hou6joeng4/boss-cli/issues/138)：增加同步 `after_tool_call` 宿主回调，覆盖已持久化的成功、失败、拒绝、未执行和结果未知工具终态；结果内容默认隐藏，需嵌入端显式 opt-in，回调只读且不能改写执行事实。
 
