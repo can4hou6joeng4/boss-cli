@@ -1,7 +1,7 @@
 {
   "name": "boss-cli-desktop",
   "productName": "BOSS-CLI",
-  "version": "0.2.0-rc.13",
+  "version": "0.2.0-rc.14",
   "private": true,
   "description": "BOSS-CLI 桌面端外壳（Electron + React）",
   "main": "./out/main/index.js",
