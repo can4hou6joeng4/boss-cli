@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第五十六轮：限制新会话目录权限
+
+本项目 Issue [#129](https://github.com/can4hou6joeng4/boss-cli/issues/129) 记录招聘会话 JSONL 目录的权限边界。`SessionStore` 原先调用未指定 mode 的 `mkdir`；在 `umask 022` 下，本地真实初始化得到 `0755`，让同机其他用户能够枚举会话文件名及元信息。本轮只验证并收紧新目录权限，不对单个 JSONL 文件的权限作结论，也不改变其创建方式。
+
+参考 Pi 开放 [Issue #10770](https://github.com/earendil-works/pi/issues/10770) 及其参考修复 head `256a8d3f9ea264cf23c5384482114beae3def710`（Pi main `a92283056d915c758799fcd904948ff0cb42628c`；MIT）。Pi 为新建默认、自定义及 fork 会话目录显式使用 `0700`，已存在目录权限保持原样。本轮采用相同的创建期隐私默认值，不自动修改既有用户目录，不复制源码或引入依赖。
+
+`SessionStore` 现在以 `mode=0o700` 创建新根目录。JSONL 文件创建方式、权限模式、SQLite/事件格式均未在本轮改变；已有目录权限保持不变。
+
 ## 第五十五轮：摘要占用期间保留后续回合队列
 
 本项目 Issue [#127](https://github.com/can4hou6joeng4/boss-cli/issues/127) 复现了摘要与后续消息之间的 admission 竞态：摘要运行时，`queue/add` 会尝试领取 `followUp`，随后 `turn/start` 因会话被摘要占用而拒绝；旧异常路径把这个暂时忙状态当成 `TURN_START_FAILED`，将队列错误暂停。摘要结束后又没有重新唤醒队列。
