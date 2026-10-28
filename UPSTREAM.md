@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第五十四轮：以 OpenAI Responses 终态收敛流式输出块
+
+本轮复核 Pi 开放 [Issue #11043](https://github.com/earendil-works/pi/issues/11043)（截至 2026-10-28 为 OPEN；Pi main `a92283056d915c758799fcd904948ff0cb42628c`；MIT）。该议题同时讨论 `afterTool` 与回合上限；本仓库已经在第五十二轮吸收回合上限，本轮继续处理执行循环依赖的 provider 终态事实，不引入 `afterTool` 扩展 API。
+
+临时合成 Responses 流复现：`output_item.done` 先产生一个工具调用，随后流中还有文本块，但 `response.completed.response.output` 只保留文本块。原实现按流事件累积 `blocks`，终态只覆盖出现的索引；已撤回的工具调用会残留在 `AssistantMessage`，`TurnRunner` 随后可能把它派发给 handler。该问题只涉及 provider 到执行器的通用契约，不涉及招聘平台操作。
+
+独立修复把 `response.completed` / `response.incomplete` 的 `output` 视为权威输出集合：以输出项 ID/索引建立终态集合，拒绝终态缺失、重复索引或重复 ID；终态没有的流式块会从最终消息中移除，终态异常则返回错误事件而不产生 `done`。仍在终态集合中的工具调用继续按原有参数来源一致性校验；Anthropic 线路和现有工具权限不变。未复制 Pi 源码或引入依赖。
+
+本地离线探针覆盖撤回工具、缺失终态 output、重复终态索引和保留有效工具四种路径，4/4 通过；Python 源码编译和 `git diff --check` 通过。探针仅保留在临时目录，未调用真实模型或招聘平台。
+
 ## 第五十三轮：补齐摘要与连接检查的请求策略覆盖
 
 本仓库 [Issue #121](https://github.com/can4hou6joeng4/boss-cli/issues/121) 复核 rc.10 引入的 Pi [Issue #11055](https://github.com/earendil-works/pi/issues/11055) 请求拒绝契约。以主线 `47238b2` 为基础，临时状态和合成 provider 复现：始终拒绝的策略仍会在业务请求准备中先生成一次阈值摘要并提交 checkpoint；手动摘要与模型连接检查也有未经过策略的 `provider.stream` 路径。已关闭的 `LifecycleHooks` 还会把策略跳过当作允许。第五十一轮的实现和验收只覆盖业务请求，不能支持对全部模型用量的预算或 kill switch。

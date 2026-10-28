@@ -337,6 +337,10 @@ class OpenAIResponsesProvider:
         #: 是否有一段思考待分隔：延后到下一段真正开始时再发，避免尾部分隔符
         pending_break = False
         terminal: object | None = None
+        #: response.completed / response.incomplete 的 output 是权威集合。
+        #: 流中曾出现、但终态已撤回的块不能继续落入最终 AssistantMessage，
+        #: 否则调用方会把已撤回的工具调用交给执行器。
+        terminal_indexes: set[int] | None = None
 
         yield StreamEvent(type="start")
 
@@ -514,8 +518,14 @@ class OpenAIResponsesProvider:
 
                     elif kind in ("response.completed", "response.incomplete"):
                         terminal = getattr(event, "response", None)
+                        if terminal is None:
+                            raise ValueError("响应终态缺少 response 对象")
+                        terminal_output = getattr(terminal, "output", None)
+                        if terminal_output is None:
+                            raise ValueError("响应终态缺少 output 集合")
+                        terminal_indexes = set()
                         terminal_ids: set[str] = set()
-                        for output_index, item in enumerate(getattr(terminal, "output", None) or []):
+                        for output_index, item in enumerate(terminal_output):
                             item_type = str(getattr(item, "type", "") or "")
                             item_id = str(getattr(item, "id", "") or "")
                             if item_id:
@@ -523,6 +533,9 @@ class OpenAIResponsesProvider:
                                     raise ValueError("响应终态重复使用输出项标识")
                                 terminal_ids.add(item_id)
                             item_index = item_ids.get(item_id, output_index) if item_id else output_index
+                            if item_index in terminal_indexes:
+                                raise ValueError("响应终态重复使用输出项索引")
+                            terminal_indexes.add(item_index)
                             if item_type == "reasoning":
                                 text = _reasoning_text(item, text_budget, item_index)
                                 thinking_buffers[item_index] = [text]
@@ -635,11 +648,13 @@ class OpenAIResponsesProvider:
             return
 
         for index, parts in text_buffers.items():
-            if index not in blocks:
+            if index not in blocks and (terminal_indexes is None or index in terminal_indexes):
                 blocks[index] = TextBlock(text=text_budget.reconcile_parts(("text", index), parts))
         for index, parts in thinking_buffers.items():
-            if index not in blocks:
+            if index not in blocks and (terminal_indexes is None or index in terminal_indexes):
                 blocks[index] = ThinkingBlock(thinking=text_budget.reconcile_parts(("thinking", index), parts))
+        if terminal_indexes is not None:
+            blocks = {index: block for index, block in blocks.items() if index in terminal_indexes}
         ordered: list[object] = [blocks[key] for key in sorted(blocks)]
         calls = tuple(block for block in ordered if isinstance(block, ToolCallBlock))
         # 参数 JSON 没解析成功时，视为这一轮未完成，交由调用方报错而不是带着空参数执行。
