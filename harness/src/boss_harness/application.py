@@ -206,6 +206,7 @@ class ApplicationService:
             self._compaction_terminal_ids: set[str] = set()
             self._bridge_refs: list[Any] = []
             self.context = ContextService(self.sessions)
+            self._restore_compaction_jobs()
             self.skills = SkillCatalog(self.workspace / ".boss-cli" / "skills")
             self.attachments = AttachmentStore(self.sessions, state_dir / "attachments", self.workspace)
             self.tools = self._new_bridge()
@@ -838,6 +839,74 @@ class ApplicationService:
             if job["threadId"] == thread_id and job["status"] != "running":
                 return {"jobId": job["jobId"], "status": job["status"], "active": False}
         return None
+
+    def _restore_compaction_jobs(self) -> None:
+        methods = ("context/compactionStarted", "context/compactionProgress",
+                   "context/compactionCompleted", "context/compactionFailed")
+        active: dict[str, dict[str, Any]] = {}
+        terminal: dict[str, dict[str, Any]] = {}
+        order: deque[str] = deque()
+        cursor = "0"
+        while True:
+            page = self.sessions.events_after(cursor, limit=1000, methods=methods)
+            for event in page["events"]:
+                params = event["params"]
+                job_id, thread_id = params.get("jobId"), params.get("threadId")
+                if (not isinstance(job_id, str) or not re.fullmatch(r"[0-9a-f]{32}", job_id)
+                        or not isinstance(thread_id, str)):
+                    continue
+                job = {key: value for key, value in params.items() if key not in {"eventId", "eventCursor"}}
+                job["_eventCursor"] = int(params.get("eventCursor", "0"))
+                if event["method"] in {"context/compactionStarted", "context/compactionProgress"}:
+                    if job_id not in terminal:
+                        active[job_id] = job
+                    continue
+                active.pop(job_id, None)
+                terminal[job_id] = job
+                if job_id in order:
+                    order.remove(job_id)
+                order.append(job_id)
+                while len(order) > MAX_RETAINED_COMPACTION_JOBS:
+                    expired_id = order.popleft()
+                    terminal.pop(expired_id, None)
+            cursor = page["nextCursor"]
+            if not page["hasMore"]:
+                break
+
+        for job_id, job in active.items():
+            thread_id = job["threadId"]
+            try:
+                entries = self.sessions.read_entries(thread_id)
+            except ValueError:
+                # Session files may be removed independently of the append-only global event log.
+                continue
+            checkpoint_committed = any(
+                entry.get("type") == "context_checkpoint"
+                and entry.get("payload", {}).get("summaryJobId") == job_id
+                for entry in entries
+            )
+            if checkpoint_committed:
+                job.update(status="completed", code="COMPACTION_RECOVERED_COMMIT",
+                           message="摘要检查点已提交；已恢复任务状态，未重放模型请求。")
+                method = "context/compactionCompleted"
+            else:
+                job.update(status="failed", code="COMPACTION_INTERRUPTED",
+                           message="内核在摘要任务完成前退出；模型请求和检查点均未自动重放。请重新读取计划后显式开始新任务。")
+                method = "context/compactionFailed"
+            event = self.events.emit(method, self._compaction_public(job), publish=False, observe=False)
+            job["_eventCursor"] = int(event["params"]["eventCursor"])
+            terminal[job_id] = job
+            order.append(job_id)
+            while len(order) > MAX_RETAINED_COMPACTION_JOBS:
+                expired_id = order.popleft()
+                terminal.pop(expired_id, None)
+
+        for job_id in order:
+            job = terminal[job_id]
+            job.pop("_eventCursor", None)
+            self._compaction_jobs[job_id] = job
+            self._compaction_terminal_ids.add(job_id)
+            self._compaction_terminal_order.append(job_id)
 
     @staticmethod
     def _source_digest(params: dict) -> str | None:

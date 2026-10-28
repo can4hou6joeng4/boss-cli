@@ -71,6 +71,7 @@ class PersistenceIndex:
             except BaseException:
                 connection.rollback()
                 raise
+            connection.execute("CREATE INDEX IF NOT EXISTS events_method_cursor ON events(method,cursor)")
 
     @contextmanager
     def connection(self) -> Iterator[sqlite3.Connection]:
