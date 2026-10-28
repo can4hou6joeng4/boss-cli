@@ -47,6 +47,7 @@ from boss_harness.context import NoCompactionSource
 from boss_harness.shutdown import TrackedAbort, join_until
 from boss_harness.hooks import HookFailure, LifecycleHooks
 from boss_harness.item_content import read_item_content
+from boss_harness.turn_limits import model_request_limit, model_request_limit_from_environment
 
 PROTOCOL_VERSION = "0.2.0"
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
@@ -132,8 +133,11 @@ class ApplicationService:
                  tool_bundle: ToolBundle | None = None, bridge_factory: Callable[[], Any] | None = None,
                  compaction_policy: CompactionPolicy | None = None,
                  lifecycle_hooks: LifecycleHooks | tuple[Any, ...] | list[Any] | None = None,
-                 hook_timeout: float = 0.25) -> None:
+                 hook_timeout: float = 0.25,
+                 max_model_requests: int | None = None) -> None:
         self.server, self.config, self.provider = server, config, provider
+        self.max_model_requests = (model_request_limit_from_environment() if max_model_requests is None
+                                   else model_request_limit(max_model_requests))
         if type(config.max_tokens) is not int or config.max_tokens <= 0:
             raise ValueError("max_tokens 必须是正整数")
         self.model_catalog = model_catalog if model_catalog is not None else ModelCatalog.from_environment()
@@ -295,6 +299,7 @@ class ApplicationService:
             validate_arguments=self.registry.validate, pause_on_result=self.tool_bundle.pause_on_result,
             lifecycle_hooks=self.lifecycle_hooks,
             persistence_fence=self._fence_tool_persistence,
+            max_model_requests=self.max_model_requests,
             history_provider=self.context.history,
             request_preparer=lambda request: self.context.prepare(request,
                 self.model_catalog.resolve(config.provider, request.model), provider=config.provider))
@@ -411,6 +416,7 @@ class ApplicationService:
         return {"protocolVersion": PROTOCOL_VERSION, "workspace": str(self.workspace),
                 "provider": self.config.provider, "model": self.config.model,
                 "maxOutputTokens": self.config.max_tokens, "parallelThreads": self.runtimes.capacity,
+                "maxModelRequests": self.max_model_requests,
                 "modelCapabilities": self.model_catalog.resolve(self.config.provider, self.config.model).describe(),
                 "toolBundleId": self.tool_bundle.id,
                 "autoCompaction": self.compaction_policy.describe(),
@@ -1462,10 +1468,13 @@ class ApplicationService:
                 config = self._model_config(thread, params)
                 policy = (self.compaction_policy.override(params["autoCompaction"])
                           if "autoCompaction" in params else self.compaction_policy)
+                max_model_requests = model_request_limit(params.get("maxModelRequests", self.max_model_requests),
+                                                         ceiling=self.max_model_requests)
                 model = config.model
                 skill_text, skills = self.skills.load(params.get("skillIds"))
                 attachment_text, attachments = self.attachments.context(thread_id, params.get("attachmentIds"))
                 runner = self._runner_for(config)
+                runner.max_model_requests = max_model_requests
                 if any(compaction["status"] == "running" and compaction.get("provider") is runner.provider
                        for compaction in self._compaction_jobs.values()):
                     raise RpcError(-32005, "模型供应商实例正在执行摘要任务，请稍后重试")
@@ -1498,6 +1507,7 @@ class ApplicationService:
                 try:
                     self.sessions.record_turn(thread_id, job["turnId"], "running", model=model, provider=config.provider,
                         reasoningEffort=config.effort,
+                        maxModelRequests=max_model_requests,
                         skillIds=[s["id"] for s in skills], toolPolicy=thread.get("toolPolicy", "approval"),
                         clientUserMessageId=client_id, requestInputDigest=request_digest, queueId=job["queueId"])
                     user = runner.append_user(thread_id, text + ("\n\n" + attachment_text if attachment_text else ""),

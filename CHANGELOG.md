@@ -1,5 +1,11 @@
 # 变更记录
 
+## 未发布
+
+### 内核
+
+- 参考 Pi Issue [#11043](https://github.com/earendil-works/pi/issues/11043)，允许宿主配置每回合 1–64 次业务模型请求硬上限，默认仍为 6；单次 `turn/start.maxModelRequests` 只能收紧上限，工具循环、steering 和上下文恢复统一计数。上限随回合持久化，耗尽继续暂停未投递队列，不重放工具或审批。
+
 ## 0.2.0-rc.10 - 2026-10-28
 
 第十次私有源码与 Python 内核候选发布，增加模型请求前策略拒绝闸门。
@@ -12,12 +18,6 @@
 
 - 本地离线探针覆盖首次请求、工具循环第二轮和上下文恢复重试；Python 3.14 编译、Harness wheel/sdist 构建、TypeScript 类型检查、桌面源码构建及产物内容检查通过。
 - 未调用真实模型或招聘平台；本候选继续交付私有源码与 Python wheel/sdist，不含独立桌面安装包。
-
-## 未发布
-
-### 内核
-
-- 参考 Pi Issue [#11055](https://github.com/earendil-works/pi/issues/11055)，新增 `before_request` 生命周期策略闸门；模型请求可在完整预算准备后、provider 调用前被明确拒绝，并以 `error` 终止而不触发工具、审批、上下文恢复或自动重试。
 
 ## 0.2.0-rc.9 - 2026-10-28
 

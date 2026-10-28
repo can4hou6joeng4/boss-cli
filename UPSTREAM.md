@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第五十二轮：可配置的回合请求上限
+
+参考 Pi 开放 [Issue #11043](https://github.com/earendil-works/pi/issues/11043)（截至 2026-10-28 为 OPEN；Pi main `a92283056d915c758799fcd904948ff0cb42628c`；MIT），其中 `HarnessSettings.maxTurns` 用来约束一次运行的模型轮次；同一议题的 `afterTool` 变化不在本轮范围。本项目已具备固定 6 次业务请求的停止边界，本轮独立实现可配置的宿主硬上限，未复制 Pi 源码或新增依赖。
+
+`ApplicationService(max_model_requests=...)` 或启动环境变量 `BOSS_HARNESS_MAX_MODEL_REQUESTS` 接受 1–64，显式宿主值优先，默认仍为 6；`turn/start.maxModelRequests` 只能为本回合收紧宿主上限。请求参数在构造回合 provider、预留回合和保存输入前严格校验；运行器在开始时冻结实际上限，工具循环、steering 续答和 overflow retry 共同计数。provider/SDK 内部传输重试和独立摘要的 32 次生成上限不受其控制，队列后续回合恢复宿主默认值。
+
+`config/read`、持久回合元数据和 `TURN_ROUND_LIMIT` 通知暴露可追溯的实际上限；耗尽仍为 `blocked`，已有结果保留，未投递队列暂停。最后一次正常最终文本可完成，但不投递无法响应的 steering；最后一次 overflow 不启动无业务请求额度的摘要。协议版本仍为 `0.2.0`，新增字段可选，旧历史继续读取。
+
+本地 73 项离线断言覆盖默认/最小/最大值、环境与 RPC 类型拒绝、宿主硬上限、无输入/无回合副作用、1/3/6/64 次工具循环、最终正常响应、overflow 最后次数停止与可用额度恢复、队列暂停、单次覆盖后串行回合回到宿主上限和历史记录。使用合成 provider、工具和临时状态，未调用真实模型或招聘平台；探针仅保留本地。
+
 ## 第五十一轮：模型请求前策略拒绝
 
 Pi 开放 [Issue #11055](https://github.com/earendil-works/pi/issues/11055)（截至 2026-10-28 为 OPEN；Pi main `a92283056d915c758799fcd904948ff0cb42628c`；仓库许可证 MIT）。该 issue 指出 `beforeRequest` 可以改写请求，却不能在 provider 调用前拒绝请求；用异常绕过会进入不清晰的 abort/重试路径，无法表达预算、账户策略或 kill switch 的明确终态。
