@@ -2,13 +2,22 @@
 
 ## 未发布
 
+## 0.2.0-rc.13 - 2026-10-28
+
+第十三次私有源码与 Python 内核候选发布，修复摘要期间的后续回合派发竞态，并完善会话存储目录、文件及 macOS ACL 的隐私保护。
+
 ### 修复
 
-- [Issue #133](https://github.com/can4hou6joeng4/boss-cli/issues/133)：新建会话持久化文件从创建时起限制为 `0600`，写入前清除 macOS 继承 ACL；状态和附件目录拒绝可授予他人访问或修改的权限。
-  启动时收紧当前用户拥有的旧状态文件，并在写入前保护 SQLite/WAL/SHM、checkpoint 临时文件、repair 备份、manifest 和状态锁；不支持的权限平台在创建状态前 fail closed。
-- [Issue #131](https://github.com/can4hou6joeng4/boss-cli/issues/131)：独立初始化 `SessionStore` 时，私有创建承载 SQLite 索引和事件日志的新父目录；已有目录权限不变。
-- [Issue #129](https://github.com/can4hou6joeng4/boss-cli/issues/129)：新建会话目录限制为 owner-only `0700`，不随宽松 umask 暴露目录项；已有目录权限不被自动改写。
-- [Issue #127](https://github.com/can4hou6joeng4/boss-cli/issues/127)：摘要运行期间排入的后续回合保持 `queued`，不再被暂时的会话占用误判为 `TURN_START_FAILED`；摘要与已领取但尚未启动的后续回合互斥，成功后恢复派发，手动摘要失败或取消则暂停旧输入。
+- [Issue #127](https://github.com/can4hou6joeng4/boss-cli/issues/127)（[PR #128](https://github.com/can4hou6joeng4/boss-cli/pull/128)）：摘要运行期间排入的后续回合保持 `queued`，不再因会话暂时占用被误判为 `TURN_START_FAILED`；摘要与已领取但尚未启动的后续回合互斥，成功后恢复派发，手动摘要失败或取消则暂停旧输入。
+- [Issue #129](https://github.com/can4hou6joeng4/boss-cli/issues/129)（[PR #130](https://github.com/can4hou6joeng4/boss-cli/pull/130)）：新建会话目录限制为 owner-only `0700`，不随宽松 umask 暴露目录项。
+- [Issue #131](https://github.com/can4hou6joeng4/boss-cli/issues/131)（[PR #132](https://github.com/can4hou6joeng4/boss-cli/pull/132)）：独立初始化 `SessionStore` 时，私有创建承载 SQLite 索引和事件日志的新父目录。
+- [Issue #133](https://github.com/can4hou6joeng4/boss-cli/issues/133)（[PR #134](https://github.com/can4hou6joeng4/boss-cli/pull/134)）：新建会话持久化文件限制为 `0600`，清除 macOS 继承 ACL；启动时收紧当前用户拥有的旧文件，覆盖 SQLite/WAL/SHM、checkpoint、附件、repair 备份、manifest 和状态锁。已有目录 mode/ACL 保持不变，不安全的目录或不支持的权限平台在创建状态前拒绝初始化。
+
+### 兼容与验证
+
+- npm 工作区统一为 `0.2.0-rc.13`，Python 内核为等价 PEP 440 版本 `0.2.0rc13`；JSON-RPC 保持 `0.2.0`。状态文件权限后端支持 Linux 与 macOS；Windows 和其他平台需要独立的权限后端，当前拒绝创建状态。
+- 本地 Python 3.14/APFS 探针覆盖新旧文件、继承 ACL、可搜索目录拒绝、checkpoint、活跃 WAL/SHM、repair 备份与 manifest、状态锁、符号链接/FIFO 和不支持平台；内容 hash 与已有目录权限保持不变。类型检查、桌面源码构建、Python 编译及 wheel/sdist 构建通过；功能 PR #128/#130/#132/#134 的 Source build 与 GitGuardian 检查通过。
+- 探针只保留本地；未调用真实模型或招聘平台，未进行桌面 UI 验收，不含独立桌面安装包。
 
 ## 0.2.0-rc.12 - 2026-10-28
 
