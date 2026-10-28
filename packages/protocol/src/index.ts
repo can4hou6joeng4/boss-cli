@@ -173,6 +173,9 @@ export interface SessionErrorNotification {
   code?: string;
   recoveryAttempted?: boolean;
   outputObserved?: boolean;
+  /** Business request cap and exhausted count for TURN_ROUND_LIMIT. */
+  maxModelRequests?: number;
+  modelRequestCount?: number;
   errorInfo?: ProviderFailureInfo;
 }
 
@@ -409,6 +412,8 @@ export interface TurnStartParams {
   attachmentIds?: string[];
   skillIds?: string[];
   autoCompaction?: Partial<TurnAutoCompactionOverride>;
+  /** Tightens the host cap for this turn only; integer from 1 to the configured maximum. */
+  maxModelRequests?: number;
 }
 
 export interface TurnStartResponse {
@@ -460,7 +465,7 @@ export interface ToolApprovalResponse { approved: boolean }
 
 export interface PageParams { cursor?: string | null; limit?: number }
 export interface ThreadListParams extends PageParams { archived?: boolean; projectId?: string }
-export interface TurnSummary { turnId: string; threadId: string; status: TurnStatus; model?: string; startedAt?: string; updatedAt?: string }
+export interface TurnSummary { turnId: string; threadId: string; status: TurnStatus; model?: string; startedAt?: string; updatedAt?: string; maxModelRequests?: number }
 export interface TurnListResponse { turns: TurnSummary[]; nextCursor: string | null }
 export interface ItemListResponse { items: ThreadItem[]; nextCursor: string | null }
 

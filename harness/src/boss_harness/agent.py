@@ -2,7 +2,7 @@
 
 职责：把「一条用户输入」变成「一串协议事件 + 落库条目」。
 - 历史重建：从会话条目还原 ChatMessage（含工具调用与其结果）；
-- 工具回路：模型要调工具就执行、回填结果，再让模型继续，最多 MAX_TOOL_ROUNDS 次模型请求；
+- 工具回路：模型要调工具就执行、回填结果，再让模型继续，最多 max_model_requests 次模型请求；
 - 审批闸门：标记为需要批准的工具，在执行前先向用户要批准，拿不到就 fail closed；
 - 中断：回合可被外部取消，取消点落在每次取流事件之前与每个工具调用之前。
 
@@ -44,8 +44,10 @@ from boss_harness.toolkit import ToolResult, snapshot_result
 from boss_harness.tool_results import (
     model_result_content, model_result_for_item, project_error, project_item,
 )
+from boss_harness.turn_limits import DEFAULT_MAX_MODEL_REQUESTS, model_request_limit
 
-MAX_TOOL_ROUNDS = 6
+# Compatibility for embedded hosts importing the former fixed default.
+MAX_TOOL_ROUNDS = DEFAULT_MAX_MODEL_REQUESTS
 
 #: 审批的默认等待上限（秒）。超时按未批准处理：无法安全判定时必须 fail closed。
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
@@ -102,6 +104,7 @@ class TurnRunner:
         recover_context: Callable[[ModelRequest], ModelRequest | None] | None = None,
         lifecycle_hooks: LifecycleHooks | None = None,
         persistence_fence: Callable[[str], None] | None = None,
+        max_model_requests: int = DEFAULT_MAX_MODEL_REQUESTS,
     ) -> None:
         self.sessions = sessions
         self.tool_bridge = tool_bridge
@@ -139,6 +142,7 @@ class TurnRunner:
         self.last_stream_recoverable = False
         self.last_stream_output_observed = False
         self.preparing_request_index: int | None = None
+        self.max_model_requests = model_request_limit(max_model_requests)
 
     @property
     def tool_names(self) -> list[str]:
@@ -598,6 +602,7 @@ class TurnRunner:
         """
         if self.provider is None:
             raise RuntimeError("run() 需要已配置的 provider；无 provider 时请走确定性路径")
+        max_model_requests = model_request_limit(self.max_model_requests)
 
         self._cancel = cancel or threading.Event()
         self.tool_bridge.cancel_event = self._cancel
@@ -609,7 +614,7 @@ class TurnRunner:
             specs = self.tool_specs()
             pending_steering: tuple[list[UserMessage], Callable[[], None]] | None = None
             overflow_retried = False
-            for _round in range(MAX_TOOL_ROUNDS):
+            for _round in range(max_model_requests):
                 if self.cancelled():
                     return "interrupted"
 
@@ -667,6 +672,7 @@ class TurnRunner:
                         "threadId": thread_id,
                         "turnId": self.turn_id,
                         "requestIndex": _round,
+                        "maxModelRequests": max_model_requests,
                         "provider": self.config.provider,
                         "model": request.model,
                         "messageCount": len(request.messages),
@@ -689,7 +695,7 @@ class TurnRunner:
 
                 if error is not None:
                     if (self.last_stream_recoverable and self.recover_context is not None and
-                            not overflow_retried and _round + 1 < MAX_TOOL_ROUNDS):
+                            not overflow_retried and _round + 1 < max_model_requests):
                         overflow_retried = True
                         try:
                             replacement = self.recover_context(request)
@@ -729,13 +735,13 @@ class TurnRunner:
                     return "error"
                 if not calls:
                     # Only deliver steering when another model request can consume it.
-                    if self.stage_steering is not None and _round + 1 < MAX_TOOL_ROUNDS:
+                    if self.stage_steering is not None and _round + 1 < max_model_requests:
                         pending_steering = self.stage_steering()
                         if pending_steering[0]:
                             messages.append(assistant)
                             continue
                     steering = (self.drain_steering() if self.drain_steering is not None
-                                and self.stage_steering is None and _round + 1 < MAX_TOOL_ROUNDS else [])
+                                and self.stage_steering is None and _round + 1 < max_model_requests else [])
                     if steering:
                         messages.append(assistant)
                         messages.extend(steering)
@@ -764,10 +770,12 @@ class TurnRunner:
                         return "interrupted"
                 messages.append(ToolResultsMessage(results=tuple(results)))
 
-            message = (f"已达到模型调用上限（{MAX_TOOL_ROUNDS} 次请求），本回合已暂停。"
+            message = (f"已达到模型调用上限（{max_model_requests} 次请求），本回合已暂停。"
                        "已执行的工具结果已保留；请核对后明确发起新回合，不会自动继续或重试。")
             self.append_agent(thread_id, message)
-            self.notify(N_SESSION_ERROR, {"threadId": thread_id, "code": "TURN_ROUND_LIMIT", "message": message})
+            self.notify(N_SESSION_ERROR, {"threadId": thread_id, "code": "TURN_ROUND_LIMIT", "message": message,
+                                         "maxModelRequests": max_model_requests,
+                                         "modelRequestCount": max_model_requests})
             return "blocked"
         finally:
             # 回合结束就丢弃本轮所有待决定审批，避免它们被后续回合误认领。
