@@ -132,6 +132,8 @@ Pi 通过宽泛短语匹配解决其 overflow detector 的问题。本项目只�
 
 本轮只在 context manager 返回后登记句柄并立即复查取消标志；上下文退出仍负责关闭响应，外层 `finally` 清空句柄。Anthropic 已由 Issue/PR [#105](https://github.com/can4hou6joeng4/boss-cli/pull/105) 覆盖相同登记窗口，未改动其线路。同步检查 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`（许可证接口不可用；开放事项为 Cookie/认证、沟通、分页和 recruiter 业务）没有可移植的 provider 流取消契约，本轮不采用其代码。Pi [Issue #11376](https://github.com/earendil-works/pi/issues/11376) 维护者于 2026-10-27 反馈无法复现，本项目也不发送 `tool_addition/tool_removal`，不纳入。
 
+2026-10-29 复核：Pi Issue #11211 仍 OPEN；Pi main 更新为 `a87b742ff4ce262c07b7830a25c73c1442dab41`，许可证 MIT。当前本项目 main `11142f783e1751c066a0ea920469971b1e9f82ec` 的 Anthropic provider 在迭代前登记 SDK stream，`request_abort()` 调用其 `close()`；回合、摘要及连接检查消费者均在 `finally` 关闭流。使用本地 Anthropic 2.3.0、httpx2 2.16.0 和 `MockTransport` 验证：body 在提供 `message_start` 后阻塞等待下一帧，调用 `request_abort()` 后 SDK 调用 body `close()`，迭代器立即退出；畸形 SSE 在 SDK context manager 退出时同样关闭 body。无网络或模型请求。Pi 报告中的 caller-provided client 不受 abort signal 控制与本项目不同：`AnthropicProvider` 不公开注入 client 的配置入口。合成传输没有验证操作系统 socket 的唤醒行为，因此不据此推断网络栈所有故障都能立即取消；在本项目支持的接入路径中未复现可修复缺口，本轮不改运行时代码。
+
 ## 第五十八轮：保护会话持久化文件 mode
 
 本项目 Issue [#133](https://github.com/can4hou6joeng4/boss-cli/issues/133) 的本机合成复现发现：旧版 `0755` state 目录中，新 session JSONL、event JSONL、SQLite/WAL/SHM 会随 `umask 022` 以 `0644` 创建；附件则先以该 mode 创建再 chmod `0600`。此前的新目录权限修复无法约束旧 state 根目录内的文件。
