@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第五十九轮：OpenAI Responses 流取消的句柄登记窗口
+
+本项目 Issue [#136](https://github.com/can4hou6joeng4/boss-cli/issues/136) 在基线 `99a3249ad96374d1352a44327e9bf5b9d5f7b096` 上由隔离 `MockTransport` 复现：`OpenAIResponsesProvider._stream_once()` 只有在官方 SDK 的 `responses.create(..., stream=True)` context manager 返回后才登记 `_active_stream`，登记后也没有重新检查 `_abort_requested`。响应建立期间用户取消时没有可关闭句柄；响应随后返回仍会进入 body iterator，传输若等待数据会让回合 worker 和状态目录所有权滞留。
+
+参考 Pi 开放 [Issue #11211](https://github.com/earendil-works/pi/issues/11211)（报告基于 `82432219a`，截至 2026-10-28 仍 OPEN；Pi 当前 main `a92283056d915c758799fcd904948ff0cb42628c`，许可证 MIT）。Pi 讨论 Anthropic SSE body 的 abort/finally 清理；本项目使用 Python OpenAI Responses SDK，结构不同，仅采用“响应句柄登记后要复查取消并关闭 body”的生命周期目标，不复制 Pi 代码或引入依赖。
+
+本地使用 OpenAI SDK `3.35.1`、最低兼容 `3.35.0`、httpx2 `2.13.1/2.16.0` 和合成流验证：修复前 headers gate 取消后 250ms worker 仍存活、body 已读取且未关闭，事件只有 `start`；修复后两版本均立即得到 `start + error(reason=aborted)`，body 读取为 0、已关闭、活动句柄已清空。body 读取期间取消仍关闭流并终止，不触发 provider 重试；正常 Responses 文本流仍得到 `start/text_delta/text_end/done`。socket、连接建立和 DNS 尝试均为 0。探针仅留在 ignored 本地目录，未调用真实模型、招聘平台或外部进程。
+
+本轮只在 context manager 返回后登记句柄并立即复查取消标志；上下文退出仍负责关闭响应，外层 `finally` 清空句柄。Anthropic 已由 Issue/PR [#105](https://github.com/can4hou6joeng4/boss-cli/pull/105) 覆盖相同登记窗口，未改动其线路。同步检查 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`（许可证接口不可用；开放事项为 Cookie/认证、沟通、分页和 recruiter 业务）没有可移植的 provider 流取消契约，本轮不采用其代码。Pi [Issue #11376](https://github.com/earendil-works/pi/issues/11376) 维护者于 2026-10-27 反馈无法复现，本项目也不发送 `tool_addition/tool_removal`，不纳入。
+
 ## 第五十八轮：保护会话持久化文件 mode
 
 本项目 Issue [#133](https://github.com/can4hou6joeng4/boss-cli/issues/133) 的本机合成复现发现：旧版 `0755` state 目录中，新 session JSONL、event JSONL、SQLite/WAL/SHM 会随 `umask 022` 以 `0644` 创建；附件则先以该 mode 创建再 chmod `0600`。此前的新目录权限修复无法约束旧 state 根目录内的文件。

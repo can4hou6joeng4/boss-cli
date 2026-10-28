@@ -351,6 +351,12 @@ class OpenAIResponsesProvider:
             # 而本项目本来就在自己维护状态（累积块、算停止原因），不需要它的状态机。
             with self._client.responses.create(**kwargs, stream=True) as stream:
                 self._active_stream = stream
+                # `request_abort()` 可能发生在 SDK context manager 建立响应的窗口；
+                # 此前没有可关闭的句柄，因此必须在登记后重新检查。否则即使取消标志
+                # 已经置上，仍会进入 body iterator，把一个已取消的回合卡在传输读取上。
+                if self._abort_requested:
+                    yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+                    return
                 for event in stream:
                     kind = str(getattr(event, "type", ""))
                     index = int(getattr(event, "output_index", 0) or 0)
