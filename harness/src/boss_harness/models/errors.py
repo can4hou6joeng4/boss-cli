@@ -1,9 +1,10 @@
 """Conservative overflow classification at the trusted provider error boundary.
 
 Pi d5b3de22d0e24a3e9c38a9410d3329b099717283 ai/utils/overflow separates overflow
-from transient retries. This adapter deliberately accepts fewer signals: only
-the exact OpenAI error code or Anthropic's typed, numeric prompt rejection.
-Length stops, estimates and generic request byte limits are not token overflow.
+from transient retries. This adapter deliberately accepts fewer signals: the exact
+OpenAI error code, the bounded llama.cpp exhaustion message, or Anthropic's typed,
+numeric prompt rejection. Length stops, estimates and generic request byte limits
+are not token overflow.
 """
 from __future__ import annotations
 
@@ -24,6 +25,7 @@ _ANTHROPIC_PROMPT_LIMIT = re.compile(
     r"prompt is too long:\s*([0-9]+) tokens\s*>\s*([0-9]+) maximum\.?",
     re.IGNORECASE,
 )
+_LLAMA_CONTEXT_EXHAUSTED = re.compile(r"context size has been exceeded\.?", re.IGNORECASE)
 
 
 def _field(value: object, name: str) -> object:
@@ -76,6 +78,13 @@ def _is_overflow_source(source: str, status_code: int | None) -> bool:
     return source == "stream_error" and (status_code is None or status_code == 200)
 
 
+def _llama_context_exhausted(error: object) -> bool:
+    """Recognize llama.cpp's bounded decode-time KV-pool exhaustion message."""
+    message = _field(_error_payload(error), "message")
+    return (type(message) is str and len(message) <= 512
+            and _LLAMA_CONTEXT_EXHAUSTED.fullmatch(message.strip()) is not None)
+
+
 def openai_error_info(error: object, *, source: ErrorSource,
                       status_code: int | None = None,
                       retryable: bool | None = None) -> ModelErrorInfo | None:
@@ -83,8 +92,9 @@ def openai_error_info(error: object, *, source: ErrorSource,
     if not _valid_source(source, status_code):
         return None
     raw_code = _field(_error_payload(error), "code")
-    overflow = (_is_overflow_source(source, status_code)
-                and type(raw_code) is str and raw_code == "context_length_exceeded")
+    structured_overflow = type(raw_code) is str and raw_code == "context_length_exceeded"
+    text_overflow = status_code in {400, 200} and _llama_context_exhausted(error)
+    overflow = _is_overflow_source(source, status_code) and (structured_overflow or text_overflow)
     return ModelErrorInfo(provider="openai", source=source,
                           code="CONTEXT_OVERFLOW" if overflow else None,
                           provider_code=_safe_provider_code(error), status_code=status_code,

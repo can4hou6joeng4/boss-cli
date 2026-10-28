@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第五十轮：识别 llama.cpp 解码阶段的上下文耗尽
+
+Pi 开放 [Issue #10885](https://github.com/earendil-works/pi/issues/10885)（截至 2026-10-28 为 OPEN；报告对应 llama.cpp `Context size has been exceeded.`；Pi main `a92283056d915c758799fcd904948ff0cb42628c`；仓库许可证 MIT）。该错误来自 llama.cpp 解码阶段 KV pool 耗尽，不带 `context_length_exceeded` 结构化 code，因此若只检查供应商 code，自动上下文恢复不会触发。
+
+本项目的 OpenAI Responses 适配器也承接 OpenAI-compatible 端点。此前 `openai_error_info()` 只接受精确 `context_length_exceeded`，会把该有界上下文事实当作普通错误；Anthropic 的 typed 数字上下限规则保持不变。招聘业务上游 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70` 的开放 Issue/PR 仍为 Cookie、认证、沟通和 recruiter 业务，没有通用 provider 错误契约，本轮不迁移其代码。
+
+独立实现仅在合法 OpenAI 错误来源（HTTP 400 或 HTTP 200 流内事件）且结构化 `message` 为不超过 512 字符、完整匹配 `Context size has been exceeded.`（允许大小写和末尾句点）时标记 `CONTEXT_OVERFLOW`；任意更长、带额外前后文或其他错误文本均不分类。现有“无输出/无取消时最多一次压缩恢复”、请求上限和错误脱敏边界不变，未复制 Pi 源码或增加依赖。
+
+本轮离线验收覆盖 HTTP 400、HTTP 200 流内事件、精确大小写/句点兼容、额外文本和超长文本拒绝、原有结构化 code 兼容及来源状态拒绝；真实模型、llama.cpp 服务和招聘平台均未调用。
+
 ## 第四十九轮：按显式工具 schema 解码结构化字符串参数
 
 Pi 开放 [PR #9569](https://github.com/earendil-works/pi/pull/9569)（截至 2026-10-28 为 OPEN；head `8746d6617b5349ed4fee3f5d3522f0cc46a79ae5`；Pi main `a92283056d915c758799fcd904948ff0cb42628c`；仓库许可证 MIT）。该 PR 报告部分 OpenAI-compatible 模型把嵌套 object/array 再编码为 JSON 字符串，导致 schema 类型检查失败；Pi 的处理只在 schema 要求结构类型且解析结果符合 schema 时解码，允许 string 的 union 保留原字符串。
