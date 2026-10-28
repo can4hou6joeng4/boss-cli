@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第五十三轮：补齐摘要与连接检查的请求策略覆盖
+
+本仓库 [Issue #121](https://github.com/can4hou6joeng4/boss-cli/issues/121) 复核 rc.10 引入的 Pi [Issue #11055](https://github.com/earendil-works/pi/issues/11055) 请求拒绝契约。以主线 `47238b2` 为基础，临时状态和合成 provider 复现：始终拒绝的策略仍会在业务请求准备中先生成一次阈值摘要并提交 checkpoint；手动摘要与模型连接检查也有未经过策略的 `provider.stream` 路径。已关闭的 `LifecycleHooks` 还会把策略跳过当作允许。第五十一轮的实现和验收只覆盖业务请求，不能支持对全部模型用量的预算或 kill switch。
+
+独立实现统一的请求策略检查，业务请求、每个摘要分片和模型连接检查在各自完整预算准备后调用同一 `before_request`，以 `purpose=turn/compaction/connection_check` 和从零开始的 `requestIndex` 区分请求；只提供请求身份、provider/model、数量与预算，不提供正文、工具参数或凭据。业务与摘要拒绝的 code、脱敏原因及身份写入 `model_error`；摘要失败事件保留 `requestRejected=true`，自动/溢出摘要的拒绝透传为业务回合 `error`，不进入通用恢复失败或后续业务请求。任何分片拒绝都不会提交本次新 checkpoint，既有 checkpoint 与已完成的有界分片 usage 保留。连接拒绝通过 `failed` 报告保留策略 code、脱敏原因和该标记，后续显式检查清除旧标记。
+
+策略正在关闭或已关闭时 fail closed，运行中回调的迟到允许也被忽略；取消优先，并沿用现有 worker/provider 所有权。`SessionErrorNotification`、`ContextCompactJob` 和 `ConnectionCheck` 补齐可选拒绝字段，业务错误通知携带实际被拒绝的摘要请求身份。provider/SDK 内部传输重试不重复进入策略；本轮未复制 Pi 源码或引入依赖。
+
+本地扩展探针通过 106 项断言，覆盖首次与第二摘要分片拒绝、旧 checkpoint 保留、overflow 摘要拒绝、摘要/连接凭据脱敏、连接后续成功清除旧标记、关闭中迟到允许、取消优先，以及三种请求用途的超时和无效返回。原始审计探针同时确认阈值摘要、手动摘要、连接检查与 closed 策略的拒绝 provider 调用均为零，阈值摘要无新 checkpoint。Python 3.14 编译、TypeScript 类型检查、桌面源码构建及 Harness wheel/sdist 构建通过；两个 Python 产物包含新策略模块且不包含测试材料。所有状态位于临时目录，网络尝试为零，探针未提交；未验证真实模型或招聘平台。
+
 ## 第五十二轮：可配置的回合请求上限
 
 参考 Pi 开放 [Issue #11043](https://github.com/earendil-works/pi/issues/11043)（截至 2026-10-28 为 OPEN；Pi main `a92283056d915c758799fcd904948ff0cb42628c`；MIT），其中 `HarnessSettings.maxTurns` 用来约束一次运行的模型轮次；同一议题的 `afterTool` 变化不在本轮范围。本项目已具备固定 6 次业务请求的停止边界，本轮独立实现可配置的宿主硬上限，未复制 Pi 源码或新增依赖。
@@ -14,13 +24,13 @@
 
 Pi 开放 [Issue #11055](https://github.com/earendil-works/pi/issues/11055)（截至 2026-10-28 为 OPEN；Pi main `a92283056d915c758799fcd904948ff0cb42628c`；仓库许可证 MIT）。该 issue 指出 `beforeRequest` 可以改写请求，却不能在 provider 调用前拒绝请求；用异常绕过会进入不清晰的 abort/重试路径，无法表达预算、账户策略或 kill switch 的明确终态。
 
-本项目在现有嵌入式 `LifecycleHooks` 中增加 `before_request(context)`，沿用有界、深只读 JSON 策略输入和可选协作式 `signal`。它运行在完整 `request_preparer`（包括 system、消息、工具、thinking 与预算）之后、provider stream 之前；返回 `HookDecision(False, code, message)` 时，运行器将拒绝原因脱敏后写入 `model_error` 并发出 `session/error`，以 `error` 终止当前回合，不调用 provider、不执行工具、不申请审批，也不进入上下文恢复或自动重试。每个工具回路和 overflow recovery 都重新经过该闸门。
+本轮最初在现有嵌入式 `LifecycleHooks` 中增加 `before_request(context)`，沿用有界、深只读 JSON 策略输入和可选协作式 `signal`。它运行在完整业务 `request_preparer`（包括 system、消息、工具、thinking 与预算）之后、业务 provider stream 之前；返回 `HookDecision(False, code, message)` 时，运行器将拒绝原因脱敏后写入 `model_error` 并发出 `session/error`，以 `error` 终止当前回合，不调用该业务 provider、不执行工具、不申请审批，也不进入上下文恢复或自动重试。每个工具回路和 overflow 恢复后的业务重试重新经过该闸门；当时尚未覆盖准备/恢复中的摘要 provider 或独立连接检查，覆盖修复见第五十三轮。
 
 拒绝上下文只包含 thread/turn、请求序号、provider/model、消息与工具数量及预算快照，不包含消息正文、工具参数或凭据。hook 错误、超时、并发耗尽、无效返回和输入越界均 fail closed；取消或迟到结果不会改写回合。兼容现有 `before_tool_call` 与一参数 hook，未复制 Pi 源码或引入依赖。
 
 同步检查 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`：开放事项仍为招聘认证、Cookie/Keychain、沟通与 recruiter 业务，没有通用模型请求策略契约；本轮不迁移其业务代码。
 
-本地离线探针覆盖首次请求、工具第二轮和上下文恢复请求的拒绝；确认 provider、handler、审批和 `recover_context` 均未被触发，终态为 `error`，拒绝原因进入持久错误记录与通知。未调用真实模型或招聘平台。
+当时的本地离线探针覆盖首次业务请求拒绝（provider 0 次）、工具循环第二请求拒绝（provider 1 次、handler 1 次、无审批），以及 overflow 恢复后的业务重试拒绝（provider 1 次、`recover_context` 1 次）；被拒绝的那次业务请求没有调用 provider，终态为 `error`，拒绝原因进入持久错误记录与通知。这些探针没有验证摘要 provider 或连接检查策略；未调用真实模型或招聘平台。
 
 ## 第五十轮：识别 llama.cpp 解码阶段的上下文耗尽
 

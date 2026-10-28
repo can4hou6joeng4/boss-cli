@@ -169,10 +169,18 @@ export interface ProviderFailureInfo {
 
 export interface SessionErrorNotification {
   threadId?: string;
+  turnId?: string;
   message: string;
   code?: string;
   recoveryAttempted?: boolean;
   outputObserved?: boolean;
+  /** The host refused this request before provider dispatch. */
+  requestRejected?: boolean;
+  purpose?: "turn" | "compaction" | "connection_check";
+  provider?: string;
+  model?: string;
+  requestIndex?: number;
+  jobId?: string;
   /** Business request cap and exhausted count for TURN_ROUND_LIMIT. */
   maxModelRequests?: number;
   modelRequestCount?: number;
@@ -579,6 +587,7 @@ export interface ContextCompactJob {
   summaryProvider?: string;
   summaryModel?: string;
   summaryEffort?: string | null;
+  requestRejected?: boolean;
 }
 export interface ContextCompactAbortResponse extends ContextCompactJob { aborted: boolean }
 export interface ContextBudget {
@@ -629,6 +638,7 @@ export interface ConnectionCheck {
   authState?: string;
   binarySource?: string;
   browserSourcePolicy?: "inherit" | "auto" | "existing-browser" | "stored-cookie";
+  requestRejected?: boolean;
 }
 export interface ConnectionReport { cli: ConnectionCheck; model: ConnectionCheck; platform: ConnectionCheck }
 /** Login control contains no credentials; cookie transport is private to the host. */

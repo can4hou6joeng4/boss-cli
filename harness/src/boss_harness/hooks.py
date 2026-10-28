@@ -1,8 +1,8 @@
 """Explicit, bounded lifecycle hooks for embedded kernel hosts.
 
 The hook boundary is deliberately smaller than Pi's interactive extension
-runtime.  Hosts may observe durable events and deny a tool call before the
-existing approval gate, but hooks cannot add tools, approve operations, or
+runtime.  Hosts may observe durable events, deny model requests, and deny a tool
+call before the existing approval gate, but hooks cannot add tools, approve operations, or
 rewrite persisted facts.  Hooks are injected by the embedding application;
 this module never scans or imports files from a workspace.
 """
@@ -42,6 +42,7 @@ _HOOK_BUSY = object()
 _HOOK_CONTEXT_TOO_LARGE = object()
 _HOOK_CONTEXT_INVALID = object()
 _HOOK_CANCELLED = object()
+_HOOK_CLOSED = object()
 
 
 class HookCancellationSignal:
@@ -269,8 +270,9 @@ class LifecycleHooks:
         remain supported.
     ``before_request(context) -> HookDecision | None``
         Deny a model request after the complete request budget is prepared and
-        before the provider is called.  A denial is terminal for the current
-        turn; it does not authorize a retry or a context-recovery request.
+        before the provider is called. ``purpose`` distinguishes business turns,
+        summary fragments and connection checks. A denial terminates that work
+        without authorizing a retry or a context-recovery request.
     ``close()``
         Release host resources after all kernel workers have stopped.
 
@@ -358,6 +360,12 @@ class LifecycleHooks:
         callback = getattr(hook, method, None)
         if not callable(callback):
             return None
+        policy = method in {"before_tool_call", "before_request"}
+        if cancel_event is not None and cancel_event.is_set():
+            return _HOOK_CANCELLED
+        with self._lock:
+            if policy and (self._closing or self._closed):
+                return _HOOK_CLOSED
         try:
             callback_context = (freeze_policy_context(context or {}) if method in {"before_tool_call", "before_request"}
                                else freeze_context(context or {}) if method == "on_event" else None)
@@ -406,7 +414,7 @@ class LifecycleHooks:
         start_error: Exception | None = None
         with self._lock:
             if self._closed or (self._closing and method in {"before_tool_call", "before_request"}):
-                return None
+                return _HOOK_CLOSED if policy else None
             if self._active >= MAX_ACTIVE_HOOK_CALLBACKS:
                 if method == "on_event":
                     self._busy_events += 1
@@ -440,6 +448,9 @@ class LifecycleHooks:
             finished.wait(min(0.025, remaining))
         if cancel_event is not None and cancel_event.is_set():
             return _HOOK_CANCELLED
+        with self._lock:
+            if policy and (self._closing or self._closed):
+                return _HOOK_CLOSED
         if error:
             self._failure(hook, method, event, "HOOK_ERROR", str(error[0]))
             return _HOOK_FAILED
@@ -532,6 +543,8 @@ class LifecycleHooks:
             )
             if result is _HOOK_CANCELLED:
                 return None
+            if result is _HOOK_CLOSED:
+                return HookDecision(False, "HOOK_CLOSED", "内核策略 hook 正在关闭或已关闭；工具调用已暂停")
             if result is _HOOK_CONTEXT_TOO_LARGE:
                 return HookDecision(False, "HOOK_CONTEXT_TOO_LARGE", "策略输入超过内核上限；为保证策略检查完整，工具调用已暂停")
             if result is _HOOK_CONTEXT_INVALID:
@@ -569,6 +582,8 @@ class LifecycleHooks:
             )
             if result is _HOOK_CANCELLED:
                 return None
+            if result is _HOOK_CLOSED:
+                return HookDecision(False, "HOOK_CLOSED", "内核策略 hook 正在关闭或已关闭；模型请求已拒绝")
             if result is _HOOK_CONTEXT_TOO_LARGE:
                 return HookDecision(False, "HOOK_CONTEXT_TOO_LARGE", "策略输入超过内核上限；模型请求已拒绝")
             if result is _HOOK_CONTEXT_INVALID:

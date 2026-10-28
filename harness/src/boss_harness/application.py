@@ -35,6 +35,7 @@ from boss_harness.model_tools import MODEL_RESULT_READ_TOOL, model_tool_specs
 from boss_harness.ownership import StateDirectoryOwner
 from boss_harness.resources import AttachmentStore, SkillCatalog, ToolRegistry
 from boss_harness.request_identity import resolve_request
+from boss_harness.request_policy import ModelRequestRejected, check_model_request, record_model_rejection
 from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
 from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUncertain, Entry,
@@ -198,6 +199,9 @@ class ApplicationService:
             self.tools = self._new_bridge()
             self.connections = ConnectionChecks(config, request_preparer=lambda request: self.context.prepare(
                 request, self.model_catalog.resolve(config.provider, request.model), provider=config.provider)[0],
+                request_budget=lambda request: self.context.prepare(request,
+                    self.model_catalog.resolve(config.provider, request.model), provider=config.provider)[1],
+                lifecycle_hooks=self.lifecycle_hooks,
                 bridge_factory=self._new_bridge if self._business_services else None,
                 browser_source_policy=getattr(self.tools, "browser_source_policy", None),
                 bridge_lifecycle=self.bridge_lifecycle)
@@ -836,7 +840,7 @@ class ApplicationService:
                   "status": job["status"]}
         for key in ("code", "message", "result", "modelRequestCount", "processedCharacters", "totalCharacters",
                     "retainedItemCount", "firstKeptItemId", "estimatedRetainedTokens", "reason", "turnId",
-                    "summaryProvider", "summaryModel", "summaryEffort"):
+                    "summaryProvider", "summaryModel", "summaryEffort", "requestRejected"):
             if key in job and job[key] is not None:
                 result[key] = job[key]
         return result
@@ -1128,6 +1132,19 @@ class ApplicationService:
             planner.config = config
             fragment = planner.fragment(offset, summary, index)
             prepared, budget = self.context.prepare(fragment.request, capabilities, provider=config.provider)
+            try:
+                check_model_request(self.lifecycle_hooks, config, prepared, budget,
+                    purpose="compaction", request_index=index - 1, cancel_event=job["cancel"],
+                    thread_id=thread_id, turn_id=job.get("turnId"), job_id=job["jobId"])
+            except ModelRequestRejected as exc:
+                if job["cancel"].is_set():
+                    raise _CompactionCancelled from None
+                record_model_rejection(self.sessions, thread_id, exc)
+                with self.runtimes.lock:
+                    job["requestRejected"] = True
+                raise
+            if job["cancel"].is_set():
+                raise _CompactionCancelled
             with self.runtimes.lock:
                 job["modelRequestCount"] = index
             assistant = self._stream_compaction(job["provider"], prepared, job["cancel"],
@@ -1192,6 +1209,8 @@ class ApplicationService:
         except ContextBudgetExceeded as exc:
             self._compaction_failed(job, "COMPACTION_INPUT_TOO_LARGE", exc)
         except _CompactionFailure as exc:
+            self._compaction_failed(job, exc.code, exc)
+        except ModelRequestRejected as exc:
             self._compaction_failed(job, exc.code, exc)
         except CheckpointCommitUncertain as exc:
             self._compaction_failed(job, exc.code, exc)
@@ -1366,7 +1385,8 @@ class ApplicationService:
                     pass
                 raise ContextCompactionFailed(exc.code, runner.safe_error(exc)) from None
             if job is not None and job["status"] != "completed":
-                code = exc.code if isinstance(exc, (ContextCompactionFailed, _CompactionFailure, CheckpointCommitUncertain)) else (
+                code = exc.code if isinstance(exc, (ContextCompactionFailed, _CompactionFailure,
+                                                    CheckpointCommitUncertain, ModelRequestRejected)) else (
                     exc.data.get("code", "COMPACTION_FAILED") if isinstance(exc, RpcError)
                     and isinstance(exc.data, dict) else "COMPACTION_FAILED")
                 try:
@@ -1377,6 +1397,8 @@ class ApplicationService:
                 raise ContextCompactionFailed(exc.code, runner.safe_error(exc)) from None
             if turn["cancel"].is_set() or self.runtimes.closed:
                 raise ContextCompactionFailed("COMPACTION_CANCELLED", "自动摘要已取消，本回合停止") from None
+            if isinstance(exc, ModelRequestRejected):
+                raise
             if job is not None and job["status"] == "completed" and replacement is not None:
                 with self.runtimes.lock:
                     owned()
