@@ -892,16 +892,24 @@ class SessionStore:
             connection.execute("INSERT INTO checkpoints(name,value) VALUES('events',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", (f"{stat.st_size}:{stat.st_mtime_ns}",))
         return frame
 
-    def events_after(self, cursor: str | None = None, thread_id: str | None = None, limit: int = 100) -> dict:
+    def events_after(self, cursor: str | None = None, thread_id: str | None = None, limit: int = 100,
+                     methods: tuple[str, ...] | list[str] | None = None) -> dict:
         position = _event_cursor(cursor)
         _limit(limit, 1000)
         if thread_id is not None:
             self.require_thread(thread_id)
+        if methods is not None and (not isinstance(methods, (tuple, list)) or not 1 <= len(methods) <= 16
+                or any(not isinstance(method, str) or not method or len(method) > 256
+                       or any(ord(char) < 32 for char in method) for method in methods)):
+            raise ValueError("事件方法筛选无效")
         query = "SELECT cursor,method,params_json FROM events WHERE cursor>?"
         parameters: list[Any] = [position]
         if thread_id is not None:
             query += " AND thread_id=?"
             parameters.append(thread_id)
+        if methods is not None:
+            query += " AND method IN (" + ",".join("?" for _ in methods) + ")"
+            parameters.extend(methods)
         query += " ORDER BY cursor LIMIT ?"
         parameters.append(limit + 1)
         self._sync_events()

@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第六十九轮：从持久事件恢复摘要任务终态而不重放
+
+Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 讨论任务执行所有权、是否阻塞新输入与是否响应 abort 应由独立属性表达；核对时 issue 仍开放。Pi 关闭 [Issue #11141](https://github.com/earendil-works/pi/issues/11141) 后增加 `afterRun` task，但 #11332 的 checkpoint 用例仍指出任务若只存在进程运行时，异常退出后缺少可恢复的可观察终态。本轮不引入 Pi 的 task API；仅沿用“持久任务状态与当前进程执行所有权分离”的设计目标。
+
+本项目 [Issue #158](https://github.com/can4hou6joeng4/boss-cli/issues/158) 在 main `7c1828e04c4dbe950e14c0a44aaa8c6accd3a2df` 上由阻塞合成 provider 复现：手动摘要已持久化 `context/compactionStarted`，复制该稳定状态模拟崩溃并重开服务后，`context/read.compactionJob` 为 `null`，`context/compact/read` 返回 `COMPACTION_JOB_NOT_FOUND`；无 provider 重放。项目原有会话恢复修复 running turn 与工具终态，但摘要 job 注册表只在内存。
+
+`SessionStore.events_after()` 增加有界方法筛选，SQLite 为 method/cursor 增加可重建查询索引。服务启动时分页读取摘要生命周期事件，恢复最近 64 条终态；进程退出留下的未终结 job 会检查同一会话是否存在带匹配 `summaryJobId` 的 `context_checkpoint`。若存在，补写 completed 恢复事件；否则补写 `failed / COMPACTION_INTERRUPTED`。恢复事件仅追加持久日志，不在 handshake 前发布通知；不会创建 provider、worker、取消句柄、重放模型请求或再次提交 checkpoint。原有会话占用、follow-up 队列和手动取消策略不变。
+
+本地隔离探针通过克隆 gate provider 运行中的 state 模拟崩溃，分别验证无 checkpoint 时恢复 interrupted、有匹配 checkpoint 时恢复 completed、旧 jobId 与 `context/read` 可查询、恢复 provider 调用为零。测试材料保留在忽略的 `.local-tests/`，不进入 Git 或 Python 产物。
+
 ## 第六十八轮：并发容量暂满时保留并公平唤醒后续回合
 
 Pi MIT 仓库开放 [Issue #11350](https://github.com/earendil-works/pi/issues/11350)，讨论共享 Codemode worker 池在长任务下的跨会话饥饿、等待者公平准入和占用诊断。核对时 Pi main 为 `ad702637fdf6fbd3f965c5dba0b14bae100b74eb`。Pi 的 worker 池与本项目模型回合容量不是同一种资源；本轮只参考“先等待的会话不应被后续新请求越过”这一调度原则，不移植 worker 实现。
