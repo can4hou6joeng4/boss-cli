@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第六十一轮：识别 LiteLLM HTTP 400 上下文窗口拒绝
+
+本项目 [Issue #140](https://github.com/can4hou6joeng4/boss-cli/issues/140) 以 Pi Issue [#11492](https://github.com/earendil-works/pi/issues/11492) 的原始 LiteLLM 响应复现了上下文分类缺口：HTTP 400 的 `litellm.ContextWindowExceededError` 被 `openai_error_info()` 当作普通请求错误，因此现有自动摘要恢复无法处理。Pi [PR #11494](https://github.com/earendil-works/pi/pull/11494) 已合并，固定 merge commit `d3398f826ae2654b52a7988830d533a354754c13`；核对时 Pi main 为 `fa16851520f8c5edf930d14ca04cdb4cb71d7a67`，许可证 MIT。
+
+Pi 通过宽泛短语匹配解决其 overflow detector 的问题。本项目只在可信 HTTP 400 响应中识别有界、以 `litellm.ContextWindowExceededError:` 开头且同时包含 `Context Window exceeded for given call.` 与 `Max Input Tokens=N, Got=M` 的错误消息，并要求 `N > 0` 且 `M > N`。HTTP 200 流错误、普通 400、其他状态、缺少数字事实、未超限和超长消息均不扩大为上下文溢出；未复制 Pi 代码或增加依赖。
+
+分类仍受既有恢复闸门约束：请求未输出文本、思考或工具事件且未取消，自动摘要策略已启用、请求预算允许且本回合尚未恢复时，才会提交摘要并重试一次当前模型请求；不重放工具或审批。19 项临时离线检查通过：15 项覆盖 LiteLLM 顶层/嵌套错误、普通 400、错误标记/数字/超限关系、消息长度与 HTTP/SSE 状态，并确认结构化 OpenAI、llama.cpp 和 Anthropic 分类不回归；另 4 项通过完整 `TurnRunner` 路径核对一次恢复、请求预算耗尽、已输出文本与取消边界。测试材料仅保留本地。
+
 ## 第六十轮：工具终态宿主观察回调
 
 参考 Pi 开放 [Issue #11043](https://github.com/earendil-works/pi/issues/11043) 的 `afterTool` 提案（Pi main `a92283056d915c758799fcd904948ff0cb42628c`，MIT）。本项目第五十二轮已吸收其中 `maxTurns` 请求上限，但有意未引入可改写工具结果的 `afterTool`。本轮重新按本项目招聘宿主需求限定为同步只读观察：嵌入工作台需要在每个工具终态后、下一次模型请求前记录工具实际执行状态；异步 `on_event` 的有限队列可能丢弃事件，而且白名单不暴露结果正文。

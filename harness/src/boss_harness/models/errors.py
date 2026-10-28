@@ -1,10 +1,9 @@
 """Conservative overflow classification at the trusted provider error boundary.
 
 Pi d5b3de22d0e24a3e9c38a9410d3329b099717283 ai/utils/overflow separates overflow
-from transient retries. This adapter deliberately accepts fewer signals: the exact
-OpenAI error code, the bounded llama.cpp exhaustion message, or Anthropic's typed,
-numeric prompt rejection. Length stops, estimates and generic request byte limits
-are not token overflow.
+from transient retries. This adapter accepts only an exact OpenAI error code,
+bounded provider-specific context rejections, or Anthropic's typed numeric prompt
+rejection. Length stops, estimates and generic request byte limits are not overflow.
 """
 from __future__ import annotations
 
@@ -26,6 +25,12 @@ _ANTHROPIC_PROMPT_LIMIT = re.compile(
     re.IGNORECASE,
 )
 _LLAMA_CONTEXT_EXHAUSTED = re.compile(r"context size has been exceeded\.?", re.IGNORECASE)
+_LITELLM_CONTEXT_WINDOW = re.compile(
+    r"^litellm\.ContextWindowExceededError:.*?Context Window exceeded for given call\."
+    r".*?\bMax Input Tokens=([0-9]{1,12}),\s*Got=([0-9]{1,12})\b",
+    re.DOTALL,
+)
+_MAX_LITELLM_ERROR_MESSAGE = 2048
 
 
 def _field(value: object, name: str) -> object:
@@ -85,16 +90,32 @@ def _llama_context_exhausted(error: object) -> bool:
             and _LLAMA_CONTEXT_EXHAUSTED.fullmatch(message.strip()) is not None)
 
 
+def _litellm_context_window_exceeded(error: object) -> bool:
+    """Recognize LiteLLM's explicit pre-call window rejection, not generic 400 text."""
+    message = _field(_error_payload(error), "message")
+    if type(message) is not str or len(message) > _MAX_LITELLM_ERROR_MESSAGE:
+        return False
+    match = _LITELLM_CONTEXT_WINDOW.search(message)
+    if match is None:
+        return False
+    maximum, received = map(int, match.groups())
+    return maximum > 0 and received > maximum
+
+
 def openai_error_info(error: object, *, source: ErrorSource,
                       status_code: int | None = None,
                       retryable: bool | None = None) -> ModelErrorInfo | None:
-    """Preserve bounded provider facts; classify overflow only by exact code/source."""
+    """Preserve bounded provider facts; classify overflow by explicit signals and source."""
     if not _valid_source(source, status_code):
         return None
     raw_code = _field(_error_payload(error), "code")
     structured_overflow = type(raw_code) is str and raw_code == "context_length_exceeded"
     text_overflow = status_code in {400, 200} and _llama_context_exhausted(error)
-    overflow = _is_overflow_source(source, status_code) and (structured_overflow or text_overflow)
+    litellm_overflow = (source == "http_error" and status_code == 400
+                        and _litellm_context_window_exceeded(error))
+    overflow = _is_overflow_source(source, status_code) and (
+        structured_overflow or text_overflow or litellm_overflow
+    )
     return ModelErrorInfo(provider="openai", source=source,
                           code="CONTEXT_OVERFLOW" if overflow else None,
                           provider_code=_safe_provider_code(error), status_code=status_code,
