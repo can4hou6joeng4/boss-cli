@@ -2,6 +2,14 @@
 
 ## 未发布
 
+### 修复
+
+- [Issue #136](https://github.com/can4hou6joeng4/boss-cli/issues/136)：OpenAI Responses 流在响应句柄登记前收到取消时，登记后立即复查取消标志并退出 SDK context manager，避免已取消回合继续读取响应 body。
+
+### 兼容与验证
+
+- 保持 OpenAI Responses 的正常事件、回合终态和重试边界不变；Anthropic 线路不变。使用 OpenAI SDK `3.35.0`（项目最低兼容版本）与 `3.35.1`、httpx2 `2.13.1/2.16.0` 的隔离合成流验证 headers gate/body gate、正常流、重复/迟到取消与 provider 复用；网络尝试为零。探针仅保留本地，未调用真实模型或招聘平台。
+
 ## 0.2.0-rc.13 - 2026-10-28
 
 第十三次私有源码与 Python 内核候选发布，修复摘要期间的后续回合派发竞态，并完善会话存储目录、文件及 macOS ACL 的隐私保护。
