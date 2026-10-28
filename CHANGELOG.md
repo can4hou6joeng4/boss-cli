@@ -8,13 +8,16 @@
 
 ### 修复
 
+- [Issue #144](https://github.com/can4hou6joeng4/boss-cli/issues/144)：仅将可信 HTTP 413 中不超过 512 字符且完整匹配 `Request body too large` / `payload too large` 的错误分类为上下文溢出；裸 413、其他消息及非 HTTP 错误来源不触发恢复。
 - [Issue #142](https://github.com/can4hou6joeng4/boss-cli/issues/142)：将工具派发认领与回合中断放在同一运行时锁下，关闭工具状态持久化期间接受中断后仍调用 handler 的竞态；取消先于派发认领时记为 `CANCELLED / not_executed`。
 - [Issue #140](https://github.com/can4hou6joeng4/boss-cli/issues/140)：识别 LiteLLM 有界 HTTP 400 上下文窗口拒绝，使符合条件的无输出请求进入现有单次摘要恢复；普通请求错误和非 HTTP 400 不触发恢复。
 - [Issue #136](https://github.com/can4hou6joeng4/boss-cli/issues/136)：OpenAI Responses 流在响应句柄登记前收到取消时，登记后立即复查取消标志并退出 SDK context manager，避免已取消回合继续读取响应 body。
 
 ### 兼容与验证
 
-- 保持 OpenAI Responses 的正常事件、回合终态和重试边界不变；Anthropic 线路不变。使用 OpenAI SDK `3.35.0`（项目最低兼容版本）与 `3.35.1`、httpx2 `2.13.1/2.16.0` 的隔离合成流验证 headers gate/body gate、正常流、重复/迟到取消与 provider 复用；网络尝试为零。探针仅保留本地，未调用真实模型或招聘平台。
+- OpenAI 与 Anthropic 共享相同的窄 HTTP 413 消息分类；既有无输出、未取消、自动压缩启用、预算足够及每回合只恢复一次的条件不变。Pi Issue #10879 的通用 413 检测不直接移植。
+- 本地 7 项离线探针覆盖两个 provider 的精确匹配、裸/其他/超长 HTTP 413、其他状态和错误来源、既有结构化 overflow，以及 TurnRunner 的单次恢复、输出、取消和请求上限门禁。Python 3.11 编译、类型检查、Electron 源码构建、wheel/sdist 构建及 `git diff --check` 通过；wheel/sdist 仅含 Harness 产品源码。探针只保留本地，未调用真实模型或招聘平台。
+- OpenAI Responses 正常事件、回合终态和重试边界保持不变；Anthropic 流协议与现有 prompt 窗口分类保持不变。本轮未执行真实服务、招聘平台或桌面 UI 验收。
 
 ## 0.2.0-rc.13 - 2026-10-28
 

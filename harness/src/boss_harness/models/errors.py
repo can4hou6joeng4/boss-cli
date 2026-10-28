@@ -31,6 +31,8 @@ _LITELLM_CONTEXT_WINDOW = re.compile(
     re.DOTALL,
 )
 _MAX_LITELLM_ERROR_MESSAGE = 2048
+_PROXY_BODY_TOO_LARGE = re.compile(r"(?:request body|payload) too large\.?", re.IGNORECASE)
+_MAX_PROXY_ERROR_MESSAGE = 512
 
 
 def _field(value: object, name: str) -> object:
@@ -102,6 +104,15 @@ def _litellm_context_window_exceeded(error: object) -> bool:
     return maximum > 0 and received > maximum
 
 
+def _proxy_body_too_large(error: object, *, source: str, status_code: int | None) -> bool:
+    """Recognize only bounded, explicit proxy body-size rejections."""
+    if source != "http_error" or status_code != 413:
+        return False
+    message = _field(_error_payload(error), "message")
+    return (type(message) is str and len(message) <= _MAX_PROXY_ERROR_MESSAGE
+            and _PROXY_BODY_TOO_LARGE.fullmatch(message.strip()) is not None)
+
+
 def openai_error_info(error: object, *, source: ErrorSource,
                       status_code: int | None = None,
                       retryable: bool | None = None) -> ModelErrorInfo | None:
@@ -113,9 +124,11 @@ def openai_error_info(error: object, *, source: ErrorSource,
     text_overflow = status_code in {400, 200} and _llama_context_exhausted(error)
     litellm_overflow = (source == "http_error" and status_code == 400
                         and _litellm_context_window_exceeded(error))
-    overflow = _is_overflow_source(source, status_code) and (
-        structured_overflow or text_overflow or litellm_overflow
-    )
+    proxy_body_overflow = _proxy_body_too_large(error, source=source, status_code=status_code)
+    overflow = (
+        _is_overflow_source(source, status_code)
+        and (structured_overflow or text_overflow or litellm_overflow)
+    ) or proxy_body_overflow
     return ModelErrorInfo(provider="openai", source=source,
                           code="CONTEXT_OVERFLOW" if overflow else None,
                           provider_code=_safe_provider_code(error), status_code=status_code,
@@ -130,14 +143,14 @@ def anthropic_error_info(error: object, *, source: ErrorSource,
         return None
     payload = _error_payload(error)
     message = _field(payload, "message")
-    overflow = False
+    overflow = _proxy_body_too_large(error, source=source, status_code=status_code)
     if (_is_overflow_source(source, status_code)
             and _field(payload, "type") == "invalid_request_error"
             and type(message) is str and len(message) <= 512):
         match = _ANTHROPIC_PROMPT_LIMIT.fullmatch(message.strip())
         if match is not None:
             actual, limit = map(int, match.groups())
-            overflow = limit > 0 and actual > limit
+            overflow = overflow or (limit > 0 and actual > limit)
     return ModelErrorInfo(provider="anthropic", source=source,
                           code="CONTEXT_OVERFLOW" if overflow else None,
                           provider_code=_safe_provider_code(error), status_code=status_code,
