@@ -217,6 +217,8 @@ RPC 客户端可通过 `thread/item/result/read`，传入 `threadId`、`itemId`�
 
 `before_tool_call(context)` 保持旧的一参数形式兼容；需要协作取消的宿主可改为 `before_tool_call(context, *, signal)`，其中 `signal.aborted` 表示回合已取消，`signal.wait(timeout)` 可等待该状态。取消会结束内核的策略等待并忽略迟到决策；如果 hook 不检查 signal，它的 Python 线程仍会继续运行并占用在途名额直到退出，因此策略 hook 应保持无副作用并在可取消工作点检查 signal。取消期间当前工具记录为 `CANCELLED / not_executed`，不会请求审批或调用 handler。
 
+`before_request(context)` 同样兼容一参数和可选 `signal` 形式，在每次完整请求预算准备后、provider 调用前执行；返回 `HookDecision(False, code, message)` 会把当前回合以 `error` 终止并持久化 `model_error`，不调用 provider、不执行工具、不申请审批，也不会进入上下文恢复或自动重试。请求策略输入是有界 JSON 快照，包含 `threadId`、`turnId`、请求序号、provider/model、消息与工具数量及预算快照；拒绝原因会脱敏后进入终态通知和会话记录。
+
 ## 模型运行所有权
 
 嵌入方使用 `ApplicationService(provider_factory=...)` 并发运行模型回合时，工厂须提供独立实例。非空返回值不能是应用主 provider，也不能被其他业务 worker（包括已释放执行槽位但仍在通知/收尾的 worker）或尚未完成收尾的摘要持有；违规调用在预留回合、保存输入前拒绝，不会中断原 owner。手动与自动摘要同样拒绝借用尚未完成收尾的业务 provider。模型执行、终态通知、bridge 清理及已认领的 abort 都完成后才允许临时实例串行复用，防止旧中止误伤新请求；后续队列派发的尾部继续单独持有状态目录责任。未传工厂的主实例串行路径也遵守上述条件，工厂返回 `None` 的无模型路径保持兼容。默认内建工厂创建新实例，模型摘要仍要求独立于主回合的 provider。

@@ -2,6 +2,10 @@
 
 ## 未发布
 
+### 内核
+
+- 参考 Pi Issue [#11055](https://github.com/earendil-works/pi/issues/11055)，新增 `before_request` 生命周期策略闸门；模型请求可在完整预算准备后、provider 调用前被明确拒绝，并以 `error` 终止而不触发工具、审批、上下文恢复或自动重试。
+
 ## 0.2.0-rc.9 - 2026-10-28
 
 第九次私有源码与 Python 内核候选发布，补齐 OpenAI-compatible llama.cpp 解码阶段上下文耗尽的恢复分类。

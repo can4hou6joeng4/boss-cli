@@ -77,7 +77,7 @@ def _signal_mode(callback: Callable[..., Any]) -> str | None:
 
 @dataclass(frozen=True)
 class HookDecision:
-    """A before-tool hook may only deny; approval remains a separate gate."""
+    """A policy hook may only deny; approval remains a separate gate."""
 
     allow: bool
     code: str = "HOOK_DENIED"
@@ -267,6 +267,10 @@ class LifecycleHooks:
         New callbacks may also declare a ``signal`` keyword parameter to
         cooperatively stop when the turn is cancelled; one-argument callbacks
         remain supported.
+    ``before_request(context) -> HookDecision | None``
+        Deny a model request after the complete request budget is prepared and
+        before the provider is called.  A denial is terminal for the current
+        turn; it does not authorize a retry or a context-recovery request.
     ``close()``
         Release host resources after all kernel workers have stopped.
 
@@ -294,8 +298,9 @@ class LifecycleHooks:
             except TypeError:
                 raise ValueError("lifecycle_hooks 必须是可迭代对象") from None
         for hook in values:
-            if not any(callable(getattr(hook, name, None)) for name in ("on_event", "before_tool_call", "close")):
-                raise ValueError("生命周期 hook 至少提供 on_event、before_tool_call 或 close")
+            if not any(callable(getattr(hook, name, None)) for name in
+                       ("on_event", "before_tool_call", "before_request", "close")):
+                raise ValueError("生命周期 hook 至少提供 on_event、before_tool_call、before_request 或 close")
         self._hooks = values
         self.timeout = float(timeout)
         self._error_sink = error_sink
@@ -354,11 +359,13 @@ class LifecycleHooks:
         if not callable(callback):
             return None
         try:
-            callback_context = (freeze_policy_context(context or {}) if method == "before_tool_call"
+            callback_context = (freeze_policy_context(context or {}) if method in {"before_tool_call", "before_request"}
                                else freeze_context(context or {}) if method == "on_event" else None)
         except _PolicyContextError as exc:
-            message = ("策略 hook 输入超过内核上限；工具未执行" if exc.code == "HOOK_CONTEXT_TOO_LARGE"
-                       else "策略 hook 输入不是受支持的 JSON；工具未执行")
+            subject = "模型请求" if method == "before_request" else "工具"
+            message = (f"策略 hook 输入超过内核上限；{subject}已拒绝"
+                       if exc.code == "HOOK_CONTEXT_TOO_LARGE"
+                       else f"策略 hook 输入不是受支持的 JSON；{subject}已拒绝")
             self._failure(hook, method, event, exc.code, message)
             return _HOOK_CONTEXT_TOO_LARGE if exc.code == "HOOK_CONTEXT_TOO_LARGE" else _HOOK_CONTEXT_INVALID
         if cancel_event is not None and cancel_event.is_set():
@@ -373,7 +380,7 @@ class LifecycleHooks:
         error: list[BaseException] = []
         finished = threading.Event()
         signal_mode = (_signal_mode(callback)
-                       if method == "before_tool_call" and signal is not None else None)
+                       if method in {"before_tool_call", "before_request"} and signal is not None else None)
 
         def run() -> None:
             try:
@@ -398,7 +405,7 @@ class LifecycleHooks:
         thread = threading.Thread(target=run, name=f"boss-hook-{method}", daemon=True)
         start_error: Exception | None = None
         with self._lock:
-            if self._closed or (self._closing and method == "before_tool_call"):
+            if self._closed or (self._closing and method in {"before_tool_call", "before_request"}):
                 return None
             if self._active >= MAX_ACTIVE_HOOK_CALLBACKS:
                 if method == "on_event":
@@ -442,7 +449,8 @@ class LifecycleHooks:
     def _event_projection(method: str, params: Mapping[str, Any] | None) -> dict[str, Any]:
         visible = {"threadId", "turnId", "itemId", "queueId", "jobId", "status", "code",
                    "reason", "origin", "kind", "toolName", "model", "provider", "effort",
-                   "state", "aborted", "active", "eventCursor", "eventId", "recoveryAction"}
+                   "state", "aborted", "active", "eventCursor", "eventId", "recoveryAction",
+                   "outputObserved", "requestRejected"}
         source = dict(params or {})
         projected = {key: source[key] for key in visible if key in source}
         return {"phase": "event", "event": method, "params": _safe_value(projected)}
@@ -537,6 +545,44 @@ class LifecycleHooks:
             if not isinstance(result, HookDecision):
                 self._failure(hook, "before_tool_call", event, "HOOK_RESULT_INVALID", "before_tool_call 必须返回 HookDecision 或 None")
                 return HookDecision(False, "HOOK_RESULT_INVALID", "内核策略 hook 返回了无效结果；当前回合已暂停")
+            if not result.allow:
+                return result
+        return None
+
+    def before_request(self, context: Mapping[str, Any], *,
+                       cancel_event: threading.Event | None = None) -> HookDecision | None:
+        """Run a fail-closed policy check before one provider request."""
+        if not self._hooks:
+            return None
+        event = "modelRequest/before"
+        signal = HookCancellationSignal(cancel_event) if cancel_event is not None else None
+        for hook in self._hooks:
+            if not callable(getattr(hook, "before_request", None)):
+                continue
+            result = self._invoke(
+                hook,
+                "before_request",
+                {"phase": "before_request", **dict(context)},
+                event=event,
+                cancel_event=cancel_event,
+                signal=signal,
+            )
+            if result is _HOOK_CANCELLED:
+                return None
+            if result is _HOOK_CONTEXT_TOO_LARGE:
+                return HookDecision(False, "HOOK_CONTEXT_TOO_LARGE", "策略输入超过内核上限；模型请求已拒绝")
+            if result is _HOOK_CONTEXT_INVALID:
+                return HookDecision(False, "HOOK_CONTEXT_INVALID", "策略输入不是受支持的 JSON；模型请求已拒绝")
+            if result is _HOOK_BUSY:
+                return HookDecision(False, "HOOK_BUSY", "内核策略 hook 已达到在途回调上限；模型请求已拒绝")
+            if result is _HOOK_FAILED:
+                return HookDecision(False, "HOOK_ERROR", "内核策略 hook 未能完成；模型请求已拒绝")
+            if result is None:
+                continue
+            if not isinstance(result, HookDecision):
+                self._failure(hook, "before_request", event, "HOOK_RESULT_INVALID",
+                              "before_request 必须返回 HookDecision 或 None")
+                return HookDecision(False, "HOOK_RESULT_INVALID", "内核策略 hook 返回了无效结果；模型请求已拒绝")
             if not result.allow:
                 return result
         return None

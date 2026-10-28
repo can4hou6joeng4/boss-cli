@@ -20,7 +20,7 @@ from typing import Any
 
 from boss_harness.context import ContextBudgetExceeded
 from boss_harness.compaction import ContextCompactionFailed
-from boss_harness.hooks import LifecycleHooks
+from boss_harness.hooks import HookDecision, LifecycleHooks
 from boss_harness.models import (
     AssistantMessage,
     ToolCallBlock,
@@ -632,11 +632,12 @@ class TurnRunner:
                     effort=self.config.effort,
                     thinking=self.config.thinking,
                 )
+                request_budget: dict[str, Any] = {}
                 if self.request_preparer is not None:
                     try:
                         before = request
                         self.preparing_request_index = _round
-                        request, budget = self.request_preparer(request)
+                        request, request_budget = self.request_preparer(request)
                         messages = list(request.messages)
                         # A summary can take long enough for new steering to arrive.
                         # Catch up once, before consuming either batch or calling a model.
@@ -646,7 +647,7 @@ class TurnRunner:
                             if catch_up:
                                 messages.extend(catch_up)
                                 request = replace(request, messages=tuple(messages))
-                                request, budget = self.request_preparer(request)
+                                request, request_budget = self.request_preparer(request)
                                 messages = list(request.messages)
                                 commits.append(commit)
                     except ContextBudgetExceeded as exc:
@@ -660,7 +661,20 @@ class TurnRunner:
                         return "blocked"
                     except ContextCompactionFailed as exc:
                         return self._context_failed(thread_id, exc)
-                    self._record_preparation(thread_id, request, budget)
+                    self._record_preparation(thread_id, request, request_budget)
+                if self.lifecycle_hooks is not None:
+                    decision = self.lifecycle_hooks.before_request({
+                        "threadId": thread_id,
+                        "turnId": self.turn_id,
+                        "requestIndex": _round,
+                        "provider": self.config.provider,
+                        "model": request.model,
+                        "messageCount": len(request.messages),
+                        "toolCount": len(request.tools),
+                        "budget": request_budget,
+                    }, cancel_event=self._cancel)
+                    if decision is not None and not decision.allow:
+                        return self._request_rejected(thread_id, request, decision)
                 if self.cancelled():
                     return "interrupted"
                 if self.request_preparer is not None:
@@ -770,6 +784,32 @@ class TurnRunner:
         self.append_agent(thread_id, message)
         self.notify(N_SESSION_ERROR, {"threadId": thread_id, "code": error.code, "message": message})
         return "blocked"
+
+    def _request_rejected(self, thread_id: str, request: ModelRequest,
+                          decision: HookDecision) -> str:
+        """Persist a terminal policy rejection without entering provider/recovery paths."""
+        if self.cancelled():
+            return "interrupted"
+        message = self.safe_error(decision.message)
+        self.append_agent(thread_id, f"模型请求已拒绝（{decision.code}）：{message}")
+        self.sessions.append(thread_id, Entry(type="model_error", payload={
+            "turnId": self.turn_id,
+            "model": request.model,
+            "provider": self.config.provider,
+            "message": message,
+            "errorInfo": {"source": "request_policy", "code": decision.code},
+            "outputObserved": False,
+            "contextRecoveryEligible": False,
+            "requestRejected": True,
+        }))
+        self.notify(N_SESSION_ERROR, {
+            "threadId": thread_id,
+            "code": decision.code,
+            "message": message,
+            "outputObserved": False,
+            "requestRejected": True,
+        })
+        return "error"
 
     def _record_preparation(self, thread_id: str, request: ModelRequest, budget: dict[str, Any]) -> None:
         snapshot = {**budget, "provider": self.config.provider, "turnId": self.turn_id}
