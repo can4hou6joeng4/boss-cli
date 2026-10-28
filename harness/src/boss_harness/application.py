@@ -57,9 +57,13 @@ MAX_COMPACTION_ERROR_CHARACTERS = 2_048
 
 
 class _CompactionFailure(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(self, code: str, message: str, *, assistant: AssistantMessage | None = None) -> None:
         super().__init__(message)
         self.code = code
+        # A terminal provider response can carry usage even when its content
+        # is rejected as a summary. Keep that observation separate from the
+        # checkpoint decision so it cannot be silently lost.
+        self.assistant = assistant
 
 
 class _CompactionCancelled(Exception):
@@ -1141,20 +1145,37 @@ class ApplicationService:
         if cancel.is_set():
             raise _CompactionCancelled
         if error is not None:
-            raise _CompactionFailure("COMPACTION_PROVIDER_ERROR", error)
+            raise _CompactionFailure("COMPACTION_PROVIDER_ERROR", error, assistant=assistant)
         if assistant is None:
             raise _CompactionFailure("COMPACTION_INCOMPLETE", "摘要模型未返回完成响应")
         if assistant.stop_reason != "stop":
             raise _CompactionFailure("COMPACTION_INVALID_STOP_REASON",
-                                     "摘要模型未以正常停止原因结束")
+                                     "摘要模型未以正常停止原因结束", assistant=assistant)
         if tool_event or assistant.tool_calls():
-            raise _CompactionFailure("COMPACTION_TOOL_CALL_REJECTED", "摘要请求不允许调用工具")
+            raise _CompactionFailure("COMPACTION_TOOL_CALL_REJECTED", "摘要请求不允许调用工具", assistant=assistant)
         summary = assistant.text().strip()
         if not summary:
-            raise _CompactionFailure("COMPACTION_EMPTY", "摘要模型返回了空内容")
+            raise _CompactionFailure("COMPACTION_EMPTY", "摘要模型返回了空内容", assistant=assistant)
         if len(summary) > character_limit:
-            raise _CompactionFailure("COMPACTION_TOO_LARGE", "摘要模型返回内容超过本次请求的字符预算")
+            raise _CompactionFailure("COMPACTION_TOO_LARGE", "摘要模型返回内容超过本次请求的字符预算", assistant=assistant)
         return assistant
+
+    def _record_compaction_usage(self, job: dict, prepared: ModelRequest, budget: dict,
+                                 fragment: Any, planner: SummaryPlanner, index: int,
+                                 assistant: AssistantMessage, *, failure_code: str | None = None) -> None:
+        """Persist observed terminal usage even when summary content is rejected."""
+        config: ModelConfig = job["config"]
+        payload = {
+            "jobId": job["jobId"], "provider": config.provider, "model": prepared.model,
+            "usage": asdict(assistant.usage) if assistant.usage is not None else None,
+            "stopReason": assistant.stop_reason, "eligible": False,
+            "requestFingerprint": request_fingerprint(config.provider, prepared), "budget": budget,
+            "fragmentIndex": index, "sourceStart": fragment.start, "sourceEnd": fragment.end,
+            "sourceCharacters": len(planner.source), "sourceTextDigest": planner.source_digest,
+        }
+        if failure_code is not None:
+            payload["rejectedCode"] = failure_code
+        self.sessions.append(job["threadId"], Entry(type="context_summary_usage", payload=payload))
 
     def _generate_compaction(self, job: dict, source: str) -> tuple[str, SummaryPlanner]:
         config: ModelConfig = job["config"]
@@ -1183,15 +1204,15 @@ class ApplicationService:
                 raise _CompactionCancelled
             with self.runtimes.lock:
                 job["modelRequestCount"] = index
-            assistant = self._stream_compaction(job["provider"], prepared, job["cancel"],
-                                                character_limit=planner.character_limit)
-            self.sessions.append(thread_id, Entry(type="context_summary_usage", payload={
-                "jobId": job["jobId"], "provider": config.provider, "model": prepared.model,
-                "usage": asdict(assistant.usage) if assistant.usage is not None else None,
-                "stopReason": assistant.stop_reason, "eligible": False,
-                "requestFingerprint": request_fingerprint(config.provider, prepared), "budget": budget,
-                "fragmentIndex": index, "sourceStart": fragment.start, "sourceEnd": fragment.end,
-                "sourceCharacters": len(source), "sourceTextDigest": planner.source_digest}))
+            try:
+                assistant = self._stream_compaction(job["provider"], prepared, job["cancel"],
+                                                    character_limit=planner.character_limit)
+            except _CompactionFailure as exc:
+                if exc.assistant is not None and exc.assistant.usage is not None:
+                    self._record_compaction_usage(job, prepared, budget, fragment, planner, index,
+                                                  exc.assistant, failure_code=exc.code)
+                raise
+            self._record_compaction_usage(job, prepared, budget, fragment, planner, index, assistant)
             summary, offset = assistant.text().strip(), fragment.end
             with self.runtimes.lock:
                 job["processedCharacters"] = offset

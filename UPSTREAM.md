@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第六十五轮：保留被拒摘要的终态用量归因
+
+Pi 开放 [Issue #11090](https://github.com/earendil-works/pi/issues/11090) 要求为模型工具、压缩和分支摘要的每次物理调用保留 provider/model 归因；核对时 Pi main 为 `c3d8ce44d3231c7e46071d2d859f41ca7d39d21b`，许可证 MIT。当前项目成功摘要已经按分片保存 `context_summary_usage`，并在 checkpoint 中记录摘要 provider/model；本轮补齐“provider 已返回终态 usage、但摘要内容不合格”这一相邻缺口，不复制 Pi 代码或引入依赖。
+
+本项目 [Issue #150](https://github.com/can4hou6joeng4/boss-cli/issues/150) 在 main `21734260cd2a7b30b3c41180bae5c0cdd12aa064` 上复现：`_stream_compaction()` 先验收 stop reason、工具调用、空文本和字符上限，`_generate_compaction()` 只有成功返回摘要后才追加 usage；合成 provider 每次返回 `Usage(input=100, output=5)` 时，`length`、空文本和 32001 字符摘要均已调用 provider，但没有任何 `context_summary_usage`。
+
+现在终态 `AssistantMessage` 随摘要校验失败一起携带，若其中有 usage，则在抛出拒绝前保存与成功路径相同的 job、provider、model、fragmentIndex、requestFingerprint、budget、source digest 和 usage，并附受限的 `rejectedCode`。该记录始终 `eligible=false`，不会成为业务 usage anchor。摘要失败仍不写 checkpoint、不重试、不继续后续片段；provider error、流未完成或没有 usage 时不伪造 token 记录。成功摘要仍只写一次 usage，未改变摘要和上下文提交边界。
+
+本地离线探针覆盖正常摘要、invalid stop reason、空摘要和超长摘要：4/4 通过；每个拒绝案例均只产生一条带 `Usage(input=100, output=5)` 的归因记录且没有 checkpoint。Python 编译、类型检查、桌面源码构建、wheel/sdist 内容检查和 `git diff --check` 通过；未调用真实模型、招聘平台或连接服务。测试材料仅保留本地。
+
+同步核对 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`，GitHub license 字段为空；开放 Issue/PR 仍集中招聘认证、Cookie、沟通、分页和 recruiter 业务，没有可移植的模型用量归因契约，本轮不迁移其代码。
+
 ## 第六十四轮：连接与登录 worker 的启动失败责任
 
 Pi 开放 [Issue #11433](https://github.com/earendil-works/pi/issues/11433) 报告 pi-env 在 pipe reader/waiter 线程创建失败时，调用方永久等待且子进程未被回收；核对时 Pi main 为 `c3d8ce44d3231c7e46071d2d859f41ca7d39d21b`，许可证 MIT。本项目的子进程输出与 I/O 线程失败已在第二十一轮覆盖，本轮以相同的“启动失败必须明确结算，真实运行任务仍需持有责任”原则审计连接服务，未复制 Pi 实现或引入依赖。
