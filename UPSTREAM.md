@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第四十九轮：按显式工具 schema 解码结构化字符串参数
+
+Pi 开放 [PR #9569](https://github.com/earendil-works/pi/pull/9569)（截至 2026-10-28 为 OPEN；head `8746d6617b5349ed4fee3f5d3522f0cc46a79ae5`；Pi main `a92283056d915c758799fcd904948ff0cb42628c`；仓库许可证 MIT）。该 PR 报告部分 OpenAI-compatible 模型把嵌套 object/array 再编码为 JSON 字符串，导致 schema 类型检查失败；Pi 的处理只在 schema 要求结构类型且解析结果符合 schema 时解码，允许 string 的 union 保留原字符串。
+
+本项目的 OpenAI Responses 与 Anthropic 适配器会解析工具参数的外层 object；通用 `ToolBundle` 允许嵌套 schema，但 `tool_schema.validated_arguments()` 原先对嵌套值严格按 JSON 类型拒绝。合成离线输入 `{"target":"{\"kind\":\"agent\"}"}` 可复现：schema 要求 `target` 为 object 时失败，原生 object 则成功。招聘内置工具当前参数基本扁平；本轮针对通用、显式注册的工具组合补足兼容能力，不改变招聘命令或参数授权。
+
+独立实现只对 schema 选择的 object/array 结构字段各解码一层，先保持调用方输入不变，再对解码结构递归应用同一 schema 规则并重新完整校验；格式错误、错误结构、超限节点/深度和最终字节数仍拒绝。若输入已匹配允许 string 的 `anyOf` 分支则保留字符串。规范化参数在生命周期策略、审批请求、持久化和 handler 派发前统一传递；审批要求与 allowlist 不变。未复制 Pi 源码或增加依赖。
+
+本地离线验收覆盖嵌套 object/array、`anyOf`、字符串 union、原始输入不可变、格式/类型拒绝、标量不转换、深度/节点上限及自定义校验器只读语义；合成 `ApplicationService` 与 `TurnRunner` 检查规范化值在策略 hook、审批、持久化与 handler 间一致，错误结构在 hook/handler 前拒绝。Python 3.11 `compileall`、Harness wheel/sdist 构建及 `git diff --check` 通过。探针只使用临时状态和合成 provider，不调用真实模型或招聘 CLI；探针代码仅在本地命令中运行，未提交。
+
+检查 `can4hou6joeng4/boss-cli` 当前 main `641c147648f5ef280cc69f5efb5cf53a8f2bde96`（私有仓库、无开放 Issue；草稿 PR #109 是会话模型线路选择）及业务上游 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`（许可证字段为空）。后者开放 Issue #35/#34 等关于招聘认证与业务操作，开放 PR #37/#29 等关于沟通分页和 recruiter 功能；未发现通用工具 schema 参数规范化需求，不移植其业务逻辑或认证代码。
+
 ## 第四十八轮：为模型上下文限制大型工具结果
 
 Pi 开放 [Issue #11386](https://github.com/earendil-works/pi/issues/11386)（截至 2026-10-28 为 OPEN；Pi main `85c2ee3e761e4fc4f901ff0ed584fb2465aa552e`；MIT）提出将 MCP 工具结果的固定 20 KiB 上限改为按工具/server/项目配置。议题主要关心单次模型输入预算与大 schema/tree/search 结果；Pi 尚无关联实现 PR。本项目没有 MCP server 配置，工具来自显式 `ToolBundle`；`jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70` 的许可证字段为空，当前开放 Issue/PR 仍集中招聘业务、平台权限、会话发送和认证，不存在可直接移植的通用工具结果预算实现。
