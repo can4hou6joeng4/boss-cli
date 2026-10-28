@@ -2,6 +2,14 @@
 
 ## 未发布
 
+### 修复
+
+- 参考 Pi Issue [#11043](https://github.com/earendil-works/pi/issues/11043)，OpenAI Responses 适配器现在以 `response.completed` / `response.incomplete` 的权威 `output` 集合收敛最终内容；流中出现但终态撤回的工具调用不会再进入执行器，缺失或重复终态集合会返回错误并停止派发。
+
+### 验证与限制
+
+- 本地离线终态一致性探针覆盖撤回工具、缺失 `output`、重复索引和有效工具保留四种路径，4/4 通过；Python 源码编译与 `git diff --check` 通过。未调用真实模型或招聘平台。
+
 ## 0.2.0-rc.11 - 2026-10-28
 
 第十一次私有源码与 Python 内核候选发布，提供宿主控制的回合请求上限，并补齐摘要与连接检查的模型请求策略。
