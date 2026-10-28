@@ -2,6 +2,10 @@
 
 ## 未发布
 
+### 修复
+
+- 参考 Pi Issue [#10885](https://github.com/earendil-works/pi/issues/10885)，识别 OpenAI-compatible llama.cpp 在解码阶段返回的有界 `Context size has been exceeded.`，使上下文恢复路径能够处理 KV pool 耗尽，而不扩大对任意错误文本的匹配。
+
 ## 0.2.0-rc.8 - 2026-10-28
 
 第八次私有源码与 Python 内核候选发布，修复模型将嵌套 object/array 参数额外编码为 JSON 字符串时的工具调用兼容性。
