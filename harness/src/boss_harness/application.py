@@ -870,6 +870,14 @@ class ApplicationService:
         wake_follow_up = False
         with self.runtimes.lock:
             job["_shutdown_worker_done"] = True
+            if (job.get("status") in {"failed", "cancelled"}
+                    and self.runtimes.active.get(job["threadId"]) is None):
+                try:
+                    self.queue.pause(job["threadId"], kind="followUp")
+                except Exception:
+                    # TurnQueue records an in-memory pending pause before
+                    # persistence, so future admission still settles it first.
+                    pass
             released = self._retire_compaction_locked(job)
             # A successful checkpoint is the only compaction outcome that may
             # resume a queued user request. Failed/cancelled compaction keeps
