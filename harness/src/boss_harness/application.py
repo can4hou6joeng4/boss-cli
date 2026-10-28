@@ -1223,6 +1223,7 @@ class ApplicationService:
                            for existing in self._compaction_jobs.values()):
                 raise RpcError(-32005, "模型供应商实例正在被其他任务使用，无法安全隔离摘要请求")
             job_id = uuid.uuid4().hex
+            launch_done = threading.Event()
             job = {"jobId": job_id, "threadId": thread_id, "throughTurnId": through_turn_id,
                    "sourceDigest": plan["sourceDigest"], "config": config, "provider": provider,
                    "summaryProvider": config.provider, "summaryModel": config.model,
@@ -1230,18 +1231,27 @@ class ApplicationService:
                    "cancel": threading.Event(), "status": "running", "modelRequestCount": 0,
                    "processedCharacters": 0, "totalCharacters": len(source),
                    "retainedItemCount": plan["retainedItemCount"], "firstKeptItemId": plan["firstKeptItemId"],
-                   "estimatedRetainedTokens": plan["estimatedRetainedTokens"]}
-            self._compaction_jobs[job_id] = job
-            self._compaction_by_thread[thread_id] = job_id
-        worker = None
-        try:
+                   "estimatedRetainedTokens": plan["estimatedRetainedTokens"],
+                   "_launch_done": launch_done}
             worker = threading.Thread(target=self._run_compaction, args=(job,),
                                       name=f"compact-{job_id[:8]}", daemon=True)
             job["worker"] = worker
+            self._compaction_jobs[job_id] = job
+            self._compaction_by_thread[thread_id] = job_id
+        try:
             self.events.emit("context/compactionStarted", self._compaction_public(job))
-            worker.start()
+            with self.runtimes.lock:
+                if self.runtimes.closed or job["cancel"].is_set():
+                    job.update(status="cancelled", code="COMPACTION_CANCELLED", message="摘要已取消")
+                    cancelled_before_start = True
+                else:
+                    worker.start()
+                    cancelled_before_start = False
+            if cancelled_before_start:
+                self.events.emit("context/compactionFailed", self._compaction_public(job))
+                self._finish_compaction(job)
         except Exception as exc:
-            if worker is not None and worker.is_alive():
+            if worker.ident is not None:
                 raise
             with self.runtimes.lock:
                 job.update(status="failed", code="COMPACTION_START_FAILED",
@@ -1251,6 +1261,10 @@ class ApplicationService:
             finally:
                 self._finish_compaction(job)
             raise RuntimeError(job["message"]) from None
+        finally:
+            launch_done.set()
+            with self.runtimes.lock:
+                job.pop("_launch_done", None)
         return self._compaction_public(job)
 
     def on_context_compact_abort(self, params: dict | None) -> dict:
@@ -2327,6 +2341,11 @@ class ApplicationService:
             abort.start()
 
     def _wait_compaction_jobs(self, deadline: float) -> None:
+        with self.runtimes.lock:
+            launch_events = [job.get("_launch_done") for job in self._compaction_jobs.values()]
+        for launch_done in launch_events:
+            if launch_done is not None:
+                launch_done.wait(max(0, deadline - time.monotonic()))
         with self.runtimes.lock:
             workers = [job.get("worker") for job in self._compaction_jobs.values()]
             workers.extend(job["_shutdown_abort"].worker for job in self._compaction_jobs.values()

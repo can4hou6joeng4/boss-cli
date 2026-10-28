@@ -1,5 +1,15 @@
 # 变更记录
 
+## 未发布
+
+### 修复
+
+- [Issue #163](https://github.com/can4hou6joeng4/boss-cli/issues/163)：将摘要 worker 句柄与启动决策纳入 shutdown 所有权；关闭期间取消的摘要不会晚启动，正常启动仍由共享期限内的关闭流程等待收尾。
+
+### 兼容与验证
+
+- Issue #163 离线并发屏障探针覆盖 shutdown 与摘要开始事件并发、取消后不启动 worker，以及无竞争时正常启动并由 close 收尾。Python 3.14 编译、TypeScript 检查、Electron 源码构建、Python wheel/sdist 构建、产物内容扫描和 `git diff --check` 均通过；探针使用合成对象，未调用真实模型、招聘 CLI 或招聘平台，测试代码未提交。
+
 ## 0.2.0-rc.14 - 2026-10-29
 
 第十四次私有源码与 Python 内核候选发布，累计纳入 rc.13 后合入的十四项功能与修复，并补足持久摘要任务的崩溃恢复状态。
