@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from boss_harness.persistence import PersistenceIndex
-from boss_harness.private_files import open_private_file, restrict_private_file
+from boss_harness.private_files import ensure_private_file_support, open_private_file, restrict_private_file
 from boss_harness.models.capabilities import REASONING_EFFORTS
 
 _THREAD_ID = re.compile(r"[a-f0-9]{12}\Z")
@@ -135,6 +135,7 @@ class ToolRevisionPersistenceError(OSError):
 class SessionStore:
     def __init__(self, root: Path) -> None:
         self.root = Path(root).resolve()
+        ensure_private_file_support()
         self.root.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._lock = threading.RLock()

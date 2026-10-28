@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from boss_harness.private_files import open_private_file, restrict_private_file
+from boss_harness.private_files import ensure_private_file_support, open_private_file, restrict_private_file
 
 
 SCHEMA_VERSION = 1
@@ -21,7 +21,9 @@ SCHEMA_VERSION = 1
 class PersistenceIndex:
     def __init__(self, path: Path) -> None:
         self.path = path
+        ensure_private_file_support()
         self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._restrict_sidecars()
         try:
             descriptor = open_private_file(self.path, os.O_RDWR | os.O_EXCL)
         except FileExistsError:
@@ -31,6 +33,7 @@ class PersistenceIndex:
         with self.connection() as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("BEGIN IMMEDIATE")
+            self._restrict_sidecars()
             try:
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
                 if version > SCHEMA_VERSION:
@@ -82,10 +85,19 @@ class PersistenceIndex:
         finally:
             connection.close()
 
+    def _restrict_sidecars(self) -> None:
+        for path in (self.path.with_name(self.path.name + "-wal"),
+                     self.path.with_name(self.path.name + "-shm")):
+            try:
+                restrict_private_file(path)
+            except FileNotFoundError:
+                pass
+
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         with self.connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._restrict_sidecars()
             try:
                 yield connection
                 connection.commit()
