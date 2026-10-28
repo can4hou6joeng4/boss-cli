@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第七十一轮：shutdown 与摘要 worker 启动所有权
+
+Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 讨论输入准入、任务 abort 与 idle 等待应由独立策略表达；截至 2026-10-29 仍为 OPEN。Pi main 为 `14b4c56e5796e995706fec5b5124181a0f60bc35`，许可证 MIT。该议题还指出异步任务启动与恢复的责任边界。本项目手动摘要已有专用会话准入、显式取消和持久终态恢复，不需要引入通用 task API。
+
+本项目新建 [Issue #163](https://github.com/can4hou6joeng4/boss-cli/issues/163) 在 main `42b4aeb` 上由同步屏障复现：`on_context_compact_start()` 登记摘要 job 后，在 worker 句柄进入 job 且启动前检查关闭状态之前释放运行时锁。并发 `close()` 可取消该 job、在 worker 仍为 `None` 时完成等待并返回；随后启动调用仍会发送 `context/compactionStarted` 并启动已取消 worker，形成 shutdown 后事件和线程。
+
+本轮将摘要线程句柄在登记 job 前创建并一同写入运行时状态；开始事件发布后，启动方在运行时锁内再次检查关闭与取消标志，只有仍获准的 job 才能启动 worker。shutdown 使用既有共享期限等待未完成的启动决策，再等待可见的摘要与 abort worker。正常摘要、显式取消和 provider 终态协议不变；未复制 Pi 实现或增加依赖。
+
+同步核对招聘业务上游 `boss-agent-cli` main `70840e79e8208aeaab7d20ac44646fc74168af6a`（MIT）：开放 Issue #485 询问规避账号封禁，开放 PR #480 明确外部写操作须逐次授权；两者都强化风控停止和授权边界，没有可迁移的 Harness 生命周期代码。`jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70` 的许可证字段为空，开放事项集中招聘、认证和平台行为，没有本轮相关通用任务实现，不复制其代码。
+
 ## 第七十轮：审批请求计时器启动失败时收敛 pending waiter
 
 Pi 开放 [Issue #11433](https://github.com/earendil-works/pi/issues/11433) 报告子进程管道 reader/waiter 线程无法创建时请求挂起、取消失效且子进程残留。核对时 issue 仍为 OPEN；Pi main 为 `02a2b2532d8f6ea7b26da578a6844a1fcfd50e03`，仓库许可证为 MIT。本项目的问题范围不同：在 main `8f7f2158fc4d769b470fcd381ab7a9c54bbc4035` 上，故障注入使 `threading.Timer.start()` 失败后，`JsonRpcServer.request()` 已发出审批请求但把 future 留在 `_pending`，且调用方未能注册审批完成回调。两者共同揭示线程启动失败也必须结算对应的等待所有权；本轮不复制 Pi 的 Rust 子进程实现。
