@@ -40,6 +40,9 @@ class TextBlock:
 @dataclass(frozen=True)
 class ThinkingBlock:
     thinking: str = ""
+    signature: str | None = field(default=None, repr=False)
+    redacted_data: str | None = field(default=None, repr=False)
+    prefix_digest: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)

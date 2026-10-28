@@ -17,6 +17,7 @@ from dataclasses import replace
 from typing import Any
 
 from boss_harness.models.capabilities import ModelCapabilities
+from boss_harness.models.continuation import ANTHROPIC_CONTINUATION_FIELD, assistant_from_tool_batch
 from boss_harness.models.types import (
     AssistantMessage, ChatMessage, ModelRequest, TextBlock, ThinkingBlock, ToolCallBlock,
     ToolResultItem, ToolResultsMessage, UserMessage,
@@ -29,14 +30,16 @@ def messages_from_items(items: list[dict]) -> tuple[ChatMessage, ...]:
     messages: list[ChatMessage] = []
     pending: list[dict] = []
     batch: str | None = None
+    continuation_agent_ids = {
+        item[ANTHROPIC_CONTINUATION_FIELD].get("assistantItemId")
+        for item in items
+        if isinstance(item.get(ANTHROPIC_CONTINUATION_FIELD), dict)
+    }
 
     def flush() -> None:
         if not pending:
             return
-        messages.append(AssistantMessage(blocks=tuple(
-            ToolCallBlock(id=str(p.get("toolCallId") or p["id"]),
-                          name=str(p.get("toolName", "")), arguments=p.get("toolArguments") or {})
-            for p in pending)))
+        messages.append(assistant_from_tool_batch(items, pending))
         messages.append(ToolResultsMessage(results=tuple(
             ToolResultItem(tool_call_id=str(p.get("toolCallId") or p["id"]),
                            content=model_result_for_item(p),
@@ -49,7 +52,8 @@ def messages_from_items(items: list[dict]) -> tuple[ChatMessage, ...]:
             flush()
         if kind == "userMessage":
             messages.append(UserMessage(text=str(item.get("text", ""))))
-        elif kind == "agentMessage" and item.get("status") != "running" and item.get("text"):
+        elif (kind == "agentMessage" and item.get("status") != "running" and item.get("text")
+              and item.get("id") not in continuation_agent_ids):
             messages.append(AssistantMessage(blocks=(TextBlock(text=str(item["text"])),)))
         elif kind == "toolCall" and item.get("status") != "running":
             batch = item.get("toolBatchId")
@@ -92,6 +96,10 @@ def _message_size(messages: tuple[ChatMessage, ...] | list[ChatMessage]) -> int:
                     size += len(block.text)
                 elif isinstance(block, ThinkingBlock):
                     size += len(block.thinking)
+                    if block.signature is not None:
+                        size += len(block.signature)
+                    if block.redacted_data is not None:
+                        size += len(block.redacted_data)
                 elif isinstance(block, ToolCallBlock):
                     size += len(block.id) + len(block.name) + _json_size(dict(block.arguments))
         else:
@@ -110,6 +118,12 @@ def _message_fingerprint_payload(message: ChatMessage) -> dict[str, Any]:
                 blocks.append({"type": "text", "text": block.text})
             elif isinstance(block, ThinkingBlock):
                 blocks.append({"type": "thinking", "text": block.thinking})
+                if block.signature is not None:
+                    blocks[-1]["signature"] = block.signature
+                if block.redacted_data is not None:
+                    blocks[-1]["redactedData"] = block.redacted_data
+                if block.prefix_digest is not None:
+                    blocks[-1]["prefixDigest"] = block.prefix_digest
             elif isinstance(block, ToolCallBlock):
                 blocks.append({"type": "toolCall", "id": block.id, "name": block.name,
                                "arguments": dict(block.arguments)})
@@ -291,7 +305,14 @@ class ContextService:
         covered = (set(self._checkpoint_source_item_ids(checkpoint["payload"], raw_items))
                    if checkpoint else set())
         reason = None
-        if item_id in covered:
+        continuation_item_ids = {
+            value.get(ANTHROPIC_CONTINUATION_FIELD, {}).get("assistantItemId")
+            for value in raw_items
+            if isinstance(value.get(ANTHROPIC_CONTINUATION_FIELD), dict)
+        }
+        if item_id in continuation_item_ids:
+            reason = "该助手回复包含 Anthropic 工具续接签名；当前版本暂不支持编辑。"
+        elif item_id in covered:
             reason = "该消息已纳入摘要检查点；请从摘要之后的会话分支继续编辑。"
         elif turn is None or turn.get("status") not in {"completed", "interrupted", "blocked", "error"}:
             reason = "只能编辑已经结束回合中的消息。"
@@ -635,7 +656,8 @@ class ContextService:
             raise ValueError("压缩来源已变化，请重新读取压缩计划")
         covered = (set(self._checkpoint_source_item_ids(checkpoint["payload"], selected))
                    if checkpoint else set())
-        fresh = [item for item in selected if item["id"] not in covered]
+        fresh = [{key: value for key, value in item.items() if key != ANTHROPIC_CONTINUATION_FIELD}
+                 for item in selected if item["id"] not in covered]
         if not fresh and checkpoint is not None:
             raise NoCompactionSource("没有新增可压缩内容")
         previous_checkpoint = None

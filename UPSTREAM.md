@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第六十三轮：保留 Anthropic extended thinking 签名续接元数据
+
+本项目 [Issue #146](https://github.com/can4hou6joeng4/boss-cli/issues/146) 复现了 Anthropic extended thinking 在流式解析、工具续请求和重开会话时丢失 `signature` 的问题：模型返回的 thinking block 仍带有工具调用，但后续请求没有原样回放签名，服务端会拒绝请求；若继续执行工具，则可能在请求事实未被确认时产生外部副作用。
+
+参考 Pi main `4ba356228c7fea1524413b1d56f9a31351329575`（MIT）。Pi 对跨模型或 provider 的 thinking 历史采取保守丢弃策略；本轮只吸收“签名属于 provider 私有、必须按兼容线路保留”的边界，不复制其消息转换实现。同步核对 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`：GitHub license 字段为空，开放 Issue/PR 仍集中招聘认证、Cookie、沟通、分页和 recruiter 业务，没有可移植的通用 provider continuation 契约。
+
+官方 Anthropic Python SDK `2.3.0` 的 `ThinkingBlock.signature` 是 opaque 值，`signature_delta` 在 `content_block_stop` 前到达；重复 delta 按 SDK 语义替换而不是拼接。`redacted_thinking.data` 同样按原值回传。独立实现将这些字段放入内核私有 continuation metadata，并同时记录 block 顺序、内容摘要、工具调用 ID 和请求前缀 digest；metadata 不进入 RPC、事件、hook、摘要材料或工具结果投影。
+
+同回合工具续请求、历史重建、关闭后恢复和 fork 均回放已核验的 signed thinking/redacted thinking。若含工具的 thinking 响应缺签名或出现不受支持的 fallback block，provider fail closed，不执行工具；前缀 digest 不一致时丢弃失效 thinking block，不发送其签名。崩溃恢复只补回已持久化的连续工具前缀，不猜测或重跑缺失工具。上下文编辑会拒绝带签名的工具回复，压缩摘要只保留可公开的尾部材料。
+
+本地探针使用 Anthropic SDK `2.3.0` 的 `MockTransport`，覆盖流式捕获、signature 替换、同回合/重开/fork 续接、缺签名阻断、前缀失配、上下文编辑、压缩和崩溃恢复；公开 RPC/event/live/hook/摘要出口无私有 marker，HTTP 400 与 HTTP 200 SSE 错误回显也已脱敏。Python `compileall`、TypeScript 类型检查、Electron 构建、wheel/sdist 构建及 `git diff --check` 通过；探针仅保留本地，未调用真实模型或招聘平台。真实 Anthropic 服务、第三方网关跨模型兼容性和省略后缀 `tool_use` 的远端行为仍未验收。
+
 ## 第六十二轮：识别代理 HTTP 413 请求体上限
 
 本项目 [Issue #144](https://github.com/can4hou6joeng4/boss-cli/issues/144) 基于文本附件/较长会话的字节体积复现：本地 token 估算仍在容量内时，前置代理仍可因 HTTP body 上限拒绝请求。Pi 开放 [Issue #10879](https://github.com/earendil-works/pi/issues/10879) 报告相同故障；核对时仍为 OPEN。Pi main `bdb68f750ed7724a7718237895b98604f7f2c114`（MIT）在 `packages/ai/src/utils/overflow.ts` 将通用 HTTP 413 文本和 Cerebras 无正文 400/413 都归为 overflow，范围比本项目允许的恢复信号更宽。
