@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第六十八轮：并发容量暂满时保留并公平唤醒后续回合
+
+Pi MIT 仓库开放 [Issue #11350](https://github.com/earendil-works/pi/issues/11350)，讨论共享 Codemode worker 池在长任务下的跨会话饥饿、等待者公平准入和占用诊断。核对时 Pi main 为 `ad702637fdf6fbd3f965c5dba0b14bae100b74eb`。Pi 的 worker 池与本项目模型回合容量不是同一种资源；本轮只参考“先等待的会话不应被后续新请求越过”这一调度原则，不移植 worker 实现。
+
+本项目 [Issue #156](https://github.com/can4hou6joeng4/boss-cli/issues/156) 在 main `20cc7375cd606947d4e94512ad8d8340789124ce` 上以合成 provider 复现：RuntimeManager 容量占满时，第九个会话的 follow-up 被领取为 `delivering`，容量错误随后被写成 `paused / TURN_START_FAILED`；现有释放路径只唤醒原会话，空出的槽位不会重新尝试其他会话。默认容量是 8，隔离探针将其设为 1 以缩短复现。
+
+`RuntimeManager.reserve()` 现在为容量限制提供 `TURN_CONCURRENCY_LIMIT` 与上限元数据。follow-up admission 由进程内 FIFO 等待队列串行调度：容量已满时不领取队列项，槽位释放后先派发更早的等待会话；若在并发竞争中已领取后才遇到容量错误，则把尚未启动的 delivery 退回 `queued`，不伪报真实启动失败。普通直接 `turn/start` 仍返回容量拒绝；存在可调度的更早等待项且槽位已空出时，先派发等待项。回合无论成功还是中断/失败结束，都会唤醒其他容量等待者；provider、bridge 或 worker 的真实启动失败继续使用 `TURN_START_FAILED`。去重身份、审批、工具副作用、重启时未知结果不重放规则均保持不变。
+
+同步核对 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`，GitHub license 字段为空；其开放事项集中招聘业务、浏览器凭据与平台行为，没有可移植的通用模型回合 admission 实现，不复制其代码。
+
+本地合成 provider 探针覆盖并发容量满载、多个跨会话 waiter 的 FIFO/单次启动、重复 client request ID、槽位释放时直接请求不得越过 waiter、同会话 follow-up FIFO、中断后唤醒、关闭时不启动 waiter、领取与关闭竞争时退回 `queued`、清空 waiter 并拒绝晚到唤醒、容量退回及 provider factory 真实启动失败，7 项集成用例通过；网络与子进程尝试为零。测试材料仅留在忽略的 `.local-tests/`，未加入 Git、wheel 或 sdist。
+
 ## 第六十七轮：拒绝 Anthropic 消息终态后的流事件
 
 参考 Pi 已关闭 [Issue #11506](https://github.com/earendil-works/pi/issues/11506)，其场景是 Anthropic-compatible relay 在完整流终止前省略 `message_delta.stop_reason`；这与本轮发现相邻，但不是相同故障。核对时 Pi main 为 `ad702637fdf6fbd3f965c5dba0b14bae100b74eb`，许可证 MIT。Pi 当前 `anthropic-messages.ts` 检查了 `message_stop` 是否出现，但不会因此停止解析器向调用方传递后续 SSE 事件；本轮不复制实现，而是按本项目“工具只能来自完整 provider 终态”的契约独立加固。

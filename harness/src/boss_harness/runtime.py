@@ -35,7 +35,8 @@ class RuntimeManager:
             if thread_id in self.active:
                 raise RpcError(-32004, "该会话已有回合运行", {"turnId": self.active[thread_id]["turnId"]})
             if len(self.active) >= self.capacity:
-                raise RpcError(-32005, "已达到并发会话上限")
+                raise RpcError(-32005, "已达到并发会话上限",
+                               {"code": "TURN_CONCURRENCY_LIMIT", "limit": self.capacity})
             job = {"threadId": thread_id, "turnId": uuid.uuid4().hex, "input": text,
                    "cancel": threading.Event(), "runner": runner, "worker": None}
             self.active[thread_id] = job
@@ -169,6 +170,18 @@ class TurnQueue:
             if input_persisted is not None:
                 failed["inputPersisted"] = input_persisted
             return item if failed == item else self._save(thread_id, failed)
+
+    def defer_capacity(self, thread_id: str, queue_id: str) -> dict:
+        """Return an unstarted follow-up to the durable queue after capacity backpressure."""
+        with self.lock:
+            self.settle_pauses(thread_id)
+            item = self.get(thread_id, queue_id)
+            if item["status"] != "delivering":
+                return item
+            deferred = {key: value for key, value in item.items()
+                        if key not in {"turnId", "failureCode", "executionStarted", "inputPersisted"}}
+            deferred["status"] = "queued"
+            return self._save(thread_id, deferred)
 
     def _associate_request(self, thread_id: str, queue_id: str, identity: RequestIdentity) -> dict:
         """Append a receipt for an existing turn without resuming its request."""

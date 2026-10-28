@@ -194,6 +194,9 @@ class ApplicationService:
             self._follow_up_workers: dict[str, threading.Thread] = {}
             self._follow_up_dispatches: dict[str, dict[str, Any]] = {}
             self._receipt_notices: dict[str, dict[str, Any]] = {}
+            self._follow_up_admission_lock = threading.RLock()
+            self._capacity_waiters: deque[str] = deque()
+            self._capacity_waiter_ids: set[str] = set()
             # Compaction jobs are independent of business turns and never own a
             # tool bridge. The per-thread index prevents a new turn from
             # changing the source while a summary is being generated.
@@ -1502,6 +1505,34 @@ class ApplicationService:
 
     def on_turn_start(self, params: dict | None, *, queue_item: dict | None = None) -> dict:
         params = params or {}
+        if queue_item is None:
+            thread_id, text = _text(params, "threadId"), _text(params, "input")
+            client_id = params.get("clientUserMessageId")
+            if client_id is not None and (not isinstance(client_id, str)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", client_id)):
+                raise ValueError("clientUserMessageId 格式无效")
+        with self._follow_up_admission_lock, self.runtimes.lock:
+            if (queue_item is None and self._capacity_waiters and not self.runtimes.closed
+                    and len(self.runtimes.active) < self.runtimes.capacity):
+                thread = self.sessions.get_thread(thread_id)
+                if thread.get("archived"):
+                    raise ValueError("请先恢复归档会话")
+                if thread_id in self.runtimes.active:
+                    raise RpcError(-32004, "该会话已有回合运行",
+                                   {"turnId": self.runtimes.active[thread_id]["turnId"]})
+                if thread_id in self._compaction_by_thread:
+                    raise RpcError(-32004, "该会话正在生成摘要，请等待完成或先取消摘要")
+                if thread_id in self._tool_persistence_fences:
+                    raise RpcError(-32004, "该会话的工具结果尚未完成持久化核对，请重启内核后重新读取状态",
+                                   {"code": "THREAD_REQUIRES_REVIEW"})
+                identity = resolve_request(self.sessions, thread_id, client_id, text)
+                if identity.turn is None and identity.queue is None:
+                    raise RpcError(-32005, "已有更早排队的后续回合等待并发槽位",
+                                   {"code": "TURN_ADMISSION_WAITING", "limit": self.runtimes.capacity})
+            return self._on_turn_start(params, queue_item=queue_item)
+
+    def _on_turn_start(self, params: dict | None, *, queue_item: dict | None = None) -> dict:
+        params = params or {}
         thread_id, text = _text(params, "threadId"), _text(params, "input")
         client_id = params.get("clientUserMessageId")
         if client_id is not None and (not isinstance(client_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", client_id)):
@@ -1513,7 +1544,7 @@ class ApplicationService:
         try:
             with self.runtimes.lock:
                 if self.runtimes.closed:
-                    raise RpcError(-32003, "内核正在关闭")
+                    raise RpcError(-32003, "内核正在关闭", {"code": "KERNEL_SHUTTING_DOWN"})
                 thread = self.sessions.get_thread(thread_id)
                 if thread.get("archived"):
                     raise ValueError("请先恢复归档会话")
@@ -1632,6 +1663,10 @@ class ApplicationService:
                     if job is not None and job.get("_start_failed"):
                         try:
                             self.runtimes.finish(job)
+                        except Exception:
+                            pass
+                        try:
+                            self._drain_capacity_waiters()
                         except Exception:
                             pass
                     try:
@@ -1754,6 +1789,10 @@ class ApplicationService:
                         self.bridge_lifecycle.close(job["runner"].tool_bridge)
                 finally:
                     self.runtimes.finish(job)
+                    try:
+                        self._drain_capacity_waiters()
+                    except Exception:
+                        pass
             if status == "completed":
                 # A serial provider can pass to the next turn after the old
                 # notifications and bridge cleanup; the tail still owns storage.
@@ -1977,66 +2016,115 @@ class ApplicationService:
         return {"queueItem": item}
 
     def _start_follow_up(self, thread_id: str) -> None:
-        while True:
+        with self._follow_up_admission_lock:
             with self.runtimes.lock:
-                if self.runtimes.closed or thread_id in self.runtimes.active:
+                if self.runtimes.closed:
                     return
-                # A compaction owns the session admission boundary. Leave a
-                # queued follow-up untouched until a successful checkpoint
-                # releases that ownership; otherwise the temporary busy error
-                # would be misclassified as TURN_START_FAILED.
-                if thread_id in self._compaction_by_thread:
+            if thread_id not in self._capacity_waiter_ids:
+                self._capacity_waiter_ids.add(thread_id)
+                self._capacity_waiters.append(thread_id)
+            self._drain_capacity_waiters_locked()
+
+    def _drain_capacity_waiters(self) -> None:
+        with self._follow_up_admission_lock:
+            self._drain_capacity_waiters_locked()
+
+    def _drain_capacity_waiters_locked(self) -> None:
+        attempts = len(self._capacity_waiters)
+        while attempts:
+            attempts -= 1
+            with self.runtimes.lock:
+                if self.runtimes.closed or len(self.runtimes.active) >= self.runtimes.capacity:
                     return
-                if thread_id in self._tool_persistence_fences:
-                    return
-                if thread_id in self._follow_up_dispatches:
-                    # A fast turn can finish before its dispatcher returns.
-                    # Hand the wakeup to that dispatcher without another claim.
-                    self._follow_up_dispatches[thread_id]["again"] = True
-                    return
-                if self.sessions.get_thread(thread_id).get("archived"):
-                    return
-                item = self.queue.claim(thread_id, "followUp")
-                if item is None:
-                    return
-                dispatch = {"owner": threading.get_ident(), "done": threading.Event(), "queueId": item["id"]}
-                self._follow_up_dispatches[thread_id] = dispatch
-            started = False
-            try:
-                self.on_turn_start({"threadId": thread_id, "input": item["input"],
-                    "clientUserMessageId": item.get("clientUserMessageId") or "queue-" + item["id"]}, queue_item=item)
-                started = True
-            except Exception as error:
-                # Reserved jobs settle and notify while retaining their own
-                # ownership. Only pre-reservation admission failures get here.
-                if dispatch.get("identity_reconciled"):
-                    started = True
-                elif not dispatch.get("start_failed"):
+                thread_id = self._capacity_waiters.popleft()
+                self._capacity_waiter_ids.discard(thread_id)
+            outcome = self._dispatch_follow_up(thread_id)
+            if outcome == "capacity":
+                with self.runtimes.lock:
+                    if not self.runtimes.closed and thread_id not in self._capacity_waiter_ids:
+                        self._capacity_waiters.appendleft(thread_id)
+                        self._capacity_waiter_ids.add(thread_id)
+                return
+
+    def _dispatch_follow_up(self, thread_id: str) -> str:
+        with self.runtimes.lock:
+            if self.runtimes.closed or thread_id in self.runtimes.active:
+                return "idle"
+            # Compaction owns session admission until its checkpoint settles.
+            if thread_id in self._compaction_by_thread or thread_id in self._tool_persistence_fences:
+                return "idle"
+            if thread_id in self._follow_up_dispatches:
+                self._follow_up_dispatches[thread_id]["again"] = True
+                return "idle"
+            if self.sessions.get_thread(thread_id).get("archived"):
+                return "idle"
+            item = self.queue.claim(thread_id, "followUp")
+            if item is None:
+                return "idle"
+            dispatch = {"owner": threading.get_ident(), "done": threading.Event(), "queueId": item["id"]}
+            self._follow_up_dispatches[thread_id] = dispatch
+        started = False
+        deferred = False
+        try:
+            self.on_turn_start({"threadId": thread_id, "input": item["input"],
+                "clientUserMessageId": item.get("clientUserMessageId") or "queue-" + item["id"]}, queue_item=item)
+            started = True
+        except Exception as error:
+            capacity_error = (isinstance(error, RpcError) and isinstance(error.data, dict)
+                              and error.data.get("code") == "TURN_CONCURRENCY_LIMIT")
+            shutdown_error = (isinstance(error, RpcError) and isinstance(error.data, dict)
+                              and error.data.get("code") == "KERNEL_SHUTTING_DOWN")
+            if capacity_error or shutdown_error:
+                deferred_item = None
+                for _ in range(2):
                     try:
-                        with self.runtimes.lock:
-                            if isinstance(error, RpcError) and isinstance(error.data, dict) and error.data.get("code") in {
-                                    "CLIENT_REQUEST_CONFLICT", "CLIENT_REQUEST_AMBIGUOUS", "REQUEST_REQUIRES_REVIEW"}:
-                                if self.queue.get(thread_id, item["id"])["status"] == "delivering":
-                                    self.queue.transition(thread_id, item["id"], "paused")
-                            else:
-                                persisted = None
-                                try:
-                                    persisted = any(entry.get("kind") == "userMessage" and entry.get("queueId") == item["id"]
-                                        for entry in self.sessions.read_items(thread_id))
-                                except Exception:
-                                    pass
-                                self.queue._fail_start(thread_id, item["id"], input_persisted=persisted)
+                        deferred_item = self.queue.defer_capacity(thread_id, item["id"])
+                        break
+                    except Exception:
+                        pass
+                deferred = deferred_item is not None and deferred_item.get("status") == "queued"
+                if deferred:
+                    try:
                         self.events.emit("queue/updated", {"threadId": thread_id, "queueId": item["id"]})
                     except Exception:
                         pass
-            finally:
-                with self.runtimes.lock:
-                    self._follow_up_dispatches.pop(thread_id, None)
-                    again = started and dispatch.get("again", False)
-                    dispatch["done"].set()
-                self._close_application_resources_if_idle()
-            if not again:
-                return
+                else:
+                    try:
+                        self.queue.pause(thread_id, kind="followUp")
+                        self.events.emit("queue/updated", {"threadId": thread_id, "queueId": item["id"]})
+                    except Exception:
+                        pass
+            elif dispatch.get("identity_reconciled"):
+                started = True
+            elif not dispatch.get("start_failed"):
+                try:
+                    with self.runtimes.lock:
+                        if isinstance(error, RpcError) and isinstance(error.data, dict) and error.data.get("code") in {
+                                "CLIENT_REQUEST_CONFLICT", "CLIENT_REQUEST_AMBIGUOUS", "REQUEST_REQUIRES_REVIEW"}:
+                            if self.queue.get(thread_id, item["id"])["status"] == "delivering":
+                                self.queue.transition(thread_id, item["id"], "paused")
+                        else:
+                            persisted = None
+                            try:
+                                persisted = any(entry.get("kind") == "userMessage" and entry.get("queueId") == item["id"]
+                                    for entry in self.sessions.read_items(thread_id))
+                            except Exception:
+                                pass
+                            self.queue._fail_start(thread_id, item["id"], input_persisted=persisted)
+                    self.events.emit("queue/updated", {"threadId": thread_id, "queueId": item["id"]})
+                except Exception:
+                    pass
+        finally:
+            with self.runtimes.lock:
+                self._follow_up_dispatches.pop(thread_id, None)
+                again = started and dispatch.get("again", False)
+                dispatch["done"].set()
+            self._close_application_resources_if_idle()
+        if deferred and capacity_error:
+            return "capacity"
+        if again:
+            return self._dispatch_follow_up(thread_id)
+        return "started" if started else "idle"
 
     def _fence_tool_persistence(self, thread_id: str) -> None:
         """Keep a session closed when dispatched tool outcome cannot be confirmed."""
@@ -2087,6 +2175,9 @@ class ApplicationService:
             self._shutdown_preparing += 1
             self.runtimes.cancel_all(interrupt=False)
             self._cancel_compaction_jobs()
+        with self._follow_up_admission_lock, self.runtimes.lock:
+            self._capacity_waiters.clear()
+            self._capacity_waiter_ids.clear()
         try:
             # Do not invert begin_login's connections -> runtime lock order.
             # Dispatch every cancel before any potentially blocking abort hook.

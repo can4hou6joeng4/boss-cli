@@ -9,6 +9,7 @@
 
 ### 修复
 
+- [Issue #156](https://github.com/can4hou6joeng4/boss-cli/issues/156)：并发会话容量暂满时保留 follow-up 队列项为 `queued`，在槽位释放后按等待顺序唤醒；直接新回合不会越过已等待队列，真实 provider/worker 启动失败仍按 `TURN_START_FAILED` 结算。
 - [Issue #154](https://github.com/can4hou6joeng4/boss-cli/issues/154)：Anthropic 流到达 `message_stop` 后拒绝任何额外事件，避免终态之后追加的工具调用进入已完成响应并派发；正常终态前的响应处理不变。
 - [Issue #150](https://github.com/can4hou6joeng4/boss-cli/issues/150)：摘要 provider 已返回终态并带有 token usage、但摘要内容因停止原因、空文本、工具调用或超长被拒绝时，仍保存不可用但可追溯的 `context_summary_usage`（含拒绝 code）；不写检查点、不重试，也不伪造没有终态或 usage 的记录。
 - [Issue #148](https://github.com/can4hou6joeng4/boss-cli/issues/148)：登录保存 worker 未启动时返回 `LOGIN_SAVE_START_FAILED` 并回收忙状态；连接检查、登录和模型 abort 的启动包装层在实际启动后抛错时保留真实 worker 所有权。已观察取消的桥接任务不追加后续 CLI 调用，不自动重试登录保存。
