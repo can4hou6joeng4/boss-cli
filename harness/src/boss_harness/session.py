@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from boss_harness.persistence import PersistenceIndex
-from boss_harness.private_files import ensure_private_file_support, open_private_file, restrict_private_file
+from boss_harness.private_files import ensure_private_directory, open_private_file, restrict_private_file
 from boss_harness.models.capabilities import REASONING_EFFORTS
 
 _THREAD_ID = re.compile(r"[a-f0-9]{12}\Z")
@@ -135,9 +135,8 @@ class ToolRevisionPersistenceError(OSError):
 class SessionStore:
     def __init__(self, root: Path) -> None:
         self.root = Path(root).resolve()
-        ensure_private_file_support()
-        self.root.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        ensure_private_directory(self.root.parent)
+        ensure_private_directory(self.root)
         self._lock = threading.RLock()
         self.database_path = self.root.parent / "state.sqlite3"
         self.events_path = self.root.parent / "events.jsonl"
@@ -347,7 +346,7 @@ class SessionStore:
                         raise ValueError("摘要提交必须构造 context_checkpoint 条目")
                     encoded = (_json(entry.to_dict()) + "\n").encode("utf-8")
                     candidate_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.checkpoint.tmp")
-                    descriptor = os.open(candidate_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    descriptor = open_private_file(candidate_path, os.O_WRONLY | os.O_EXCL)
                     temporary = candidate_path
                     with os.fdopen(descriptor, "wb") as target:
                         last_byte = b""

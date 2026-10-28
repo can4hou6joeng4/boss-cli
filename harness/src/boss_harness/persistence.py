@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from boss_harness.private_files import ensure_private_file_support, open_private_file, restrict_private_file
+from boss_harness.private_files import ensure_private_directory, open_private_file, restrict_private_file
 
 
 SCHEMA_VERSION = 1
@@ -20,9 +20,8 @@ SCHEMA_VERSION = 1
 
 class PersistenceIndex:
     def __init__(self, path: Path) -> None:
-        self.path = path
-        ensure_private_file_support()
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.path = Path(path).absolute()
+        ensure_private_directory(self.path.parent)
         self._restrict_sidecars()
         try:
             descriptor = open_private_file(self.path, os.O_RDWR | os.O_EXCL)

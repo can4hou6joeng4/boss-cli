@@ -14,7 +14,7 @@ import stat
 import uuid
 from typing import Any
 
-from boss_harness.private_files import open_private_file, restrict_private_file
+from boss_harness.private_files import ensure_private_directory, open_private_file, restrict_private_file
 from boss_harness.session import Entry, SessionStore
 from boss_harness.tool_bundle import ToolDefinition, ToolRegistry as _ToolRegistry
 
@@ -85,7 +85,7 @@ class AttachmentStore:
 
     def __init__(self, sessions: SessionStore, root: Path, allowed_root: Path) -> None:
         self.sessions, self.root, self.allowed_root = sessions, root.resolve(), allowed_root.resolve()
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        ensure_private_directory(self.root)
         for path in self.root.iterdir():
             if not stat.S_ISREG(path.lstat().st_mode):
                 raise ValueError("附件状态必须是普通文件")
