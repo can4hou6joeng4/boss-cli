@@ -67,7 +67,9 @@ OpenAI Responses 的完整显式配置由以下三项组成，去除首尾空白
 
 当前文件适配要求文件自身同时提供 `model`、`model_provider` 及该 provider 的 `base_url` 才形成可用 profile；认证仅识别 `experimental_bearer_token`，尚未适配 Codex 的 `env_key`、OAuth 或任意 `wire_api`。配置解析只读本地文件，不探测真实服务。
 
-`model/list` 只列举本机已配置且当前可用的 provider 及其配置模型，不探测或下载远程模型目录，也不返回端点和凭据。`thread/start` 可指定 provider/model；已有会话通过 `thread/model/set` 保存选择，只接受该目录中的精确组合，并要求会话空闲。provider 与 model 追加到会话元数据，fork 会继承；旧会话没有 provider 时继续使用进程默认 provider。切换模型会清除不再适用的会话推理档位。未配置或不可用线路会在用户输入持久化和 worker 启动前被拒绝。
+`model/list` 只列举本机已配置且当前可用的 provider 及其配置模型，不探测或下载远程模型目录，也不返回端点和凭据。`thread/start` 可指定 provider/model，且必须匹配目录中的精确组合；已有会话通过 `thread/model/set` 保存选择，同样只接受精确组合并要求会话空闲。provider 与 model 追加到会话元数据，fork 会继承；旧会话没有 provider 时继续使用进程默认 provider。切换模型会清除不再适用的会话推理档位。未配置或不可用线路会在用户输入持久化和 worker 启动前被拒绝。
+
+为兼容既有 JSON-RPC 客户端，`turn/start.model` 仍可覆盖单回合使用的模型 ID，只对 ID 格式作校验；provider 始终取自该会话已持久化的线路，覆盖不会写入会话元数据，也不会切换 provider。
 
 ## 明确条件搜索
 

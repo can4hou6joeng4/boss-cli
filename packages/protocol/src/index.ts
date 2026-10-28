@@ -329,6 +329,7 @@ export interface ThreadStartParams {
   title?: string;
   projectId?: string;
   provider?: string;
+  /** Persisted session selection; must match a model/list entry for this provider. */
   model?: string;
 }
 
@@ -426,6 +427,7 @@ export interface TurnStartParams {
   input: string;
   /** Per-thread identity shared by direct and follow-up submissions; retries retain the first input. */
   clientUserMessageId?: string;
+  /** Per-turn model override on the session's persisted provider; does not change session metadata. */
   model?: string;
   attachmentIds?: string[];
   skillIds?: string[];

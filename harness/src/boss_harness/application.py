@@ -507,11 +507,10 @@ class ApplicationService:
             raise ValueError("toolPolicy 必须是 readOnly 或 approval")
         provider = self._canonical_provider(params.get("provider", self.config.provider))
         config = self._configured_route(provider)
-        model = params.get("model", config.model)
-        if params.get("provider") is not None and model != config.model:
+        model = self._validate_model_id(params.get("model", config.model))
+        if model != config.model:
             raise RpcError(-32013, "该 provider/model 不在本机配置目录中",
                            {"code": "MODEL_ROUTE_UNAVAILABLE", "provider": provider, "model": model})
-        self._validate_model_id(model)
         thread = self.sessions.create(title, projectId=params.get("projectId"),
                                       provider=provider, model=model, cwd=str(self.workspace), toolPolicy=policy)
         self.events.emit("thread/created", {"threadId": thread["id"], "thread": thread})
@@ -745,7 +744,11 @@ class ApplicationService:
         return result
 
     def _model_config(self, thread: dict, params: dict) -> ModelConfig:
-        provider = self._canonical_provider(params.get("provider", thread.get("provider", self.config.provider)))
+        provider = self._canonical_provider(thread.get("provider", self.config.provider))
+        requested_provider = params.get("provider")
+        if requested_provider is not None and self._canonical_provider(requested_provider) != provider:
+            raise RpcError(-32013, "provider 由会话模型选择决定，不能按回合切换",
+                           {"code": "MODEL_PROVIDER_MISMATCH", "provider": provider})
         base = self._configured_route(provider)
         model = self._validate_model_id(params.get("model") or thread.get("model") or base.model)
         effort = self._effective_reasoning_effort(thread, provider, model)
