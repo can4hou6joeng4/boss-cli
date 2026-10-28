@@ -6,10 +6,13 @@ an uncommitted transaction. WAL readers do not block the single serialized write
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+
+from boss_harness.private_files import open_private_file, restrict_private_file
 
 
 SCHEMA_VERSION = 1
@@ -18,7 +21,13 @@ SCHEMA_VERSION = 1
 class PersistenceIndex:
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        try:
+            descriptor = open_private_file(self.path, os.O_RDWR | os.O_EXCL)
+        except FileExistsError:
+            restrict_private_file(self.path)
+        else:
+            os.close(descriptor)
         with self.connection() as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("BEGIN IMMEDIATE")

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from boss_harness.persistence import PersistenceIndex
+from boss_harness.private_files import open_private_file, restrict_private_file
 from boss_harness.models.capabilities import REASONING_EFFORTS
 
 _THREAD_ID = re.compile(r"[a-f0-9]{12}\Z")
@@ -139,6 +140,14 @@ class SessionStore:
         self._lock = threading.RLock()
         self.database_path = self.root.parent / "state.sqlite3"
         self.events_path = self.root.parent / "events.jsonl"
+        for path in (self.database_path.with_name(self.database_path.name + "-wal"),
+                     self.database_path.with_name(self.database_path.name + "-shm"), self.events_path,
+                     *self.root.glob("*.jsonl"), *self.root.glob(".*.tmp")):
+            try:
+                path.lstat()
+            except FileNotFoundError:
+                continue
+            restrict_private_file(path)
         self._index = PersistenceIndex(self.database_path)
         self._refresh_threads()
         self._sync_events()
@@ -168,7 +177,8 @@ class SessionStore:
     @staticmethod
     def _append_line(path: Path, value: dict) -> None:
         encoded = (_json(value) + "\n").encode("utf-8")
-        with path.open("ab+") as handle:
+        descriptor = open_private_file(path, os.O_RDWR | os.O_APPEND)
+        with os.fdopen(descriptor, "a+b") as handle:
             handle.seek(0, 2)
             if handle.tell():
                 handle.seek(-1, 2)
@@ -188,7 +198,8 @@ class SessionStore:
             # Publish a complete rollout only after fsync. Hard-link creation is
             # atomic and refuses to overwrite an existing thread on an ID collision.
             try:
-                with temporary.open("xb") as handle:
+                descriptor = open_private_file(temporary, os.O_WRONLY | os.O_EXCL)
+                with os.fdopen(descriptor, "wb") as handle:
                     handle.write(encoded)
                     handle.flush()
                     os.fsync(handle.fileno())
@@ -347,7 +358,7 @@ class SessionStore:
                         target.write(encoded)
                         target.flush()
                         os.fchown(target.fileno(), -1, original.st_gid)
-                        os.fchmod(target.fileno(), stat.S_IMODE(original.st_mode))
+                        os.fchmod(target.fileno(), 0o600)
                         os.fsync(target.fileno())
                         candidate = os.fstat(target.fileno())
                         candidate_identity = (candidate.st_dev, candidate.st_ino)

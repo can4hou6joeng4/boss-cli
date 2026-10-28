@@ -1,5 +1,11 @@
 # 上游吸收记录
 
+## 第五十八轮：保护会话持久化文件 mode
+
+本项目 Issue [#133](https://github.com/can4hou6joeng4/boss-cli/issues/133) 的本机合成复现发现：旧版 `0755` state 目录中，新 session JSONL、event JSONL、SQLite/WAL/SHM 会随 `umask 022` 以 `0644` 创建；附件则先以该 mode 创建再 chmod `0600`。此前的新目录权限修复无法约束旧 state 根目录内的文件。
+
+参考 Pi [Issue #10770](https://github.com/earendil-works/pi/issues/10770) 对 owner-only 会话存储的目标。本轮新增不跟随链接的普通文件处理：新文件以 `0600` 创建；打开既有 state 时，只将当前用户拥有的普通 SQLite、事件、session JSONL 和附件文件收紧至 `0600`。目录 mode、文件内容与格式保持不变；链接、非普通文件及非当前用户文件不被跟随或改写。SQLite 主库先设为私有，确保 WAL/SHM 沿用其权限。未复制 Pi 代码或增加依赖。
+
 ## 第五十七轮：私有创建会话存储父目录
 
 本项目 Issue [#131](https://github.com/can4hou6joeng4/boss-cli/issues/131) 复现了独立初始化 `SessionStore` 时的权限遗漏：会话目录显式为 `0700`，但 `state.sqlite3` 与 `events.jsonl` 位于其父目录；当该父目录也需要由递归 `mkdir` 新建时，它按宽松 `umask 022` 得到 `0755`，持久化文件则为 `0644`。Pi [Issue #10770](https://github.com/earendil-works/pi/issues/10770) 确认会话存储需要 owner-only 目录边界；本轮结合本地存储布局，将同一隐私默认扩展到新建的索引/事件目录。
