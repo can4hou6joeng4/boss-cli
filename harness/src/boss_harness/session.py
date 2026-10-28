@@ -134,6 +134,7 @@ class ToolRevisionPersistenceError(OSError):
 class SessionStore:
     def __init__(self, root: Path) -> None:
         self.root = Path(root).resolve()
+        self.root.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._lock = threading.RLock()
         self.database_path = self.root.parent / "state.sqlite3"
