@@ -2,6 +2,10 @@
 
 ## 未发布
 
+### 修复
+
+- [Issue #127](https://github.com/can4hou6joeng4/boss-cli/issues/127)：摘要运行期间排入的后续回合保持 `queued`，不再被暂时的会话占用误判为 `TURN_START_FAILED`；摘要成功提交后恢复正常派发，失败或取消仍需用户明确重试。
+
 ## 0.2.0-rc.12 - 2026-10-28
 
 第十二次私有源码与 Python 内核候选发布，收敛 OpenAI Responses 流式输出与权威终态之间的差异，避免执行已撤回的工具调用。

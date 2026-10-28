@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第五十五轮：摘要占用期间保留后续回合队列
+
+本项目 Issue [#127](https://github.com/can4hou6joeng4/boss-cli/issues/127) 复现了摘要与后续消息之间的 admission 竞态：摘要运行时，`queue/add` 会尝试领取 `followUp`，随后 `turn/start` 因会话被摘要占用而拒绝；旧异常路径把这个暂时忙状态当成 `TURN_START_FAILED`，将队列错误暂停。摘要结束后又没有重新唤醒队列。
+
+参考 Pi Issue [#10982](https://github.com/earendil-works/pi/issues/10982) 的会话忙状态边界（Pi main `a92283056d915c758799fcd904948ff0cb42628c`；MIT）。本轮只采用“异步消息等待当前会话占用释放”的职责，不复制 Pi 源码，不引入依赖，也不改变招聘工具或外部操作授权。
+
+`_start_follow_up` 在领取队列项前检查摘要占用，使摘要期间的后续消息保持 `queued`。仅摘要成功提交 checkpoint 并释放占用后才唤醒正常队列派发；摘要失败或取消继续保留队列，不自动启动新的模型请求或招聘操作。唤醒失败不改写摘要终态，也不把队列改成启动失败；已有工具结果、审批和未知外部动作不重放。
+
 ## 第五十四轮：以 OpenAI Responses 终态收敛流式输出块
 
 本轮复核 Pi 开放 [Issue #11043](https://github.com/earendil-works/pi/issues/11043)（截至 2026-10-28 为 OPEN；Pi main `a92283056d915c758799fcd904948ff0cb42628c`；MIT）。该议题同时讨论 `afterTool` 与回合上限；本仓库已经在第五十二轮吸收回合上限，本轮继续处理执行循环依赖的 provider 终态事实，不引入 `afterTool` 扩展 API。
