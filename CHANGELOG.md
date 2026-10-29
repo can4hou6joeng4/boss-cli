@@ -1,6 +1,8 @@
 # 变更记录
 
-## 未发布
+## 0.2.0-rc.15 - 2026-10-29
+
+第十五次私有源码与 Python 内核候选发布，修复关闭期间摘要 worker 晚启动及可选事件锁等待超过关闭期限的问题。
 
 ### 修复
 
@@ -9,8 +11,10 @@
 
 ### 兼容与验证
 
-- Issue #163 离线并发屏障探针覆盖 shutdown 与摘要开始事件并发、取消后不启动 worker，以及无竞争时正常启动并由 close 收尾。Python 3.14 编译、TypeScript 检查、Electron 源码构建、Python wheel/sdist 构建、产物内容扫描和 `git diff --check` 均通过；探针使用合成对象，未调用真实模型、招聘 CLI 或招聘平台，测试代码未提交。
-- Issue #165 临时故障探针在 Started 事件持有 EventHub 锁超过关闭期限时验证 `close()` 有界返回、hook 收尾和取消后的摘要 worker 不启动；空闲锁下 shutdown marker 仍持久化。Python 编译与 `git diff --check` 通过；探针未调用真实模型、招聘 CLI 或招聘平台，测试代码未提交。
+- npm 工作区统一为 `0.2.0-rc.15`，Python Harness 为等价的 PEP 440 版本 `0.2.0rc15`；JSON-RPC 协议版本保持 `0.2.0`。
+- Issue #163 离线并发屏障探针覆盖 shutdown 与摘要开始事件并发、取消后不启动 worker，以及无竞争时正常启动并由 close 收尾。验证使用合成对象，未调用真实模型、招聘 CLI 或招聘平台；测试代码未提交。
+- Issue #165 临时故障探针在 Started 事件持有 EventHub 锁超过关闭期限时验证 `close()` 有界返回、hook 收尾和取消后的摘要 worker 不启动；空闲锁下 shutdown marker 仍持久化。期限约束锁等待，取得锁后的同步持久化仍依赖本地文件系统；探针未调用真实模型、招聘 CLI 或招聘平台，测试代码未提交。
+- Python 3.14 编译、TypeScript 类型检查、Electron 源码构建及 Python wheel/sdist 构建通过；wheel/sdist 内容检查未发现测试材料。
 
 ## 0.2.0-rc.14 - 2026-10-29
 
