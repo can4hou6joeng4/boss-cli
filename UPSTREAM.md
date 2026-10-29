@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第七十六轮：删除意图落盘前保留摘要终态观察
+
+继续参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 对任务执行责任、会话忙状态与取消策略的讨论；核对时 Pi main 为 `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`，许可证 MIT。本项目已将摘要任务的持久可观察终态与当前进程的 worker 所有权分离，本轮延伸这一生命周期原则；具体删除缓存缺陷来自本地复现，不移植 Pi task API、实现或依赖。
+
+本项目 [Issue #174](https://github.com/can4hou6joeng4/boss-cli/issues/174) 在固定 main `0cc2087a018d57b7cdf35f917803cd924af0f1c0` 上复现：真实 `ApplicationService` 从合成终态事件恢复任务后，`SessionStore._write_delete_intent()` 在落盘前发生合成 I/O 失败；会话、终态事件仍存在且没有删除标记，但删除入口已提前清除内存任务、终态 ID 与保留顺序，`context/compact/read` 因而返回 `COMPACTION_JOB_NOT_FOUND`，`context/read.compactionJob` 变为 `null`。正常重启后原任务又从事件完整恢复，没有模型请求或 checkpoint 重放。
+
+`SessionStore.delete_thread()` 现在在删除索引与权威 `thread/deleted` 事件的事务提交后发出仅供应用内部使用的提交信号。应用只在该信号已发出或删除意图仍持久存在时退休目标任务；前者也覆盖最后移除 intent 后目录 `fsync` 失败、此时没有 intent 可查询但删除已经提交的边界，原始 `fsync` 错误仍向调用方返回。落盘前失败保留原任务字段、集合与顺序。已存在权威删除事件的幂等重复删除在查询事务结束后同样发出提交信号。忙碌摘要及已显示终态但 abort 尚在收尾的任务仍由既有 `THREAD_BUSY` 门禁保护，其他会话相对顺序及最近 64 条终态逐出规则不变；不修改持久格式、摘要生成、checkpoint 或容量等待实现。
+
+本地隔离边界探针 9/9 通过：提交信号只在删除事务提交或已有权威删除事件时发出，缺失会话不发信号；连续三次落盘前故障保留 64 条终态与顺序，新终态只逐出最旧项；成功与重复删除只退休目标且删除事件恰一条；落盘后清理失败的显式重试及重启恢复均不恢复目标任务；提交后的最终目录 `fsync` 故障即使没有 intent 也退休目标任务且仍上抛原错误；真实摘要 worker 与阻塞的 abort 收尾期间拒绝删除，释放后可正常删除。Python 3.14 编译、类型检查、Electron 源码构建与 wheel/sdist 构建通过，45 个产品源码逐字节匹配候选，未发现额外测试或本地状态。探针使用临时状态和合成 provider，网络与外部进程尝试均为零；未调用真实模型、招聘 CLI 或平台，也未进行桌面 UI 验收。测试材料只保留本地。
+
 ## 第七十二轮：关闭期限覆盖 shutdown 事件锁等待
 
 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 仍在讨论 shutdown、任务所有权与 idle 等待的分离；本轮不引入 Pi 的 task API，也不复制其实现。参考仍限于此前核对的 Pi main `14b4c56e5796e995706fec5b5124181a0f60bc35`（MIT）。

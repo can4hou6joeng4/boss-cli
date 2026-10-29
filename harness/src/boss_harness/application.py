@@ -699,6 +699,12 @@ class ApplicationService:
 
     def on_thread_delete(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")
+        deletion_committed = False
+
+        def mark_deletion_committed() -> None:
+            nonlocal deletion_committed
+            deletion_committed = True
+
         with self._thread_admission.hold(thread_id), self._follow_up_admission_lock, self.runtimes.lock:
             if thread_id in self.runtimes.active:
                 reason = "turn"
@@ -723,24 +729,20 @@ class ApplicationService:
                 self.events.live.pop(thread_id, None)
                 self._snapshot_pages = {key: value for key, value in self._snapshot_pages.items()
                                         if value[0] != thread_id}
-                removed_jobs = {job_id for job_id, job in self._compaction_jobs.items()
-                                if job.get("threadId") == thread_id}
-                for job_id in removed_jobs:
-                    self._compaction_jobs.pop(job_id, None)
-                    self._compaction_terminal_ids.discard(job_id)
-                if removed_jobs:
-                    self._compaction_terminal_order = deque(
-                        job_id for job_id in self._compaction_terminal_order if job_id not in removed_jobs)
                 try:
-                    event = self.sessions.delete_thread(thread_id)
+                    event = self.sessions.delete_thread(thread_id, _on_committed=mark_deletion_committed)
                 except ThreadNotFound:
                     raise RpcError(-32011, "会话不存在",
                                    {"code": "THREAD_NOT_FOUND", "threadId": thread_id}) from None
                 except Exception:
-                    if self.sessions.has_pending_deletion(thread_id):
+                    pending_deletion = self.sessions.has_pending_deletion(thread_id)
+                    if pending_deletion or deletion_committed:
+                        self._retire_deleted_compaction_jobs_locked(thread_id)
+                    if pending_deletion:
                         raise RpcError(-32012, "会话删除尚未完成；该会话已隐藏，内核重启后会继续清理",
                                        {"code": "THREAD_DELETE_INCOMPLETE", "threadId": thread_id}) from None
                     raise
+                self._retire_deleted_compaction_jobs_locked(thread_id)
                 self._tool_persistence_fences.discard(thread_id)
                 self._capacity_waiter_ids.discard(thread_id)
                 self._capacity_waiters = deque(value for value in self._capacity_waiters if value != thread_id)
@@ -749,6 +751,17 @@ class ApplicationService:
                 if notify_deleted:
                     self.events.publish_persisted(event)
         return {"threadId": thread_id, "deleted": True}
+
+    def _retire_deleted_compaction_jobs_locked(self, thread_id: str) -> None:
+        """Retire terminal observations only after deletion is durable; hold runtimes.lock."""
+        removed_jobs = {job_id for job_id, job in self._compaction_jobs.items()
+                        if job.get("threadId") == thread_id}
+        for job_id in removed_jobs:
+            self._compaction_jobs.pop(job_id, None)
+            self._compaction_terminal_ids.discard(job_id)
+        if removed_jobs:
+            self._compaction_terminal_order = deque(
+                job_id for job_id in self._compaction_terminal_order if job_id not in removed_jobs)
 
     def on_thread_unarchive(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")
