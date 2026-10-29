@@ -2097,8 +2097,13 @@ class ApplicationService:
                         pass
                 finally:
                     self.runtimes.release(job)
-            self.events.emit("turn/completed", {"threadId": thread_id, "turnId": job["turnId"], "status": status})
-            self.events.emit("thread/updated", {"threadId": thread_id, "turnId": job["turnId"], "status": status})
+            for method in ("turn/completed", "thread/updated"):
+                try:
+                    self.events.emit(method, {"threadId": thread_id, "turnId": job["turnId"], "status": status})
+                except Exception:
+                    # Turn and queue settlement already determined the status.
+                    # Never replay a notification that may already be durable.
+                    pass
         return status
 
     def _run_deterministic(self, thread_id: str, text: str, cancel: threading.Event | None = None,

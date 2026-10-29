@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第七十五轮：终态事件异常不丢失已受理的后续任务
+
+Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332)，讨论持久任务事实与进程执行责任之间的边界；固定核对 Pi main `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`（MIT）。本项目已有明确分离的回合持久结算、终态事件及后续队列 owner；本轮不引入 Pi 未决的 task API，也不复制上游代码。
+
+本项目 [Issue #173](https://github.com/can4hou6joeng4/boss-cli/issues/173) 在 main `0cc2087a018d57b7cdf35f917803cd924af0f1c0` 使用真实 `ApplicationService` 与合成纯文本 gate provider 复现：同一会话 A 活动时排入 B，A 的成功回合状态、队列结算和释放槽位已持久化，EventHub 已追加一次 `turn/completed` 后向 observer 发布抛出普通 `OSError`。`_execute_turn()` 因事件异常未返回 `completed`；`_run_turn()` 虽完成 A 的 bridge/job 收尾，却跳过本会话 follow-up 唤醒，留下无 owner 的 queued B（active/jobs/waiters 均为 0，provider 仅调用 A 一次）。
+
+现在只对权威持久结算之后的 `turn/completed` 与 `thread/updated` 分别做 best-effort 发布；任一失败不阻止尝试另一事件，随后返回已确定的真实终态，让既有 tail owner、provider/bridge 清理、FIFO drain 与同会话队列交接逻辑继续运行。每种事件最多追加/发布一次，不重放可能已落盘的事件；runner、turn 持久化和 queue settlement 的异常仍保持原有保守路径。取消仍可在结算锁内胜出，shutdown 的关闭门禁继续阻止新回合。
+
+本地 13 项独立边界探针通过：容量 1/2 下两类终态事件在追加前失败或追加后发布失败；同会话多项和重复唤醒、跨会话 FIFO；回合终态及 steering pause 持久化故障；取消与 shutdown 竞争。另用真实 slow bridge 和 tracked abort 验证正常清理后 B 单次派发、关闭期间 B 保持 queued、状态目录 owner 直到 worker/abort 实际完成后才释放。所有合成 provider 调用和事件数量符合预期，网络与外部进程尝试为零。测试材料仅保留本地，不进入仓库或 Python 产物；未调用真实模型、招聘 CLI、招聘平台或桌面 UI。
+
+同步核对 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70` 与 `can4hou6joeng4/boss-agent-cli` master `70840e79e8208aeaab7d20ac44646fc74168af6a`，近期开放 PR 聚焦招聘平台流程和业务接口，没有与本轮相同的通用终态发布及队列交接契约，不迁移其业务代码。
+
 ## 第七十四轮：OpenAI 响应终态之后不再接纳流事件
 
 固定核对 Pi main `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`（MIT）。其 `packages/ai/src/api/openai-responses-shared.ts` 要求流见到终态，并在 toolUse 时拒绝未完成调用，但收到 completed/incomplete 后仍继续遍历；本轮不能把上游当作已经具备封口保护。本项目延伸已交付的 [Issue #154](https://github.com/can4hou6joeng4/boss-cli/issues/154) Anthropic 终态契约，独立加固 Responses，不复制 Pi 实现或增加依赖。Pi 新增的 Chord 依赖提案明确标为 Parked Until Resolved，本轮不引入其未决依赖模型。
@@ -23,6 +35,7 @@
 删除失败分支只有在确认持久删除标记存在时，才同步移除目标 waiter ID 和 deque 项；与成功删除使用相同的 follow-up admission/runtime 锁，保留其他会话的相对顺序。删除意图落盘前失败不移除有效 waiter，RPC 的删除未完成错误、重启继续清理和不可自动重放规则保持不变；不在调度层宽泛捕获损坏或 I/O 异常。修复后同一探针得到 C delivered、D accepted、等待队列清空，合成 provider 在 D 之前仅执行 A/C 各一次；网络和外部进程尝试均为零，探针仅保留本地。
 
 独立 7 项边界探针通过：删除意图落盘前失败保留 B/C 的执行顺序；落盘后失败移除 B，C/D/E 仍按 FIFO 各执行一次，重复唤醒不重放；成功删除、归档和关闭均不启动对应工作；正常重开及稳定的运行中状态快照重开均继续完成删除，旧队列暂停、provider 调用为零，删除事件恰为一条。类型检查、Electron 源码构建、Python 编译和 wheel/sdist 构建通过，45 个包内产品源码文件逐字节匹配候选树，无额外测试或本地状态。独立代码审查未发现新锁序或有效工作丢失；测试材料未提交，未进行真实模型、平台或桌面 UI 验收。
+
 ## 第七十二轮：关闭期限覆盖 shutdown 事件锁等待
 
 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 仍在讨论 shutdown、任务所有权与 idle 等待的分离；本轮不引入 Pi 的 task API，也不复制其实现。参考仍限于此前核对的 Pi main `14b4c56e5796e995706fec5b5124181a0f60bc35`（MIT）。
