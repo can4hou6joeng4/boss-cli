@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第八十九轮：按可验证的模型用量校准摘要保留范围
+
+参考 Pi MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 及开放 [Issue #10583](https://github.com/earendil-works/pi/issues/10583) 对 CJK 内容字符估算与 provider usage 偏差的讨论。本项目 [Issue #202](https://github.com/can4hou6joeng4/boss-cli/issues/202) 在固定 main `020cc8b83541f5d79bca04648cf2305bd2c6e0e1` 上以六个合成 CJK 回合复现：字符估算的保留切点与合成 provider 的相邻请求 usage 差值明显不同。Pi 的 tokenizer/compaction 实现与本项目消息、工具和持久化契约不同；本轮不复制源码或增加依赖。
+
+本项目只接受 `eligible=true`、provider/model 一致、usage 合法且完整请求指纹与当前投影消息前缀精确匹配的 `model_usage` 记录。相邻锚点的 input usage 差值按本地字符估算权重分配至消息，再映射到完整回合；摘要占位、编辑投影、附件/技能等造成序列或请求环境不匹配时，相应区间回退。最新锚点之后未被模型观察的尾部仍按字符估算。自动摘要使用业务 runner 的 provider 身份。计划可见估算方法与实际参与保留范围的锚点数，不代表 tokenizer 或账单精度。
+
+固定隔离探针覆盖 CJK 差异、与字符估算相同但仍报告已校准、尾部回退、provider/model/system/tools/options/fingerprint 不匹配、重复消息数冲突、非法与非单调 usage、不可映射 owner、工具调用/结果配对、摘要 checkpoint 与上下文编辑回退；网络和外部进程尝试均为零。探针仅留忽略目录，未调用真实模型、招聘 CLI、招聘平台或桌面应用。
+
 ## 第八十八轮：技能目录发现与读取的资源边界
 
 本项目 [Issue #199](https://github.com/can4hou6joeng4/boss-cli/issues/199) 在 main `6ae1c409db75e732602c7bb262cb467cb321417f` 复现了技能目录的独立资源问题：坏 UTF-8 候选占用前 100 名额后不会补位，`stat` 与读取之间的文件增长可绕过 64 KiB 检查，超大文件进入完整读取路径，且 `glob`/`sorted` 会先物化全部候选。合成 50,000 个目录、32 MiB 文件、FIFO、符号链接和竞态替换均在本地复现；网络、DNS 与子进程调用均为零。
