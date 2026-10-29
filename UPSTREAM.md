@@ -1,5 +1,67 @@
 # 上游吸收记录
 
+## 第八十八轮：技能目录发现与读取的资源边界
+
+本项目 [Issue #199](https://github.com/can4hou6joeng4/boss-cli/issues/199) 在 main `6ae1c409db75e732602c7bb262cb467cb321417f` 复现了技能目录的独立资源问题：坏 UTF-8 候选占用前 100 名额后不会补位，`stat` 与读取之间的文件增长可绕过 64 KiB 检查，超大文件进入完整读取路径，且 `glob`/`sorted` 会先物化全部候选。合成 50,000 个目录、32 MiB 文件、FIFO、符号链接和竞态替换均在本地复现；网络、DNS 与子进程调用均为零。
+
+参考 Pi MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的资源发现边界，以及 Pi Issue [#10062](https://github.com/earendil-works/pi/issues/10062) 对不可读 skills 目录诊断的讨论。本轮只吸收有界发现、无效资源隔离与 fail-closed 原则，不复制 Pi 源码、不新增依赖，也不改变本项目工具 allowlist、审批或招聘平台权限。
+
+`SkillCatalog` 现在对空选择直接返回；目录用 `os.scandir` 保持候选内存有界，并按字典序批量扩大候选窗口以补足最多 100 个可读取技能。读取前后核对普通文件身份，使用 `O_NONBLOCK` 与可用的 `O_NOFOLLOW`，最多读取 `64 KiB + 1` 字节后再解码和计算摘要；坏编码、超限、FIFO、符号链接或竞态替换只跳过该候选，加载阶段的变化或不可读资源则明确失败，不执行目录脚本。Python 3.10 兼容语法、技能 frontmatter 和 JSON-RPC 形状保持不变。
+
+固定离线探针覆盖空选择不扫描、坏 UTF-8 补位、32 MiB 拒绝、50,000 候选的 100 项上限、普通文件身份与外部调用计数；`compileall` 与 `git diff --check` 已通过。探针和临时状态只保留在忽略目录，未调用真实模型、招聘 CLI、招聘平台或桌面 UI。
+
+## 第八十八轮：摘要切点先于上下文编辑投影
+
+本项目 [Issue #197](https://github.com/can4hou6joeng4/boss-cli/issues/197) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 复现：两回合各有 user/assistant 条目，排除摘要来源第一回合的 user 后，count-only checkpoint 的 `sourceItemCount=2` 在历史投影中过滤 excluded 条目后才计算切点，错误覆盖了第一回合 assistant 与第二回合 user。摘要预览仍保留第二回合两条，但保存、重开、fork 后只剩第二回合 assistant；第三回合 provider request 缺少未摘要用户输入，估算从 1424 降到 396，request fingerprint 也变化。原始 transcript 和 checkpoint 仍完整，因此问题是模型上下文投影丢失事实，不是持久记录删除。
+
+固定参考 Pi MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `packages/coding-agent/src/core/session-manager.ts` `buildContextEntries()`：以 entry ID 选择 compaction 切点，再对路径应用 context edit。本轮独立采用“来源位置先于编辑投影”的职责，不复制 Pi 代码、不改变协议或持久格式。
+
+`ContextService._history_projection()` 现在先从未过滤的规范 item 序列解析 `sourceItemCount` / `sourceItemIds`，再移除摘要覆盖条目和 `contextEdit.excluded` 条目。显式 source IDs、摘要来源校验、fork、预算与摘要 digest 保持不变；没有排除项或仅排除摘要尾部时投影不变。
+
+离线五场景探针覆盖 count-only source exclusion、预览与保存一致、重开/fork、旧 source IDs checkpoint、无排除/排除尾部及全排除来源；真实 ApplicationService edit→compact→第三回合 provider request 也验证未摘要用户消息存在，estimatedInput 1424、request fingerprint 与完整历史一致。原始 JSONL 保持四条，网络/DNS/子进程尝试均为零；未调用真实模型、招聘 CLI、平台或桌面 UI。
+## 第八十七轮：持久记录的写入与重读预算一致性
+
+本项目 [Issue #195](https://github.com/can4hou6joeng4/boss-cli/issues/195) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 以真实 `SessionStore` / `TurnRunner.finish_tool_call()` 复现：9 MiB 合成成功结果先向 JSONL 追加 9,446,225 字节，之后索引重读因 8 MiB 单行限制失败，工具修订对账也无法读取该行。重开时 SQLite 列表跳过整会话，恢复扫描不重放操作但也不会把它重新列出，原始 JSONL 仍保留。
+
+固定参考 Pi MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `packages/coding-agent/src/core/session-manager.ts`：`_persist()` / `_rewriteFile()` 写 JSONL，`loadEntriesFromFile()` 按固定缓冲流读，并为 header 发现设置独立扫描预算。开放 [Pi Issue #11386](https://github.com/earendil-works/pi/issues/11386) 讨论 MCP 输出上限；它与本项目 CLI、结果记录及冻结快照不是同一协议。本轮采用“传输、持久记录与发现扫描须各有明确边界”的原则，32 MiB 预算及预写校验独立实现，不复制源码或新增依赖。
+
+正文及快照 record 统一为 32 MiB，header/event 保留 8 MiB；按最终 UTF-8 JSON 字节计量，不含换行。追加在打开文件或补尾部 LF 前校验；新会话/分支先检查 header 和全部正文；checkpoint 在创建临时候选和复制来源前检查。工具修订的拒绝仍进入既有 `ToolRevisionPersistenceError(absent)` 与有界失败记录路径，保存成功结果后索引故障的对账也使用同一正文读预算。附件引用扫描同步正文预算，并继续独立验证 header，避免删除其他会话时错误移除共享附件。
+
+预算不是“所有 16 MiB CLI 输出必定能保存”的保证：离线反例中，含 180 万个 `1e15` 的原始信封仅 9,000,109 字节，Python 归一化后的 data 已有 34,200,001 字节。该结果在写入前拒绝，工具只执行一次，以小型 `outcome_unknown` 失败终态暂停并要求核对；会话和重启恢复保持可读，无工具或模型重放。未采用数据截断或新增跨文件 blob 格式；序列化前宿主对象内存不受此记录预算约束。大于 8 MiB 的新合法记录需用兼容新内核，不能由旧版本重开。
+
+两组完整结果验收覆盖 9 MiB 和接近 16 MiB 的 data，经工具完成、冷删索引重建、分支、真实 ApplicationService 冻结快照、结果引用/摘要/分段 RPC 与共享附件删除后逐字节一致，模型投影和 RPC 页仍有界。独立八组写入口探针覆盖精确 UTF-8/控制转义字节、32 MiB 接受与多一字节拒绝、无 LF 尾部不修改、header/body 分别校验、后续 entry 超限不发布、checkpoint 候选创建前拒绝、9 MiB 修订的写后故障对账、超限修订错误归属、event 原预算和附件 header 门禁。测试材料仅留忽略目录，网络、DNS 与子进程尝试均为零；未调用真实模型、招聘 CLI、平台或桌面 UI。
+
+## 第八十六轮：业务回合的保留 owner 资源边界
+
+本项目 [Issue #193](https://github.com/can4hou6joeng4/boss-cli/issues/193) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 由真实 `ApplicationService` 与隔离 provider/bridge 复现：`parallelThreads=1` 时，连续四次取消且 abort hook 阻塞，或四次成功但 bridge 清理阻塞，active 始终为 0，保留 jobs 与活跃收尾线程从 1 增至 4。owner 没有丢失，活动执行并发也没有超过 1；缺口是有意允许执行/收尾重叠后，没有单独限制保留资源总量。
+
+参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 的持久状态与执行责任分离，以及开放 [Issue #11350](https://github.com/earendil-works/pi/issues/11350) 的资源持有与跨会话准入。固定 MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `scheduler.ts` invocation 责任持续到 run/abort 结束；其通用 task 与 codemode pool 和本地业务回合不同。本轮独立增加本地预算，不复制源码、增加依赖或引入通用调度器。
+
+保留原 `parallelThreads` 活动上限，活动加通知/bridge/abort 收尾的 jobs 总量最多为其两倍，允许一批活动回合与一批收尾重叠。配置公开 `maxRetainedTurns`；新请求在 provider 工厂与输入写入前检查，底层 reserve 再原子复核，超限使用 `TURN_OWNER_LIMIT`。已知用户请求回执仍优先去重。follow-up 在领取前检查两项预算，竞争性超限退回 queued，不误报启动失败；额度退休后按 FIFO 唤醒。迟到 abort 可能在原 worker 的交接结束后才完成，因此增加锁外退休通知；关闭、工具审批与未知结果不重放契约不变。
+
+独立审查发现，同步退休回调在 abort 线程启动失败时会运行于取消调用线程，不能在其中直接派发等待的 provider 工厂。现以初始化时预启动的一个受跟踪 worker 合并处理迟到退休唤醒，abort 完成只设置信号；关闭停止并等待该 worker，状态目录责任保留到其退出。启动失败时构造清理，不以无限 inline 工作补偿；已实际启动后包装器抛错仍保留 worker 责任。
+
+五组隔离探针通过：abort/bridge 各两组 owner 满额后的第三请求零工厂/零持久化拒绝、满额去重回执、正常一批收尾加一活动重叠、迟到 abort 退休唤醒 B/C FIFO 与单次派发、关闭后不晚启动。探针等待真实 worker 完成交接，再检查等待队列，未以 active 清空代替收尾完成。网络和子进程尝试均为零；探针及合成状态只保留忽略目录，未调用真实模型、招聘 CLI、平台或桌面 UI。
+
+另六项边界验收通过：领取后的容量拒绝退回 queued、未启动失败的通知与 bridge tail 占额度、abort 启动失败时取消不等待其他工厂、唤醒 worker 构造/启动失败清理、实际启动后包装器抛错保留责任、关闭期限耗尽后仍保留状态目录至 worker 真正结束。唤醒通知合并且 queued turn 只派发一次；网络、DNS 与子进程尝试均为零。
+
+同时核对 Pi 已关闭 [Issue #11141](https://github.com/earendil-works/pi/issues/11141) 和落地主线的 `7e15f9601` afterRun 子任务。该实现先保存答案，再保持 generation 忙碌等待子任务。本项目异步、有界且可丢弃的 on_event 是观察机制；阻塞回调时同会话新回合仍可正常执行，不能据此承诺必达收尾。本地当前没有要求阻塞输入的收据归档消费者，普通审计可按 turnId/cursor 从持久日志派生，故暂不新增子任务或 finalizer API。若将来确需必需收尾，须先定义持久 intent、取消、幂等与重启人工复核契约。
+
+## 第八十五轮：摘要并发额度跟随执行 owner 退休
+
+本项目 [Issue #191](https://github.com/can4hou6joeng4/boss-cli/issues/191) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 由真实 `ApplicationService`、独立合成 provider 和临时状态复现：容量 1 时跨三个会话启动并取消摘要，worker 已结束而 abort hook 继续阻塞，status 均为 cancelled、running 计数为 0，但 owner/provider/活跃 abort worker 依次增长至 1、2、3。成功摘要的终态通知阻塞时也能启动第二任务。旧准入只计 running 状态，与已有 owner 退休条件不一致。
+
+参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 的状态与执行责任分离，以及开放 [Issue #11350](https://github.com/earendil-works/pi/issues/11350) 的资源准入讨论；核对 MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `scheduler.ts` invocation 在 run/abort 执行结束前保留责任。Pi codemode worker pool 与本项目摘要池不同，本轮只吸收生命周期原则，不复制源码、引入 Pi 依赖或改变取消策略。
+
+现在手动摘要按 `_compaction_by_thread` 的现有 owner 计入容量，直到 worker、终态通知与已认领 abort 全部结束后退休；终态缓存和重启恢复终态不占额度，带 turnId 的自动摘要继续受业务 turn 并发限制。超限仍返回 `COMPACTION_CONCURRENCY_LIMIT`，不创建 provider 或执行模型；没有自动等待或重试。七场景离线探针覆盖取消后 abort 阻塞、成功终态通知阻塞、abort 先结束/worker 后结束、正常完成回收、重启终态缓存、真实业务回合触发的自动摘要和 worker 未启动失败回收，全部通过。网络和子进程尝试为零；探针及合成状态只保留本地，未调用真实模型、招聘 CLI、平台或桌面 UI。
+
+## 第八十四轮：finish checkpoint 失败的队列结算责任
+
+参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 对持久任务、执行 owner 与输入准入分离的讨论；固定 MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `scheduler.ts` 将 run/abort invocation 的责任保留到执行结束。本项目独立延伸既有 queue pause 门禁，不引入 Pi 调度器、afterRun 子任务或恢复重放，也不复制源码。
+
+本项目 [Issue #189](https://github.com/can4hou6joeng4/boss-cli/issues/189) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 的真实 `ApplicationService` 离线复现：容量 1、首回合活动时排入 follow-up，finish checkpoint 在写入前失败或写入后抛错均令首回合标为 `error / phasePersistenceFailure`，但已登记的容量 waiter 仍把 follow-up 执行为 delivered。此前队列结算基于 completed 只暂停 steering，新增阶段写入失败后未补全 follow-up 暂停责任。
+
+现在阶段失败分支在释放执行槽位前调用全队列 pause；暂停写入同时失败时，既有 pending-pause 责任阻止后续 claim 与新准入，恢复存储后旧输入仍变为 paused。保持原回合错误原因、已落盘事实和跨会话 FIFO 容量唤醒，不重放模型或工具。六场景隔离探针覆盖 finish 写前/写后失败、暂停持续失败及恢复、既有 steering settlement 失败、正常 completed 与 B/self/C 等待顺序；修复后错误回合只执行 first，其他会话依次执行 B/C，正常回合仍继续 follow-up。网络与外部进程尝试为零，探针与合成状态只保留在忽略目录；未调用真实模型、招聘 CLI、招聘平台或桌面 UI。
 ## 第八十三轮：定点读取大型工具结果
 
 本项目此前新增 `read_session_tool_result` 与 `thread/item/result/read`，但二者通过 `SessionStore.read_items()` 先解码并物化整份会话 JSONL，再按逻辑 item ID 搜索。即使结果只返回一个小分页，长会话仍令工具读取的峰值内存随历史大小增长；这是在采用 Pi `SessionManager` 增量读取原则后仍遗漏的查询投影边界，不等同于 Pi 提供了同样的结果 API。
@@ -12,7 +74,7 @@
 
 本项目 [Issue #187](https://github.com/can4hou6joeng4/boss-cli/issues/187) 的只读任务归属视图参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 关于持久任务事实与进程执行责任分离的讨论。独立代码审查发现，PR #188 的 `task/read` 虽限制关系投影数量，却调用 `read_entries()` 将整个会话 JSONL 解码并保存在列表中，再多次扫描；超长会话仍会令查询峰值内存随历史总量增长。
 
-现在 `SessionStore.open_entries_snapshot()` 在 writer lock 内验证会话并固定打开文件的 inode 与长度，之后由同一可回绕句柄按 64 KiB 块、8 MiB 单行上限逐次扫描固定前缀。`task/read` 将目标身份和冲突验证器直接应用于流式迭代器，不保留完整历史列表；会话追加不会改变当前查询切面。每会话准入锁覆盖扫描并阻止并发删除；全局 runtime/queue 锁只用于捕获运行时归属并打开快照，文件扫描期间已释放。坏 JSON 跳过、坏 UTF-8 替换、通用换行与条目筛选语义和关系数量上限保持不变。
+现在 `SessionStore.open_entries_snapshot()` 在 writer lock 内验证会话并固定打开文件的 inode 与长度，之后由同一可回绕句柄按 64 KiB 块、32 MiB 会话正文单行上限逐次扫描固定前缀；会话头和事件日志仍各自保持 8 MiB 上限。`task/read` 将目标身份和冲突验证器直接应用于流式迭代器，不保留完整历史列表；会话追加不会改变当前查询切面。每会话准入锁覆盖扫描并阻止并发删除；全局 runtime/queue 锁只用于捕获运行时归属并打开快照，文件扫描期间已释放。坏 JSON 跳过、坏 UTF-8 替换、通用换行与条目筛选语义和关系数量上限保持不变。
 
 忽略目录的离线探针以 60,002 条记录、49,200,327 字节的合成会话对比：`task/read` 峰值 Python 分配为 308,017 字节，原 `read_entries()` 列表路径为 87,747,515 字节；打开快照后追加记录，两次回绕仍得到相同记录数且不包含新记录。另一探针暂停文件扫描时确认 runtime/queue 全局锁可被其他工作获取。查询前后 session 与 event 文件 SHA-256 相同；未调用 provider、招聘 CLI、真实平台或桌面 UI。数据只验证合成冷读路径，不代表完整应用进程 RSS 或墙钟延迟。
 

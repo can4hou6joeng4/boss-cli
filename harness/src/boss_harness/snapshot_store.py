@@ -12,8 +12,9 @@ from typing import BinaryIO
 import uuid
 
 from boss_harness.private_files import ensure_private_directory, open_private_file, restrict_private_file
+from boss_harness.session import MAX_SESSION_LINE_BYTES
 
-MAX_SNAPSHOT_RECORD_BYTES = 16 * 1024 * 1024
+MAX_SNAPSHOT_RECORD_BYTES = MAX_SESSION_LINE_BYTES
 MAX_SNAPSHOT_SOURCE_BYTES = 1024 * 1024 * 1024
 MAX_SNAPSHOT_ITEM_BYTES = 128 * 1024 * 1024
 MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024

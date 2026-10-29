@@ -293,7 +293,10 @@ class ApplicationService:
             self._server_approvals: dict[str, str] = {}
             self._register()
             server.before_dispatch = self._check_ready
+            self.runtimes.start_capacity_notifications(self._drain_capacity_waiters)
         except Exception:
+            if hasattr(self, "runtimes"):
+                self.runtimes.stop()
             if hasattr(self, "connections"):
                 self.connections.close()
             if hasattr(self, "tools"):
@@ -508,6 +511,7 @@ class ApplicationService:
         return {"protocolVersion": PROTOCOL_VERSION, "workspace": str(self.workspace),
                 "provider": self.config.provider, "model": self.config.model,
                 "maxOutputTokens": self.config.max_tokens, "parallelThreads": self.runtimes.capacity,
+                "maxRetainedTurns": self.runtimes.owner_capacity,
                 "maxModelRequests": self.max_model_requests,
                 "modelCapabilities": self.model_catalog.resolve(self.config.provider, self.config.model).describe(),
                 "toolBundleId": self.tool_bundle.id,
@@ -1562,8 +1566,10 @@ class ApplicationService:
             config = self._model_config(self.sessions.get_thread(thread_id), {})
             config = self._compaction_model_config(self.compaction_policy, config,
                                                    model_override=params.get("model"))
-            active_manual = sum(1 for existing in self._compaction_jobs.values()
-                                if existing["status"] == "running" and "turnId" not in existing)
+            # Terminal status may precede worker/abort cleanup. Only the owner
+            # index marks which jobs still consume execution capacity.
+            active_manual = sum(1 for job_id in self._compaction_by_thread.values()
+                                if "turnId" not in self._compaction_jobs[job_id])
             if active_manual >= self.runtimes.capacity:
                 raise RpcError(-32005, "已达到后台摘要并发上限",
                                {"code": "COMPACTION_CONCURRENCY_LIMIT", "limit": self.runtimes.capacity})
@@ -2045,8 +2051,7 @@ class ApplicationService:
                     or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", client_id)):
                 raise ValueError("clientUserMessageId 格式无效")
         with self._follow_up_admission_lock, self.runtimes.lock:
-            if (queue_item is None and self._capacity_waiters and not self.runtimes.closed
-                    and len(self.runtimes.active) < self.runtimes.capacity):
+            if queue_item is None and self._capacity_waiters and self.runtimes.has_capacity():
                 thread = self.sessions.get_thread(thread_id)
                 if thread.get("archived"):
                     raise ValueError("请先恢复归档会话")
@@ -2119,6 +2124,7 @@ class ApplicationService:
                 model = config.model
                 skill_text, skills = self.skills.load(params.get("skillIds"))
                 attachment_text, attachments = self.attachments.context(thread_id, params.get("attachmentIds"))
+                self.runtimes.check_admission(thread_id)
                 runner = self._runner_for(config)
                 runner.max_model_requests = max_model_requests
                 if any(compaction["status"] == "running" and compaction.get("provider") is runner.provider
@@ -2359,7 +2365,8 @@ class ApplicationService:
             return
         with self.runtimes.lock:
             if (not self.runtimes.closed or self._shutdown_preparing
-                    or self.runtimes.jobs or self._compaction_by_thread
+                    or self.runtimes.jobs or not self.runtimes.capacity_notifications_stopped
+                    or self._compaction_by_thread
                     or self._follow_up_workers or self._follow_up_dispatches or self._receipt_notices
                     or not self.lifecycle_hooks.closed):
                 return
@@ -2438,6 +2445,13 @@ class ApplicationService:
                                                 job.get("phaseAttempt", 1))
                     except (OSError, ValueError):
                         status = "error"
+                        # Phase settlement failed after a successful runner may
+                        # already have left follow-ups eligible. Register the
+                        # full pause before releasing capacity to any waiter.
+                        try:
+                            self.queue.pause(thread_id)
+                        except (OSError, ValueError):
+                            pass
                         try:
                             self.sessions.record_turn(thread_id, job["turnId"], "error",
                                                       recoveryReason="phasePersistenceFailure")
@@ -2606,7 +2620,7 @@ class ApplicationService:
         while attempts:
             attempts -= 1
             with self.runtimes.lock:
-                if self.runtimes.closed or len(self.runtimes.active) >= self.runtimes.capacity:
+                if not self.runtimes.has_capacity():
                     return
                 thread_id = self._capacity_waiters.popleft()
                 self._capacity_waiter_ids.discard(thread_id)
@@ -2643,7 +2657,7 @@ class ApplicationService:
             started = True
         except Exception as error:
             capacity_error = (isinstance(error, RpcError) and isinstance(error.data, dict)
-                              and error.data.get("code") == "TURN_CONCURRENCY_LIMIT")
+                              and error.data.get("code") in {"TURN_CONCURRENCY_LIMIT", "TURN_OWNER_LIMIT"})
             shutdown_error = (isinstance(error, RpcError) and isinstance(error.data, dict)
                               and error.data.get("code") == "KERNEL_SHUTTING_DOWN")
             if capacity_error or shutdown_error:
