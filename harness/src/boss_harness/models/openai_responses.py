@@ -24,7 +24,7 @@ from typing import Any
 
 import openai
 
-from boss_harness.models.errors import openai_error_info
+from boss_harness.models.errors import SDK_TRANSPORT_ERRORS, openai_error_info
 from boss_harness.models.output_budget import (
     MAX_RESPONSE_TEXT_BYTES,
     OutputBudgetExceeded,
@@ -750,8 +750,16 @@ class OpenAIResponsesProvider:
         except openai.APIConnectionError as exc:
             # 连接被掐断通常是瞬时的（网关抖动、代理换路），值得重试。
             self._last_error_retryable = True
-            error_info = openai_error_info(None, source="transport_error", retryable=True)
+            error_info = openai_error_info(None, source="transport_error", retryable=True,
+                                           transport_error=exc)
             yield StreamEvent(type="error", reason="error", error=self._redact(f"连接失败：{exc}"),
+                              error_info=error_info)
+            return
+        except SDK_TRANSPORT_ERRORS as exc:
+            # Preserve the existing no-retry policy for unwrapped body failures.
+            self._last_error_retryable = False
+            error_info = openai_error_info(None, source="transport_error", transport_error=exc)
+            yield StreamEvent(type="error", reason="error", error="模型流传输失败",
                               error_info=error_info)
             return
         except openai.APIError as exc:

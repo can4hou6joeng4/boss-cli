@@ -18,7 +18,7 @@ from typing import Any
 
 import anthropic
 
-from boss_harness.models.errors import anthropic_error_info
+from boss_harness.models.errors import SDK_TRANSPORT_ERRORS, anthropic_error_info
 from boss_harness.models.continuation import (
     MAX_ANTHROPIC_SIGNATURE_BYTES,
     MAX_ANTHROPIC_SIGNATURE_TOTAL_BYTES,
@@ -451,9 +451,17 @@ class AnthropicProvider:
                               error="模型流并发容量已满，当前请求未发出；请稍后重试")
             return
         except anthropic.APIConnectionError as exc:
-            error_info = private_error_info(anthropic_error_info(None, source="transport_error"))
+            error_info = private_error_info(anthropic_error_info(
+                None, source="transport_error", transport_error=exc))
             message = "模型连接失败" if has_private() else f"连接失败：{exc}"
             yield StreamEvent(type="error", reason="error", error=self._redact(message),
+                              error_info=error_info)
+            return
+        except SDK_TRANSPORT_ERRORS as exc:
+            # SSE body reads can bypass the SDK's APIConnectionError wrapper.
+            error_info = private_error_info(anthropic_error_info(
+                None, source="transport_error", transport_error=exc))
+            yield StreamEvent(type="error", reason="error", error="模型流传输失败",
                               error_info=error_info)
             return
         except anthropic.RateLimitError as exc:
