@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第七十九轮：待处理队列的会话级资源边界
+
+参考 Pi Durable 开放 [Issue #11350](https://github.com/earendil-works/pi/issues/11350) 对跨会话公平准入、等待者诊断和长期占用的讨论；核对时 Pi main 为 `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`，许可证 MIT。Pi 的 codemode worker pool 与本项目持久 follow-up/steering 队列不是同一资源，本轮只采用“等待工作必须有可解释的资源边界”这一原则，不复制 Pi 调度代码或增加依赖。
+
+本项目 `TurnQueue.add()` 原先只限制单条输入 100000 字符；同一会话可以无限追加 `queued`/`delivering` 项，`queue/list`、领取和恢复每次都从会话 JSONL 重建完整状态。长期客户端因此可以让待处理输入和持久队列状态无界增长，容量公平检查只能限制并发回合，不能限制会话内排队资源。
+
+现在每个会话最多保留 128 个待处理项，且这些项的 UTF-8 输入合计不超过 4 MiB；已完成、暂停或取消的历史记录不占用待处理预算，带相同 `clientUserMessageId` 的幂等重试仍先返回既有项目。超过任一上限时返回结构化 `QUEUE_LIMIT`，不写入部分队列记录、不改变已有项目或调度顺序；既有单项 100000 字符上限、FIFO、steering/follow-up 区分和恢复规则保持不变。
+
+本地隔离探针覆盖 128 项数量上限、UTF-8 字节上限、幂等重试、暂停后释放预算、steering 与 follow-up 共用预算、拒绝时无追加记录及重开后的状态一致性；未调用真实模型、招聘平台或桌面 UI，探针和临时状态不进入 Git、wheel 或 sdist。
+
 ## 第七十八轮：会话 JSONL 冷读的有界流式解析
 
 继续参考 Pi MIT 仓库当前 `main` `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a` 的 `loadEntriesFromFile()`：固定 1 MiB 读取缓冲区配合增量解码和逐行解析。本项目此前 [Issue #103](https://github.com/can4hou6joeng4/boss-cli/issues/103) 只把原始 bytes 快照与 JSON 解码拆开，降低了解码额外峰值；`SessionStore.read_entries()` 仍先 `read_bytes()`，长期会话会把完整原始 JSONL 保留在内存。本轮延伸同一存储边界，不复制 Pi 源码或增加依赖。
@@ -30,8 +40,7 @@
 
 新增私有 SQLite `SnapshotStore`，以固定 JSONL 文件描述符与大小构造不可见的临时快照，流式归并 revision alias、终态 toolCall、context edit、running live delta 和队列最新状态；分页、内容引用和队列读取按需查询磁盘。快照捕获事件日志的 cursor 高水位、turn 索引、队列历史、线程与运行状态。会话 JSONL 条目和对应事件仍沿用分开提交的既有协议：若条目恰在 cursor 采样前落盘、对应事件随后才提交，该事件会出现在 cursor 后的 `event/list` 中；桌面恢复先加载快照，再按 item ID 幂等归并游标后的事件。限制单记录 16 MiB、来源 JSONL 1 GiB、item 128 MiB、单快照 256 MiB、已登记缓存 512 MiB、并发构建 2 份、缓存 16 份与 TTL 120 秒；SQLite 最大页数、无回滚日志的临时数据库及队列序索引将构建文件和缓存数据库总量限制在 1 GiB 内。删除或关闭会使在建快照失效；超限失败不会发布部分内容，清理兼容移除旧 SQLite journal/WAL/SHM。
 
-本地合成会话覆盖 20,003 条目与完整恢复 RPC，构建及端到端 `tracemalloc` 峰值均为约 0.89 MiB。独立检查 revision 与工具替换、最新 context edit、live delta、固定内容引用、构建期间追加后的 item/turn/queue 切点、JSONL 先于对应事件落盘时 cursor 后续事件可查询、队列顺序查询计划使用索引且无临时排序、逐页 1 MiB 响应、TTL/淘汰、超长记录、磁盘预算，以及删除/关闭与构建竞争；全部通过。探针仅位于 `/tmp`，网络和子进程尝试为零；未调用真实模型、招聘 CLI、平台或桌面 UI。
-## 第七十六轮：删除意图落盘前保留摘要终态观察
+本地合成会话覆盖 20,003 条目与完整恢复 RPC，构建及端到端 `tracemalloc` 峰值均为约 0.89 MiB。独立检查 revision 与工具替换、最新 context edit、live delta、固定内容引用、构建期间追加后的 item/turn/queue 切点、JSONL 先于对应事件落盘时 cursor 后续事件可查询、队列顺序查询计划使用索引且无临时排序、逐页 1 MiB 响应、TTL/淘汰、超长记录、磁盘预算，以及删除/关闭与构建竞争；全部通过。探针仅位于 `/tmp`，网络和子进程尝试为零；未调用真实模型、招聘 CLI、平台或桌面 UI。## 第七十六轮：删除意图落盘前保留摘要终态观察
 
 继续参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 对任务执行责任、会话忙状态与取消策略的讨论；核对时 Pi main 为 `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`，许可证 MIT。本项目已将摘要任务的持久可观察终态与当前进程的 worker 所有权分离，本轮延伸这一生命周期原则；具体删除缓存缺陷来自本地复现，不移植 Pi task API、实现或依赖。
 
