@@ -17,6 +17,7 @@ import stat
 import threading
 import uuid
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -288,11 +289,12 @@ class SessionStore:
             if self._delete_intent_path(thread_id).exists():
                 raise ValueError("会话正在删除，暂不可读取")
             try:
-                with path.open(encoding="utf-8", errors="replace") as handle:
-                    header = json.loads(handle.readline())
+                with closing(_iter_bounded_lines(path, maximum=MAX_EVENT_LINE_BYTES,
+                             label="会话头", universal_newlines=True)) as lines:
+                    header = json.loads(next(lines))
             except FileNotFoundError:
                 raise ValueError("会话不存在") from None
-            except (ValueError, IndexError):
+            except (ValueError, IndexError, StopIteration):
                 raise ValueError("会话头损坏，请保留原文件后恢复") from None
             if not isinstance(header, dict) or header.get("type") != "session" or header.get("id") != thread_id:
                 raise ValueError("会话头无效")
