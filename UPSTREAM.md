@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第八十七轮：持久记录的写入与重读预算一致性
+
+本项目 [Issue #195](https://github.com/can4hou6joeng4/boss-cli/issues/195) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 以真实 `SessionStore` / `TurnRunner.finish_tool_call()` 复现：9 MiB 合成成功结果先向 JSONL 追加 9,446,225 字节，之后索引重读因 8 MiB 单行限制失败，工具修订对账也无法读取该行。重开时 SQLite 列表跳过整会话，恢复扫描不重放操作但也不会把它重新列出，原始 JSONL 仍保留。
+
+固定参考 Pi MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `packages/coding-agent/src/core/session-manager.ts`：`_persist()` / `_rewriteFile()` 写 JSONL，`loadEntriesFromFile()` 按固定缓冲流读，并为 header 发现设置独立扫描预算。开放 [Pi Issue #11386](https://github.com/earendil-works/pi/issues/11386) 讨论 MCP 输出上限；它与本项目 CLI、结果记录及冻结快照不是同一协议。本轮采用“传输、持久记录与发现扫描须各有明确边界”的原则，32 MiB 预算及预写校验独立实现，不复制源码或新增依赖。
+
+正文及快照 record 统一为 32 MiB，header/event 保留 8 MiB；按最终 UTF-8 JSON 字节计量，不含换行。追加在打开文件或补尾部 LF 前校验；新会话/分支先检查 header 和全部正文；checkpoint 在创建临时候选和复制来源前检查。工具修订的拒绝仍进入既有 `ToolRevisionPersistenceError(absent)` 与有界失败记录路径，保存成功结果后索引故障的对账也使用同一正文读预算。附件引用扫描同步正文预算，并继续独立验证 header，避免删除其他会话时错误移除共享附件。
+
+预算不是“所有 16 MiB CLI 输出必定能保存”的保证：离线反例中，含 180 万个 `1e15` 的原始信封仅 9,000,109 字节，Python 归一化后的 data 已有 34,200,001 字节。该结果在写入前拒绝，工具只执行一次，以小型 `outcome_unknown` 失败终态暂停并要求核对；会话和重启恢复保持可读，无工具或模型重放。未采用数据截断或新增跨文件 blob 格式；序列化前宿主对象内存不受此记录预算约束。大于 8 MiB 的新合法记录需用兼容新内核，不能由旧版本重开。
+
+两组完整结果验收覆盖 9 MiB 和接近 16 MiB 的 data，经工具完成、冷删索引重建、分支、真实 ApplicationService 冻结快照、结果引用/摘要/分段 RPC 与共享附件删除后逐字节一致，模型投影和 RPC 页仍有界。独立八组写入口探针覆盖精确 UTF-8/控制转义字节、32 MiB 接受与多一字节拒绝、无 LF 尾部不修改、header/body 分别校验、后续 entry 超限不发布、checkpoint 候选创建前拒绝、9 MiB 修订的写后故障对账、超限修订错误归属、event 原预算和附件 header 门禁。测试材料仅留忽略目录，网络、DNS 与子进程尝试均为零；未调用真实模型、招聘 CLI、平台或桌面 UI。
+
 ## 第八十六轮：业务回合的保留 owner 资源边界
 
 本项目 [Issue #193](https://github.com/can4hou6joeng4/boss-cli/issues/193) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 由真实 `ApplicationService` 与隔离 provider/bridge 复现：`parallelThreads=1` 时，连续四次取消且 abort hook 阻塞，或四次成功但 bridge 清理阻塞，active 始终为 0，保留 jobs 与活跃收尾线程从 1 增至 4。owner 没有丢失，活动执行并发也没有超过 1；缺口是有意允许执行/收尾重叠后，没有单独限制保留资源总量。

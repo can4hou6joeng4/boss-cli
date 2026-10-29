@@ -40,6 +40,11 @@ _EVENT_READ_CHUNK_BYTES = 64 * 1024
 # transport.  Keep one explicit line limit so a damaged append-only log cannot
 # make a cold index rebuild allocate without bound.
 MAX_EVENT_LINE_BYTES = 8 * 1024 * 1024
+# Canonical results have a separate budget from their bounded transport
+# projection.  Validate the final JSON spelling before publishing a record;
+# raw CLI bytes and decoded/re-encoded JSON need not have the same size.
+MAX_SESSION_LINE_BYTES = 32 * 1024 * 1024
+MAX_SESSION_HEADER_BYTES = 8 * 1024 * 1024
 # Recovery metadata is tiny in normal operation.  Keep a separate whole-file
 # bound so a forged delete marker or repair manifest cannot be materialised
 # before its JSON shape is checked.
@@ -57,6 +62,14 @@ def _new_id() -> str:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def _encode_session_line(value: dict, *, maximum: int = MAX_SESSION_LINE_BYTES,
+                         label: str = "会话日志") -> bytes:
+    encoded = _json(value).encode("utf-8")
+    if len(encoded) > maximum:
+        raise ValueError(f"{label}单行超过大小限制")
+    return encoded + b"\n"
 
 
 def _iter_bounded_raw_lines_from_handle(handle, *, maximum: int, label: str = "JSONL",
@@ -330,7 +343,7 @@ class SessionStore:
             if self._delete_intent_path(thread_id).exists():
                 raise ValueError("会话正在删除，暂不可读取")
             try:
-                with closing(_iter_bounded_lines(path, maximum=MAX_EVENT_LINE_BYTES,
+                with closing(_iter_bounded_lines(path, maximum=MAX_SESSION_HEADER_BYTES,
                              label="会话头", universal_newlines=True)) as lines:
                     header = json.loads(next(lines))
             except FileNotFoundError:
@@ -343,7 +356,7 @@ class SessionStore:
 
     @staticmethod
     def _append_line(path: Path, value: dict) -> None:
-        encoded = (_json(value) + "\n").encode("utf-8")
+        encoded = _encode_session_line(value)
         descriptor = open_private_file(path, os.O_RDWR | os.O_APPEND)
         with os.fdopen(descriptor, "a+b") as handle:
             handle.seek(0, 2)
@@ -359,7 +372,10 @@ class SessionStore:
 
     def _write_new(self, header: dict, entries: list[dict] | None = None) -> dict:
         path = self.path_for(header["id"])
-        encoded = ("\n".join([_json(header), *(_json(entry) for entry in entries or [])]) + "\n").encode("utf-8")
+        encoded = b"".join([
+            _encode_session_line(header, maximum=MAX_SESSION_HEADER_BYTES, label="会话头"),
+            *(_encode_session_line(entry) for entry in entries or []),
+        ])
         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
         with self._lock, self._index.transaction() as connection:
             # Publish a complete rollout only after fsync. Hard-link creation is
@@ -413,7 +429,7 @@ class SessionStore:
             nonlocal outcome
             found = False
             try:
-                for line in _iter_bounded_lines(path, maximum=MAX_EVENT_LINE_BYTES,
+                for line in _iter_bounded_lines(path, maximum=MAX_SESSION_LINE_BYTES,
                                                 label="会话日志", universal_newlines=True):
                     try:
                         current = json.loads(line)
@@ -514,7 +530,7 @@ class SessionStore:
                     entry = entry_factory()
                     if not isinstance(entry, Entry) or entry.type != "context_checkpoint":
                         raise ValueError("摘要提交必须构造 context_checkpoint 条目")
-                    encoded = (_json(entry.to_dict()) + "\n").encode("utf-8")
+                    encoded = _encode_session_line(entry.to_dict())
                     candidate_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.checkpoint.tmp")
                     descriptor = open_private_file(candidate_path, os.O_WRONLY | os.O_EXCL)
                     temporary = candidate_path
@@ -602,7 +618,7 @@ class SessionStore:
         with self._lock:
             self.require_thread(thread_id)
             out: list[dict] = []
-            for line in _iter_bounded_lines(self.path_for(thread_id), maximum=MAX_EVENT_LINE_BYTES,
+            for line in _iter_bounded_lines(self.path_for(thread_id), maximum=MAX_SESSION_LINE_BYTES,
                                             label="会话日志", universal_newlines=True):
                 if not line.strip():
                     continue
@@ -1151,7 +1167,8 @@ class SessionStore:
                 raise ValueError("会话文件不可信，无法确认共享附件引用")
             restrict_private_file(session_path)
             try:
-                for line in _iter_bounded_lines(session_path, maximum=MAX_EVENT_LINE_BYTES,
+                self.require_thread(session_path.stem)
+                for line in _iter_bounded_lines(session_path, maximum=MAX_SESSION_LINE_BYTES,
                                                 label="会话日志", universal_newlines=True):
                     try:
                         entry = json.loads(line)
