@@ -23,6 +23,17 @@
   <a href="UPSTREAM.md">上游吸收记录</a>
 </p>
 
+## 按目标阅读
+
+| 你想做什么 | 入口 |
+| --- | --- |
+| 在本机启动桌面工作台 | [快速开始](#快速开始) |
+| 了解搜索、回合队列、摘要和技能 | [交互式工作流](#交互式工作流) |
+| 配置 OpenAI 或 Anthropic 模型 | [模型配置来源](#模型配置来源) |
+| 核对查询范围、平台访问和暂停条件 | [招聘工具与平台边界](#招聘工具与平台边界) |
+| 理解模型预算、摘要和历史恢复 | [模型与长会话](#模型与长会话) |
+| 接入自定义工具或参与开发 | [模块边界](#模块边界)、[贡献与验证](#贡献与验证) |
+
 ## 你会得到什么
 
 | 你想解决的问题 | BOSS-CLI 的回答 |
@@ -146,6 +157,11 @@ Electron 运行时从官方源单独下载和校验，失败后需先恢复安�
 
 ## 模型配置来源
 
+桌面默认使用 OpenAI Responses，也支持 Anthropic Messages；`none` 模式可在不调用模型的情况下体验确定性入口。真实模型请求可能联网并产生费用。
+
+<details>
+<summary>展开：显式环境变量和本地 Codex 配置的读取规则</summary>
+
 OpenAI Responses 的完整显式配置由以下三项组成，去除首尾空白后均须非空：
 
 | 配置 | 来源 |
@@ -160,7 +176,16 @@ OpenAI Responses 的完整显式配置由以下三项组成，去除首尾空白
 
 当前文件适配要求文件自身同时提供 `model`、`model_provider` 及该 provider 的 `base_url` 才形成可用 profile；认证仅识别 `experimental_bearer_token`，尚未适配 Codex 的 `env_key`、OAuth 或任意 `wire_api`。配置解析只读本地文件，不探测真实服务。
 
-## 明确条件搜索
+</details>
+
+## 招聘工具与平台边界
+
+搜索与沟通工具按明确条件和指定页工作。未知分页、筛选结果或沟通状态会保留为未知；读取不会隐式扩大查询范围或执行回复、投递等外部操作。
+
+<details>
+<summary>展开：搜索参数与沟通列表的完整契约</summary>
+
+### 明确条件搜索
 
 在模型会话中可以要求“上海 Python、20–50K、3–5 年、本科，先看第一页”，模型通过 `boss_search` 传递结构化条件：
 
@@ -184,7 +209,7 @@ OpenAI Responses 的完整显式配置由以下三项组成，去除首尾空白
 
 仅传 `keyword` 的旧调用继续有效，由上游默认读取第 1 页。无模型模式的 `/search 关键词` 仍为关键词查询快捷入口，不解析结构化筛选标志。URL、薪资多选及更多列表筛选是后续扩展范围。
 
-## 求职者沟通列表
+### 求职者沟通列表
 
 配置模型后，可要求“查看求职沟通的第 1 页”或明确查询下一页。模型工具 `boss_chat` 只接受可选正整数 `page`，默认 1；一次提交指定逻辑页，不补取消息、不回复、不导出，也不自动翻页。无模型模式尚无 `/chat` 快捷命令。
 
@@ -194,7 +219,16 @@ OpenAI Responses 的完整显式配置由以下三项组成，去除首尾空白
 
 请求、认证及本地状态维护沿用业务 CLI，无法保证单次网络访问或首次限制即停；收到最终受支持停止码后暂停当前回合，不执行同批后续工具或自动模型续跑。恢复会话只读取历史，不自动重查；处理限制后由用户明确发起后续任务。
 
-## 业务 CLI 请求与认证边界
+</details>
+
+## 平台访问与执行边界
+
+Harness 管理工具准入、结果持久化和可观察的停止信号；实际网络尝试、认证刷新与缓存由所配置的业务 CLI 管理。只有内核能够识别的终态错误或结构化停止信息才会触发暂停。
+
+<details>
+<summary>展开：认证、部分结果、输出限制与回合终止细节</summary>
+
+### 业务 CLI 请求与认证边界
 
 本项目按工具契约派发一次业务 CLI 进程调用，不自动展开组合或追加页面；其中的网络尝试、认证刷新、缓存及摘要补取由所配置的业务 CLI 决定。“只读”描述招聘业务动作，不表示单次网络请求，也不表示不维护本地状态。
 
@@ -212,7 +246,7 @@ Harness 可通过进程环境变量 `BOSS_HARNESS_BROWSER_SOURCE` 显式传递�
 
 固定调用链、可观察范围及后续能力接入条件见 [UPSTREAM.md](UPSTREAM.md)。
 
-## 平台暂停与聊天部分结果
+### 平台暂停与聊天部分结果
 
 `boss_hr_chat` 读取本页沟通列表时，业务 CLI 还可能为会话补取最近消息；列表只读不等于只有一个网络请求。默认摘要预算及补取行为沿用业务 CLI，本项目不追加补批或探测。
 
@@ -222,7 +256,7 @@ Harness 可通过进程环境变量 `BOSS_HARNESS_BROWSER_SOURCE` 显式传递�
 
 用户处理平台限制后再明确发起后续任务。恢复会话不会自动重试、补取消息、翻页或探测状态；上游 `hints` 中的建议命令仅作为来源数据，不构成执行授权。
 
-## 模型截断与回合上限
+### 模型截断与回合上限
 
 OpenAI Responses 的 `response.completed` / `response.incomplete` 与 Anthropic 的 `message_stop` 都是响应终态；SDK 在终态后若继续交付任何流事件，内核按协议错误结束本次请求，不执行该响应的工具、不重试或继续后续队列，已接收的有界文本前缀标为失败保留。SSE 注释与 OpenAI 的 `[DONE]` 由 SDK 处理，不属于这些内容事件。
 
@@ -232,7 +266,16 @@ OpenAI Responses 的 `response.completed` / `response.incomplete` 与 Anthropic 
 
 每个工具回路、steering 续答和上下文溢出恢复重试均计入本回合上限；provider/SDK 内部传输重试不在此计数中，摘要仍使用独立的 32 次生成上限。最后一次工具批次后仍需续答时，以 `blocked / TURN_ROUND_LIMIT` 暂停并保留结果，需核对后明确发起新回合；通知带 `maxModelRequests` 和 `modelRequestCount`，回合历史记录实际上限。最后一次正常最终文本仍可完成，最后到达而未能响应的 steering 保留为暂停队列项；已执行工具和审批不会重放。
 
-## 模型容量与请求预算
+</details>
+
+## 模型与长会话
+
+每次模型请求都会核对完整输入预算。长会话可通过完整回合摘要、上下文编辑和分段读取来管理；原始历史与已执行工具事实仍保留，超限或来源不一致时会明确暂停。
+
+<details>
+<summary>展开：模型容量、自动压缩、上下文编辑与会话恢复</summary>
+
+### 模型容量与请求预算
 
 内核在每次模型请求前估算完整输入，包括 system/技能、用户材料、消息与思考、工具调用及结果、工具 schema 和请求选项。输出预留受模型声明的上限约束，输入增长不会静默缩小输出；保留 4096 token 安全余量。接近或超过预算时可先自动摘要更早的完整回合；仍无法容纳时以 `blocked / CONTEXT_BUDGET_EXCEEDED` 或明确的压缩错误暂停，不请求业务模型、不自动启动后续队列，已有工具结果继续保留。steering 只有在下一请求通过预算检查后才标记已投递；预算失败时保留为暂停项。
 
@@ -264,7 +307,7 @@ token 数默认采用 `characters/2+message-overhead` 分类估算，不是供�
 
 回合最终 `finish` 阶段 checkpoint 无法确认持久化时，当前执行以 `error` 收尾，尽力追加 `phasePersistenceFailure` 修正记录，并在释放容量前暂停当前会话全部待处理队列。暂停写入也失败时，内核保留暂停责任；后续准入或领取必须先完成暂停，存储恢复不会自动执行旧 follow-up。其他会话仍可按既有 FIFO 等待顺序取得空出的容量。
 
-## 自动压缩与溢出恢复
+### 自动压缩与溢出恢复
 
 模型回合默认开启自动压缩：完整输入估算达到 `inputBudget` 的 80%，或预算检查拒绝请求时，尝试摘要更早的完整回合，保留近期估算 20000 token。`inputBudget` 已扣除业务输出储备和 4096 token 安全余量，阈值不重复扣减。小窗口应降低保留目标；当前运行回合始终完整保留，因此单个过大输入或工具结果仍可能无法容纳。
 
@@ -280,7 +323,7 @@ token 数默认采用 `characters/2+message-overhead` 分类估算，不是供�
 
 摘要请求自身或连接诊断不会进入业务溢出恢复。自动任务由当前业务 worker 持有，重启只恢复历史，不自动重放摘要、业务请求或外部操作。全局自动策略编辑仍通过配置和协议控制。
 
-## 桌面上下文与手动摘要
+### 桌面上下文与手动摘要
 
 在真实会话中打开“上下文”，查看内核返回的当前会话或活动请求预算，包括估算输入、有效输入预算、输出预留、容量来源及 usage 校准依据。该读取不包含尚未发送的草稿、技能或附件；token 数不是精确 tokenizer 结果或账单。打开面板、刷新预算和规划均不调用模型或招聘工具，也不会停止当前任务。
 
@@ -292,7 +335,7 @@ token 数默认采用 `characters/2+message-overhead` 分类估算，不是供�
 
 切换会话、关闭面板、断连或开始回执未知时不会自动再次生成摘要；已知任务通过读取对账。进程重启后，未终结任务会检查对应 `summaryJobId` 是否已写入 checkpoint：已提交的恢复为 completed，否则恢复为 `failed / COMPACTION_INTERRUPTED`。恢复只补写可观察终态，不恢复 provider 请求或 checkpoint；用户须重新读取计划并显式开始新任务。最近 64 条终态可查询，之后被淘汰的旧任务可能无法查询。
 
-## 大结果与会话恢复
+### 大结果与会话恢复
 
 模型可见工具结果按工具定义的 `max_model_result_bytes` 限制，默认 20 KiB，允许范围为 8 KiB 至 1 MiB。较大结果在模型上下文中显示明确的省略标记、摘要和结果 SHA-256；完整结构化结果继续保存在会话记录中。Harness 提供只读内核工具 `read_session_tool_result`，模型可按 item ID、摘要和游标每次读取至多 8,192 个 Unicode 字符；读取只访问当前会话已保存的数据，不重新调用招聘工具。桌面/RPC 展示仍使用独立的结果引用：超过 64 KiB 时不内联传输，客户端可通过 `thread/item/result/read` 按需分段读取，默认 16,384、最多 32,768 个 Unicode 字符。
 
@@ -301,6 +344,8 @@ RPC 客户端可通过 `thread/item/result/read`，传入 `threadId`、`itemId`�
 超过 64 KiB 的 Agent 文本与思考字段在条目读取和持久完成事件中改为 `textRef` / `thinkingRef`，原文仍保留在会话。`thread/item/content/read` 按 `part`（`text` 或 `thinking`）、会话、条目及 SHA-256 读取，默认 16,384、最多 32,768 个 Unicode 码点；游标绑定字段与内容版本，变更返回 `STALE_CONTENT`。冻结快照的引用还绑定 `snapshotId`，在快照有效期内始终读取该版本。桌面恢复时逐段校验长度与摘要，再展示快照；每个历史字段自动恢复上限为 16 MiB，超过时明确报错，原文仍可由该接口分段读取。恢复失败不重放招聘动作。新方法保持协议版本 `0.2.0`；自定义客户端需支持内容引用，才能完整恢复大字段。
 
 会话条目和事件回放还按约 1 MiB 响应预算分页，游标只推进到实际返回的数据。非分页读取或单条记录无法传输时会返回明确的 `RESPONSE_TOO_LARGE` 错误，连接继续可用；支持快照的客户端应通过 `thread/resume` 的冻结分页恢复。原始记录不被裁剪，读取不触发招聘工具。
+
+</details>
 
 ## 模块边界
 
@@ -312,7 +357,14 @@ RPC 客户端可通过 `thread/item/result/read`，传入 `threadId`、`itemId`�
 | `harness/src/boss_harness` | 执行、上下文、持久化、恢复和模型接入 |
 | `harness/src/boss_harness/tools` | 招聘提示、工具契约、CLI 适配及平台暂停规则 |
 
-## 显式工具组合
+## 嵌入式扩展
+
+桌面端使用默认招聘工具组合；Python 宿主也可以注入自定义工具、provider 和生命周期策略。自定义扩展由宿主显式提供，不会从工作区自动发现或获得招聘平台权限。
+
+<details>
+<summary>展开：工具组合、生命周期 hook 与并发所有权</summary>
+
+### 显式工具组合
 
 内嵌 Python 应用可通过 `ToolDefinition`、`ToolBundle` 与 `ApplicationService(tool_bundle=..., bridge_factory=...)` 组合工具。每个定义固定工具名、描述、对象 schema、handler 和是否逐次审批；注册表提供不可变的 handler/审批快照，以及只读 schema 投影。`requires_approval` 是安全分类：任何有外部或持久副作用的工具都必须设为 `True`。Bridge 工厂每次须返回独立、可弱引用且支持 `cancel_event` 的实例；应用会拒绝仍存活的重复实例。Bridge 可提供同步且应快速返回的 `close()`，或以 `dispose()` 作为兜底；临时运行器、连接检查和应用级实例分别由其所有者在工作结束或关闭时释放，重复关闭不会再次调用钩子。清理异常不会改写任务结果。
 
@@ -332,13 +384,22 @@ RPC 客户端可通过 `thread/item/result/read`，传入 `threadId`、`itemId`�
 
 返回 `HookDecision(False, code, message)` 拒绝对应请求，provider 不会被调用。业务拒绝以 `error` 终止回合；摘要拒绝将任务以 `failed` 收尾，不提交新 checkpoint、不重试或继续后续业务请求，自动/溢出恢复摘要所在回合同样以 `error` 终止。业务与摘要的脱敏拒绝原因保存在 `model_error`，并分别通过 `session/error`、`context/compactionFailed` 通知，`requestRejected=true` 区分策略拒绝；模型连接检查在读取报告中保留 `failed`、策略 code、脱敏原因和该标记，下一次显式检查会清除旧标记。未发送的请求不会执行工具或申请审批；先前已完成的模型、工具和摘要分片事实仍保留。取消优先于拒绝；策略关闭或正在关闭时 fail closed，已运行 hook 的迟到允许结果也不能放行新请求。
 
-## 模型运行所有权
+### 模型运行所有权
 
 活动业务回合仍受 `parallelThreads` 限制；活动与收尾回合合计最多保留 `2 * parallelThreads` 个执行 owner，`config/read.maxRetainedTurns` 返回这个上限。终态通知、bridge 清理或已认领 abort 尚未完成的任务继续占 owner 额度，允许一批收尾与下一批活动回合重叠。超过总量上限时直接请求返回 `TURN_OWNER_LIMIT`，不创建新 provider 或写入新回合/输入；相同请求编号的既有回执仍可去重读取。follow-up 保持 queued 并沿既有 FIFO 等待，worker 或迟到 abort 真正释放 owner 后再唤醒。迟到 abort 只向初始化时启动的单一 worker 发信号，避免在线程启动失败的取消路径里同步执行其他会话；通知合并，关闭会等待该 worker 收尾并拒绝新工作。额度不计历史终态、纯回执通知或不再持有 provider 的队列存储收尾，也不授权重放任何请求。
 
 嵌入方使用 `ApplicationService(provider_factory=...)` 并发运行模型回合时，工厂须提供独立实例。非空返回值不能是应用主 provider，也不能被其他业务 worker（包括已释放执行槽位但仍在通知/收尾的 worker）或尚未完成收尾的摘要持有；违规调用在预留回合、保存输入前拒绝，不会中断原 owner。手动与自动摘要同样拒绝借用尚未完成收尾的业务 provider。模型执行、终态通知、bridge 清理及已认领的 abort 都完成后才允许临时实例串行复用，防止旧中止误伤新请求；后续队列派发的尾部继续单独持有状态目录责任。未传工厂的主实例串行路径也遵守上述条件，工厂返回 `None` 的无模型路径保持兼容。默认内建工厂创建新实例，模型摘要仍要求独立于主回合的 provider。
 
-## 上下文 usage
+</details>
+
+## 上下文历史与预算核验
+
+上下文读取、编辑和压缩都绑定可核验的来源摘要。下面列出估算方式、投影规则与提交边界；它们描述本地内核行为，不构成供应商 tokenizer、计费或摘要无损保证。
+
+<details>
+<summary>展开：usage 校准、摘要来源、checkpoint 和失败恢复</summary>
+
+### 上下文 usage
 
 完整请求预算默认使用保守字符估算。成功的 OpenAI 或 Anthropic 响应会保存 provider、模型、完整请求指纹和消息前缀长度；下一次请求只有在这些边界仍匹配时才使用 input usage 作为基线，并对新增消息继续估算。OpenAI 的缓存 input 是总 input 的子集，Anthropic 的缓存读写字段按独立计数处理，避免重复计算。模型、提示、工具、请求选项或可追溯摘要变化后会回退到字符估算；这不是精确 tokenizer 或计费保证。
 
@@ -367,6 +428,8 @@ RPC 客户端可通过 `thread/item/result/read`，传入 `threadId`、`itemId`�
 schema 接受受限 JSON 子集：单一 `type`、`properties`、`required`、布尔型 `additionalProperties`、`enum`、`anyOf`、数值/长度/数组边界、Python `re.search` `pattern`、数组 `items`/`uniqueItems`，以及 `title`、`description`、`default` 注释。不支持引用和未知关键字；`default` 不会自动填充。若 schema 要求 object/array 而模型将该值作为 JSON 字符串返回，内核会解码一层并按同一 schema 复验；`anyOf` 已接受原字符串时保持原值。定义、桥接和暂停回调由嵌入应用显式提供，属于可信宿主代码，不构成进程沙箱。
 
 默认 CLI 仍装配原招聘工具组合。传入自定义 bundle 时，平台 local 检查及登录 host API 显示为 disabled/`NOT_SUPPORTED`，不会按 bundle id 获得招聘权限；模型连接检查仍可用。不会扫描技能目录、自动导入扩展或提供插件市场。
+
+</details>
 
 ## 贡献与验证
 
