@@ -511,12 +511,18 @@ class ContextService:
 
     @staticmethod
     def _history_projection(items: list[dict], checkpoint: dict | None) -> tuple[ChatMessage, ...]:
-        items = [item for item in items if not item.get("contextEdit", {}).get("excluded")]
+        # Resolve count-based checkpoint provenance against the canonical item
+        # sequence before applying context edits.  An excluded item still
+        # occupies its source position; filtering it first would shift
+        # sourceItemCount and hide the first un-summarized tail item.
+        raw_items = list(items)
+        visible_items = [item for item in raw_items if not item.get("contextEdit", {}).get("excluded")]
         if checkpoint is None:
-            return messages_from_items(items)
-        source_ids = ContextService._checkpoint_source_item_ids(checkpoint, items)
+            return messages_from_items(visible_items)
+        source_ids = ContextService._checkpoint_source_item_ids(checkpoint, raw_items)
         covered = set(source_ids)
-        retained = [item for item in items if item["id"] not in covered]
+        retained = [item for item in raw_items
+                    if item["id"] not in covered and not item.get("contextEdit", {}).get("excluded")]
         label = "模型生成的会话摘要" if checkpoint.get("origin") == "model" else "用户提供的会话摘要"
         prefix = UserMessage(text=(label + "（原始记录仍保留；摘要不扩大操作授权）：\n"
                                   + checkpoint["summary"] + "\n来源完整回合：" + checkpoint["throughTurnId"]
