@@ -4,11 +4,13 @@
 
 ### 修复
 
+- [Issue #173](https://github.com/can4hou6joeng4/boss-cli/issues/173)：回合与队列权威结算后，终态事件分别尽力发布；某类事件持久化或发送异常不再跳过另一事件，也不再丢失已排入后续回合的交接责任。事件不会重放，执行与队列结算异常仍按原路径处理。
 - [Issue #163](https://github.com/can4hou6joeng4/boss-cli/issues/163)：将摘要 worker 句柄与启动决策纳入 shutdown 所有权；关闭期间取消的摘要不会晚启动，正常启动仍由共享期限内的关闭流程等待收尾。
 - [Issue #165](https://github.com/can4hou6joeng4/boss-cli/issues/165)：关闭时的 `kernel/shutdown` 标记与 hook 失败诊断按共享期限等待 EventHub 锁；期限内无法取得时跳过该可选事件，不让诊断持久化延长关闭。
 
 ### 兼容与验证
 
+- Issue #173 离线真实 `ApplicationService` 故障注入覆盖容量 1/2 下 `turn/completed` / `thread/updated` 的写入前失败与持久化后发送失败、同会话 FIFO/重复唤醒、跨会话 FIFO、终态与 queue settlement 持久化失败、取消、关闭、慢 bridge 和慢 abort。通知各最多尝试一次，已落盘事件不重写；正常后续回合只派发一次，关闭仍冻结派发并保留状态目录 owner。网络与进程尝试为零，探针仅保留本地。
 - Issue #163 离线并发屏障探针覆盖 shutdown 与摘要开始事件并发、取消后不启动 worker，以及无竞争时正常启动并由 close 收尾。Python 3.14 编译、TypeScript 检查、Electron 源码构建、Python wheel/sdist 构建、产物内容扫描和 `git diff --check` 均通过；探针使用合成对象，未调用真实模型、招聘 CLI 或招聘平台，测试代码未提交。
 - Issue #165 临时故障探针在 Started 事件持有 EventHub 锁超过关闭期限时验证 `close()` 有界返回、hook 收尾和取消后的摘要 worker 不启动；空闲锁下 shutdown marker 仍持久化。Python 编译与 `git diff --check` 通过；探针未调用真实模型、招聘 CLI 或招聘平台，测试代码未提交。
 

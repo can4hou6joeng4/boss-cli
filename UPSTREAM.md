@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第七十五轮：终态事件异常不丢失已受理的后续任务
+
+Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332)，讨论持久任务事实与进程执行责任之间的边界；固定核对 Pi main `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`（MIT）。本项目已有明确分离的回合持久结算、终态事件及后续队列 owner；本轮不引入 Pi 未决的 task API，也不复制上游代码。
+
+本项目 [Issue #173](https://github.com/can4hou6joeng4/boss-cli/issues/173) 在 main `0cc2087a018d57b7cdf35f917803cd924af0f1c0` 使用真实 `ApplicationService` 与合成纯文本 gate provider 复现：同一会话 A 活动时排入 B，A 的成功回合状态、队列结算和释放槽位已持久化，EventHub 已追加一次 `turn/completed` 后向 observer 发布抛出普通 `OSError`。`_execute_turn()` 因事件异常未返回 `completed`；`_run_turn()` 虽完成 A 的 bridge/job 收尾，却跳过本会话 follow-up 唤醒，留下无 owner 的 queued B（active/jobs/waiters 均为 0，provider 仅调用 A 一次）。
+
+现在只对权威持久结算之后的 `turn/completed` 与 `thread/updated` 分别做 best-effort 发布；任一失败不阻止尝试另一事件，随后返回已确定的真实终态，让既有 tail owner、provider/bridge 清理、FIFO drain 与同会话队列交接逻辑继续运行。每种事件最多追加/发布一次，不重放可能已落盘的事件；runner、turn 持久化和 queue settlement 的异常仍保持原有保守路径。取消仍可在结算锁内胜出，shutdown 的关闭门禁继续阻止新回合。
+
+本地 13 项独立边界探针通过：容量 1/2 下两类终态事件在追加前失败或追加后发布失败；同会话多项和重复唤醒、跨会话 FIFO；回合终态及 steering pause 持久化故障；取消与 shutdown 竞争。另用真实 slow bridge 和 tracked abort 验证正常清理后 B 单次派发、关闭期间 B 保持 queued、状态目录 owner 直到 worker/abort 实际完成后才释放。所有合成 provider 调用和事件数量符合预期，网络与外部进程尝试为零。测试材料仅保留本地，不进入仓库或 Python 产物；未调用真实模型、招聘 CLI、招聘平台或桌面 UI。
+
+同步核对 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70` 与 `can4hou6joeng4/boss-agent-cli` master `70840e79e8208aeaab7d20ac44646fc74168af6a`，近期开放 PR 聚焦招聘平台流程和业务接口，没有与本轮相同的通用终态发布及队列交接契约，不迁移其业务代码。
+
 ## 第七十二轮：关闭期限覆盖 shutdown 事件锁等待
 
 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 仍在讨论 shutdown、任务所有权与 idle 等待的分离；本轮不引入 Pi 的 task API，也不复制其实现。参考仍限于此前核对的 Pi main `14b4c56e5796e995706fec5b5124181a0f60bc35`（MIT）。
