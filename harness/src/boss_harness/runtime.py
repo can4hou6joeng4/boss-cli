@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 import re
-from typing import Any
+from typing import Any, Callable
 
 from boss_harness.rpc import RpcError
 from boss_harness.request_identity import RequestIdentity, resolve_request
@@ -30,8 +30,66 @@ class RuntimeManager:
         self.capacity = capacity
         self.closed = False
         self.on_idle = None
+        self._capacity_wake = threading.Event()
+        self._capacity_callback: Callable[[], None] | None = None
+        self._capacity_worker: threading.Thread | None = None
+        self._capacity_worker_done = threading.Event()
+        self._capacity_worker_done.set()
 
-    def reserve(self, thread_id: str, text: str, runner: Any) -> dict:
+    def start_capacity_notifications(self, callback: Callable[[], None]) -> None:
+        """Start one tracked wake worker before accepting application work."""
+        with self.lock:
+            if self.closed or self._capacity_worker is not None:
+                raise RuntimeError("容量通知 worker 已启动或内核已关闭")
+            self._capacity_callback = callback
+            worker = threading.Thread(target=self._run_capacity_notifications,
+                                      name="turn-capacity-wake", daemon=True)
+            self._capacity_worker_done.clear()
+            self._capacity_worker = worker
+            try:
+                worker.start()
+            except Exception:
+                if worker.ident is None:
+                    self._capacity_worker = None
+                    self._capacity_worker_done.set()
+                    raise
+
+    @property
+    def capacity_notifications_stopped(self) -> bool:
+        return self._capacity_worker_done.is_set()
+
+    def _run_capacity_notifications(self) -> None:
+        try:
+            while True:
+                self._capacity_wake.wait()
+                self._capacity_wake.clear()
+                with self.lock:
+                    if self.closed:
+                        return
+                    callback = self._capacity_callback
+                try:
+                    if callback is not None:
+                        callback()
+                except Exception:
+                    # Durable queue state remains authoritative after a failed
+                    # wake; later ownership changes or explicit input may retry.
+                    pass
+        finally:
+            self._capacity_worker_done.set()
+            self._notify_idle()
+
+    @property
+    def owner_capacity(self) -> int:
+        # Permit one batch of cleanup tails to overlap the active batch.
+        return 2 * self.capacity
+
+    def has_capacity(self) -> bool:
+        with self.lock:
+            return (not self.closed and len(self.active) < self.capacity
+                    and len(self.jobs) < self.owner_capacity)
+
+    def check_admission(self, thread_id: str) -> None:
+        """Preflight resource bounds; reserve repeats this under the same lock."""
         with self.lock:
             if self.closed:
                 raise RpcError(-32003, "内核正在关闭")
@@ -40,6 +98,13 @@ class RuntimeManager:
             if len(self.active) >= self.capacity:
                 raise RpcError(-32005, "已达到并发会话上限",
                                {"code": "TURN_CONCURRENCY_LIMIT", "limit": self.capacity})
+            if len(self.jobs) >= self.owner_capacity:
+                raise RpcError(-32005, "仍在执行或收尾的回合已达到内核资源上限",
+                               {"code": "TURN_OWNER_LIMIT", "limit": self.owner_capacity})
+
+    def reserve(self, thread_id: str, text: str, runner: Any) -> dict:
+        with self.lock:
+            self.check_admission(thread_id)
             job = {"threadId": thread_id, "turnId": uuid.uuid4().hex, "input": text,
                    "cancel": threading.Event(), "runner": runner, "worker": None}
             self.active[thread_id] = job
@@ -57,11 +122,13 @@ class RuntimeManager:
             self._retire_locked(job)
         self._notify_idle()
 
-    def _retire_locked(self, job: dict) -> None:
+    def _retire_locked(self, job: dict) -> bool:
         abort = job.get("_shutdown_abort")
         if job.get("_worker_done") and (abort is None or abort.done.is_set()):
             if self.jobs.get(job["turnId"]) is job:
                 self.jobs.pop(job["turnId"], None)
+                return True
+        return False
 
     def _notify_idle(self) -> None:
         if self.on_idle is not None:
@@ -69,7 +136,11 @@ class RuntimeManager:
 
     def _abort_done(self, job: dict) -> None:
         with self.lock:
-            self._retire_locked(job)
+            retired = self._retire_locked(job)
+        # Abort start failure can call this inline in the cancelling thread.
+        # Signal the prestarted worker; never dispatch unrelated work here.
+        if retired:
+            self._capacity_wake.set()
         self._notify_idle()
 
     def _claim_abort_locked(self, job: dict, *, interrupt: bool) -> TrackedAbort:
@@ -105,6 +176,7 @@ class RuntimeManager:
     def cancel_all(self, *, interrupt: bool = True) -> None:
         with self.lock:
             self.closed = True
+            self._capacity_wake.set()
             for job in self.jobs.values():
                 job["cancel"].set()
                 self._claim_abort_locked(job, interrupt=interrupt)
@@ -118,6 +190,7 @@ class RuntimeManager:
     def wait_for_stop(self, deadline: float) -> None:
         with self.lock:
             workers = [job.get("worker") for job in self.jobs.values()]
+            workers.append(self._capacity_worker)
             workers.extend(job["_shutdown_abort"].worker for job in self.jobs.values()
                            if "_shutdown_abort" in job)
         join_until(workers, deadline)
