@@ -1,5 +1,11 @@
 # 上游吸收记录
 
+## 第九十一轮：暴露有界运行资源 owner 快照
+
+Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的开放 [Issue #11350](https://github.com/earendil-works/pi/issues/11350) 报告进程级 codemode worker 持有者不可见，使用户无法判断等待、转向或取消哪个长任务；其示例中的长脚本 worker 池与本项目的模型/摘要 owner 不同，且 BOSS-CLI 已有 FIFO follow-up 等待及新 turn 防插队逻辑。本轮只吸收 holder 可见性的诊断需求，不声称本项目缺乏公平调度、不改变准入算法，也不复制 Pi 源码。
+
+本项目 [Issue #213](https://github.com/can4hou6joeng4/boss-cli/issues/213) 将当前 `RuntimeManager.jobs` 与 `active`、仍占用会话准入的摘要索引及容量等待 FIFO 合并成 `runtime/resources/read` 的有界只读快照。最多返回 32 个 owner 与 32 个 waiter，分别报告总量/截断、阶段、取消与 abort 状态以及单调时钟计算的进程内时长；waiter 位置遵从现有 FIFO。进入快照的是 live 内存 owner，不从历史 transcript 推断；无正文、工具参数、模型消息、自由异常或凭据，也不新增持久字段。
+
 ## 第九十轮：保留模型流传输错误 cause 的安全诊断
 
 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的开放 [Issue #10697](https://github.com/earendil-works/pi/issues/10697) 提供 undici SSE 复现：idle body timeout 与对端关闭都被归一成 `terminated`，底层 cause 分别是 `BodyTimeoutError / UND_ERR_BODY_TIMEOUT` 与 `SocketError / UND_ERR_SOCKET`，但终态和 retry 分类只能看到外层消息；核对时该 issue 为 OPEN，未发现关联 PR。Pi 开放 [Issue #11071](https://github.com/earendil-works/pi/issues/11071) 对应更通用的原则：将 provider 已识别的错误事实作为结构化终态 metadata 传递。本项目已具备 `ModelErrorInfo`，本轮在其传输错误范围内独立扩展，不复制 Pi 实现或引入依赖。

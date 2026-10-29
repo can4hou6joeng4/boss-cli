@@ -106,6 +106,7 @@ export const ClientMethods = {
   queueRemove: "queue/remove",
   modelList: "model/list",
   configRead: "config/read",
+  runtimeResourcesRead: "runtime/resources/read",
   connectionRead: "connection/read",
   connectionCheck: "connection/check",
   skillsList: "skills/list",
@@ -550,6 +551,37 @@ export interface QueueAddParams {
 }
 export interface QueueListResponse { items: QueueItem[] }
 export interface QueueItemResponse { queueItem: QueueItem }
+
+export interface RuntimeResourceOwner {
+  kind: "turn" | "manualCompaction" | "automaticCompaction";
+  id: string;
+  threadId: string;
+  state: "active" | "cleanup";
+  ageSeconds: number;
+  cancelRequested: boolean;
+  abortPending: boolean;
+  phase: string | null;
+  phaseStatus: string | null;
+}
+
+export interface RuntimeResourceWaiter {
+  threadId: string;
+  position: number;
+  waitingSeconds: number;
+}
+
+export interface RuntimeResourcesReadResponse {
+  turnCapacity: number;
+  activeTurnCount: number;
+  maxRetainedTurns: number;
+  retainedTurnCount: number;
+  ownerCount: number;
+  owners: RuntimeResourceOwner[];
+  ownersTruncated: boolean;
+  waiterCount: number;
+  waiters: RuntimeResourceWaiter[];
+  waitersTruncated: boolean;
+}
 
 export interface ModelCapabilities {
   contextWindow: number;
