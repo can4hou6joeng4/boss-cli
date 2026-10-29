@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第八十一轮：回合阶段 checkpoint 与重启复核边界
+
+本项目 [Issue #185](https://github.com/can4hou6joeng4/boss-cli/issues/185) 基于 main `08dcccd28158548ff2fd0f0ac4f55c2198fe7746` 核对。参考 Pi Durable MIT main `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a` 的 `generation.ts` 分阶段执行、`live.ts` 持久运行态和 `harness-ownership.test.ts` / `harness-view-run.test.ts` 的崩溃重开覆盖；开放 Issue [#11332](https://github.com/earendil-works/pi/issues/11332) 仍讨论 task 所有权、abort 与 idle 边界。Pi 的实验性 Durable API 与本项目招聘回合、审批及外部工具副作用并不等价，本轮吸收的是“阶段状态须持久化并定义重启结果”的设计要求，不移植代码、不引入 Pi 依赖。
+
+本项目已有 append-only session JSONL 和 SQLite 投影，业务回合与工具执行也保存终态及执行状态；但 `RuntimeManager.active/jobs`、TurnRunner 当前请求编号和工具批次责任只在进程内存。重启时 `SessionStore.recover()` 将 running turn/tool 标记为 interrupted/failed 并阻止副作用重放，却没有一条与 turn 对应的阶段记录来区分 admission、准备、模型请求、工具执行和 finish 中断位置。摘要任务已有独立持久终态恢复，但不能覆盖业务 turn 的运行边界。
+
+现在回合以 `task_phase` 条目持久化 admission、prepare、model_request、tool_execution 与 finish 阶段，并记录受限的 attempt 和 restartLimit 字段。阶段记录只是恢复检查点，不授权自动恢复：restartLimit 当前固定为 0；启动时未收尾阶段若对应 turn 仍运行则收敛为 interrupted/manual，若 turn 终态已先落盘则按该权威终态关闭阶段。已有工具 executionState、审批及结果未知 review fence 继续决定外部效果的人工核对边界；provider 请求、工具和摘要均不会因 checkpoint 自动重放。fork 会排除 task_phase，因为阶段归属当前运行实例而不是对话历史。
+
+隔离恢复探针覆盖 model_request 阶段崩溃、turn 终态先于阶段收尾、保留 attempt/restartLimit、分支排除阶段条目及恢复不调用 provider/工具；网络与外部进程尝试为零。该增量提供可审计的恢复位置，但暂不提供阶段续跑、自动 retry/backoff、task owner 树或 task 状态 RPC；这些需要在逐一划定幂等与外部效果契约后再引入。
+
 ## 第八十轮：模型请求的本地任务归属
 
 Pi Durable 开放 [Issue #10845](https://github.com/earendil-works/pi/issues/10845) 希望 provider 能区分 generation 与 compaction 的发起任务；截至 2026-10-29 仍为 OPEN，维护者同时指出任务 ID 本身不能证明请求属于哪个用户。本轮核对固定 Pi commit `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`（MIT）的 `packages/durable/src/harness/generation.ts:283-290`、`compaction.ts:178-188,251-259` 与 `packages/ai/src/types.ts:252-269`：两类请求携带 sessionId，通用 metadata 可由 provider 解释，但没有统一固定任务归属。本项目采用显式请求归属原则，独立实现本地类型，不复制源码、不引入 Pi 或新增运行依赖，也不把上游未决提案视为授权或计费方案。

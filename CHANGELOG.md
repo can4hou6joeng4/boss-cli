@@ -4,6 +4,7 @@
 
 ### 新增
 
+- [Issue #185](https://github.com/can4hou6joeng4/boss-cli/issues/185)：回合 admission、准备、模型请求、工具执行和 finish 阶段写入 append-only `task_phase` checkpoint，并从 `turn/read`、`turn/list` 与线程 `lastTurn` 查询；重启只收敛未完成阶段并标记人工复核，不自动重放模型或工具副作用，分支不会继承进程级阶段状态。
 - 参考 Pi Durable [Issue #10845](https://github.com/earendil-works/pi/issues/10845)：自定义 provider 可通过不可变 `ModelRequest.task_context` 区分业务回合、摘要分片与连接检查，并关联固定的会话、回合、摘要任务及请求编号；身份与宿主策略一致，不进入内置供应商 HTTP 参数、模型输入或预算指纹。
 
 ### 修复

@@ -199,7 +199,7 @@ export interface ThreadSummary {
   title: string;
   createdAt: string;
   updatedAt: string;
-  lastTurn?: { turnId: string; status: TurnStatus } | null;
+  lastTurn?: Pick<TurnSummary, "turnId" | "status" | "taskPhase" | "taskPhaseStatus" | "taskAttempt" | "taskRestartLimit" | "taskRecoveryReason" | "taskResumePolicy"> | null;
   sessionId?: string;
   projectId?: string | null;
   model?: string;
@@ -448,6 +448,8 @@ export interface TurnStartResponse {
 }
 
 export type TurnStatus = "running" | "completed" | "interrupted" | "blocked" | "error";
+export type TurnTaskPhase = "admission" | "prepare" | "model_request" | "tool_execution" | "finish";
+export type TurnTaskResumePolicy = "manual" | "closed";
 
 export interface ThreadUpdatedParams {
   threadId: string;
@@ -490,7 +492,21 @@ export interface ToolApprovalResponse { approved: boolean }
 
 export interface PageParams { cursor?: string | null; limit?: number }
 export interface ThreadListParams extends PageParams { archived?: boolean; projectId?: string }
-export interface TurnSummary { turnId: string; threadId: string; status: TurnStatus; model?: string; startedAt?: string; updatedAt?: string; maxModelRequests?: number }
+export interface TurnSummary {
+  turnId: string;
+  threadId: string;
+  status: TurnStatus;
+  model?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  maxModelRequests?: number;
+  taskPhase?: TurnTaskPhase;
+  taskPhaseStatus?: TurnStatus;
+  taskAttempt?: number;
+  taskRestartLimit?: number;
+  taskRecoveryReason?: "processExit" | "terminalStateRecovered";
+  taskResumePolicy?: TurnTaskResumePolicy;
+}
 export interface TurnListResponse { turns: TurnSummary[]; nextCursor: string | null }
 export interface ItemListResponse { items: ThreadItem[]; nextCursor: string | null }
 
