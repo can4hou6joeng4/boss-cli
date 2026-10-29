@@ -5,6 +5,7 @@
 ## 快速导航
 
 - [模型配置](#模型配置来源)
+- [模型请求期限](#单次模型请求期限)
 - [职位搜索](#明确条件搜索)
 - [求职者沟通列表](#求职者沟通列表)
 - [技能与队列](#技能与队列)
@@ -26,6 +27,14 @@ OpenAI Responses 的完整显式配置由以下三项组成，去除首尾空白
 缺少任一项时才读取 `BOSS_HARNESS_CODEX_CONFIG`、`CODEX_HOME/config.toml` 或默认 `~/.codex/config.toml`，按此顺序选择文件，显式字段仍优先。读取 TOML 需要 Python 3.11+；已有文件不可读或语法损坏时明确报错，不退到其他 provider。文件不存在或缺少可用 profile 时继续检查端点与凭据，缺项会报错；未提供模型且没有可用文件模型时保留既有 `DEFAULT_MODEL`。
 
 当前文件适配要求文件自身同时提供 `model`、`model_provider` 及该 provider 的 `base_url` 才形成可用 profile；认证仅识别 `experimental_bearer_token`，尚未适配 Codex 的 `env_key`、OAuth 或任意 `wire_api`。配置解析只读本地文件，不探测真实服务。
+
+## 单次模型请求期限
+
+OpenAI Responses 与 Anthropic Messages 的单次传输默认最多运行 600 秒，可用 `BOSS_HARNESS_MODEL_REQUEST_TIMEOUT_SECONDS` 设置为 1–3600 的整数秒。该 wall-clock 总时限覆盖连接建立和流式响应；SDK 原有的 30 秒连接/读取空闲时限仍然生效，周期性 SSE 心跳不会延长总时限。
+
+超时不会标记为用户取消，也不进入上下文溢出恢复。后台清理在期限内确认完成时，它作为可重试传输错误结束；若清理仍未完成，内核停止自动重试并保留该传输的资源额度。OpenAI 仅在尚无可见输出且清理已确认时遵循既有重试策略，每次 attempt 各自重新计时；Anthropic 不新增自动重试。这不是跨重试或 Agent 自动恢复的共享总预算。
+
+每个内核进程最多保留 8 个模型传输，业务回合、摘要与连接检查共同使用；未完成后台清理的传输也占用额度，满额时新请求在发出前失败。流事件队列最多保留 64 项、估算共 4 MiB，单事件最多 2 MiB。该预算针对 SDK 已解码对象，不能限制 SDK 解码单帧时的临时内存或整个进程 RSS。
 
 ## 技能与队列
 

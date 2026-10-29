@@ -991,3 +991,13 @@ Pi Durable 开放 [Issue #11026](https://github.com/earendil-works/pi/issues/110
 本项目新增 host JSON-RPC `thread/delete({threadId})`。删除前持有线程准入、follow-up、runtime 与事件锁；活动回合、摘要、队列派发、worker 收尾和回执通知仍持有状态时返回 `THREAD_BUSY`。删除意图使用 owner-only sidecar，先隐藏目标线程，再幂等清除 session 与 checkpoint 临时文件、共享 `events.jsonl` 对应记录、SQLite turns/events/thread 投影、当前索引 WAL、修复备份中的 SQLite 副本以及没有存活 session/fork 引用的内容哈希附件。以稳定 event ID 追加不含正文的 `thread/deleted` 全局事件，维持游标前进；清理中断后启动恢复会继续处理，读取、列表和 event replay 都不会暴露 pending 线程。
 
 fork 是完整历史前缀的独立副本，父会话删除不级联删除 fork；被 fork 或其他会话引用的附件继续保留。仅保证清除应用管理的当前逻辑副本与索引修复副本，不覆盖 APFS/SSD 旧文件块、Time Machine/文件系统快照、模型或宿主此前取得的副本，也不回滚招聘 CLI 已执行的外部操作。桌面 renderer 暂未开放此 RPC，直到有明确的用户确认界面与桌面验收。
+
+## 模型流不可重置总时限
+
+参考 Pi 开放 [Issue #9474](https://github.com/earendil-works/pi/issues/9474)（2026-10-30 复核仍 OPEN，MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3`）：空闲读取超时会被周期 SSE 事件重置，无法限制一个始终不发终态的模型请求。Pi 讨论的是 Codex Responses transport；本项目使用同步 Python SDK，不能直接移植其实现。本轮独立实现、不复制 Pi 源码或增加依赖。
+
+本项目通过官方异步 SDK 执行每次 transport attempt，并以有界事件队列桥接回既有同步 Provider 接口。事件循环独立计时，在期限到达时立即通知同步消费者并仅取消 producer 一次；超时或用户取消会清空尚未消费的 SDK 事件，让终态排在队首。默认 600 秒，可由 `BOSS_HARNESS_MODEL_REQUEST_TIMEOUT_SECONDS` 设置为 1–3600 秒，既有 30 秒 SDK idle timeout 保持。期限覆盖等待响应头及读取流，事件队列最多缓冲 64 项、总估算 4 MiB、单事件 2 MiB；队列满时对 SDK producer 施加背压，超限事件不进入队列并按本地输出预算失败。估算限制作用于 SDK 已解码事件，不能阻止 SDK 在交付前暂时构造单个超大 SSE 帧。计时依赖事件循环调度，同步 CPU 工作阻塞 loop 时信号可能延迟。关闭时最多等待 SDK 收尾 1 秒，不重复中断响应清理；每进程最多 8 个 pump 持有后台传输额度，只有 worker 和 SDK 清理结束后才释放。若底层协程拒绝取消，调用方仍按时收到终态，但该 pump 会继续占用一个额度；未确认清理的 OpenAI attempt 不会自动重试，达到容量上限的新请求会在发出前失败，不创建额外线程或传输。
+
+超时映射为 `transport_error`；SDK 清理已完成时 `retryable=true`，否则为 `false` 并停止自动重试，不会使用 `aborted` 或 `CONTEXT_OVERFLOW`。显式用户取消仍映射 `aborted`。OpenAI 沿用“尚无可见内容时才重试”的既有 attempt 策略，每个 attempt 单独计时；Anthropic 不新增重试。Anthropic 的凭据类型与端点在 provider 创建时按 SDK 规则解析并冻结，异步请求不从后续环境变更重新选择凭据或端点。没有引入跨 provider、OpenAI 重试、fallback 或 Agent 层的共享 recovery budget，故不能把该单次时限理解为整轮任务总时限。
+
+本地合成服务验证覆盖心跳注释持续到达、响应头延迟、两家 provider 正常终态与显式取消；心跳及响应头两种超时均在配置期限附近返回 retryable transport error，正常响应产出 `done`，用户取消产出 `aborted`。官方 SDK 组合 Anthropic 1.15.0 / OpenAI 3.35.1 和 Anthropic 2.3.0 / OpenAI 3.41.0 均通过。pump 探针另覆盖吞掉取消及无限期取消清理、8 个残留槽位与释放、SDK Pydantic 额外字段和大整数预算；凭据探针覆盖静态 key/token、请求头快照、动态凭据借用及最终关闭，重试探针确认清理未完成时不创建第二个 OpenAI 请求。测试和合成 server 代码仅在本地保留，不提交测试材料；未使用有效凭据、真实会话或招聘平台。Pi Issue #9474 的跨层恢复预算以及实时供应商验收仍未覆盖。

@@ -105,6 +105,7 @@ flowchart LR
 | 本地 Codex profile | 显式 OpenAI 配置缺项时，读取 `BOSS_HARNESS_CODEX_CONFIG`、`CODEX_HOME/config.toml` 或 `~/.codex/config.toml`。读取 TOML 需要 Python 3.11+。 |
 | Anthropic Messages | 使用 `ANTHROPIC_*` 环境变量。 |
 | 无模型模式 | 设置 `BOSS_HARNESS_PROVIDER=none`；模型不会被调用，但招聘 CLI 工具仍可运行。 |
+| 单次模型传输 | 默认总时限 600 秒，可用 `BOSS_HARNESS_MODEL_REQUEST_TIMEOUT_SECONDS` 设置为 1–3600 秒。详见[使用指南](docs/USER_GUIDE.md#单次模型请求期限)。 |
 
 所有凭据都应保存在本地环境或安全的凭据管理工具中，不要写进配置样例、提交或日志。
 </details>
