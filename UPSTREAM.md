@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第七十八轮：会话 JSONL 冷读的有界流式解析
+
+继续参考 Pi MIT 仓库当前 `main` `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a` 的 `loadEntriesFromFile()`：固定 1 MiB 读取缓冲区配合增量解码和逐行解析。本项目此前 [Issue #103](https://github.com/can4hou6joeng4/boss-cli/issues/103) 只把原始 bytes 快照与 JSON 解码拆开，降低了解码额外峰值；`SessionStore.read_entries()` 仍先 `read_bytes()`，长期会话会把完整原始 JSONL 保留在内存。本轮延伸同一存储边界，不复制 Pi 源码或增加依赖。
+
+`read_entries()` 现在在既有 `SessionStore` 锁内按 64 KiB 块解析会话文件，保留坏 JSON 行跳过、坏 UTF-8 替换、LF/CRLF/CR 行边界、尾部无换行和条目筛选语义；单行超过 8 MiB 时拒绝，避免损坏或外部追加的无界长行。事件索引冷重建共用同一有界解析器，事件仍使用原有 LF 语义与游标冲突校验。锁覆盖整个解析过程，维持一次读取对应稳定文件切面；所有写入仍通过 `SessionStore` 串行化。
+
+本地隔离探针以大型会话冷读测量峰值分配，覆盖 LF/CRLF/CR、坏 UTF-8、坏 JSON、尾部无换行、条目投影与 8 MiB 超限拒绝；此前事件冷重建的分页、游标、坏尾行和超限验证保持通过。探针、合成状态和临时文件未进入 Git、wheel 或 sdist；未调用真实模型、招聘平台或桌面 UI。
+
 ## 第七十七轮：事件日志冷重建的有界流式解析
 
 参考 Pi MIT 仓库当前 `main` `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a` 的 `SessionManager` JSONL 增量解码路径（固定 1 MiB buffer）。Pi 的会话记录和本项目的共享 `events.jsonl` 不是同一格式，本轮只吸收“可重建日志不能按文件大小一次性进入内存”的解析边界，不复制 Pi 源码或增加依赖。

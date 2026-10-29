@@ -9,7 +9,6 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
-import io
 import json
 import os
 import re
@@ -52,29 +51,41 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
-def _iter_event_lines(path: Path):
-    """Yield decoded event lines without materialising the complete journal."""
+def _iter_bounded_lines(path: Path, *, maximum: int, label: str = "JSONL",
+                        universal_newlines: bool = False):
+    """Yield decoded JSONL lines without materialising the complete file."""
     pending = bytearray()
     with path.open("rb") as handle:
         while True:
             chunk = handle.read(_EVENT_READ_CHUNK_BYTES)
-            if not chunk:
-                break
-            pending.extend(chunk)
+            eof = not chunk
+            if chunk:
+                pending.extend(chunk)
             while True:
                 newline = pending.find(b"\n")
-                if newline < 0:
-                    if len(pending) > MAX_EVENT_LINE_BYTES:
-                        raise ValueError("事件日志单行超过大小限制")
+                carriage = pending.find(b"\r") if universal_newlines else -1
+                if carriage >= 0 and (newline < 0 or carriage < newline):
+                    if carriage + 1 == len(pending) and not eof:
+                        break
+                    separator_end = (carriage + 2 if carriage + 1 < len(pending)
+                                     and pending[carriage + 1] == 10 else carriage + 1)
+                    line = bytes(pending[:carriage])
+                    del pending[:separator_end]
+                elif newline >= 0:
+                    line = bytes(pending[:newline])
+                    del pending[:newline + 1]
+                else:
+                    if len(pending) > maximum:
+                        raise ValueError(f"{label}单行超过大小限制")
                     break
-                line = bytes(pending[:newline])
-                del pending[:newline + 1]
-                if len(line) > MAX_EVENT_LINE_BYTES:
-                    raise ValueError("事件日志单行超过大小限制")
+                if len(line) > maximum:
+                    raise ValueError(f"{label}单行超过大小限制")
                 yield line.decode("utf-8", errors="replace")
+            if eof:
+                break
         if pending:
-            if len(pending) > MAX_EVENT_LINE_BYTES:
-                raise ValueError("事件日志单行超过大小限制")
+            if len(pending) > maximum:
+                raise ValueError(f"{label}单行超过大小限制")
             yield bytes(pending).decode("utf-8", errors="replace")
 
 
@@ -544,10 +555,9 @@ class SessionStore:
     def read_entries(self, thread_id: str) -> list[dict]:
         with self._lock:
             self.require_thread(thread_id)
-            content = self.path_for(thread_id).read_bytes()
-        out: list[dict] = []
-        with io.TextIOWrapper(io.BytesIO(content), encoding="utf-8", errors="replace") as handle:
-            for line in handle:
+            out: list[dict] = []
+            for line in _iter_bounded_lines(self.path_for(thread_id), maximum=MAX_EVENT_LINE_BYTES,
+                                            label="会话日志", universal_newlines=True):
                 if not line.strip():
                     continue
                 try:
@@ -557,7 +567,7 @@ class SessionStore:
                 if (isinstance(data, dict) and data.get("type") != "session"
                         and isinstance(data.get("id"), str) and isinstance(data.get("payload"), dict)):
                     out.append(data)
-        return out
+            return out
 
     def read(self, thread_id: str) -> list[dict]:
         """Read all rollout entries, including queue/context/approval extension records."""
@@ -1335,7 +1345,7 @@ class SessionStore:
         checkpoint = connection.execute("SELECT value FROM checkpoints WHERE name='events'").fetchone()
         if checkpoint and checkpoint["value"] == fingerprint:
             return
-        for line in _iter_event_lines(self.events_path):
+        for line in _iter_bounded_lines(self.events_path, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"):
             try:
                 record = json.loads(line)
                 if not isinstance(record, dict) or not isinstance(record.get("params"), dict):
