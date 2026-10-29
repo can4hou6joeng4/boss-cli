@@ -738,6 +738,10 @@ class ApplicationService:
                                    {"code": "THREAD_NOT_FOUND", "threadId": thread_id}) from None
                 except Exception:
                     if self.sessions.has_pending_deletion(thread_id):
+                        # The durable deletion intent already hides this session.
+                        # Retire its waiter even if the remaining cleanup fails.
+                        self._capacity_waiter_ids.discard(thread_id)
+                        self._capacity_waiters = deque(value for value in self._capacity_waiters if value != thread_id)
                         raise RpcError(-32012, "会话删除尚未完成；该会话已隐藏，内核重启后会继续清理",
                                        {"code": "THREAD_DELETE_INCOMPLETE", "threadId": thread_id}) from None
                     raise
