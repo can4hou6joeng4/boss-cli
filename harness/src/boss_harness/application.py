@@ -1855,6 +1855,10 @@ class ApplicationService:
                 runner.validate_arguments = validate
                 job = self.runtimes.reserve(thread_id, text, runner)
                 job["compactionPolicy"] = policy
+                def record_phase(phase: str, attempt: int) -> None:
+                    self._record_turn_phase(job, phase, "running", attempt)
+
+                runner.phase_recorder = record_phase
                 runner.request_preparer = lambda request: self._prepare_turn_request(job, request)
                 runner.recover_context = (lambda request: self._compact_during_turn(
                     job, request, "overflow", required=True)) if policy.enabled else None
@@ -1872,6 +1876,7 @@ class ApplicationService:
                         maxModelRequests=max_model_requests,
                         skillIds=[s["id"] for s in skills], toolPolicy=thread.get("toolPolicy", "approval"),
                         clientUserMessageId=client_id, requestInputDigest=request_digest, queueId=job["queueId"])
+                    self._record_turn_phase(job, "admission", "running", 1)
                     user = runner.append_user(thread_id, text + ("\n\n" + attachment_text if attachment_text else ""),
                                        originalInput=text, clientUserMessageId=client_id,
                                        queueId=queue_item["id"] if queue_item else None, attachments=attachments)
@@ -1947,6 +1952,10 @@ class ApplicationService:
             fields["inputPersisted"] = persisted
         try:
             self.sessions.record_turn(job["threadId"], job["turnId"], "error", **fields)
+        except Exception:
+            pass
+        try:
+            self._record_turn_phase(job, "finish", "error", job.get("phaseAttempt", 1))
         except Exception:
             pass
         try:
@@ -2090,6 +2099,7 @@ class ApplicationService:
         thread_id, runner = job["threadId"], job["runner"]
         status = "error"
         try:
+            self._record_turn_phase(job, "prepare", "running", 1)
             status = runner.run(thread_id, job["cancel"]) if runner.provider is not None else self._run_deterministic(
                 thread_id, job["input"], job["cancel"], runner=runner)
         except Exception as exc:
@@ -2139,6 +2149,16 @@ class ApplicationService:
                     except (OSError, ValueError):
                         pass
                 finally:
+                    try:
+                        self._record_turn_phase(job, "finish", status,
+                                                job.get("phaseAttempt", 1))
+                    except (OSError, ValueError):
+                        status = "error"
+                        try:
+                            self.sessions.record_turn(thread_id, job["turnId"], "error",
+                                                      recoveryReason="phasePersistenceFailure")
+                        except (OSError, ValueError):
+                            pass
                     self.runtimes.release(job)
             for method in ("turn/completed", "thread/updated"):
                 try:
@@ -2148,6 +2168,18 @@ class ApplicationService:
                     # Never replay a notification that may already be durable.
                     pass
         return status
+
+    def _record_turn_phase(self, job: dict, phase: str, status: str, attempt: int) -> None:
+        """Append phase boundaries; only the most recent running phase owns recovery."""
+        previous = job.get("_taskPhase")
+        if previous is not None and previous["status"] == "running" and previous["phase"] != phase:
+            self.sessions.record_task_phase(
+                job["threadId"], job["turnId"], previous["phase"], "completed",
+                attempt=previous["attempt"], restart_limit=0)
+        self.sessions.record_task_phase(job["threadId"], job["turnId"], phase, status,
+                                        attempt=attempt, restart_limit=0)
+        job["phaseAttempt"] = attempt
+        job["_taskPhase"] = {"phase": phase, "status": status, "attempt": attempt}
 
     def _run_deterministic(self, thread_id: str, text: str, cancel: threading.Event | None = None,
                            *, runner: TurnRunner | None = None) -> str:

@@ -109,6 +109,7 @@ class TurnRunner:
         recover_context: Callable[[ModelRequest], ModelRequest | None] | None = None,
         lifecycle_hooks: LifecycleHooks | None = None,
         persistence_fence: Callable[[str], None] | None = None,
+        phase_recorder: Callable[[str, int], None] | None = None,
         dispatch_lock: Any | None = None,
         max_model_requests: int = DEFAULT_MAX_MODEL_REQUESTS,
     ) -> None:
@@ -143,6 +144,7 @@ class TurnRunner:
         self.recover_context = recover_context
         self.lifecycle_hooks = lifecycle_hooks
         self.persistence_fence = persistence_fence
+        self.phase_recorder = phase_recorder
         # The application shares this lock with interrupt acceptance.
         self._dispatch_lock = dispatch_lock or threading.Lock()
         self.context_abort: Callable[[], None] | None = None
@@ -162,6 +164,10 @@ class TurnRunner:
     def _tool_result_limit(self, name: str) -> int:
         value = self._tool_result_limits.get(name, DEFAULT_MODEL_TOOL_RESULT_BYTES)
         return value if type(value) is int else DEFAULT_MODEL_TOOL_RESULT_BYTES
+
+    def _record_phase(self, phase: str, attempt: int) -> None:
+        if self.phase_recorder is not None:
+            self.phase_recorder(phase, attempt)
 
     # ---------- 中断与审批 ----------
 
@@ -674,6 +680,7 @@ class TurnRunner:
                         commit()
                 elif staged is not None:
                     staged[1]()
+                self._record_phase("model_request", _round + 1)
                 assistant, error, interrupted, assistant_item_id = self._stream_round(thread_id, request)
 
                 if interrupted:
@@ -752,6 +759,7 @@ class TurnRunner:
                 messages.append(assistant)
                 results: list[ToolResultItem] = []
                 batch_id = uuid.uuid4().hex[:12]
+                self._record_phase("tool_execution", _round + 1)
                 for index, call in enumerate(calls):
                     if self.cancelled():
                         self._skip_calls(thread_id, calls[index:], batch_id,

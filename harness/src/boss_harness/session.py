@@ -34,6 +34,7 @@ _EVENT_ID = re.compile(r"[a-f0-9]{32}\Z")
 _ATTACHMENT_DIGEST = re.compile(r"[a-f0-9]{64}\Z")
 _DELETE_INTENT = re.compile(r"\.delete-([a-f0-9]{12})\.json\Z")
 _TERMINAL = frozenset({"completed", "interrupted", "blocked", "error"})
+_TASK_PHASES = frozenset({"admission", "prepare", "model_request", "tool_execution", "finish"})
 _EVENT_READ_CHUNK_BYTES = 64 * 1024
 # Event records are persisted from the same bounded JSON-RPC payloads as the
 # transport.  Keep one explicit line limit so a damaged append-only log cannot
@@ -737,6 +738,27 @@ class SessionStore:
         turns: dict[str, dict] = {}
         previous_end = -1
         for ordinal, entry in enumerate(entries):
+            if entry.get("type") == "task_phase":
+                payload = entry.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                task_id = payload.get("taskId")
+                turn = turns.get(task_id) if isinstance(task_id, str) else None
+                phase, status = payload.get("phase"), payload.get("status")
+                attempt, restart_limit = payload.get("attempt"), payload.get("restartLimit")
+                if (turn is not None and isinstance(phase, str) and phase in _TASK_PHASES
+                        and isinstance(status, str) and status in _TERMINAL | {"running"}
+                        and type(attempt) is int and 1 <= attempt <= 1_000
+                        and type(restart_limit) is int and 0 <= restart_limit <= 32):
+                    turn.update(taskPhase=phase, taskPhaseStatus=status, taskAttempt=attempt,
+                                taskRestartLimit=restart_limit)
+                    if (isinstance(payload.get("recoveryReason"), str)
+                            and len(payload["recoveryReason"]) <= 256):
+                        turn["taskRecoveryReason"] = payload["recoveryReason"]
+                    if (isinstance(payload.get("resumePolicy"), str)
+                            and payload["resumePolicy"] in {"manual", "closed"}):
+                        turn["taskResumePolicy"] = payload["resumePolicy"]
+                continue
             if entry.get("type") != "turn":
                 continue
             payload = entry["payload"]
@@ -1305,6 +1327,43 @@ class SessionStore:
         self.append(thread_id, Entry(type="turn", parent_id=self.last_entry_id(thread_id),
                     payload={**fields, "turnId": turn_id, "status": status}))
 
+    def record_task_phase(self, thread_id: str, task_id: str, phase: str, status: str, *,
+                          attempt: int = 1, restart_limit: int = 0,
+                          recovery_reason: str | None = None,
+                          resume_policy: str | None = None) -> None:
+        """Persist a bounded turn phase checkpoint without replaying its side effects.
+
+        A phase is an observation of local ownership, not permission to retry a
+        provider or tool operation.  Recovery may therefore close a running
+        phase as interrupted/manual-review while preserving the append-only
+        transcript and the existing external-effect fence.
+        """
+        _identifier(task_id, "taskId")
+        if not isinstance(phase, str) or phase not in _TASK_PHASES:
+            raise ValueError("任务阶段无效")
+        if not isinstance(status, str) or status not in _TERMINAL | {"running"}:
+            raise ValueError("任务阶段状态无效")
+        if type(attempt) is not int or not 1 <= attempt <= 1_000:
+            raise ValueError("任务阶段 attempt 必须是 1 到 1000 之间的整数")
+        if type(restart_limit) is not int or not 0 <= restart_limit <= 32:
+            raise ValueError("任务阶段 restartLimit 必须是 0 到 32 之间的整数")
+        for name, value in (("recoveryReason", recovery_reason), ("resumePolicy", resume_policy)):
+            if value is not None and (not isinstance(value, str) or not value or len(value) > 256):
+                raise ValueError(f"{name} 格式无效")
+        if recovery_reason not in {None, "processExit", "terminalStateRecovered"}:
+            raise ValueError("recoveryReason 无效")
+        if resume_policy not in {None, "manual", "closed"}:
+            raise ValueError("resumePolicy 无效")
+        payload: dict[str, Any] = {"taskId": task_id, "ownerKind": "turn", "phase": phase,
+                                   "status": status, "attempt": attempt,
+                                   "restartLimit": restart_limit}
+        if recovery_reason is not None:
+            payload["recoveryReason"] = recovery_reason
+        if resume_policy is not None:
+            payload["resumePolicy"] = resume_policy
+        self.append(thread_id, Entry(type="task_phase", parent_id=self.last_entry_id(thread_id),
+                                     payload=payload))
+
     def last_turn(self, thread_id: str) -> dict | None:
         return self.get_thread(thread_id).get("lastTurn")
 
@@ -1391,7 +1450,7 @@ class SessionStore:
             copied_ids: set[str] = set()
             for entry in json.loads(_json(prefix)):
                 # Queue state belongs to one thread, not its transcript forks.
-                if entry["type"] in {"thread_info", "queue"}:
+                if entry["type"] in {"thread_info", "queue", "task_phase"}:
                     continue
                 if (entry["type"] == "context_edit"
                         and owners.get(entry["payload"].get("targetItemId")) not in included_turns):
@@ -1410,6 +1469,48 @@ class SessionStore:
             thread_id = thread["id"]
             entries = self.read_entries(thread_id)
             turns = self._turns(entries, thread_id)
+            turns_by_id = {turn["turnId"]: turn for turn in turns}
+            latest_phases: dict[str, dict[str, Any]] = {}
+            for entry in entries:
+                if entry.get("type") != "task_phase" or not isinstance(entry.get("payload"), dict):
+                    continue
+                payload = entry["payload"]
+                task_id, phase = payload.get("taskId"), payload.get("phase")
+                if (isinstance(task_id, str) and _IDENTIFIER.fullmatch(task_id)
+                        and isinstance(phase, str) and phase in _TASK_PHASES):
+                    latest_phases[task_id] = payload
+            for task_id, phase in latest_phases.items():
+                turn = turns_by_id.get(task_id)
+                if turn is None:
+                    continue
+                if turn.get("status") in _TERMINAL:
+                    status = turn["status"]
+                    reason = "terminalStateRecovered"
+                    policy = "closed"
+                else:
+                    status = "interrupted"
+                    reason = "processExit"
+                    policy = "manual"
+                if (phase.get("phase") == "finish" and phase.get("status") == status
+                        and (phase.get("resumePolicy") == policy or policy == "closed")):
+                    continue
+                attempt = phase.get("attempt", 1)
+                if type(attempt) is not int or not 1 <= attempt <= 1_000:
+                    attempt = 1
+                restart_limit = phase.get("restartLimit", 0)
+                if type(restart_limit) is not int or not 0 <= restart_limit <= 32:
+                    restart_limit = 0
+                phase_was_running = phase.get("status") == "running"
+                if phase_was_running:
+                    self.record_task_phase(
+                        thread_id, task_id, phase["phase"], status,
+                        attempt=attempt, restart_limit=restart_limit,
+                        recovery_reason=reason, resume_policy=policy,
+                    )
+                if phase.get("phase") != "finish" or not phase_was_running:
+                    self.record_task_phase(thread_id, task_id, "finish", status,
+                                           attempt=attempt, restart_limit=restart_limit,
+                                           recovery_reason=reason, resume_policy=policy)
             turn_by_item = self._item_owners(entries)
             items = self._project_items(thread_id, entries)
             recovered_turns: set[str] = set()
