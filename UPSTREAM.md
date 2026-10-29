@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第七十三轮：删除意图与容量等待者退休
+
+继续参考 Pi Durable 开放 [Issue #11350](https://github.com/earendil-works/pi/issues/11350) 的跨会话公平准入原则；核对时 Pi main 为 `556860a386a03113eca146abd9cbb08e9391b7fb`，许可证 MIT。Pi 的 Codemode worker pool 与本项目模型回合容量不同，本轮只将已采用的 FIFO 原则延伸到本地删除生命周期，不复制 Pi 调度代码或引入依赖。
+
+本项目 [Issue #169](https://github.com/can4hou6joeng4/boss-cli/issues/169) 在 main `0cc2087a018d57b7cdf35f917803cd924af0f1c0` 上通过真实 `ApplicationService` worker、容量 1 与合成 provider 复现：A 占用容量，B/C 的 follow-up 排队；B 的删除意图落盘后，附件清理发生合成 I/O 失败，RPC 返回 `THREAD_DELETE_INCOMPLETE`，B 已隐藏但仍在容量等待队列。A 以 error 退出后，调度器读取 B 时抛错并停止本轮唤醒，C 仍 queued、active 为 0，新的 D 回合因 `TURN_ADMISSION_WAITING` 被拒。
+
+删除失败分支只有在确认持久删除标记存在时，才同步移除目标 waiter ID 和 deque 项；与成功删除使用相同的 follow-up admission/runtime 锁，保留其他会话的相对顺序。删除意图落盘前失败不移除有效 waiter，RPC 的删除未完成错误、重启继续清理和不可自动重放规则保持不变；不在调度层宽泛捕获损坏或 I/O 异常。修复后同一探针得到 C delivered、D accepted、等待队列清空，合成 provider 在 D 之前仅执行 A/C 各一次；网络和外部进程尝试均为零，探针仅保留本地。
+
+独立 7 项边界探针通过：删除意图落盘前失败保留 B/C 的执行顺序；落盘后失败移除 B，C/D/E 仍按 FIFO 各执行一次，重复唤醒不重放；成功删除、归档和关闭均不启动对应工作；正常重开及稳定的运行中状态快照重开均继续完成删除，旧队列暂停、provider 调用为零，删除事件恰为一条。类型检查、Electron 源码构建、Python 编译和 wheel/sdist 构建通过，45 个包内产品源码文件逐字节匹配候选树，无额外测试或本地状态。独立代码审查未发现新锁序或有效工作丢失；测试材料未提交，未进行真实模型、平台或桌面 UI 验收。
+
 ## 第七十二轮：关闭期限覆盖 shutdown 事件锁等待
 
 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 仍在讨论 shutdown、任务所有权与 idle 等待的分离；本轮不引入 Pi 的 task API，也不复制其实现。参考仍限于此前核对的 Pi main `14b4c56e5796e995706fec5b5124181a0f60bc35`（MIT）。
