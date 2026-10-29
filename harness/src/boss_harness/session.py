@@ -33,6 +33,11 @@ _EVENT_ID = re.compile(r"[a-f0-9]{32}\Z")
 _ATTACHMENT_DIGEST = re.compile(r"[a-f0-9]{64}\Z")
 _DELETE_INTENT = re.compile(r"\.delete-([a-f0-9]{12})\.json\Z")
 _TERMINAL = frozenset({"completed", "interrupted", "blocked", "error"})
+_EVENT_READ_CHUNK_BYTES = 64 * 1024
+# Event records are persisted from the same bounded JSON-RPC payloads as the
+# transport.  Keep one explicit line limit so a damaged append-only log cannot
+# make a cold index rebuild allocate without bound.
+MAX_EVENT_LINE_BYTES = 8 * 1024 * 1024
 
 
 def _now() -> str:
@@ -45,6 +50,32 @@ def _new_id() -> str:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def _iter_event_lines(path: Path):
+    """Yield decoded event lines without materialising the complete journal."""
+    pending = bytearray()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(_EVENT_READ_CHUNK_BYTES)
+            if not chunk:
+                break
+            pending.extend(chunk)
+            while True:
+                newline = pending.find(b"\n")
+                if newline < 0:
+                    if len(pending) > MAX_EVENT_LINE_BYTES:
+                        raise ValueError("事件日志单行超过大小限制")
+                    break
+                line = bytes(pending[:newline])
+                del pending[:newline + 1]
+                if len(line) > MAX_EVENT_LINE_BYTES:
+                    raise ValueError("事件日志单行超过大小限制")
+                yield line.decode("utf-8", errors="replace")
+        if pending:
+            if len(pending) > MAX_EVENT_LINE_BYTES:
+                raise ValueError("事件日志单行超过大小限制")
+            yield bytes(pending).decode("utf-8", errors="replace")
 
 
 def _limit(value: int, maximum: int = 200) -> int:
@@ -1304,7 +1335,7 @@ class SessionStore:
         checkpoint = connection.execute("SELECT value FROM checkpoints WHERE name='events'").fetchone()
         if checkpoint and checkpoint["value"] == fingerprint:
             return
-        for line in self.events_path.read_text(encoding="utf-8", errors="replace").split("\n"):
+        for line in _iter_event_lines(self.events_path):
             try:
                 record = json.loads(line)
                 if not isinstance(record, dict) or not isinstance(record.get("params"), dict):
@@ -1350,7 +1381,10 @@ class SessionStore:
             inserted = connection.execute("INSERT INTO events(event_id,method,thread_id,params_json) VALUES(?,?,?,'{}')", (event_id, method, thread_id))
             payload.update(eventId=event_id, eventCursor=str(inserted.lastrowid))
             frame = {"method": method, "params": payload}
-            self._append_line(self.events_path, {"type": "event", "timestamp": _now(), **frame})
+            record = {"type": "event", "timestamp": _now(), **frame}
+            if len(_json(record).encode("utf-8")) > MAX_EVENT_LINE_BYTES:
+                raise ValueError("事件日志单行超过大小限制")
+            self._append_line(self.events_path, record)
             connection.execute("UPDATE events SET params_json=? WHERE cursor=?", (_json(payload), inserted.lastrowid))
             stat = self.events_path.stat()
             connection.execute("INSERT INTO checkpoints(name,value) VALUES('events',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", (f"{stat.st_size}:{stat.st_mtime_ns}",))

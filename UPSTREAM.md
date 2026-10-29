@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第七十七轮：事件日志冷重建的有界流式解析
+
+参考 Pi MIT 仓库当前 `main` `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a` 的 `SessionManager` JSONL 增量解码路径（固定 1 MiB buffer）。Pi 的会话记录和本项目的共享 `events.jsonl` 不是同一格式，本轮只吸收“可重建日志不能按文件大小一次性进入内存”的解析边界，不复制 Pi 源码或增加依赖。
+
+本项目基线 `f7832c70be77045225fb281b0f8b3dac20e86dc4` 的 `SessionStore._index_events()` 在 SQLite writer 事务内对 `events.jsonl` 调用 `read_text().split("\\n")`。事件日志会持久化文本与思考增量，长期文件可能远大于单次 8 MiB JSON-RPC 帧；索引丢失、修复或恢复时，整文件物化会让内存峰值随历史长度增长，并延长 writer 锁持有时间。既有会话 JSONL 解析优化没有覆盖该共享事件索引。
+
+现在以 64 KiB 固定块增量拆分事件行，单行上限为 8 MiB；超过上限的损坏或外部追加内容立即拒绝，避免任意长行重新制造无界分配。正常坏 JSON 行继续跳过，重复游标、线程校验、SQLite 单事务、checkpoint 指纹和事件顺序语义保持不变。`append_event()` 在写入前也拒绝超过该上限的记录，防止内核生成无法重建的事件。
+
+本地隔离探针生成 2400 条事件后删除 SQLite 索引冷重建：事件分页、方法筛选、游标、坏尾行恢复和超限行拒绝均通过；`tracemalloc` 观测本轮重建峰值为 196196 字节，未随完整日志内容保留。探针、合成事件和临时状态未进入 Git、wheel 或 sdist；未调用真实模型、招聘平台或桌面 UI。
+
 ## 第七十六轮：删除意图落盘前保留摘要终态观察
 
 继续参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 对任务执行责任、会话忙状态与取消策略的讨论；核对时 Pi main 为 `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`，许可证 MIT。本项目已将摘要任务的持久可观察终态与当前进程的 worker 所有权分离，本轮延伸这一生命周期原则；具体删除缓存缺陷来自本地复现，不移植 Pi task API、实现或依赖。
