@@ -1,5 +1,17 @@
 # 上游吸收记录
 
+## 第八十轮：模型请求的本地任务归属
+
+Pi Durable 开放 [Issue #10845](https://github.com/earendil-works/pi/issues/10845) 希望 provider 能区分 generation 与 compaction 的发起任务；截至 2026-10-29 仍为 OPEN，维护者同时指出任务 ID 本身不能证明请求属于哪个用户。本轮核对固定 Pi commit `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`（MIT）的 `packages/durable/src/harness/generation.ts:283-290`、`compaction.ts:178-188,251-259` 与 `packages/ai/src/types.ts:252-269`：两类请求携带 sessionId，通用 metadata 可由 provider 解释，但没有统一固定任务归属。本项目采用显式请求归属原则，独立实现本地类型，不复制源码、不引入 Pi 或新增运行依赖，也不把上游未决提案视为授权或计费方案。
+
+本地 main `f7832c70be77045225fb281b0f8b3dac20e86dc4` 的 `before_request` 已有 purpose、threadId、turnId、jobId 与 requestIndex，但三个 `provider.stream(request)` 入口只接收没有归属字段的 `ModelRequest`。同一 provider 包装器无法仅凭 request 区分招聘业务回合、后台摘要和连接检查；依赖“当前回合”的进程状态会丢失摘要自己的来源。
+
+现在 `ModelRequest` 附加可选、不可变的 `ModelTaskContext`，包含用途、从零开始的逻辑请求编号及适用的 thread/turn/job ID。完整请求准备后由统一策略入口绑定，即使 preparer 重建请求或宿主未配置 hooks，也由执行 owner 覆盖归属；策略检查与 provider 使用同一身份。自动摘要使用 job 创建时固定的 turnId，各摘要分片按自身任务编号；手动摘要不推断 turnId，连接检查不借用会话身份。旧直接构造请求默认没有上下文，旧 provider 可忽略新增字段。内置 OpenAI/Anthropic HTTP 参数白名单、模型消息、预算及请求指纹不包含此对象；取消、拒绝、审批与传输重试行为不变，JSON-RPC 仍为 0.2.0。
+
+本地 7 项 ApplicationService / ConnectionChecks 隔离集成验证与独立 10 项 TurnRunner 场景通过，覆盖手动/自动多分片摘要、发起回合固定、两次工具循环的三次模型请求编号、preparer 重建与伪造归属覆盖、有无 hooks、不可变性、策略拒绝及取消、HTTP 参数/预算/指纹相等；网络和外部进程尝试均为零。测试脚本与合成状态仅在 `/tmp`，不进入 Git 或 Python 产物；未调用真实模型、招聘平台或桌面 UI。
+
+## 第七十六轮：删除意图落盘前保留摘要终态观察
+
 ## 第七十九轮：待处理队列的会话级资源边界
 
 参考 Pi Durable 开放 [Issue #11350](https://github.com/earendil-works/pi/issues/11350) 对跨会话公平准入、等待者诊断和长期占用的讨论；核对时 Pi main 为 `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`，许可证 MIT。Pi 的 codemode worker pool 与本项目持久 follow-up/steering 队列不是同一资源，本轮只采用“等待工作必须有可解释的资源边界”这一原则，不复制 Pi 调度代码或增加依赖。
@@ -41,7 +53,6 @@
 新增私有 SQLite `SnapshotStore`，以固定 JSONL 文件描述符与大小构造不可见的临时快照，流式归并 revision alias、终态 toolCall、context edit、running live delta 和队列最新状态；分页、内容引用和队列读取按需查询磁盘。快照捕获事件日志的 cursor 高水位、turn 索引、队列历史、线程与运行状态。会话 JSONL 条目和对应事件仍沿用分开提交的既有协议：若条目恰在 cursor 采样前落盘、对应事件随后才提交，该事件会出现在 cursor 后的 `event/list` 中；桌面恢复先加载快照，再按 item ID 幂等归并游标后的事件。限制单记录 16 MiB、来源 JSONL 1 GiB、item 128 MiB、单快照 256 MiB、已登记缓存 512 MiB、并发构建 2 份、缓存 16 份与 TTL 120 秒；SQLite 最大页数、无回滚日志的临时数据库及队列序索引将构建文件和缓存数据库总量限制在 1 GiB 内。删除或关闭会使在建快照失效；超限失败不会发布部分内容，清理兼容移除旧 SQLite journal/WAL/SHM。
 
 本地合成会话覆盖 20,003 条目与完整恢复 RPC，构建及端到端 `tracemalloc` 峰值均为约 0.89 MiB。独立检查 revision 与工具替换、最新 context edit、live delta、固定内容引用、构建期间追加后的 item/turn/queue 切点、JSONL 先于对应事件落盘时 cursor 后续事件可查询、队列顺序查询计划使用索引且无临时排序、逐页 1 MiB 响应、TTL/淘汰、超长记录、磁盘预算，以及删除/关闭与构建竞争；全部通过。探针仅位于 `/tmp`，网络和子进程尝试为零；未调用真实模型、招聘 CLI、平台或桌面 UI。## 第七十六轮：删除意图落盘前保留摘要终态观察
-
 继续参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 对任务执行责任、会话忙状态与取消策略的讨论；核对时 Pi main 为 `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`，许可证 MIT。本项目已将摘要任务的持久可观察终态与当前进程的 worker 所有权分离，本轮延伸这一生命周期原则；具体删除缓存缺陷来自本地复现，不移植 Pi task API、实现或依赖。
 
 本项目 [Issue #174](https://github.com/can4hou6joeng4/boss-cli/issues/174) 在固定 main `0cc2087a018d57b7cdf35f917803cd924af0f1c0` 上复现：真实 `ApplicationService` 从合成终态事件恢复任务后，`SessionStore._write_delete_intent()` 在落盘前发生合成 I/O 失败；会话、终态事件仍存在且没有删除标记，但删除入口已提前清除内存任务、终态 ID 与保留顺序，`context/compact/read` 因而返回 `COMPACTION_JOB_NOT_FOUND`，`context/read.compactionJob` 变为 `null`。正常重启后原任务又从事件完整恢复，没有模型请求或 checkpoint 重放。

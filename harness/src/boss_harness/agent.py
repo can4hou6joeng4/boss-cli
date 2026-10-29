@@ -662,7 +662,7 @@ class TurnRunner:
                         return self._request_rejected(thread_id, exc)
                     self._record_preparation(thread_id, request, request_budget)
                 try:
-                    check_model_request(self.lifecycle_hooks, self.config, request, request_budget,
+                    request = check_model_request(self.lifecycle_hooks, self.config, request, request_budget,
                         purpose="turn", request_index=_round, cancel_event=self._cancel,
                         thread_id=thread_id, turn_id=self.turn_id, max_model_requests=max_model_requests)
                 except ModelRequestRejected as exc:
