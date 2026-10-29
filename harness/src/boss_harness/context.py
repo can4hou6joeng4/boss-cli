@@ -4,8 +4,9 @@ Pi references: 5ba1cbaf3d96d204d847c84ce235c62dae23e0fd, session-manager and
 agent-loop transformContext; d5b3de22d0e24a3e9c38a9410d3329b099717283,
 ai/utils/estimate, ai/api/simple-options and coding-agent/core/compaction.
 Request estimates and model capacity
-remain separate. Compaction preserves provenance and complete turns; provider
-usage is reported separately and never calibrates these character estimates.
+remain separate. Compaction preserves provenance and complete turns; matching
+provider usage may calibrate retained-message deltas without claiming tokenizer
+or billing accuracy.
 """
 from __future__ import annotations
 
@@ -155,6 +156,66 @@ def _usage_input_tokens(provider: str, usage: Any) -> int | None:
         return None
     total = sum(values)
     return total if total > 0 else None
+
+
+def _retained_usage_estimate(provider: str, request: ModelRequest, entries: list[dict], *,
+                             messages: list[ChatMessage], owners: list[str | None]
+                             ) -> tuple[dict[int, int], list[tuple[int, int]]]:
+    """Estimate verified message-prefix deltas from successful request usage."""
+    fallback = {index: (_message_size([message]) + 1) // 2
+                 for index, message in enumerate(messages)}
+    if len(owners) != len(messages):
+        return fallback, []
+    anchors: dict[int, int] = {}
+    conflicts = False
+    for entry in entries:
+        if entry.get("type") != "model_usage":
+            continue
+        anchor = entry.get("payload")
+        if (not isinstance(anchor, dict) or anchor.get("provider") != provider
+                or anchor.get("model") != request.model or anchor.get("eligible") is not True):
+            continue
+        count = anchor.get("messageCount")
+        fingerprint = anchor.get("requestFingerprint")
+        if type(count) is not int or not 0 <= count <= len(messages) or count > len(request.messages) \
+                or not isinstance(fingerprint, str):
+            continue
+        if tuple(request.messages[:count]) != tuple(messages[:count]):
+            continue
+        prefix = replace(request, messages=request.messages[:count])
+        if request_fingerprint(provider, prefix) != fingerprint:
+            continue
+        usage = _usage_input_tokens(provider, anchor.get("usage"))
+        if usage is None:
+            continue
+        if count in anchors and anchors[count] != usage:
+            conflicts = True
+            break
+        anchors[count] = usage
+    if conflicts:
+        anchors.clear()
+    ordered = sorted(anchors.items())
+    if len(ordered) < 2 or any(right[1] <= left[1] for left, right in zip(ordered, ordered[1:])):
+        ordered = []
+    calibrated = dict(fallback)
+    applied_intervals: list[tuple[int, int]] = []
+    for (start, previous_usage), (end, usage) in zip(ordered, ordered[1:]):
+        indexes = list(range(start, end))
+        if not indexes or any(not isinstance(owners[index], str) or not owners[index] for index in indexes):
+            continue
+        local = [fallback[index] for index in indexes]
+        total_local, total_usage = sum(local), usage - previous_usage
+        if total_local <= 0 or total_usage <= 0:
+            continue
+        cumulative = 0
+        previous_rounded = 0
+        for index, estimate in zip(indexes, local):
+            cumulative += estimate
+            rounded = (cumulative * total_usage + total_local // 2) // total_local
+            calibrated[index] = rounded - previous_rounded
+            previous_rounded = rounded
+        applied_intervals.append((start, end))
+    return calibrated, applied_intervals
 
 
 def estimate_tokens(messages: tuple[ChatMessage, ...] | list[ChatMessage], system: str = "") -> int:
@@ -406,7 +467,10 @@ class ContextService:
 
     def _compaction_snapshot(self, thread_id: str, through_turn_id: str | None,
                              keep_recent_tokens: int | None = None, *,
-                             _active_turn_id: str | None = None
+                             _active_turn_id: str | None = None,
+                             _retention_request: ModelRequest | None = None,
+                             _retention_provider: str = "",
+                             _entries: list[dict] | None = None
                              ) -> tuple[dict[str, Any], list[dict], dict | None, list[dict]]:
         if through_turn_id is not None and keep_recent_tokens is not None:
             raise ValueError("throughTurnId 与 keepRecentTokens 不可同时提供")
@@ -420,7 +484,7 @@ class ContextService:
         # Derive items, turn ownership and the previous checkpoint from one read.
         # Pi's findCutPoint/prepareCompaction uses the projected recent tail; this
         # harness only cuts between complete turns, never inside a tool batch.
-        entries = self.sessions.read_entries(thread_id)
+        entries = self._entries(thread_id, _entries)
         items, owners = self._compaction_items(thread_id, entries)
         turns = self.sessions._turns(entries, thread_id)
         running = [turn["turnId"] for turn in turns if turn.get("status") == "running"]
@@ -451,13 +515,52 @@ class ContextService:
             raise NoCompactionSource("会话没有可压缩的完整回合")
         selection = "explicit" if through_turn_id is not None else "keepRecentTokens"
         keep = None if through_turn_id is not None else (20_000 if keep_recent_tokens is None else keep_recent_tokens)
+        message_estimates: dict[int, int] = {}
+        usage_intervals: list[tuple[int, int]] = []
+        retained_messages = self._history_projection(items, checkpoint["payload"] if checkpoint else None)
+        retained_item_ids = set(self._checkpoint_source_item_ids(checkpoint["payload"], items)) if checkpoint else set()
+        retained_items = [item for item in items if not item.get("contextEdit", {}).get("excluded")
+                          and item["id"] not in retained_item_ids]
+        owner_by_item = {item["id"]: owners.get(item["id"]) for item in retained_items}
+        mapped_messages: list[ChatMessage] = []
+        mapped_owners: list[str | None] = []
+        if checkpoint is not None:
+            mapped_messages.extend(retained_messages[:1])
+            mapped_owners.append(None)
+        for turn in turns:
+            turn_items = [item for item in retained_items if owner_by_item.get(item["id"]) == turn["turnId"]]
+            turn_messages = list(messages_from_items(turn_items))
+            mapped_messages.extend(turn_messages)
+            mapped_owners.extend([turn["turnId"]] * len(turn_messages))
+        if (tuple(mapped_messages) == tuple(retained_messages) and _retention_request is not None
+                and _retention_provider):
+            message_estimates, usage_intervals = _retained_usage_estimate(
+                _retention_provider, _retention_request, entries,
+                messages=retained_messages, owners=mapped_owners)
+        per_turn_estimate: dict[str, int] = {turn["turnId"]: 0 for turn in turns}
+        calibrated_indexes = {index for start, finish in usage_intervals
+                              for index in range(start, finish)}
+        for turn in turns:
+            turn_id = turn["turnId"]
+            indexes = [index for index, owner in enumerate(mapped_owners) if owner == turn_id]
+            if any(index in calibrated_indexes for index in indexes):
+                per_turn_estimate[turn_id] = sum(message_estimates[index] for index in indexes)
+            else:
+                per_turn_estimate[turn_id] = estimate_tokens(
+                    messages_from_items(by_turn[turn_id]))
         if through_turn_id is None:
             retained_size = 0
             first_kept = len(turns) - 1
             for index in range(len(turns) - 1, previous_index, -1):
                 first_kept = index
-                retained_size += _message_size(messages_from_items(by_turn[turns[index]["turnId"]]))
-                if (retained_size + 1) // 2 >= keep:
+                turn_id = turns[index]["turnId"]
+                if usage_intervals:
+                    retained_size += per_turn_estimate[turn_id]
+                    reached = retained_size >= keep
+                else:
+                    retained_size += _message_size(messages_from_items(by_turn[turn_id]))
+                    reached = (retained_size + 1) // 2 >= keep
+                if reached:
                     break
             if first_kept <= previous_index + 1:
                 raise NoCompactionSource("保留近期完整回合后，没有更早的可压缩内容")
@@ -479,6 +582,20 @@ class ContextService:
         if turn_index < previous_index:
             raise ValueError("压缩范围不得早于已有摘要的完整回合")
         retained = items[end:]
+        retained_turn_ids = [turn["turnId"] for turn in turns[turn_index + 1:]]
+        retained_turn_set = set(retained_turn_ids)
+        used_anchors: set[int] = set()
+        for start, finish in usage_intervals:
+            if any(owner in retained_turn_set for owner in mapped_owners[start:finish]):
+                used_anchors.update((start, finish))
+        retention_usage_applied = bool(used_anchors)
+        retention_usage = {
+            "retentionEstimateMethod": (
+                "verified-provider-usage-delta+characters/2+message-overhead"
+                if retention_usage_applied else _ESTIMATE_METHOD),
+            "retentionUsageApplied": retention_usage_applied,
+            "retentionUsageAnchorCount": len(used_anchors),
+        }
         plan = {"threadId": thread_id, "throughTurnId": through_turn_id,
                 "sourceItemIds": source_ids, "digestVersion": 2,
                 "sourceDigest": _digest({"version": 2, "throughTurnId": through_turn_id,
@@ -486,17 +603,27 @@ class ContextService:
                 "sourceItemCount": len(selected), "firstItemId": selected[0]["id"],
                 "lastItemId": selected[-1]["id"], "selection": selection,
                 "keepRecentTokens": keep, "retainedItemCount": len(retained),
-                "retainedTurnIds": [turn["turnId"] for turn in turns[turn_index + 1:]],
+                "retainedTurnIds": retained_turn_ids,
                 "firstKeptItemId": retained[0]["id"] if retained else None,
-                "estimatedRetainedTokens": estimate_tokens(messages_from_items(retained)),
+                "estimatedRetainedTokens": (sum(per_turn_estimate[turn_id]
+                                                  for turn_id in retained_turn_ids)
+                                             if retention_usage_applied
+                                             else estimate_tokens(messages_from_items(retained))),
+                **retention_usage,
                 "checkpointDigest": _digest(checkpoint) if checkpoint is not None else None}
         return plan, selected, checkpoint, items
 
     def compaction_plan(self, thread_id: str, through_turn_id: str | None = None, *,
                         keep_recent_tokens: int | None = None,
-                        _active_turn_id: str | None = None) -> dict[str, Any]:
+                        _active_turn_id: str | None = None,
+                        _retention_request: ModelRequest | None = None,
+                        _retention_provider: str = "",
+                        _entries: list[dict] | None = None) -> dict[str, Any]:
         return self._compaction_snapshot(thread_id, through_turn_id, keep_recent_tokens,
-                                         _active_turn_id=_active_turn_id)[0]
+                                         _active_turn_id=_active_turn_id,
+                                         _retention_request=_retention_request,
+                                         _retention_provider=_retention_provider,
+                                         _entries=_entries)[0]
 
     def _entries(self, thread_id: str, entries: list[dict] | None) -> list[dict]:
         if entries is None:
