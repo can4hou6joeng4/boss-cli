@@ -400,6 +400,8 @@ class OpenAIResponsesProvider:
                     yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                     return
                 for event in stream:
+                    if terminal is not None:
+                        raise ValueError("响应终态之后仍收到流事件")
                     kind = str(getattr(event, "type", ""))
                     index = int(getattr(event, "output_index", 0) or 0)
 

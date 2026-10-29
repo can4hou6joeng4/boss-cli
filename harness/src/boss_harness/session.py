@@ -735,13 +735,16 @@ class SessionStore:
     archive = archive_thread
     unarchive = unarchive_thread
 
-    def delete_thread(self, thread_id: str) -> dict:
+    def delete_thread(self, thread_id: str, *, _on_committed: Callable[[], None] | None = None) -> dict:
         """Permanently remove a rollout and its private event/attachment data."""
+        if _on_committed is not None and not callable(_on_committed):
+            raise ValueError("会话删除提交回调必须可调用")
         with self._lock:
             intent_path = self._delete_intent_path(thread_id)
             if intent_path.exists():
                 intent = self._read_delete_intent(intent_path)
             else:
+                prior = None
                 with self._index.transaction() as connection:
                     try:
                         self.require_thread(thread_id)
@@ -749,13 +752,17 @@ class SessionStore:
                         if self.path_for(thread_id).exists():
                             raise
                         prior = self._previous_deletion_event(connection, thread_id)
-                        if prior is not None:
-                            return prior
-                        raise ThreadNotFound("会话不存在") from None
-                    entries = self.read_entries(thread_id)
-                    intent = self._write_delete_intent(thread_id, entries)
-                    connection.execute("UPDATE checkpoints SET value='' WHERE name='events'")
-            return self._finish_deletion(intent)
+                        if prior is None:
+                            raise ThreadNotFound("会话不存在") from None
+                    if prior is None:
+                        entries = self.read_entries(thread_id)
+                        intent = self._write_delete_intent(thread_id, entries)
+                        connection.execute("UPDATE checkpoints SET value='' WHERE name='events'")
+                if prior is not None:
+                    if _on_committed is not None:
+                        _on_committed()
+                    return prior
+            return self._finish_deletion(intent, _on_committed=_on_committed)
 
     @staticmethod
     def _previous_deletion_event(connection: sqlite3.Connection, thread_id: str) -> dict | None:
@@ -765,7 +772,8 @@ class SessionStore:
                 return {"method": row["method"], "params": params}
         return None
 
-    def _finish_deletion(self, intent: dict[str, Any]) -> dict:
+    def _finish_deletion(self, intent: dict[str, Any], *,
+                         _on_committed: Callable[[], None] | None = None) -> dict:
         thread_id = intent["threadId"]
         with self._lock, self._index.transaction() as connection:
             connection.execute("PRAGMA secure_delete=ON")
@@ -780,6 +788,8 @@ class SessionStore:
             connection.execute("INSERT INTO checkpoints(name,value) VALUES('events',?) "
                                "ON CONFLICT(name) DO UPDATE SET value=excluded.value",
                                (f"{stat_result.st_size}:{stat_result.st_mtime_ns}",))
+        if _on_committed is not None:
+            _on_committed()
         self._checkpoint_and_truncate_wal()
         intent_path = self._delete_intent_path(thread_id)
         if intent_path.exists():
