@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第八十轮：模型请求的本地任务归属
+
+Pi Durable 开放 [Issue #10845](https://github.com/earendil-works/pi/issues/10845) 希望 provider 能区分 generation 与 compaction 的发起任务；截至 2026-10-29 仍为 OPEN，维护者同时指出任务 ID 本身不能证明请求属于哪个用户。本轮核对固定 Pi commit `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`（MIT）的 `packages/durable/src/harness/generation.ts:283-290`、`compaction.ts:178-188,251-259` 与 `packages/ai/src/types.ts:252-269`：两类请求携带 sessionId，通用 metadata 可由 provider 解释，但没有统一固定任务归属。本项目采用显式请求归属原则，独立实现本地类型，不复制源码、不引入 Pi 或新增运行依赖，也不把上游未决提案视为授权或计费方案。
+
+本地 main `f7832c70be77045225fb281b0f8b3dac20e86dc4` 的 `before_request` 已有 purpose、threadId、turnId、jobId 与 requestIndex，但三个 `provider.stream(request)` 入口只接收没有归属字段的 `ModelRequest`。同一 provider 包装器无法仅凭 request 区分招聘业务回合、后台摘要和连接检查；依赖“当前回合”的进程状态会丢失摘要自己的来源。
+
+现在 `ModelRequest` 附加可选、不可变的 `ModelTaskContext`，包含用途、从零开始的逻辑请求编号及适用的 thread/turn/job ID。完整请求准备后由统一策略入口绑定，即使 preparer 重建请求或宿主未配置 hooks，也由执行 owner 覆盖归属；策略检查与 provider 使用同一身份。自动摘要使用 job 创建时固定的 turnId，各摘要分片按自身任务编号；手动摘要不推断 turnId，连接检查不借用会话身份。旧直接构造请求默认没有上下文，旧 provider 可忽略新增字段。内置 OpenAI/Anthropic HTTP 参数白名单、模型消息、预算及请求指纹不包含此对象；取消、拒绝、审批与传输重试行为不变，JSON-RPC 仍为 0.2.0。
+
+本地 7 项 ApplicationService / ConnectionChecks 隔离集成验证与独立 10 项 TurnRunner 场景通过，覆盖手动/自动多分片摘要、发起回合固定、两次工具循环的三次模型请求编号、preparer 重建与伪造归属覆盖、有无 hooks、不可变性、策略拒绝及取消、HTTP 参数/预算/指纹相等；网络和外部进程尝试均为零。测试脚本与合成状态仅在 `/tmp`，不进入 Git 或 Python 产物；未调用真实模型、招聘平台或桌面 UI。
+
 ## 第七十六轮：删除意图落盘前保留摘要终态观察
 
 继续参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 对任务执行责任、会话忙状态与取消策略的讨论；核对时 Pi main 为 `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`，许可证 MIT。本项目已将摘要任务的持久可观察终态与当前进程的 worker 所有权分离，本轮延伸这一生命周期原则；具体删除缓存缺陷来自本地复现，不移植 Pi task API、实现或依赖。

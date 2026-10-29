@@ -1413,7 +1413,7 @@ class ApplicationService:
             fragment = planner.fragment(offset, summary, index)
             prepared, budget = self.context.prepare(fragment.request, capabilities, provider=config.provider)
             try:
-                check_model_request(self.lifecycle_hooks, config, prepared, budget,
+                prepared = check_model_request(self.lifecycle_hooks, config, prepared, budget,
                     purpose="compaction", request_index=index - 1, cancel_event=job["cancel"],
                     thread_id=thread_id, turn_id=job.get("turnId"), job_id=job["jobId"])
             except ModelRequestRejected as exc:

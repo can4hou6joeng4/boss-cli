@@ -411,7 +411,7 @@ class ConnectionChecks:
                 if cancel.is_set():
                     return
                 budget = self.request_budget(request) if self.request_budget is not None else {}
-                check_model_request(self.lifecycle_hooks, config, request, budget,
+                request = check_model_request(self.lifecycle_hooks, config, request, budget,
                     purpose="connection_check", request_index=0, cancel_event=cancel)
                 if cancel.is_set():
                     return

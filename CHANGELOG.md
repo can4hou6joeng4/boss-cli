@@ -2,6 +2,10 @@
 
 ## 未发布
 
+### 新增
+
+- 参考 Pi Durable [Issue #10845](https://github.com/earendil-works/pi/issues/10845)：自定义 provider 可通过不可变 `ModelRequest.task_context` 区分业务回合、摘要分片与连接检查，并关联固定的会话、回合、摘要任务及请求编号；身份与宿主策略一致，不进入内置供应商 HTTP 参数、模型输入或预算指纹。
+
 ### 修复
 
 - [Issue #174](https://github.com/can4hou6joeng4/boss-cli/issues/174)：删除意图落盘前失败时保留原摘要任务终态、查询引用与缓存顺序；删除事务已提交或持久删除意图已存在时才退休目标任务，即使最终目录 `fsync` 失败也不会留下已删除会话的任务引用。
