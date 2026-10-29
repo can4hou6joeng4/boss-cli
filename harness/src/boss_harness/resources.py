@@ -30,49 +30,115 @@ class ToolRegistry(_ToolRegistry):
 
 
 class SkillCatalog:
+    MAX_SKILL_BYTES = 64 * 1024
+    MAX_SKILL_DESCRIPTORS = 100
+
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
 
-    def list(self) -> list[dict]:
+    @classmethod
+    def _read_bounded(cls, path: Path) -> tuple[str, int, str] | None:
+        """Read a regular skill file without trusting a prior stat result."""
+        descriptor = -1
+        try:
+            observed = os.lstat(path)
+            if not stat.S_ISREG(observed.st_mode):
+                return None
+            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0))
+            opened = os.fstat(descriptor)
+            if (not stat.S_ISREG(opened.st_mode)
+                    or opened.st_dev != observed.st_dev
+                    or opened.st_ino != observed.st_ino):
+                return None
+            with os.fdopen(descriptor, "rb") as handle:
+                descriptor = -1
+                data = handle.read(cls.MAX_SKILL_BYTES + 1)
+            if len(data) > cls.MAX_SKILL_BYTES:
+                return None
+            source = data.decode("utf-8")
+            return source, len(data), hashlib.sha256(data).hexdigest()
+        except (OSError, UnicodeDecodeError):
+            return None
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    def _candidate_paths(self, limit: int = MAX_SKILL_DESCRIPTORS) -> list[tuple[str, Path]]:
+        """Keep only the lexicographically first candidates, without glob materialization."""
         if not self.root.is_dir():
             return []
-        skills: list[dict] = []
-        for path in sorted(self.root.glob("*/SKILL.md"))[:100]:
-            resolved = path.resolve()
-            if not resolved.is_relative_to(self.root) or not resolved.is_file() or resolved.stat().st_size > 64 * 1024:
-                continue
-            source = resolved.read_text(encoding="utf-8")
-            fields: dict[str, str] = {}
-            if source.startswith("---\n"):
-                front = source.split("---", 2)
-                if len(front) == 3:
-                    for line in front[1].splitlines():
-                        match = re.match(r"^(name|description):\s*(.+)$", line)
-                        if match:
-                            fields[match[1]] = match[2].strip("\"'")
-            skills.append({"id": path.parent.name, "name": fields.get("name", path.parent.name),
-                           "description": fields.get("description", ""),
-                           "digest": hashlib.sha256(source.encode()).hexdigest(),
-                           "bytes": resolved.stat().st_size})
-        return skills
+        candidates: list[tuple[str, Path]] = []
+        try:
+            entries = os.scandir(self.root)
+        except OSError:
+            return []
+        with entries:
+            for entry in entries:
+                try:
+                    if not entry.is_dir(follow_symlinks=False):
+                        continue
+                except (OSError, RuntimeError):
+                    continue
+                path = self.root / entry.name / "SKILL.md"
+                candidate = (entry.name, path)
+                if len(candidates) < limit:
+                    candidates.append(candidate)
+                    continue
+                largest = max(range(len(candidates)), key=lambda index: candidates[index][0])
+                if entry.name < candidates[largest][0]:
+                    candidates[largest] = candidate
+        return sorted(candidates, key=lambda candidate: candidate[0])
+
+    @staticmethod
+    def _fields(source: str) -> dict[str, str]:
+        fields: dict[str, str] = {}
+        if source.startswith("---\n"):
+            front = source.split("---", 2)
+            if len(front) == 3:
+                for line in front[1].splitlines():
+                    match = re.match(r"^(name|description):\s*(.+)$", line)
+                    if match:
+                        fields[match[1]] = match[2].strip("\"'")
+        return fields
+
+    def list(self) -> list[dict]:
+        limit = self.MAX_SKILL_DESCRIPTORS
+        while True:
+            skills: list[dict] = []
+            candidates = self._candidate_paths(limit)
+            for skill_id, path in candidates:
+                loaded = self._read_bounded(path)
+                if loaded is None:
+                    continue
+                source, byte_length, digest = loaded
+                fields = self._fields(source)
+                skills.append({"id": skill_id, "name": fields.get("name", skill_id),
+                               "description": fields.get("description", ""),
+                               "digest": digest, "bytes": byte_length})
+            if len(skills) >= self.MAX_SKILL_DESCRIPTORS or len(candidates) < limit:
+                return skills[:self.MAX_SKILL_DESCRIPTORS]
+            limit *= 2
 
     def load(self, ids: Any) -> tuple[str, list[dict]]:
         if ids is None:
             return "", []
         if not isinstance(ids, list) or len(ids) > 10 or any(not isinstance(i, str) for i in ids):
             raise ValueError("skillIds 必须是最多 10 项的字符串数组")
+        if not ids:
+            return "", []
         catalog = {skill["id"]: skill for skill in self.list()}
         selected, content = [], []
         for skill_id in dict.fromkeys(ids):
             if skill_id not in catalog:
                 raise ValueError("技能不存在或不可读取")
-            path = (self.root / skill_id / "SKILL.md").resolve()
-            if not path.is_relative_to(self.root):
+            path = self.root / skill_id / "SKILL.md"
+            if not path.parent.is_relative_to(self.root):
                 raise ValueError("技能路径越界")
-            source = path.read_text(encoding="utf-8")
-            if len(source.encode()) > 64 * 1024:
-                raise ValueError("技能文件超过大小限制")
-            if hashlib.sha256(source.encode()).hexdigest() != catalog[skill_id]["digest"]:
+            loaded = self._read_bounded(path)
+            if loaded is None:
+                raise ValueError("技能文件不可读取或超过大小限制")
+            source, _, digest = loaded
+            if digest != catalog[skill_id]["digest"]:
                 raise ValueError("技能文件已变化；请重新选择")
             selected.append(catalog[skill_id])
             content.append(f"<skill name={json.dumps(skill_id)}>\n{source}\n</skill>")

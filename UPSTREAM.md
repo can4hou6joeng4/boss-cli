@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第八十八轮：技能目录发现与读取的资源边界
+
+本项目 [Issue #199](https://github.com/can4hou6joeng4/boss-cli/issues/199) 在 main `6ae1c409db75e732602c7bb262cb467cb321417f` 复现了技能目录的独立资源问题：坏 UTF-8 候选占用前 100 名额后不会补位，`stat` 与读取之间的文件增长可绕过 64 KiB 检查，超大文件进入完整读取路径，且 `glob`/`sorted` 会先物化全部候选。合成 50,000 个目录、32 MiB 文件、FIFO、符号链接和竞态替换均在本地复现；网络、DNS 与子进程调用均为零。
+
+参考 Pi MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的资源发现边界，以及 Pi Issue [#10062](https://github.com/earendil-works/pi/issues/10062) 对不可读 skills 目录诊断的讨论。本轮只吸收有界发现、无效资源隔离与 fail-closed 原则，不复制 Pi 源码、不新增依赖，也不改变本项目工具 allowlist、审批或招聘平台权限。
+
+`SkillCatalog` 现在对空选择直接返回；目录用 `os.scandir` 保持候选内存有界，并按字典序批量扩大候选窗口以补足最多 100 个可读取技能。读取前后核对普通文件身份，使用 `O_NONBLOCK` 与可用的 `O_NOFOLLOW`，最多读取 `64 KiB + 1` 字节后再解码和计算摘要；坏编码、超限、FIFO、符号链接或竞态替换只跳过该候选，加载阶段的变化或不可读资源则明确失败，不执行目录脚本。Python 3.10 兼容语法、技能 frontmatter 和 JSON-RPC 形状保持不变。
+
+固定离线探针覆盖空选择不扫描、坏 UTF-8 补位、32 MiB 拒绝、50,000 候选的 100 项上限、普通文件身份与外部调用计数；`compileall` 与 `git diff --check` 已通过。探针和临时状态只保留在忽略目录，未调用真实模型、招聘 CLI、招聘平台或桌面 UI。
+
 ## 第八十七轮：持久记录的写入与重读预算一致性
 
 本项目 [Issue #195](https://github.com/can4hou6joeng4/boss-cli/issues/195) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 以真实 `SessionStore` / `TurnRunner.finish_tool_call()` 复现：9 MiB 合成成功结果先向 JSONL 追加 9,446,225 字节，之后索引重读因 8 MiB 单行限制失败，工具修订对账也无法读取该行。重开时 SQLite 列表跳过整会话，恢复扫描不重放操作但也不会把它重新列出，原始 JSONL 仍保留。
