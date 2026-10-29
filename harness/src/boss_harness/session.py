@@ -39,6 +39,11 @@ _EVENT_READ_CHUNK_BYTES = 64 * 1024
 # transport.  Keep one explicit line limit so a damaged append-only log cannot
 # make a cold index rebuild allocate without bound.
 MAX_EVENT_LINE_BYTES = 8 * 1024 * 1024
+# Recovery metadata is tiny in normal operation.  Keep a separate whole-file
+# bound so a forged delete marker or repair manifest cannot be materialised
+# before its JSON shape is checked.
+MAX_DELETE_INTENT_BYTES = 1024 * 1024
+MAX_REPAIR_MANIFEST_BYTES = 1024 * 1024
 
 
 def _now() -> str:
@@ -53,42 +58,74 @@ def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
 
 
+def _iter_bounded_raw_lines_from_handle(handle, *, maximum: int, label: str = "JSONL",
+                                        universal_newlines: bool = False):
+    """Yield raw JSONL records from an already pinned handle with a line bound."""
+    pending = bytearray()
+    while True:
+        chunk = handle.read(_EVENT_READ_CHUNK_BYTES)
+        eof = not chunk
+        if chunk:
+            pending.extend(chunk)
+        while True:
+            newline = pending.find(b"\n")
+            carriage = pending.find(b"\r") if universal_newlines else -1
+            if carriage >= 0 and (newline < 0 or carriage < newline):
+                if carriage + 1 == len(pending) and not eof:
+                    break
+                separator_end = (carriage + 2 if carriage + 1 < len(pending)
+                                 and pending[carriage + 1] == 10 else carriage + 1)
+                line = bytes(pending[:carriage])
+                del pending[:separator_end]
+            elif newline >= 0:
+                line = bytes(pending[:newline])
+                del pending[:newline + 1]
+            else:
+                if len(pending) > maximum:
+                    raise ValueError(f"{label}单行超过大小限制")
+                break
+            if len(line) > maximum:
+                raise ValueError(f"{label}单行超过大小限制")
+            yield line
+        if eof:
+            break
+    if pending:
+        if len(pending) > maximum:
+            raise ValueError(f"{label}单行超过大小限制")
+        yield bytes(pending)
+
+
+def _iter_bounded_raw_lines(path: Path, *, maximum: int, label: str = "JSONL",
+                            universal_newlines: bool = False):
+    with path.open("rb") as handle:
+        yield from _iter_bounded_raw_lines_from_handle(
+            handle, maximum=maximum, label=label, universal_newlines=universal_newlines)
+
+
 def _iter_bounded_lines(path: Path, *, maximum: int, label: str = "JSONL",
                         universal_newlines: bool = False):
     """Yield decoded JSONL lines without materialising the complete file."""
-    pending = bytearray()
-    with path.open("rb") as handle:
-        while True:
-            chunk = handle.read(_EVENT_READ_CHUNK_BYTES)
-            eof = not chunk
-            if chunk:
-                pending.extend(chunk)
-            while True:
-                newline = pending.find(b"\n")
-                carriage = pending.find(b"\r") if universal_newlines else -1
-                if carriage >= 0 and (newline < 0 or carriage < newline):
-                    if carriage + 1 == len(pending) and not eof:
-                        break
-                    separator_end = (carriage + 2 if carriage + 1 < len(pending)
-                                     and pending[carriage + 1] == 10 else carriage + 1)
-                    line = bytes(pending[:carriage])
-                    del pending[:separator_end]
-                elif newline >= 0:
-                    line = bytes(pending[:newline])
-                    del pending[:newline + 1]
-                else:
-                    if len(pending) > maximum:
-                        raise ValueError(f"{label}单行超过大小限制")
-                    break
-                if len(line) > maximum:
-                    raise ValueError(f"{label}单行超过大小限制")
-                yield line.decode("utf-8", errors="replace")
-            if eof:
-                break
-        if pending:
-            if len(pending) > maximum:
-                raise ValueError(f"{label}单行超过大小限制")
-            yield bytes(pending).decode("utf-8", errors="replace")
+    for line in _iter_bounded_raw_lines(path, maximum=maximum, label=label,
+                                        universal_newlines=universal_newlines):
+        yield line.decode("utf-8", errors="replace")
+
+
+def _read_bounded_file(path: Path, *, maximum: int, label: str) -> bytes:
+    descriptor = open_private_file(path, os.O_RDONLY)
+    with os.fdopen(descriptor, "rb") as handle:
+        data = handle.read(maximum + 1)
+    if len(data) > maximum:
+        raise ValueError(f"{label}超过大小限制")
+    return data
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    descriptor = open_private_file(path, os.O_RDONLY)
+    with os.fdopen(descriptor, "rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _limit(value: int, maximum: int = 200) -> int:
@@ -234,9 +271,11 @@ class SessionStore:
         match = _DELETE_INTENT.fullmatch(path.name)
         if match is None:
             raise ValueError("会话删除标记名称无效")
-        descriptor = open_private_file(path, os.O_RDONLY)
-        with os.fdopen(descriptor, "rb") as handle:
-            value = json.loads(handle.read().decode("utf-8"))
+        try:
+            raw = _read_bounded_file(path, maximum=MAX_DELETE_INTENT_BYTES, label="会话删除标记")
+            value = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            raise ValueError("会话删除标记损坏；状态恢复已停止") from None
         thread_id = match.group(1)
         if (not isinstance(value, dict) or set(value) != {"version", "threadId", "attachmentDigests", "eventId"}
                 or value.get("version") != 1 or value.get("threadId") != thread_id
@@ -372,8 +411,9 @@ class SessionStore:
         def inspect_and_sync() -> str:
             nonlocal outcome
             found = False
-            with path.open("rb") as handle:
-                for line in handle:
+            try:
+                for line in _iter_bounded_lines(path, maximum=MAX_EVENT_LINE_BYTES,
+                                                label="会话日志", universal_newlines=True):
                     try:
                         current = json.loads(line)
                     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -382,6 +422,8 @@ class SessionStore:
                         if current != expected:
                             return "conflict"
                         found = True
+            except ValueError as exc:
+                raise ToolRevisionPersistenceError("invalid") from exc
             if not found:
                 return "absent"
             try:
@@ -983,7 +1025,8 @@ class SessionStore:
         try:
             with os.fdopen(descriptor, "wb") as output:
                 if source_handle is not None:
-                    for raw_line in source_handle:
+                    for raw_line in _iter_bounded_raw_lines_from_handle(
+                            source_handle, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"):
                         try:
                             record = json.loads(raw_line)
                         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -1084,8 +1127,9 @@ class SessionStore:
             if not stat.S_ISREG(original.st_mode) or original.st_uid != current_uid or original.st_nlink != 1:
                 raise ValueError("会话文件不可信，无法确认共享附件引用")
             restrict_private_file(session_path)
-            with session_path.open(encoding="utf-8") as handle:
-                for line in handle:
+            try:
+                for line in _iter_bounded_lines(session_path, maximum=MAX_EVENT_LINE_BYTES,
+                                                label="会话日志", universal_newlines=True):
                     try:
                         entry = json.loads(line)
                     except json.JSONDecodeError:
@@ -1095,6 +1139,8 @@ class SessionStore:
                         digest = entry["payload"].get("digest")
                         if isinstance(digest, str) and _ATTACHMENT_DIGEST.fullmatch(digest):
                             referenced.add(digest)
+            except ValueError:
+                raise ValueError("会话记录损坏，无法确认共享附件引用") from None
         changed = False
         for digest in candidates - referenced:
             path = self.attachments_root / digest
@@ -1172,8 +1218,10 @@ class SessionStore:
             if manifest_path.exists():
                 restrict_private_file(manifest_path)
                 try:
-                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError):
+                    manifest = json.loads(_read_bounded_file(
+                        manifest_path, maximum=MAX_REPAIR_MANIFEST_BYTES,
+                        label="修复备份清单").decode("utf-8"))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
                     raise ValueError("修复备份清单损坏，清理已暂停") from None
                 if not isinstance(manifest, list) or any(not isinstance(item, dict) for item in manifest):
                     raise ValueError("修复备份清单格式无效，清理已暂停")
@@ -1183,7 +1231,7 @@ class SessionStore:
                         continue
                     if item.get("name") == "state.sqlite3":
                         item = {**item, "bytes": database_path.stat().st_size,
-                                "sha256": hashlib.sha256(database_path.read_bytes()).hexdigest()}
+                                "sha256": _sha256_file(database_path)}
                     updated.append(item)
                 temporary = manifest_path.with_name(f".manifest.{uuid.uuid4().hex}.tmp")
                 descriptor = open_private_file(temporary, os.O_WRONLY | os.O_EXCL)
