@@ -4,17 +4,21 @@
 
 ### 新增
 
+- [Issue #193](https://github.com/can4hou6joeng4/boss-cli/issues/193)：活动及收尾业务回合合计最多保留 `2 * parallelThreads` 个 owner，配置读取公开 `maxRetainedTurns`；超限返回 `TURN_OWNER_LIMIT`，不创建 provider 或写入新输入。follow-up 保持 queued/FIFO，迟到 abort 退休后也唤醒等待者，保留正常执行与收尾重叠。
 - [Issue #185](https://github.com/can4hou6joeng4/boss-cli/issues/185)：回合 admission、准备、模型请求、工具执行和 finish 阶段写入 append-only `task_phase` checkpoint，并从 `turn/read`、`turn/list` 与线程 `lastTurn` 查询；重启只收敛未完成阶段并标记人工复核，不自动重放模型或工具副作用，分支不会继承进程级阶段状态。
 - 参考 Pi Durable [Issue #10845](https://github.com/earendil-works/pi/issues/10845)：自定义 provider 可通过不可变 `ModelRequest.task_context` 区分业务回合、摘要分片与连接检查，并关联固定的会话、回合、摘要任务及请求编号；身份与宿主策略一致，不进入内置供应商 HTTP 参数、模型输入或预算指纹。
 
 ### 修复
 
 - [Issue #197](https://github.com/can4hou6joeng4/boss-cli/issues/197)：修复 count-only 摘要与 `contextEdit.excluded` 同时存在时的上下文切点漂移；来源条目先按原始序列定位，再应用编辑投影，避免隐藏未摘要尾部用户消息。预览、保存、重开、fork、预算与后续模型请求保持一致，原始记录和持久格式不变。
+- [Issue #195](https://github.com/can4hou6joeng4/boss-cli/issues/195)：会话正文与冻结快照共用 32 MiB 单条记录预算，header/event 保持 8 MiB；追加、新会话/分支和 checkpoint 在写入前校验最终 UTF-8 JSON，避免大型工具结果先落盘再因读取超限而使整个会话从冷重建列表消失。超限沿用结果持久化失败的暂停与人工核对路径，不截断或重放；原始 CLI 输出预算不能代替序列化记录预算，旧内核无法读取新产生的合法大行。
+- [Issue #191](https://github.com/can4hou6joeng4/boss-cli/issues/191)：手动摘要按仍持有的执行 owner 计入并发容量，取消后 abort 未结束或终态通知仍等待的任务不提前释放额度；历史终态与自动摘要不计入手动池，额度拒绝不创建 provider。
+- [Issue #189](https://github.com/can4hou6joeng4/boss-cli/issues/189)：回合 finish 阶段 checkpoint 持久化失败后，在释放容量前暂停全部待处理队列；暂停写入失败仍保留门禁，防止已标为 error 的回合继续自动派发 follow-up，同时保留其他会话的 FIFO 唤醒。
 - 收紧会话删除恢复、工具结果修订、附件引用扫描和索引修复备份的读取边界：删除标记与修复清单限制整体大小，JSONL 按块流式读取并限制单行，数据库哈希按块计算；损坏或超限输入 fail closed，避免恢复路径无界分配。
 - 参考 Pi Durable 的资源准入原则：每个会话的 `queued`/`delivering` 队列项最多 128 个，UTF-8 输入合计最多 4 MiB；已暂停、取消或完成的历史不占预算，超限返回 `QUEUE_LIMIT` 且不写入部分状态。
 - [Issue #174](https://github.com/can4hou6joeng4/boss-cli/issues/174)：删除意图落盘前失败时保留原摘要任务终态、查询引用与缓存顺序；删除事务已提交或持久删除意图已存在时才退休目标任务，即使最终目录 `fsync` 失败也不会留下已删除会话的任务引用。
 
-- 参考 Pi 的增量 JSONL 解码：会话头、条目读取与事件索引冷重建均按 64 KiB 块流式解析，单行限制为 8 MiB；会话头在 JSON 解码前拒绝超限首行，读取保留 LF/CRLF/CR、坏 UTF-8 和坏行处理语义，避免长期 JSONL 的原始文件副本进入内存。
+- 参考 Pi 的增量 JSONL 解码：会话头、条目读取与事件索引冷重建均按 64 KiB 块流式解析；会话头与事件单行限制为 8 MiB，正文上限见 Issue #195。会话头在 JSON 解码前拒绝超限首行，读取保留 LF/CRLF/CR、坏 UTF-8 和坏行处理语义，避免长期 JSONL 的原始文件副本进入内存。
 - 参考 Pi 会话管理器的增量 JSONL 解码：事件 SQLite 索引冷重建现在按 64 KiB 块流式读取 `events.jsonl`，单行限制为 8 MiB；坏 JSON 行仍跳过，超限行拒绝，事件顺序、游标冲突校验和 checkpoint 语义不变。
 
 - [Issue #179](https://github.com/can4hou6joeng4/boss-cli/issues/179)：将冻结恢复快照改为私有 SQLite 磁盘存储，按固定 JSONL 文件切面流式构建并按页读取；限制记录、来源、单快照与缓存磁盘预算，冻结 revision、toolCall、context edit、live delta、turn 与队列投影，并在过期、淘汰、删除、关闭或预算失败时清理。- [Issue #174](https://github.com/can4hou6joeng4/boss-cli/issues/174)：删除意图落盘前失败时保留原摘要任务终态、查询引用与缓存顺序；删除事务已提交或持久删除意图已存在时才退休目标任务，即使最终目录 `fsync` 失败也不会留下已删除会话的任务引用。- [Issue #173](https://github.com/can4hou6joeng4/boss-cli/issues/173)：回合与队列权威结算后，终态事件分别尽力发布；某类事件持久化或发送异常不再跳过另一事件，也不再丢失已排入后续回合的交接责任。事件不会重放，执行与队列结算异常仍按原路径处理。

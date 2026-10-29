@@ -9,7 +9,49 @@
 `ContextService._history_projection()` 现在先从未过滤的规范 item 序列解析 `sourceItemCount` / `sourceItemIds`，再移除摘要覆盖条目和 `contextEdit.excluded` 条目。显式 source IDs、摘要来源校验、fork、预算与摘要 digest 保持不变；没有排除项或仅排除摘要尾部时投影不变。
 
 离线五场景探针覆盖 count-only source exclusion、预览与保存一致、重开/fork、旧 source IDs checkpoint、无排除/排除尾部及全排除来源；真实 ApplicationService edit→compact→第三回合 provider request 也验证未摘要用户消息存在，estimatedInput 1424、request fingerprint 与完整历史一致。原始 JSONL 保持四条，网络/DNS/子进程尝试均为零；未调用真实模型、招聘 CLI、平台或桌面 UI。
+## 第八十七轮：持久记录的写入与重读预算一致性
 
+本项目 [Issue #195](https://github.com/can4hou6joeng4/boss-cli/issues/195) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 以真实 `SessionStore` / `TurnRunner.finish_tool_call()` 复现：9 MiB 合成成功结果先向 JSONL 追加 9,446,225 字节，之后索引重读因 8 MiB 单行限制失败，工具修订对账也无法读取该行。重开时 SQLite 列表跳过整会话，恢复扫描不重放操作但也不会把它重新列出，原始 JSONL 仍保留。
+
+固定参考 Pi MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `packages/coding-agent/src/core/session-manager.ts`：`_persist()` / `_rewriteFile()` 写 JSONL，`loadEntriesFromFile()` 按固定缓冲流读，并为 header 发现设置独立扫描预算。开放 [Pi Issue #11386](https://github.com/earendil-works/pi/issues/11386) 讨论 MCP 输出上限；它与本项目 CLI、结果记录及冻结快照不是同一协议。本轮采用“传输、持久记录与发现扫描须各有明确边界”的原则，32 MiB 预算及预写校验独立实现，不复制源码或新增依赖。
+
+正文及快照 record 统一为 32 MiB，header/event 保留 8 MiB；按最终 UTF-8 JSON 字节计量，不含换行。追加在打开文件或补尾部 LF 前校验；新会话/分支先检查 header 和全部正文；checkpoint 在创建临时候选和复制来源前检查。工具修订的拒绝仍进入既有 `ToolRevisionPersistenceError(absent)` 与有界失败记录路径，保存成功结果后索引故障的对账也使用同一正文读预算。附件引用扫描同步正文预算，并继续独立验证 header，避免删除其他会话时错误移除共享附件。
+
+预算不是“所有 16 MiB CLI 输出必定能保存”的保证：离线反例中，含 180 万个 `1e15` 的原始信封仅 9,000,109 字节，Python 归一化后的 data 已有 34,200,001 字节。该结果在写入前拒绝，工具只执行一次，以小型 `outcome_unknown` 失败终态暂停并要求核对；会话和重启恢复保持可读，无工具或模型重放。未采用数据截断或新增跨文件 blob 格式；序列化前宿主对象内存不受此记录预算约束。大于 8 MiB 的新合法记录需用兼容新内核，不能由旧版本重开。
+
+两组完整结果验收覆盖 9 MiB 和接近 16 MiB 的 data，经工具完成、冷删索引重建、分支、真实 ApplicationService 冻结快照、结果引用/摘要/分段 RPC 与共享附件删除后逐字节一致，模型投影和 RPC 页仍有界。独立八组写入口探针覆盖精确 UTF-8/控制转义字节、32 MiB 接受与多一字节拒绝、无 LF 尾部不修改、header/body 分别校验、后续 entry 超限不发布、checkpoint 候选创建前拒绝、9 MiB 修订的写后故障对账、超限修订错误归属、event 原预算和附件 header 门禁。测试材料仅留忽略目录，网络、DNS 与子进程尝试均为零；未调用真实模型、招聘 CLI、平台或桌面 UI。
+
+## 第八十六轮：业务回合的保留 owner 资源边界
+
+本项目 [Issue #193](https://github.com/can4hou6joeng4/boss-cli/issues/193) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 由真实 `ApplicationService` 与隔离 provider/bridge 复现：`parallelThreads=1` 时，连续四次取消且 abort hook 阻塞，或四次成功但 bridge 清理阻塞，active 始终为 0，保留 jobs 与活跃收尾线程从 1 增至 4。owner 没有丢失，活动执行并发也没有超过 1；缺口是有意允许执行/收尾重叠后，没有单独限制保留资源总量。
+
+参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 的持久状态与执行责任分离，以及开放 [Issue #11350](https://github.com/earendil-works/pi/issues/11350) 的资源持有与跨会话准入。固定 MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `scheduler.ts` invocation 责任持续到 run/abort 结束；其通用 task 与 codemode pool 和本地业务回合不同。本轮独立增加本地预算，不复制源码、增加依赖或引入通用调度器。
+
+保留原 `parallelThreads` 活动上限，活动加通知/bridge/abort 收尾的 jobs 总量最多为其两倍，允许一批活动回合与一批收尾重叠。配置公开 `maxRetainedTurns`；新请求在 provider 工厂与输入写入前检查，底层 reserve 再原子复核，超限使用 `TURN_OWNER_LIMIT`。已知用户请求回执仍优先去重。follow-up 在领取前检查两项预算，竞争性超限退回 queued，不误报启动失败；额度退休后按 FIFO 唤醒。迟到 abort 可能在原 worker 的交接结束后才完成，因此增加锁外退休通知；关闭、工具审批与未知结果不重放契约不变。
+
+独立审查发现，同步退休回调在 abort 线程启动失败时会运行于取消调用线程，不能在其中直接派发等待的 provider 工厂。现以初始化时预启动的一个受跟踪 worker 合并处理迟到退休唤醒，abort 完成只设置信号；关闭停止并等待该 worker，状态目录责任保留到其退出。启动失败时构造清理，不以无限 inline 工作补偿；已实际启动后包装器抛错仍保留 worker 责任。
+
+五组隔离探针通过：abort/bridge 各两组 owner 满额后的第三请求零工厂/零持久化拒绝、满额去重回执、正常一批收尾加一活动重叠、迟到 abort 退休唤醒 B/C FIFO 与单次派发、关闭后不晚启动。探针等待真实 worker 完成交接，再检查等待队列，未以 active 清空代替收尾完成。网络和子进程尝试均为零；探针及合成状态只保留忽略目录，未调用真实模型、招聘 CLI、平台或桌面 UI。
+
+另六项边界验收通过：领取后的容量拒绝退回 queued、未启动失败的通知与 bridge tail 占额度、abort 启动失败时取消不等待其他工厂、唤醒 worker 构造/启动失败清理、实际启动后包装器抛错保留责任、关闭期限耗尽后仍保留状态目录至 worker 真正结束。唤醒通知合并且 queued turn 只派发一次；网络、DNS 与子进程尝试均为零。
+
+同时核对 Pi 已关闭 [Issue #11141](https://github.com/earendil-works/pi/issues/11141) 和落地主线的 `7e15f9601` afterRun 子任务。该实现先保存答案，再保持 generation 忙碌等待子任务。本项目异步、有界且可丢弃的 on_event 是观察机制；阻塞回调时同会话新回合仍可正常执行，不能据此承诺必达收尾。本地当前没有要求阻塞输入的收据归档消费者，普通审计可按 turnId/cursor 从持久日志派生，故暂不新增子任务或 finalizer API。若将来确需必需收尾，须先定义持久 intent、取消、幂等与重启人工复核契约。
+
+## 第八十五轮：摘要并发额度跟随执行 owner 退休
+
+本项目 [Issue #191](https://github.com/can4hou6joeng4/boss-cli/issues/191) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 由真实 `ApplicationService`、独立合成 provider 和临时状态复现：容量 1 时跨三个会话启动并取消摘要，worker 已结束而 abort hook 继续阻塞，status 均为 cancelled、running 计数为 0，但 owner/provider/活跃 abort worker 依次增长至 1、2、3。成功摘要的终态通知阻塞时也能启动第二任务。旧准入只计 running 状态，与已有 owner 退休条件不一致。
+
+参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 的状态与执行责任分离，以及开放 [Issue #11350](https://github.com/earendil-works/pi/issues/11350) 的资源准入讨论；核对 MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `scheduler.ts` invocation 在 run/abort 执行结束前保留责任。Pi codemode worker pool 与本项目摘要池不同，本轮只吸收生命周期原则，不复制源码、引入 Pi 依赖或改变取消策略。
+
+现在手动摘要按 `_compaction_by_thread` 的现有 owner 计入容量，直到 worker、终态通知与已认领 abort 全部结束后退休；终态缓存和重启恢复终态不占额度，带 turnId 的自动摘要继续受业务 turn 并发限制。超限仍返回 `COMPACTION_CONCURRENCY_LIMIT`，不创建 provider 或执行模型；没有自动等待或重试。七场景离线探针覆盖取消后 abort 阻塞、成功终态通知阻塞、abort 先结束/worker 后结束、正常完成回收、重启终态缓存、真实业务回合触发的自动摘要和 worker 未启动失败回收，全部通过。网络和子进程尝试为零；探针及合成状态只保留本地，未调用真实模型、招聘 CLI、平台或桌面 UI。
+
+## 第八十四轮：finish checkpoint 失败的队列结算责任
+
+参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 对持久任务、执行 owner 与输入准入分离的讨论；固定 MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `scheduler.ts` 将 run/abort invocation 的责任保留到执行结束。本项目独立延伸既有 queue pause 门禁，不引入 Pi 调度器、afterRun 子任务或恢复重放，也不复制源码。
+
+本项目 [Issue #189](https://github.com/can4hou6joeng4/boss-cli/issues/189) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 的真实 `ApplicationService` 离线复现：容量 1、首回合活动时排入 follow-up，finish checkpoint 在写入前失败或写入后抛错均令首回合标为 `error / phasePersistenceFailure`，但已登记的容量 waiter 仍把 follow-up 执行为 delivered。此前队列结算基于 completed 只暂停 steering，新增阶段写入失败后未补全 follow-up 暂停责任。
+
+现在阶段失败分支在释放执行槽位前调用全队列 pause；暂停写入同时失败时，既有 pending-pause 责任阻止后续 claim 与新准入，恢复存储后旧输入仍变为 paused。保持原回合错误原因、已落盘事实和跨会话 FIFO 容量唤醒，不重放模型或工具。六场景隔离探针覆盖 finish 写前/写后失败、暂停持续失败及恢复、既有 steering settlement 失败、正常 completed 与 B/self/C 等待顺序；修复后错误回合只执行 first，其他会话依次执行 B/C，正常回合仍继续 follow-up。网络与外部进程尝试为零，探针与合成状态只保留在忽略目录；未调用真实模型、招聘 CLI、招聘平台或桌面 UI。
 ## 第八十一轮：回合阶段 checkpoint 与重启复核边界
 
 本项目 [Issue #185](https://github.com/can4hou6joeng4/boss-cli/issues/185) 基于 main `08dcccd28158548ff2fd0f0ac4f55c2198fe7746` 核对。参考 Pi Durable MIT main `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a` 的 `generation.ts` 分阶段执行、`live.ts` 持久运行态和 `harness-ownership.test.ts` / `harness-view-run.test.ts` 的崩溃重开覆盖；开放 Issue [#11332](https://github.com/earendil-works/pi/issues/11332) 仍讨论 task 所有权、abort 与 idle 边界。Pi 的实验性 Durable API 与本项目招聘回合、审批及外部工具副作用并不等价，本轮吸收的是“阶段状态须持久化并定义重启结果”的设计要求，不移植代码、不引入 Pi 依赖。
