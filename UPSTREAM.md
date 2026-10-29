@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第八十三轮：定点读取大型工具结果
+
+本项目此前新增 `read_session_tool_result` 与 `thread/item/result/read`，但二者通过 `SessionStore.read_items()` 先解码并物化整份会话 JSONL，再按逻辑 item ID 搜索。即使结果只返回一个小分页，长会话仍令工具读取的峰值内存随历史大小增长；这是在采用 Pi `SessionManager` 增量读取原则后仍遗漏的查询投影边界，不等同于 Pi 提供了同样的结果 API。
+
+现在 `SessionStore.read_item()` 从已固定长度的会话快照逐行投影，只保留目标 root item 的 `kind`、`result` 及当前仍映射到它的 revision aliases。保留原始 root ID、payload 合并和隐式 toolCall parent revision 语义；别名被另一个条目 ID 覆盖后不再将后续 revision 合入旧结果。重复 root/identity 冲突 fail closed；活动别名和匹配修订各最多 4,096 条，别名最长 128 字符且累计 UTF-8 不超过 64 KiB，超限返回稳定 `RESULT_HISTORY_LIMIT`。内核工具与桌面/RPC 分段读取共用此定点投影；SHA-256、游标、Unicode 码点分页和 `STALE_RESULT` 契约保持不变。
+
+忽略目录离线探针覆盖直接结果、revision alias 链、隐式 parent revision、alias 被其他 root 覆盖、重复 root 冲突、重复别名修订数上限、过长 ID、累计别名字节上限、Unicode/control-character 分页、过期摘要，以及模型与 RPC 两种读取入口。60,001 条、49,200,362 字节合成会话的定点读取峰值为 301,045 字节；原 `read_items()` 列表路径为 87,735,649 字节。查询前后 session/event SHA-256 不变；未调用 provider、招聘 CLI、真实平台或桌面 UI。该 Python 分配测量不代表完整进程 RSS 或墙钟延迟。
+
 ## 第八十二轮：任务读取使用有界会话快照
 
 本项目 [Issue #187](https://github.com/can4hou6joeng4/boss-cli/issues/187) 的只读任务归属视图参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 关于持久任务事实与进程执行责任分离的讨论。独立代码审查发现，PR #188 的 `task/read` 虽限制关系投影数量，却调用 `read_entries()` 将整个会话 JSONL 解码并保存在列表中，再多次扫描；超长会话仍会令查询峰值内存随历史总量增长。

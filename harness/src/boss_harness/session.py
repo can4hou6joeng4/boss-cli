@@ -40,6 +40,9 @@ _EVENT_READ_CHUNK_BYTES = 64 * 1024
 # transport.  Keep one explicit line limit so a damaged append-only log cannot
 # make a cold index rebuild allocate without bound.
 MAX_EVENT_LINE_BYTES = 8 * 1024 * 1024
+MAX_ITEM_REVISION_ALIASES = 4_096
+MAX_ITEM_REVISION_RECORDS = 4_096
+MAX_ITEM_REVISION_ALIAS_BYTES = 64 * 1024
 # Recovery metadata is tiny in normal operation.  Keep a separate whole-file
 # bound so a forged delete marker or repair manifest cannot be materialised
 # before its JSON shape is checked.
@@ -278,6 +281,12 @@ class ToolRevisionPersistenceError(OSError):
 
 class ThreadNotFound(ValueError):
     pass
+
+
+class ItemLookupError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
 
 
 class SessionStore:
@@ -762,6 +771,66 @@ class SessionStore:
 
     def read_items(self, thread_id: str) -> list[dict]:
         return self._project_items(thread_id, self.read_entries(thread_id))
+
+    def read_item(self, thread_id: str, item_id: str) -> dict | None:
+        """Project one logical item while retaining only its live revision aliases."""
+        if not isinstance(item_id, str) or not item_id or len(item_id) > 128:
+            raise ValueError("itemId 格式无效")
+        aliases: set[str] = set()
+        alias_bytes = 0
+        revision_records = 0
+        selected: dict | None = None
+        with self.open_entries_snapshot(thread_id) as entries:
+            for entry in entries:
+                if entry.get("type") != "item":
+                    continue
+                payload = dict(entry.get("payload") or {})
+                entry_id = str(entry.get("id") or "")
+                target_id = str(payload.get("revises") or "")
+                if (not target_id and payload.get("kind") == "toolCall"
+                        and payload.get("status") != "running"):
+                    parent_id = str(entry.get("parentId") or "")
+                    if (selected is not None and parent_id in aliases
+                            and selected.get("kind") == "toolCall"):
+                        target_id = parent_id
+
+                if target_id in aliases:
+                    if entry_id == item_id:
+                        raise ItemLookupError("INVALID_RESULT_REFERENCE", "结果条目身份存在冲突")
+                    revision_records += 1
+                    if revision_records > MAX_ITEM_REVISION_RECORDS:
+                        raise ItemLookupError("RESULT_HISTORY_LIMIT", "工具结果修订历史超过读取上限")
+                    if len(entry_id) > 128:
+                        raise ItemLookupError("RESULT_HISTORY_LIMIT", "工具结果修订别名超过长度上限")
+                    if entry_id not in aliases and len(aliases) >= MAX_ITEM_REVISION_ALIASES:
+                        raise ItemLookupError("RESULT_HISTORY_LIMIT", "工具结果修订历史超过读取上限")
+                    if entry_id not in aliases:
+                        alias_bytes += len(entry_id.encode("utf-8"))
+                        if alias_bytes > MAX_ITEM_REVISION_ALIAS_BYTES:
+                            raise ItemLookupError("RESULT_HISTORY_LIMIT", "工具结果修订别名超过大小上限")
+                    aliases.add(entry_id)
+                    if "kind" in payload:
+                        selected["kind"] = payload["kind"]
+                    if "result" in payload:
+                        selected["result"] = payload["result"]
+                    continue
+
+                if entry_id == item_id:
+                    if selected is not None or target_id or (
+                            payload.get("kind") == "toolCall" and payload.get("status") != "running"
+                            and entry.get("parentId")):
+                        raise ItemLookupError("INVALID_RESULT_REFERENCE", "结果条目身份存在冲突")
+                    selected = {"id": item_id, "threadId": thread_id}
+                    for key in ("kind", "result"):
+                        if key in payload:
+                            selected[key] = payload[key]
+                    aliases.add(entry_id)
+                    alias_bytes = len(entry_id.encode("utf-8"))
+                else:
+                    if entry_id in aliases:
+                        aliases.remove(entry_id)
+                        alias_bytes -= len(entry_id.encode("utf-8"))
+        return selected
 
     @staticmethod
     def _item_owners(entries: list[dict]) -> dict[str, str | None]:

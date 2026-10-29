@@ -40,8 +40,8 @@ from boss_harness.request_policy import ModelRequestRejected, check_model_reques
 from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
 from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUncertain, Entry,
-                                  SessionEntriesSnapshot, SessionStore, ThreadNotFound,
-                                  ToolRevisionPersistenceError)
+                                  ItemLookupError, SessionEntriesSnapshot, SessionStore,
+                                  ThreadNotFound, ToolRevisionPersistenceError)
 from boss_harness.snapshot_store import SnapshotStore
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
 from boss_harness.tool_bundle import ToolBundle
@@ -947,11 +947,17 @@ class ApplicationService:
         if set(params) - {"threadId", "itemId", "sha256", "cursor", "limit"}:
             raise ValueError("工具结果读取包含未知参数；不接受文件路径或自由偏移")
         thread_id, item_id = _text(params, "threadId"), _text(params, "itemId", maximum=128)
-        self.sessions.require_thread(thread_id)
-        item = next((item for item in self.sessions.read_items(thread_id) if item["id"] == item_id), None)
+        try:
+            item = self.sessions.read_item(thread_id, item_id)
+        except ItemLookupError as exc:
+            raise RpcError(-32010 if exc.code == "RESULT_HISTORY_LIMIT" else -32011,
+                           str(exc), {"code": exc.code, "itemId": item_id}) from None
         if item is None:
             raise ValueError("条目不属于该会话或不存在")
-        return read_result_chunk(thread_id, item, sha256=_text(params, "sha256", maximum=64),
+        if item.get("kind") != "toolCall" or not isinstance(item.get("result"), dict):
+            raise ValueError("该条目没有可读取的完整工具结果")
+        return read_result_chunk(thread_id, item,
+                                 sha256=_text(params, "sha256", maximum=64),
                                  cursor=params.get("cursor"), limit=params.get("limit", 16_384))
 
     def on_item_content_read(self, params: dict | None) -> dict:

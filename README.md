@@ -201,7 +201,7 @@ token 数默认采用 `characters/2+message-overhead` 分类估算，不是供�
 
 ## 大结果与会话恢复
 
-模型可见工具结果按工具定义的 `max_model_result_bytes` 限制，默认 20 KiB，允许范围为 8 KiB 至 1 MiB。较大结果在模型上下文中显示明确的省略标记、摘要和结果 SHA-256；完整结构化结果继续保存在会话记录中。Harness 提供只读内核工具 `read_session_tool_result`，模型可按 item ID、摘要和游标每次读取至多 8,192 个 Unicode 字符；读取只访问当前会话已保存的数据，不重新调用招聘工具。桌面/RPC 展示仍使用独立的结果引用：超过 64 KiB 时不内联传输，客户端可通过 `thread/item/result/read` 按需分段读取，默认 16,384、最多 32,768 个 Unicode 字符。
+模型可见工具结果按工具定义的 `max_model_result_bytes` 限制，默认 20 KiB，允许范围为 8 KiB 至 1 MiB。较大结果在模型上下文中显示明确的省略标记、摘要和结果 SHA-256；完整结构化结果继续保存在会话记录中。Harness 提供只读内核工具 `read_session_tool_result`，模型可按 item ID、摘要和游标每次读取至多 8,192 个 Unicode 字符；读取使用固定长度的会话快照定点投影，不载入无关历史，也不重新调用招聘工具。桌面/RPC 展示仍使用独立的结果引用：超过 64 KiB 时不内联传输，客户端可通过 `thread/item/result/read` 按需分段读取，默认 16,384、最多 32,768 个 Unicode 字符。两个入口均将目标结果投影限制为必要字段，并限制匹配修订记录和活动别名各最多 4,096 条、别名 ID 最长 128 个 Unicode 码点且累计 UTF-8 不超过 64 KiB；超限以 `RESULT_HISTORY_LIMIT` 失败，不猜测结果。
 
 RPC 客户端可通过 `thread/item/result/read`，传入 `threadId`、`itemId`、引用中的 `sha256` 及可选 `cursor`、`limit` 读取标准 JSON 文本；默认 16,384、最多 32,768 个 Unicode 码点。引用包含该文本的 UTF-8 SHA-256、字节数和码点数，服务端游标绑定会话、条目及版本。结果发生修订时返回 `STALE_RESULT`，客户端须重新获取并确认引用，不能混用不同版本。
 
