@@ -921,3 +921,13 @@ Pi Durable 开放 [Issue #11026](https://github.com/earendil-works/pi/issues/110
 本项目新增 host JSON-RPC `thread/delete({threadId})`。删除前持有线程准入、follow-up、runtime 与事件锁；活动回合、摘要、队列派发、worker 收尾和回执通知仍持有状态时返回 `THREAD_BUSY`。删除意图使用 owner-only sidecar，先隐藏目标线程，再幂等清除 session 与 checkpoint 临时文件、共享 `events.jsonl` 对应记录、SQLite turns/events/thread 投影、当前索引 WAL、修复备份中的 SQLite 副本以及没有存活 session/fork 引用的内容哈希附件。以稳定 event ID 追加不含正文的 `thread/deleted` 全局事件，维持游标前进；清理中断后启动恢复会继续处理，读取、列表和 event replay 都不会暴露 pending 线程。
 
 fork 是完整历史前缀的独立副本，父会话删除不级联删除 fork；被 fork 或其他会话引用的附件继续保留。仅保证清除应用管理的当前逻辑副本与索引修复副本，不覆盖 APFS/SSD 旧文件块、Time Machine/文件系统快照、模型或宿主此前取得的副本，也不回滚招聘 CLI 已执行的外部操作。桌面 renderer 暂未开放此 RPC，直到有明确的用户确认界面与桌面验收。
+
+## 第七十六轮：跨回合、队列与摘要的只读任务归属
+
+Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 继续讨论持久任务与输入准入、取消和 idle 的边界。采用显式区分任务身份、持久父子关系和进程执行 owner 的原则；不移植 Durable 源码、未合入的 `blocksInput` 方案，也不新增任务账本、调度器、自动重试或副作用恢复策略。
+
+本项目 [Issue #187](https://github.com/can4hou6joeng4/boss-cli/issues/187) 增加只读 `task/read({threadId, kind, id})`，把已存在的 turn checkpoint、queue JSONL 与 compaction job/checkpoint 投影为单任务视图。每个读取按目标身份筛选有限数量的 turn、queue、revision alias 与关系，并通过既有 JSON-RPC 响应预算拒绝超限结果；不输出输入、模型正文或凭据。Follow-up 的 `turn.queueId` 与同回合 user message `queueId` 必须相互印证；queue 的 `turnId` 回执不能单独证明因果。Steering 只指向已有 turn；自动摘要仅通过自己的 `turnId` 归属，手动摘要独立于 turn，`throughTurnId` 仅为来源边界。重复身份、孤儿与互相矛盾的记录标记 conflict/unresolved，不推断 owner。
+
+任务状态与运行时责任分别呈现。重启后 interrupted turn 保持人工复核；恢复读取不启动 provider、工具或 abort，不转换队列状态，也不写 session/event JSONL。摘要成功状态可从 durable checkpoint 读取，最近 64 个终态摘要 job 的缓存窗口仍用于没有 checkpoint 的失败/取消记录；较旧失败任务不保证可按 task ID 查询。Renderer 仅通过精确的只读 IPC allowlist 调用该方法，参数严格限定为 `threadId`、`kind`、`id`。
+
+验证使用本地忽略目录内的合成 session 与探针，覆盖 follow-up、dedup receipt、steering、自动/手动摘要、冲突身份、恢复状态及读取零副作用；探针不进入 Git 或 Python 产物。桌面 GUI 验收仍待执行，不把协议、类型检查或源码构建当作 Electron UI 验收。

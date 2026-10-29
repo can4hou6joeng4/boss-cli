@@ -79,7 +79,7 @@ export function loginCaptureReadiness(url: string, cookies: Record<string, strin
 const RENDERER_METHODS = new Set([
   "thread/start", "thread/list", "thread/read", "thread/resume", "thread/fork",
   "thread/archive", "thread/unarchive", "thread/name/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
-  "turn/start", "turn/interrupt", "turn/steer", "turn/read", "queue/list", "queue/add", "queue/remove",
+  "turn/start", "turn/interrupt", "turn/steer", "turn/read", "task/read", "queue/list", "queue/add", "queue/remove",
   "event/list", "model/list", "config/read", "skills/list", "tool/list", "attachment/add", "attachment/read",
   "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "context/edit/read", "context/edit", "approval/respond",
   "connection/read", "connection/check",
@@ -87,7 +87,7 @@ const RENDERER_METHODS = new Set([
 const THREAD_METHODS = new Set([
   "thread/read", "thread/resume", "thread/fork", "thread/archive", "thread/unarchive", "thread/name/set",
   "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read", "turn/start", "turn/interrupt", "turn/steer", "turn/read",
-  "queue/list", "queue/add", "queue/remove", "context/read", "context/compact/plan", "context/compact/start", "context/compact", "context/edit/read", "context/edit",
+  "task/read", "queue/list", "queue/add", "queue/remove", "context/read", "context/compact/plan", "context/compact/start", "context/compact", "context/edit/read", "context/edit",
 ]);
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -100,6 +100,16 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
   }
   if (payload.params !== undefined && !record(payload.params)) throw new Error("harness params must be an object");
   const params = payload.params as Record<string, unknown> | undefined;
+  if (payload.method === "task/read") {
+    const allowed = new Set(["threadId", "kind", "id"]);
+    if (!params || Object.keys(params).some(key => !allowed.has(key)) ||
+      typeof params.threadId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(params.threadId) ||
+      (params.kind !== "turn" && params.kind !== "queue" && params.kind !== "compaction") ||
+      typeof params.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(params.id)) {
+      throw new Error("invalid task read");
+    }
+    return { method: payload.method, params };
+  }
   if (payload.method === "connection/check" && (typeof params?.target !== "string" || !["local", "model", "platform"].includes(params.target))) {
     throw new Error("invalid connection target");
   }

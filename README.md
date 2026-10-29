@@ -243,6 +243,10 @@ RPC 客户端可通过 `thread/item/result/read`，传入 `threadId`、`itemId`�
 
 嵌入方使用 `ApplicationService(provider_factory=...)` 并发运行模型回合时，工厂须提供独立实例。非空返回值不能是应用主 provider，也不能被其他业务 worker（包括已释放执行槽位但仍在通知/收尾的 worker）或尚未完成收尾的摘要持有；违规调用在预留回合、保存输入前拒绝，不会中断原 owner。手动与自动摘要同样拒绝借用尚未完成收尾的业务 provider。模型执行、终态通知、bridge 清理及已认领的 abort 都完成后才允许临时实例串行复用，防止旧中止误伤新请求；后续队列派发的尾部继续单独持有状态目录责任。未传工厂的主实例串行路径也遵守上述条件，工厂返回 `None` 的无模型路径保持兼容。默认内建工厂创建新实例，模型摘要仍要求独立于主回合的 provider。
 
+## 任务归属读取
+
+`task/read` 按 `{threadId, kind, id}` 只读查询单个 `turn`、`queue` 或 `compaction`。响应区分持久状态、当前进程是否拥有执行责任、恢复策略和已验证的任务关系，不包含输入、模型正文或凭据。Follow-up 只有在回合与原始用户消息的队列 ID 一致时才关联；steering 指向既有回合；自动摘要由自身 `turnId` 归属，手动摘要保持独立，`throughTurnId` 只表示来源边界。冲突或不完整记录会显示为 unresolved/conflict，不触发恢复、重试、取消、队列转换、provider 或工具。
+
 ## 上下文 usage
 
 完整请求预算默认使用保守字符估算。成功的 OpenAI 或 Anthropic 响应会保存 provider、模型、完整请求指纹和消息前缀长度；下一次请求只有在这些边界仍匹配时才使用 input usage 作为基线，并对新增消息继续估算。OpenAI 的缓存 input 是总 input 的子集，Anthropic 的缓存读写字段按独立计数处理，避免重复计算。模型、提示、工具、请求选项或可追溯摘要变化后会回退到字符估算；这不是精确 tokenizer 或计费保证。

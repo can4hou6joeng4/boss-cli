@@ -99,6 +99,7 @@ export const ClientMethods = {
   turnInterrupt: "turn/interrupt",
   turnSteer: "turn/steer",
   turnRead: "turn/read",
+  taskRead: "task/read",
   approvalRespond: "approval/respond",
   eventList: "event/list",
   queueAdd: "queue/add",
@@ -543,6 +544,31 @@ export interface QueueAddParams {
 }
 export interface QueueListResponse { items: QueueItem[] }
 export interface QueueItemResponse { queueItem: QueueItem }
+
+export type TaskKind = "turn" | "queue" | "compaction";
+export type TaskOwnership = "root" | "resolved" | "unassigned" | "unresolved" | "conflict" | "independent";
+export type TaskRecoveryPolicy = "process_owned" | "manual_review" | "queue_pending" | "closed";
+export interface TaskLocator { kind: TaskKind; id: string }
+export interface TaskRelation {
+  relation: "input_queue" | "steering_input" | "queue_candidate" | "delivered_as" | "targets"
+    | "turn_candidate" | "summary_child" | "summary_candidate" | "owner_turn";
+  ownership: Extract<TaskOwnership, "resolved" | "unresolved" | "conflict">;
+  task?: TaskLocator;
+}
+export interface TaskReadParams { threadId: string; kind: TaskKind; id: string }
+export interface TaskReadTask {
+  locator: TaskLocator;
+  threadId: string;
+  status: string;
+  ownership: TaskOwnership;
+  runtimeOwned: boolean;
+  recoveryPolicy: TaskRecoveryPolicy;
+  phase?: { name: TurnTaskPhase; status: TurnStatus; attempt: number; restartLimit: number; recoveryReason?: string };
+  relations: TaskRelation[];
+  relationsTruncated?: boolean;
+  historyWindow?: { terminalCompactions: number; checkpointRelations: "durable" };
+}
+export interface TaskReadResponse { task: TaskReadTask }
 
 export interface ModelCapabilities {
   contextWindow: number;
