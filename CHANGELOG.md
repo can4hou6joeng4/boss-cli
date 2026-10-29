@@ -9,6 +9,7 @@
 
 ### 修复
 
+- [Issue #197](https://github.com/can4hou6joeng4/boss-cli/issues/197)：修复 count-only 摘要与 `contextEdit.excluded` 同时存在时的上下文切点漂移；来源条目先按原始序列定位，再应用编辑投影，避免隐藏未摘要尾部用户消息。预览、保存、重开、fork、预算与后续模型请求保持一致，原始记录和持久格式不变。
 - 收紧会话删除恢复、工具结果修订、附件引用扫描和索引修复备份的读取边界：删除标记与修复清单限制整体大小，JSONL 按块流式读取并限制单行，数据库哈希按块计算；损坏或超限输入 fail closed，避免恢复路径无界分配。
 - 参考 Pi Durable 的资源准入原则：每个会话的 `queued`/`delivering` 队列项最多 128 个，UTF-8 输入合计最多 4 MiB；已暂停、取消或完成的历史不占预算，超限返回 `QUEUE_LIMIT` 且不写入部分状态。
 - [Issue #174](https://github.com/can4hou6joeng4/boss-cli/issues/174)：删除意图落盘前失败时保留原摘要任务终态、查询引用与缓存顺序；删除事务已提交或持久删除意图已存在时才退休目标任务，即使最终目录 `fsync` 失败也不会留下已删除会话的任务引用。

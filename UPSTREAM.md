@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第八十八轮：摘要切点先于上下文编辑投影
+
+本项目 [Issue #197](https://github.com/can4hou6joeng4/boss-cli/issues/197) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 复现：两回合各有 user/assistant 条目，排除摘要来源第一回合的 user 后，count-only checkpoint 的 `sourceItemCount=2` 在历史投影中过滤 excluded 条目后才计算切点，错误覆盖了第一回合 assistant 与第二回合 user。摘要预览仍保留第二回合两条，但保存、重开、fork 后只剩第二回合 assistant；第三回合 provider request 缺少未摘要用户输入，估算从 1424 降到 396，request fingerprint 也变化。原始 transcript 和 checkpoint 仍完整，因此问题是模型上下文投影丢失事实，不是持久记录删除。
+
+固定参考 Pi MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `packages/coding-agent/src/core/session-manager.ts` `buildContextEntries()`：以 entry ID 选择 compaction 切点，再对路径应用 context edit。本轮独立采用“来源位置先于编辑投影”的职责，不复制 Pi 代码、不改变协议或持久格式。
+
+`ContextService._history_projection()` 现在先从未过滤的规范 item 序列解析 `sourceItemCount` / `sourceItemIds`，再移除摘要覆盖条目和 `contextEdit.excluded` 条目。显式 source IDs、摘要来源校验、fork、预算与摘要 digest 保持不变；没有排除项或仅排除摘要尾部时投影不变。
+
+离线五场景探针覆盖 count-only source exclusion、预览与保存一致、重开/fork、旧 source IDs checkpoint、无排除/排除尾部及全排除来源；真实 ApplicationService edit→compact→第三回合 provider request 也验证未摘要用户消息存在，estimatedInput 1424、request fingerprint 与完整历史一致。原始 JSONL 保持四条，网络/DNS/子进程尝试均为零；未调用真实模型、招聘 CLI、平台或桌面 UI。
+
 ## 第八十一轮：回合阶段 checkpoint 与重启复核边界
 
 本项目 [Issue #185](https://github.com/can4hou6joeng4/boss-cli/issues/185) 基于 main `08dcccd28158548ff2fd0f0ac4f55c2198fe7746` 核对。参考 Pi Durable MIT main `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a` 的 `generation.ts` 分阶段执行、`live.ts` 持久运行态和 `harness-ownership.test.ts` / `harness-view-run.test.ts` 的崩溃重开覆盖；开放 Issue [#11332](https://github.com/earendil-works/pi/issues/11332) 仍讨论 task 所有权、abort 与 idle 边界。Pi 的实验性 Durable API 与本项目招聘回合、审批及外部工具副作用并不等价，本轮吸收的是“阶段状态须持久化并定义重启结果”的设计要求，不移植代码、不引入 Pi 依赖。
