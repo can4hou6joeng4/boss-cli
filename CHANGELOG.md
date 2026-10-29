@@ -10,6 +10,7 @@
 
 ### 修复
 
+- [Issue #199](https://github.com/can4hou6joeng4/boss-cli/issues/199)：技能目录发现与读取增加有界资源策略；`load([])` 不扫描目录，发现过程不全量物化，坏 UTF-8、超大文件、符号链接、FIFO 和竞态替换不会阻断合法技能，最多返回 100 个可读取技能，单文件按 64 KiB 原始字节限制。
 - [Issue #197](https://github.com/can4hou6joeng4/boss-cli/issues/197)：修复 count-only 摘要与 `contextEdit.excluded` 同时存在时的上下文切点漂移；来源条目先按原始序列定位，再应用编辑投影，避免隐藏未摘要尾部用户消息。预览、保存、重开、fork、预算与后续模型请求保持一致，原始记录和持久格式不变。
 - [Issue #195](https://github.com/can4hou6joeng4/boss-cli/issues/195)：会话正文与冻结快照共用 32 MiB 单条记录预算，header/event 保持 8 MiB；追加、新会话/分支和 checkpoint 在写入前校验最终 UTF-8 JSON，避免大型工具结果先落盘再因读取超限而使整个会话从冷重建列表消失。超限沿用结果持久化失败的暂停与人工核对路径，不截断或重放；原始 CLI 输出预算不能代替序列化记录预算，旧内核无法读取新产生的合法大行。
 - [Issue #191](https://github.com/can4hou6joeng4/boss-cli/issues/191)：手动摘要按仍持有的执行 owner 计入并发容量，取消后 abort 未结束或终态通知仍等待的任务不提前释放额度；历史终态与自动摘要不计入手动池，额度拒绝不创建 provider。
