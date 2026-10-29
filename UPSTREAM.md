@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第七十二轮：关闭期限覆盖 shutdown 事件锁等待
+
+Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 仍在讨论 shutdown、任务所有权与 idle 等待的分离；本轮不引入 Pi 的 task API，也不复制其实现。参考仍限于此前核对的 Pi main `14b4c56e5796e995706fec5b5124181a0f60bc35`（MIT）。
+
+本项目 [Issue #165](https://github.com/can4hou6joeng4/boss-cli/issues/165) 在 #164 合并后的 `11142f7` 上复现：同步 `context/compactionStarted` 持有 `EventHub.lock` 并延迟事件持久化 2.15 秒时，启用 `on_event` hook 的 `close()` 会在工作等待期限耗尽后继续同步写 `kernel/shutdown`，实测总耗时 2.18 秒；hook 关闭诊断也通过同一事件锁。无 hook 时 close 按期限返回，且摘要 worker 不会晚启动。
+
+`EventHub.emit_until()` 只在关闭路径内按共享绝对期限等待事件锁。`kernel/shutdown` 标记或 hook 失败诊断无法在期限内取得锁时跳过；常规事件写入行为不变，取得锁后的文件持久化仍是同步操作。无竞争路径继续持久化 shutdown 标记。本地探针覆盖阻塞和无竞争路径，不调用真实模型、招聘 CLI 或招聘平台；未复制 Pi 代码或增加依赖。
+
 ## 第七十一轮：shutdown 与摘要 worker 启动所有权
 
 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 讨论输入准入、任务 abort 与 idle 等待应由独立策略表达；截至 2026-10-29 仍为 OPEN。Pi main 为 `14b4c56e5796e995706fec5b5124181a0f60bc35`，许可证 MIT。该议题还指出异步任务启动与恢复的责任边界。本项目手动摘要已有专用会话准入、显式取消和持久终态恢复，不需要引入通用 task API。
