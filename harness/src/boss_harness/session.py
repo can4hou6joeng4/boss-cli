@@ -552,9 +552,10 @@ class SessionStore:
                 source.close()
                 raise
 
-    def snapshot_projection(self, thread_id: str, *, max_turn_bytes: int = 1024 * 1024
+    def snapshot_projection(self, thread_id: str, *, include_turns: bool = True,
+                            max_turn_bytes: int = 1024 * 1024
                             ) -> tuple[dict, list[dict], bool]:
-        """Read the already-indexed metadata at the caller's locked snapshot cut."""
+        """Read indexed metadata at the caller's cut; skipped turns are not budgeted."""
         with self._lock:
             if self._delete_intent_path(thread_id).exists():
                 raise ValueError("会话正在删除，暂不可读取")
@@ -568,9 +569,11 @@ class SessionStore:
                 if (thread["indexed_size"], thread["indexed_mtime_ns"]
                         ) != (stat_result.st_size, stat_result.st_mtime_ns):
                     raise ValueError("会话索引与日志不同步，请重试冻结快照")
+                turns = []
+                if not include_turns:
+                    return json.loads(thread["metadata_json"]), turns, False
                 rows = connection.execute("""SELECT metadata_json FROM turns
                     WHERE thread_id=? ORDER BY first_ordinal,turn_id LIMIT 50""", (thread_id,))
-                turns = []
                 turn_bytes = 0
                 for row in rows:
                     turn_bytes += len(row["metadata_json"].encode("utf-8"))

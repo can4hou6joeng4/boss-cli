@@ -541,7 +541,7 @@ class ApplicationService:
                 with self.events.lock:
                     with self.sessions._lock:
                         thread, snapshot_turns, turns_too_large = self.sessions.snapshot_projection(
-                            thread_id, max_turn_bytes=MAX_PAGE_BYTES)
+                            thread_id, include_turns=not exclude, max_turn_bytes=MAX_PAGE_BYTES)
                         if turns_too_large:
                             raise RpcError(-32010, "会话响应过大，请用 thread/resume snapshot=true 后分页读取条目",
                                            {"code": "RESPONSE_TOO_LARGE", "recoveryMethod": "thread/resume",
