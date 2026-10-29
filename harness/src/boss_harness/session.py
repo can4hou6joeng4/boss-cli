@@ -746,7 +746,8 @@ class SessionStore:
                 turn = turns.get(task_id) if isinstance(task_id, str) else None
                 phase, status = payload.get("phase"), payload.get("status")
                 attempt, restart_limit = payload.get("attempt"), payload.get("restartLimit")
-                if (turn is not None and isinstance(phase, str) and phase in _TASK_PHASES
+                if (payload.get("ownerKind") == "turn" and turn is not None
+                        and isinstance(phase, str) and phase in _TASK_PHASES
                         and isinstance(status, str) and status in _TERMINAL | {"running"}
                         and type(attempt) is int and 1 <= attempt <= 1_000
                         and type(restart_limit) is int and 0 <= restart_limit <= 32):
@@ -1476,7 +1477,8 @@ class SessionStore:
                     continue
                 payload = entry["payload"]
                 task_id, phase = payload.get("taskId"), payload.get("phase")
-                if (isinstance(task_id, str) and _IDENTIFIER.fullmatch(task_id)
+                if (payload.get("ownerKind") == "turn" and isinstance(task_id, str)
+                        and _IDENTIFIER.fullmatch(task_id)
                         and isinstance(phase, str) and phase in _TASK_PHASES):
                     latest_phases[task_id] = payload
             for task_id, phase in latest_phases.items():
