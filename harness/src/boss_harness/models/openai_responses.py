@@ -19,11 +19,12 @@ import os
 import sys
 import threading
 from collections.abc import Iterator, Sequence
+from dataclasses import replace
 from typing import Any
 
 import openai
 
-from boss_harness.models.errors import openai_error_info
+from boss_harness.models.errors import SDK_TRANSPORT_ERRORS, openai_error_info
 from boss_harness.models.output_budget import (
     MAX_RESPONSE_TEXT_BYTES,
     OutputBudgetExceeded,
@@ -33,7 +34,12 @@ from boss_harness.models.output_budget import (
 )
 from boss_harness.models.provider import ModelConfig
 from boss_harness.models.secret import redact_secrets
-from boss_harness.models.stream_pump import AsyncStreamPump, StreamAborted, StreamDeadlineExceeded
+from boss_harness.models.stream_pump import (
+    AsyncStreamPump,
+    StreamAborted,
+    StreamDeadlineExceeded,
+    StreamPumpCapacityExceeded,
+)
 from boss_harness.models.types import (
     AssistantMessage,
     ChatMessage,
@@ -271,22 +277,36 @@ class OpenAIResponsesProvider:
                 emitted = False
                 retry_message: str | None = None
                 retry_after: float | None = None
-
-                for event in self._stream_once(request):
-                    if event.type == "start":
-                        continue  # 外层已经发过
-                    if event.type == "error":
-                        retryable = self._last_error_retryable and not self._abort_requested
-                        retry_after = self._last_error_retry_after
-                        if retryable and not emitted and attempt < attempts:
-                            retry_message = event.error
-                            break
+                retry_event: StreamEvent | None = None
+                attempt_stream = self._stream_once(request)
+                try:
+                    for event in attempt_stream:
+                        if event.type == "start":
+                            continue  # 外层已经发过
+                        if event.type == "error":
+                            retryable = self._last_error_retryable and not self._abort_requested
+                            retry_after = self._last_error_retry_after
+                            if retryable and not emitted and attempt < attempts:
+                                retry_message = event.error
+                                retry_event = event
+                                break
+                            yield event
+                            return
+                        emitted = True
                         yield event
-                        return
-                    emitted = True
-                    yield event
+                finally:
+                    attempt_stream.close()
 
                 if retry_message is None:
+                    return
+                active = self._active_stream
+                if isinstance(active, AsyncStreamPump) and not active.worker_done:
+                    self._last_error_retryable = False
+                    assert retry_event is not None
+                    info = (replace(retry_event.error_info, retryable=False)
+                            if retry_event.error_info is not None else None)
+                    yield replace(retry_event, error=self._redact(
+                        retry_message + "；后台清理未确认，已停止自动重试"), error_info=info)
                     return
                 delay = self._retry_delay(attempt, retry_after)
                 print(
@@ -690,18 +710,25 @@ class OpenAIResponsesProvider:
                     raise ValueError("工具调用缺少完整的 output_item.done 事件")
 
         except StreamDeadlineExceeded:
-            self._last_error_retryable = not self._abort_requested
-            error_info = openai_error_info(None, source="transport_error", retryable=True)
+            retryable = not self._abort_requested and pump.worker_done
+            self._last_error_retryable = retryable
+            error_info = openai_error_info(None, source="transport_error", retryable=retryable)
             if self._abort_requested:
                 yield StreamEvent(type="error", reason="aborted", error="请求已取消")
             else:
+                detail = "" if retryable else "；后台清理未确认，已停止自动重试"
                 yield StreamEvent(type="error", reason="error",
-                                  error=f"模型请求超过 {self._request_timeout_seconds} 秒总时限",
+                                  error=f"模型请求超过 {self._request_timeout_seconds} 秒总时限{detail}",
                                   error_info=error_info)
             return
         except StreamAborted:
             self._last_error_retryable = False
             yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+            return
+        except StreamPumpCapacityExceeded:
+            self._last_error_retryable = False
+            yield StreamEvent(type="error", reason="error",
+                              error="模型流并发容量已满，当前请求未发出；请稍后重试")
             return
         except OutputBudgetExceeded as exc:
             self._last_error_retryable = False
@@ -726,6 +753,13 @@ class OpenAIResponsesProvider:
             error_info = openai_error_info(None, source="transport_error", retryable=True,
                                            transport_error=exc)
             yield StreamEvent(type="error", reason="error", error=self._redact(f"连接失败：{exc}"),
+                              error_info=error_info)
+            return
+        except SDK_TRANSPORT_ERRORS as exc:
+            # Preserve the existing no-retry policy for unwrapped body failures.
+            self._last_error_retryable = False
+            error_info = openai_error_info(None, source="transport_error", transport_error=exc)
+            yield StreamEvent(type="error", reason="error", error="模型流传输失败",
                               error_info=error_info)
             return
         except openai.APIError as exc:

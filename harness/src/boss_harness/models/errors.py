@@ -8,6 +8,7 @@ rejection. Length stops, estimates and generic request byte limits are not overf
 from __future__ import annotations
 
 import errno
+import importlib
 import re
 import socket
 from typing import Literal
@@ -84,6 +85,23 @@ _TRANSPORT_LABELS = {
 }
 
 
+def _sdk_transport_errors() -> tuple[type[Exception], ...]:
+    """Use public transport types from either supported SDK dependency family."""
+    classes: list[type[Exception]] = []
+    for name in ("httpx", "httpx2"):
+        try:
+            module = importlib.import_module(name)
+        except ModuleNotFoundError as exc:
+            if exc.name != name:
+                raise
+            continue
+        classes.append(module.TransportError)
+    return tuple(classes)
+
+
+SDK_TRANSPORT_ERRORS = _sdk_transport_errors()
+
+
 def _field(value: object, name: str) -> object:
     return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
 
@@ -100,14 +118,13 @@ def _transport_diagnostics(error: BaseException | None) -> tuple[str | None, str
 
     cause: str | None = None
     code: str | None = None
-    pending = [error]
+    current: BaseException | None = error
     visited: set[int] = set()
     has_nested_cause = False
-    while pending and len(visited) < 8:
-        current = pending.pop(0)
+    while current is not None and len(visited) < 8:
         identity = id(current)
         if identity in visited:
-            continue
+            break
         visited.add(identity)
         if current is not error:
             has_nested_cause = True
@@ -121,15 +138,22 @@ def _transport_diagnostics(error: BaseException | None) -> tuple[str | None, str
 
         if code is None and isinstance(current, OSError):
             error_number = current.errno
-            error_name = errno.errorcode.get(error_number) if type(error_number) is int else None
-            if error_name in _TRANSPORT_ERRNO_CODES:
-                code = error_name
-            elif error_number in _TRANSPORT_SOCKET_CODES:
-                code = _TRANSPORT_SOCKET_CODES[error_number]
+            if type(error_number) is int:
+                # getaddrinfo codes have a separate namespace and can overlap
+                # ordinary errno values (for example ENOENT on macOS).
+                if isinstance(current, socket.gaierror):
+                    code = _TRANSPORT_SOCKET_CODES.get(error_number)
+                else:
+                    error_name = errno.errorcode.get(error_number)
+                    if error_name in _TRANSPORT_ERRNO_CODES:
+                        code = error_name
 
-        for linked in (getattr(current, "__cause__", None), getattr(current, "__context__", None)):
-            if isinstance(linked, BaseException) and id(linked) not in visited:
-                pending.append(linked)
+        # Match Python's displayed causal chain: an explicit cause wins over
+        # context, and `raise ... from None` must not expose suppressed context.
+        linked = current.__cause__
+        if linked is None and not current.__suppress_context__:
+            linked = current.__context__
+        current = linked if isinstance(linked, BaseException) else None
 
     if cause is None and has_nested_cause:
         cause = "unknown"

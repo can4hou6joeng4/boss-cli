@@ -8,14 +8,17 @@
 """
 from __future__ import annotations
 
+import inspect
 import json
 import os
+import weakref
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
+from typing import Any
 
 import anthropic
 
-from boss_harness.models.errors import anthropic_error_info
+from boss_harness.models.errors import SDK_TRANSPORT_ERRORS, anthropic_error_info
 from boss_harness.models.continuation import (
     MAX_ANTHROPIC_SIGNATURE_BYTES,
     MAX_ANTHROPIC_SIGNATURE_TOTAL_BYTES,
@@ -29,7 +32,12 @@ from boss_harness.models.output_budget import (
 )
 from boss_harness.models.provider import ModelConfig
 from boss_harness.models.secret import redact_secrets
-from boss_harness.models.stream_pump import AsyncStreamPump, StreamAborted, StreamDeadlineExceeded
+from boss_harness.models.stream_pump import (
+    AsyncStreamPump,
+    StreamAborted,
+    StreamDeadlineExceeded,
+    StreamPumpCapacityExceeded,
+)
 from boss_harness.models.types import (
     AssistantMessage,
     ChatMessage,
@@ -113,6 +121,24 @@ def to_sdk_messages(messages: Sequence[ChatMessage], *, system: str | None = Non
     return out
 
 
+class _BorrowedCredentials:
+    """Keep attempt-client cleanup from closing the provider's credential owner."""
+
+    def __init__(self, provider) -> None:
+        self._provider = provider
+        try:
+            parameters = inspect.signature(provider).parameters.values()
+            self._supports_refresh = any(parameter.name == "force_refresh"
+                or parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+        except (TypeError, ValueError):
+            self._supports_refresh = False
+
+    def __call__(self, *, force_refresh: bool = False):
+        if self._supports_refresh:
+            return self._provider(force_refresh=force_refresh)
+        return self._provider()
+
+
 class AnthropicProvider:
     id = "anthropic"
 
@@ -126,6 +152,32 @@ class AnthropicProvider:
         self._secret = (
             config.api_key.get() if config.api_key else ""
         ) or os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY") or ""
+        # Resolve SDK credential precedence once, as the previous sync client did.
+        # A later environment change must not silently reroute an existing provider.
+        snapshot = anthropic.Anthropic(timeout=30.0, max_retries=0)
+        close_snapshot = True
+        try:
+            self._client_options: dict[str, Any] = {"base_url": str(snapshot.base_url)}
+            if snapshot.api_key is not None:
+                self._client_options["api_key"] = snapshot.api_key
+            if snapshot.auth_token is not None:
+                self._client_options["auth_token"] = snapshot.auth_token
+            if not ("api_key" in self._client_options or "auth_token" in self._client_options) \
+                    and getattr(snapshot, "credentials", None) is not None:
+                self._client_options["credentials"] = _BorrowedCredentials(snapshot.credentials)
+                self._credential_finalizer = weakref.finalize(self, snapshot.close)
+                close_snapshot = False
+            if len(self._client_options) == 1:
+                raise ValueError("Anthropic 线路未配置可用凭据")
+            self._request_headers = {name: value for name, value in snapshot.default_headers.items()
+                if not name.lower().startswith("x-stainless-") and name.lower() != "user-agent"}
+            self._request_header_names = {name.lower() for name in self._request_headers}
+            self._credential_secrets = tuple(value for value in
+                (self._secret, snapshot.api_key, snapshot.auth_token,
+                 *self._request_headers.values()) if isinstance(value, str) and value)
+        finally:
+            if close_snapshot:
+                snapshot.close()
         self._request_timeout_seconds = config.request_timeout_seconds
         self._active_stream: object | None = None
         self._abort_requested = False
@@ -144,7 +196,7 @@ class AnthropicProvider:
 
     def _redact(self, text: object) -> str:
         """错误文本会被写进会话文件并推给外壳，落盘前先把凭据抹掉。"""
-        return bounded_error("", redact_secrets(str(text), extra=(self._secret,)))
+        return bounded_error("", redact_secrets(str(text), extra=self._credential_secrets))
 
     # ---------- 请求参数 ----------
 
@@ -210,16 +262,24 @@ class AnthropicProvider:
 
         try:
             async def produce(send) -> None:
-                async with anthropic.AsyncAnthropic(timeout=30.0, max_retries=0) as client:
+                async with anthropic.AsyncAnthropic(timeout=30.0, max_retries=0,
+                                                    **self._client_options) as client:
+                    headers = {name: anthropic.omit for name in client.default_headers
+                        if name.lower() not in self._request_header_names
+                        and not name.lower().startswith("x-stainless-")
+                        and name.lower() != "user-agent"}
+                    headers.update(self._request_headers)
                     if self.server_side_fallback:
                         stream = await client.beta.messages.create(
                             **kwargs,  # type: ignore[arg-type]
+                            extra_headers=headers,
                             betas=[_FALLBACK_BETA],
                             fallbacks="default",
                             stream=True,
                         )
                     else:
-                        stream = await client.messages.create(**kwargs, stream=True)  # type: ignore[arg-type]
+                        stream = await client.messages.create(**kwargs, stream=True,
+                                                              extra_headers=headers)  # type: ignore[arg-type]
                     async with stream:
                         async for event in stream:
                             await send(event)
@@ -375,20 +435,33 @@ class AnthropicProvider:
             if self._abort_requested:
                 yield StreamEvent(type="error", reason="aborted", error="请求已取消")
             else:
+                retryable = pump.worker_done
                 error_info = private_error_info(
-                    anthropic_error_info(None, source="transport_error", retryable=True))
+                    anthropic_error_info(None, source="transport_error", retryable=retryable))
+                detail = "" if retryable else "；后台清理未确认，已保留传输额度"
                 yield StreamEvent(type="error", reason="error",
-                                  error=f"模型请求超过 {self._request_timeout_seconds} 秒总时限",
+                                  error=f"模型请求超过 {self._request_timeout_seconds} 秒总时限{detail}",
                                   error_info=error_info)
             return
         except StreamAborted:
             yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+            return
+        except StreamPumpCapacityExceeded:
+            yield StreamEvent(type="error", reason="error",
+                              error="模型流并发容量已满，当前请求未发出；请稍后重试")
             return
         except anthropic.APIConnectionError as exc:
             error_info = private_error_info(anthropic_error_info(
                 None, source="transport_error", transport_error=exc))
             message = "模型连接失败" if has_private() else f"连接失败：{exc}"
             yield StreamEvent(type="error", reason="error", error=self._redact(message),
+                              error_info=error_info)
+            return
+        except SDK_TRANSPORT_ERRORS as exc:
+            # SSE body reads can bypass the SDK's APIConnectionError wrapper.
+            error_info = private_error_info(anthropic_error_info(
+                None, source="transport_error", transport_error=exc))
+            yield StreamEvent(type="error", reason="error", error="模型流传输失败",
                               error_info=error_info)
             return
         except anthropic.RateLimitError as exc:

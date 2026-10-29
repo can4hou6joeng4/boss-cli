@@ -4,9 +4,9 @@
 
 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的开放 [Issue #10697](https://github.com/earendil-works/pi/issues/10697) 提供 undici SSE 复现：idle body timeout 与对端关闭都被归一成 `terminated`，底层 cause 分别是 `BodyTimeoutError / UND_ERR_BODY_TIMEOUT` 与 `SocketError / UND_ERR_SOCKET`，但终态和 retry 分类只能看到外层消息；核对时该 issue 为 OPEN，未发现关联 PR。Pi 开放 [Issue #11071](https://github.com/earendil-works/pi/issues/11071) 对应更通用的原则：将 provider 已识别的错误事实作为结构化终态 metadata 传递。本项目已具备 `ModelErrorInfo`，本轮在其传输错误范围内独立扩展，不复制 Pi 实现或引入依赖。
 
-本项目 [Issue #208](https://github.com/can4hou6joeng4/boss-cli/issues/208) 复核发现 OpenAI 与 Anthropic SDK 的 `APIConnectionError` 会被报告为 `transport_error`，但原来传给分类器的是 `None`，因此无法区分 `ReadTimeout`、读取失败或协议错误。现在只沿有限深度的 Python exception cause/context 链，把已知异常基类归一为固定 transport cause；OS errno 仅保留 `ECONNABORTED`、`ECONNREFUSED`、`ECONNRESET`、`EHOSTUNREACH`、`ENETUNREACH`、`ETIMEDOUT`、`EPIPE`、`EAI_AGAIN` 与 `EAI_NONAME`。未知 cause 只报告 `unknown`，无 cause 省略字段；异常类型名和 cause 文本从不序列化。
+本项目 [Issue #208](https://github.com/can4hou6joeng4/boss-cli/issues/208) 复核发现 OpenAI 与 Anthropic SDK 的 `APIConnectionError` 会被报告为 `transport_error`，但原来传给分类器的是 `None`，因此无法区分 `ReadTimeout`、读取失败或协议错误。现在只沿最多八个异常的 Python exception cause/context 链，显式 cause 优先于 context，跳过被抑制的 context；按独立的 OS errno 与 DNS gaierror 命名空间，把已知异常基类归一为固定 transport cause；OS errno 仅保留 `ECONNABORTED`、`ECONNREFUSED`、`ECONNRESET`、`EHOSTUNREACH`、`ENETUNREACH`、`ETIMEDOUT`、`EPIPE`、`EAI_AGAIN` 与 `EAI_NONAME`。未知 cause 只报告 `unknown`，无 cause 省略字段；异常类型名和 cause 文本从不序列化。
 
-新增的 `transportCause` / `transportCode` 通过 `session/error.errorInfo` 与 `model_error` 持久记录传递，并在普通会话错误消息中显示固定中文摘要，帮助区分等待超时、网络断开和协议失败。Anthropic 私有请求也只公开上述固定分类及 OS code，不公开 provider code、cause 原文或配置细节。总时限超时没有 SDK cause，继续使用原有超时错误消息。传输 retryability、OpenAI attempt 重试、用户取消、回合重放及上下文溢出恢复保持不变；没有新增平台网络请求。
+新增的 `transportCause` / `transportCode` 通过 `session/error.errorInfo` 与 `model_error` 持久记录传递，并在普通会话错误消息中显示固定中文摘要，帮助区分等待超时、网络断开和协议失败。Anthropic 私有请求也只公开上述固定分类及 OS code，不公开 provider code、cause 原文或配置细节。SDK 未包装的 SSE 正文读取异常，仅按公开 `httpx.TransportError` / `httpx2.TransportError` 类型识别，覆盖两代 SDK 依赖；用固定文案和同一受控分类报告，不把一般异常冒充传输失败，也不新增该分支的自动重试。总时限超时没有 SDK cause，继续使用原有超时错误消息。传输 retryability、OpenAI attempt 重试、用户取消、回合重放及上下文溢出恢复保持不变；没有新增平台网络请求。
 
 离线验证需使用合成嵌套 timeout、peer disconnect、unknown/no cause 与白名单外 errno，检查两个 provider 的事件、会话记录及私有 Anthropic 路径只出现受控枚举；并复核既有 overflow / retry 语义。真实模型服务和招聘平台行为未由此模拟。
 
@@ -1004,10 +1004,10 @@ fork 是完整历史前缀的独立副本，父会话删除不级联删除 fork�
 
 ## 模型流不可重置总时限
 
-参考 Pi 开放 [Issue #9474](https://github.com/earendil-works/pi/issues/9474)：空闲读取超时会被周期 SSE 事件重置，无法限制一个始终不发终态的模型请求。Pi 讨论的是 Codex Responses transport；本项目使用同步 Python SDK，不能直接移植其实现。本轮本地合成 HTTP/SSE 实验还确认，同步 SDK 的 `stream.close()` 未能及时唤醒阻塞读取。
+参考 Pi 开放 [Issue #9474](https://github.com/earendil-works/pi/issues/9474)（2026-10-30 复核仍 OPEN，MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3`）：空闲读取超时会被周期 SSE 事件重置，无法限制一个始终不发终态的模型请求。Pi 讨论的是 Codex Responses transport；本项目使用同步 Python SDK，不能直接移植其实现。本轮独立实现、不复制 Pi 源码或增加依赖。
 
-本项目通过官方异步 SDK 执行每次 transport attempt，并以有界事件队列桥接回既有同步 Provider 接口。事件循环独立计时，在期限到达时立即通知同步消费者并仅取消 producer 一次；超时或用户取消会清空尚未消费的 SDK 事件，让终态排在队首。默认 600 秒，可由 `BOSS_HARNESS_MODEL_REQUEST_TIMEOUT_SECONDS` 设置为 1–3600 秒，既有 30 秒 SDK idle timeout 保持。期限覆盖等待响应头及读取流，队列最多缓冲 64 个解码事件，限制生产者领先于回合处理的速度。计时依赖事件循环调度，同步 CPU 工作阻塞 loop 时信号可能延迟。关闭时最多等待 SDK 收尾 1 秒，不重复中断响应清理；极端情况下若底层协程拒绝取消，pump 使用 daemon 线程避免阻塞同步调用方和进程退出。
+本项目通过官方异步 SDK 执行每次 transport attempt，并以有界事件队列桥接回既有同步 Provider 接口。事件循环独立计时，在期限到达时立即通知同步消费者并仅取消 producer 一次；超时或用户取消会清空尚未消费的 SDK 事件，让终态排在队首。默认 600 秒，可由 `BOSS_HARNESS_MODEL_REQUEST_TIMEOUT_SECONDS` 设置为 1–3600 秒，既有 30 秒 SDK idle timeout 保持。期限覆盖等待响应头及读取流，事件队列最多缓冲 64 项、总估算 4 MiB、单事件 2 MiB；队列满时对 SDK producer 施加背压，超限事件不进入队列并按本地输出预算失败。估算限制作用于 SDK 已解码事件，不能阻止 SDK 在交付前暂时构造单个超大 SSE 帧。计时依赖事件循环调度，同步 CPU 工作阻塞 loop 时信号可能延迟。关闭时最多等待 SDK 收尾 1 秒，不重复中断响应清理；每进程最多 8 个 pump 持有后台传输额度，只有 worker 和 SDK 清理结束后才释放。若底层协程拒绝取消，调用方仍按时收到终态，但该 pump 会继续占用一个额度；未确认清理的 OpenAI attempt 不会自动重试，达到容量上限的新请求会在发出前失败，不创建额外线程或传输。
 
-超时映射为 `transport_error` 且 `retryable=true`，不会使用 `aborted` 或 `CONTEXT_OVERFLOW`。显式用户取消仍映射 `aborted`。OpenAI 沿用“尚无可见内容时才重试”的既有 attempt 策略，每个 attempt 单独计时；Anthropic 不新增重试。没有引入跨 provider、OpenAI 重试、fallback 或 Agent 层的共享 recovery budget，故不能把该单次时限理解为整轮任务总时限。
+超时映射为 `transport_error`；SDK 清理已完成时 `retryable=true`，否则为 `false` 并停止自动重试，不会使用 `aborted` 或 `CONTEXT_OVERFLOW`。显式用户取消仍映射 `aborted`。OpenAI 沿用“尚无可见内容时才重试”的既有 attempt 策略，每个 attempt 单独计时；Anthropic 不新增重试。Anthropic 的凭据类型与端点在 provider 创建时按 SDK 规则解析并冻结，异步请求不从后续环境变更重新选择凭据或端点。没有引入跨 provider、OpenAI 重试、fallback 或 Agent 层的共享 recovery budget，故不能把该单次时限理解为整轮任务总时限。
 
-本地合成服务验证覆盖心跳注释持续到达、响应头延迟、两家 provider 正常终态与显式取消；心跳及响应头两种超时均在配置期限附近返回 retryable transport error，正常响应产出 `done`，用户取消产出 `aborted`。pump 单元探针另覆盖吞掉取消及无限期取消清理，确保超时仍立即送达且同步关闭有界。测试和合成 server 代码仅在本地命令中，不提交测试材料；未使用有效凭据或真实会话内容。Pi Issue #9474 的跨层恢复预算以及实时供应商验收仍未覆盖。
+本地合成服务验证覆盖心跳注释持续到达、响应头延迟、两家 provider 正常终态与显式取消；心跳及响应头两种超时均在配置期限附近返回 retryable transport error，正常响应产出 `done`，用户取消产出 `aborted`。官方 SDK 组合 Anthropic 1.15.0 / OpenAI 3.35.1 和 Anthropic 2.3.0 / OpenAI 3.41.0 均通过。pump 探针另覆盖吞掉取消及无限期取消清理、8 个残留槽位与释放、SDK Pydantic 额外字段和大整数预算；凭据探针覆盖静态 key/token、请求头快照、动态凭据借用及最终关闭，重试探针确认清理未完成时不创建第二个 OpenAI 请求。测试和合成 server 代码仅在本地保留，不提交测试材料；未使用有效凭据、真实会话或招聘平台。Pi Issue #9474 的跨层恢复预算以及实时供应商验收仍未覆盖。
