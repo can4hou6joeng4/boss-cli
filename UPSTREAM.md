@@ -1,5 +1,19 @@
 # 上游吸收记录
 
+## 第七十四轮：OpenAI 响应终态之后不再接纳流事件
+
+固定核对 Pi main `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`（MIT）。其 `packages/ai/src/api/openai-responses-shared.ts` 要求流见到终态，并在 toolUse 时拒绝未完成调用，但收到 completed/incomplete 后仍继续遍历；本轮不能把上游当作已经具备封口保护。本项目延伸已交付的 [Issue #154](https://github.com/can4hou6joeng4/boss-cli/issues/154) Anthropic 终态契约，独立加固 Responses，不复制 Pi 实现或增加依赖。Pi 新增的 Chord 依赖提案明确标为 Parked Until Resolved，本轮不引入其未决依赖模型。
+
+本项目 [Issue #171](https://github.com/can4hou6joeng4/boss-cli/issues/171) 在 main `0cc2087a018d57b7cdf35f917803cd924af0f1c0` 上用官方 OpenAI SDK 3.41.0、HTTPX MockTransport SSE 与真实 TurnRunner 复现：`response.completed` 的权威 output 为索引 0 的文本，后续再交付相同索引的工具 added/done，原代码按索引筛选后保留后置工具，回合 completed、handler 调用一次并继续第二次模型请求。重复 completed 携带工具同样会派发，后置文本则覆盖已确认文本。
+
+现在一旦已有 completed/incomplete response，后续任何 SDK 流事件在读取字段或修改缓冲之前即报协议错误；沿用现有不可重试 error 和响应 context manager 关闭路径，不产生 done，也不调用工具或审批。正常 EOF、SSE 注释与 `[DONE]` 保持 SDK 语义。终态对象自身的 status 兼容规则及终态前工具身份来源核对属于不同边界，本轮不修改。
+
+本地八路径探针覆盖后置工具、重复 completed 携带工具、后置文本、重复终态、incomplete 后事件和正常文本/工具/长度耗尽；前五项 error 且 handler 为零，每项仅一次 SDK 请求，正常工具仍执行一次并续答。探针为 SDK 平台信息头提供合成值以避免 Python 元数据探测启动外部命令，协议解析使用未修改的官方 SDK；最终审计网络与子进程尝试均为零。脚本与替身只保留本地，未调用真实模型、招聘平台或桌面 UI。
+
+独立十项边界验收进一步覆盖空终态后的临时错误、failed、usage 与未知事件，以及终态内合法工具之后的异常事件：请求仅一次、handler/审批为零，不生成可用终态 usage 或上下文恢复资格。响应恰关闭一次，近 1 MiB 前缀逐字保留并标为 failed，正常注释、`[DONE]` 和 EOF 不误报。独立代码审查无 finding；类型检查、Electron 源码构建、Python 编译与 wheel/sdist 构建通过，45 个产品源码逐字节匹配候选树，未打包测试或本地状态。版本未调整，不纳入尚未合并的 rc.15 release PR。
+
+同步核对 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`，开放 PR 仍集中聊天分页、recruiter、凭据和简历业务；`can4hou6joeng4/boss-agent-cli` master 为 `70840e79e8208aeaab7d20ac44646fc74168af6a`。二者没有本轮相关的通用模型流终态实现，不迁移其业务代码。
+
 ## 第七十二轮：关闭期限覆盖 shutdown 事件锁等待
 
 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 仍在讨论 shutdown、任务所有权与 idle 等待的分离；本轮不引入 Pi 的 task API，也不复制其实现。参考仍限于此前核对的 Pi main `14b4c56e5796e995706fec5b5124181a0f60bc35`（MIT）。
