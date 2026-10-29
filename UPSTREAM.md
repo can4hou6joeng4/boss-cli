@@ -6,9 +6,44 @@
 
 本项目 [Issue #174](https://github.com/can4hou6joeng4/boss-cli/issues/174) 在固定 main `0cc2087a018d57b7cdf35f917803cd924af0f1c0` 上复现：真实 `ApplicationService` 从合成终态事件恢复任务后，`SessionStore._write_delete_intent()` 在落盘前发生合成 I/O 失败；会话、终态事件仍存在且没有删除标记，但删除入口已提前清除内存任务、终态 ID 与保留顺序，`context/compact/read` 因而返回 `COMPACTION_JOB_NOT_FOUND`，`context/read.compactionJob` 变为 `null`。正常重启后原任务又从事件完整恢复，没有模型请求或 checkpoint 重放。
 
-`SessionStore.delete_thread()` 现在在删除索引与权威 `thread/deleted` 事件的事务提交后发出仅供应用内部使用的提交信号。应用只在该信号已发出或删除意图仍持久存在时退休目标任务；前者也覆盖最后移除 intent 后目录 `fsync` 失败、此时没有 intent 可查询但删除已经提交的边界，原始 `fsync` 错误仍向调用方返回。落盘前失败保留原任务字段、集合与顺序。已存在权威删除事件的幂等重复删除在查询事务结束后同样发出提交信号。忙碌摘要及已显示终态但 abort 尚在收尾的任务仍由既有 `THREAD_BUSY` 门禁保护，其他会话相对顺序及最近 64 条终态逐出规则不变；不修改持久格式、摘要生成、checkpoint 或容量等待实现。
+`SessionStore.delete_thread()` 现在在删除索引与权威 `thread/deleted` 事件的事务提交后发出仅供应用内部使用的提交信号。应用只在该信号已发出或删除意图仍持久存在时退休目标摘要任务与容量 waiter；前者也覆盖最后移除 intent 后目录 `fsync` 失败、此时没有 intent 可查询但删除已经提交的边界，原始 `fsync` 错误仍向调用方返回。落盘前失败保留原任务字段、集合与顺序。已存在权威删除事件的幂等重复删除在查询事务结束后同样发出提交信号。忙碌摘要及已显示终态但 abort 尚在收尾的任务仍由既有 `THREAD_BUSY` 门禁保护，其他会话相对顺序及最近 64 条终态逐出规则不变；不修改持久格式、摘要生成、checkpoint 或容量等待实现。
 
 本地隔离边界探针 9/9 通过：提交信号只在删除事务提交或已有权威删除事件时发出，缺失会话不发信号；连续三次落盘前故障保留 64 条终态与顺序，新终态只逐出最旧项；成功与重复删除只退休目标且删除事件恰一条；落盘后清理失败的显式重试及重启恢复均不恢复目标任务；提交后的最终目录 `fsync` 故障即使没有 intent 也退休目标任务且仍上抛原错误；真实摘要 worker 与阻塞的 abort 收尾期间拒绝删除，释放后可正常删除。Python 3.14 编译、类型检查、Electron 源码构建与 wheel/sdist 构建通过，45 个产品源码逐字节匹配候选，未发现额外测试或本地状态。探针使用临时状态和合成 provider，网络与外部进程尝试均为零；未调用真实模型、招聘 CLI 或平台，也未进行桌面 UI 验收。测试材料只保留本地。
+## 第七十五轮：终态事件异常不丢失已受理的后续任务
+
+Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332)，讨论持久任务事实与进程执行责任之间的边界；固定核对 Pi main `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`（MIT）。本项目已有明确分离的回合持久结算、终态事件及后续队列 owner；本轮不引入 Pi 未决的 task API，也不复制上游代码。
+
+本项目 [Issue #173](https://github.com/can4hou6joeng4/boss-cli/issues/173) 在 main `0cc2087a018d57b7cdf35f917803cd924af0f1c0` 使用真实 `ApplicationService` 与合成纯文本 gate provider 复现：同一会话 A 活动时排入 B，A 的成功回合状态、队列结算和释放槽位已持久化，EventHub 已追加一次 `turn/completed` 后向 observer 发布抛出普通 `OSError`。`_execute_turn()` 因事件异常未返回 `completed`；`_run_turn()` 虽完成 A 的 bridge/job 收尾，却跳过本会话 follow-up 唤醒，留下无 owner 的 queued B（active/jobs/waiters 均为 0，provider 仅调用 A 一次）。
+
+现在只对权威持久结算之后的 `turn/completed` 与 `thread/updated` 分别做 best-effort 发布；任一失败不阻止尝试另一事件，随后返回已确定的真实终态，让既有 tail owner、provider/bridge 清理、FIFO drain 与同会话队列交接逻辑继续运行。每种事件最多追加/发布一次，不重放可能已落盘的事件；runner、turn 持久化和 queue settlement 的异常仍保持原有保守路径。取消仍可在结算锁内胜出，shutdown 的关闭门禁继续阻止新回合。
+
+本地 13 项独立边界探针通过：容量 1/2 下两类终态事件在追加前失败或追加后发布失败；同会话多项和重复唤醒、跨会话 FIFO；回合终态及 steering pause 持久化故障；取消与 shutdown 竞争。另用真实 slow bridge 和 tracked abort 验证正常清理后 B 单次派发、关闭期间 B 保持 queued、状态目录 owner 直到 worker/abort 实际完成后才释放。所有合成 provider 调用和事件数量符合预期，网络与外部进程尝试为零。测试材料仅保留本地，不进入仓库或 Python 产物；未调用真实模型、招聘 CLI、招聘平台或桌面 UI。
+
+同步核对 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70` 与 `can4hou6joeng4/boss-agent-cli` master `70840e79e8208aeaab7d20ac44646fc74168af6a`，近期开放 PR 聚焦招聘平台流程和业务接口，没有与本轮相同的通用终态发布及队列交接契约，不迁移其业务代码。
+
+## 第七十四轮：OpenAI 响应终态之后不再接纳流事件
+
+固定核对 Pi main `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`（MIT）。其 `packages/ai/src/api/openai-responses-shared.ts` 要求流见到终态，并在 toolUse 时拒绝未完成调用，但收到 completed/incomplete 后仍继续遍历；本轮不能把上游当作已经具备封口保护。本项目延伸已交付的 [Issue #154](https://github.com/can4hou6joeng4/boss-cli/issues/154) Anthropic 终态契约，独立加固 Responses，不复制 Pi 实现或增加依赖。Pi 新增的 Chord 依赖提案明确标为 Parked Until Resolved，本轮不引入其未决依赖模型。
+
+本项目 [Issue #171](https://github.com/can4hou6joeng4/boss-cli/issues/171) 在 main `0cc2087a018d57b7cdf35f917803cd924af0f1c0` 上用官方 OpenAI SDK 3.41.0、HTTPX MockTransport SSE 与真实 TurnRunner 复现：`response.completed` 的权威 output 为索引 0 的文本，后续再交付相同索引的工具 added/done，原代码按索引筛选后保留后置工具，回合 completed、handler 调用一次并继续第二次模型请求。重复 completed 携带工具同样会派发，后置文本则覆盖已确认文本。
+
+现在一旦已有 completed/incomplete response，后续任何 SDK 流事件在读取字段或修改缓冲之前即报协议错误；沿用现有不可重试 error 和响应 context manager 关闭路径，不产生 done，也不调用工具或审批。正常 EOF、SSE 注释与 `[DONE]` 保持 SDK 语义。终态对象自身的 status 兼容规则及终态前工具身份来源核对属于不同边界，本轮不修改。
+
+本地八路径探针覆盖后置工具、重复 completed 携带工具、后置文本、重复终态、incomplete 后事件和正常文本/工具/长度耗尽；前五项 error 且 handler 为零，每项仅一次 SDK 请求，正常工具仍执行一次并续答。探针为 SDK 平台信息头提供合成值以避免 Python 元数据探测启动外部命令，协议解析使用未修改的官方 SDK；最终审计网络与子进程尝试均为零。脚本与替身只保留本地，未调用真实模型、招聘平台或桌面 UI。
+
+独立十项边界验收进一步覆盖空终态后的临时错误、failed、usage 与未知事件，以及终态内合法工具之后的异常事件：请求仅一次、handler/审批为零，不生成可用终态 usage 或上下文恢复资格。响应恰关闭一次，近 1 MiB 前缀逐字保留并标为 failed，正常注释、`[DONE]` 和 EOF 不误报。独立代码审查无 finding；类型检查、Electron 源码构建、Python 编译与 wheel/sdist 构建通过，45 个产品源码逐字节匹配候选树，未打包测试或本地状态。版本未调整，不纳入尚未合并的 rc.15 release PR。
+
+同步核对 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`，开放 PR 仍集中聊天分页、recruiter、凭据和简历业务；`can4hou6joeng4/boss-agent-cli` master 为 `70840e79e8208aeaab7d20ac44646fc74168af6a`。二者没有本轮相关的通用模型流终态实现，不迁移其业务代码。
+
+## 第七十三轮：删除意图与容量等待者退休
+
+继续参考 Pi Durable 开放 [Issue #11350](https://github.com/earendil-works/pi/issues/11350) 的跨会话公平准入原则；核对时 Pi main 为 `556860a386a03113eca146abd9cbb08e9391b7fb`，许可证 MIT。Pi 的 Codemode worker pool 与本项目模型回合容量不同，本轮只将已采用的 FIFO 原则延伸到本地删除生命周期，不复制 Pi 调度代码或引入依赖。
+
+本项目 [Issue #169](https://github.com/can4hou6joeng4/boss-cli/issues/169) 在 main `0cc2087a018d57b7cdf35f917803cd924af0f1c0` 上通过真实 `ApplicationService` worker、容量 1 与合成 provider 复现：A 占用容量，B/C 的 follow-up 排队；B 的删除意图落盘后，附件清理发生合成 I/O 失败，RPC 返回 `THREAD_DELETE_INCOMPLETE`，B 已隐藏但仍在容量等待队列。A 以 error 退出后，调度器读取 B 时抛错并停止本轮唤醒，C 仍 queued、active 为 0，新的 D 回合因 `TURN_ADMISSION_WAITING` 被拒。
+
+删除失败分支只有在确认删除事务已提交或持久删除标记仍存在时，才同步退休目标摘要终态并移除 waiter ID/deque 项；与成功删除使用相同的 follow-up admission/runtime 锁，保留其他会话的相对顺序。删除提交前失败不移除有效 waiter 或摘要观察，RPC 的删除未完成错误、重启继续清理和不可自动重放规则保持不变；不在调度层宽泛捕获损坏或 I/O 异常。修复后同一探针得到 C delivered、D accepted、等待队列清空，合成 provider 在 D 之前仅执行 A/C 各一次；网络和外部进程尝试均为零，探针仅保留本地。
+
+独立 7 项边界探针通过：删除意图落盘前失败保留 B/C 的执行顺序；落盘后失败移除 B，C/D/E 仍按 FIFO 各执行一次，重复唤醒不重放；成功删除、归档和关闭均不启动对应工作；正常重开及稳定的运行中状态快照重开均继续完成删除，旧队列暂停、provider 调用为零，删除事件恰为一条。类型检查、Electron 源码构建、Python 编译和 wheel/sdist 构建通过，45 个包内产品源码文件逐字节匹配候选树，无额外测试或本地状态。独立代码审查未发现新锁序或有效工作丢失；测试材料未提交，未进行真实模型、平台或桌面 UI 验收。
 
 ## 第七十二轮：关闭期限覆盖 shutdown 事件锁等待
 

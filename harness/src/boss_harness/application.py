@@ -738,6 +738,8 @@ class ApplicationService:
                     pending_deletion = self.sessions.has_pending_deletion(thread_id)
                     if pending_deletion or deletion_committed:
                         self._retire_deleted_compaction_jobs_locked(thread_id)
+                        self._capacity_waiter_ids.discard(thread_id)
+                        self._capacity_waiters = deque(value for value in self._capacity_waiters if value != thread_id)
                     if pending_deletion:
                         raise RpcError(-32012, "会话删除尚未完成；该会话已隐藏，内核重启后会继续清理",
                                        {"code": "THREAD_DELETE_INCOMPLETE", "threadId": thread_id}) from None
@@ -2106,8 +2108,13 @@ class ApplicationService:
                         pass
                 finally:
                     self.runtimes.release(job)
-            self.events.emit("turn/completed", {"threadId": thread_id, "turnId": job["turnId"], "status": status})
-            self.events.emit("thread/updated", {"threadId": thread_id, "turnId": job["turnId"], "status": status})
+            for method in ("turn/completed", "thread/updated"):
+                try:
+                    self.events.emit(method, {"threadId": thread_id, "turnId": job["turnId"], "status": status})
+                except Exception:
+                    # Turn and queue settlement already determined the status.
+                    # Never replay a notification that may already be durable.
+                    pass
         return status
 
     def _run_deterministic(self, thread_id: str, text: str, cancel: threading.Event | None = None,
