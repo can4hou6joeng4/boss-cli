@@ -16,6 +16,9 @@ from boss_harness.request_identity import RequestIdentity, resolve_request
 from boss_harness.session import Entry, SessionStore
 from boss_harness.shutdown import TrackedAbort, join_until
 
+MAX_PENDING_QUEUE_ITEMS = 128
+MAX_PENDING_QUEUE_INPUT_BYTES = 4 * 1024 * 1024
+
 
 class RuntimeManager:
     def __init__(self, *, capacity: int = 8) -> None:
@@ -143,6 +146,12 @@ class TurnQueue:
         self.sessions.append(thread_id, Entry(type="queue", payload=item))
         return dict(item)
 
+    @staticmethod
+    def _pending_usage(items: list[dict]) -> tuple[int, int]:
+        pending = [item for item in items if item.get("status") in {"queued", "delivering"}]
+        total_bytes = sum(len(item["input"].encode("utf-8")) for item in pending)
+        return len(pending), total_bytes
+
     def get(self, thread_id: str, queue_id: str) -> dict:
         with self.lock:
             item = next((q for q in self.list(thread_id) if q["id"] == queue_id), None)
@@ -206,11 +215,19 @@ class TurnQueue:
             raise ValueError("clientUserMessageId 格式无效")
         with self.lock:
             self.settle_pauses(thread_id)
-            for item in self.list(thread_id):
+            items = self.list(thread_id)
+            for item in items:
                 if client_id and item.get("clientUserMessageId") == client_id:
                     if item["input"] != text or item["kind"] != kind:
                         raise ValueError("clientUserMessageId 已用于不同输入")
                     return item
+            pending_items, pending_bytes = self._pending_usage(items)
+            input_bytes = len(text.encode("utf-8"))
+            if (pending_items >= MAX_PENDING_QUEUE_ITEMS
+                    or pending_bytes + input_bytes > MAX_PENDING_QUEUE_INPUT_BYTES):
+                raise RpcError(-32005, "会话待处理队列已达到内核资源上限",
+                               {"code": "QUEUE_LIMIT", "maxItems": MAX_PENDING_QUEUE_ITEMS,
+                                "maxInputBytes": MAX_PENDING_QUEUE_INPUT_BYTES})
             return self._save(thread_id, {"id": uuid.uuid4().hex, "kind": kind,
                 "input": text, "status": "queued", "expectedTurnId": turn_id,
                 "clientUserMessageId": client_id})
