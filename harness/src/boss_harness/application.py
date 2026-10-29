@@ -1278,8 +1278,10 @@ class ApplicationService:
             config = self._model_config(self.sessions.get_thread(thread_id), {})
             config = self._compaction_model_config(self.compaction_policy, config,
                                                    model_override=params.get("model"))
-            active_manual = sum(1 for existing in self._compaction_jobs.values()
-                                if existing["status"] == "running" and "turnId" not in existing)
+            # Terminal status may precede worker/abort cleanup. Only the owner
+            # index marks which jobs still consume execution capacity.
+            active_manual = sum(1 for job_id in self._compaction_by_thread.values()
+                                if "turnId" not in self._compaction_jobs[job_id])
             if active_manual >= self.runtimes.capacity:
                 raise RpcError(-32005, "已达到后台摘要并发上限",
                                {"code": "COMPACTION_CONCURRENCY_LIMIT", "limit": self.runtimes.capacity})
