@@ -89,6 +89,7 @@ class SnapshotBuilder:
         self.connection.execute("CREATE TABLE aliases (alias TEXT PRIMARY KEY, ordinal INTEGER NOT NULL)")
         self.connection.execute("CREATE TABLE edits (item_id TEXT PRIMARY KEY, entry_id TEXT NOT NULL, excluded INTEGER NOT NULL)")
         self.connection.execute("CREATE TABLE queue_items (queue_id TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, payload TEXT NOT NULL)")
+        self.connection.execute("CREATE INDEX queue_items_order ON queue_items(ordinal)")
         self.count = 0
         self.item_bytes = 0
         self.queue_count = 0
