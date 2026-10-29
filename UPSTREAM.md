@@ -1,5 +1,21 @@
 # 上游吸收记录
 
+## 第八十六轮：业务回合的保留 owner 资源边界
+
+本项目 [Issue #193](https://github.com/can4hou6joeng4/boss-cli/issues/193) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 由真实 `ApplicationService` 与隔离 provider/bridge 复现：`parallelThreads=1` 时，连续四次取消且 abort hook 阻塞，或四次成功但 bridge 清理阻塞，active 始终为 0，保留 jobs 与活跃收尾线程从 1 增至 4。owner 没有丢失，活动执行并发也没有超过 1；缺口是有意允许执行/收尾重叠后，没有单独限制保留资源总量。
+
+参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 的持久状态与执行责任分离，以及开放 [Issue #11350](https://github.com/earendil-works/pi/issues/11350) 的资源持有与跨会话准入。固定 MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `scheduler.ts` invocation 责任持续到 run/abort 结束；其通用 task 与 codemode pool 和本地业务回合不同。本轮独立增加本地预算，不复制源码、增加依赖或引入通用调度器。
+
+保留原 `parallelThreads` 活动上限，活动加通知/bridge/abort 收尾的 jobs 总量最多为其两倍，允许一批活动回合与一批收尾重叠。配置公开 `maxRetainedTurns`；新请求在 provider 工厂与输入写入前检查，底层 reserve 再原子复核，超限使用 `TURN_OWNER_LIMIT`。已知用户请求回执仍优先去重。follow-up 在领取前检查两项预算，竞争性超限退回 queued，不误报启动失败；额度退休后按 FIFO 唤醒。迟到 abort 可能在原 worker 的交接结束后才完成，因此增加锁外退休通知；关闭、工具审批与未知结果不重放契约不变。
+
+独立审查发现，同步退休回调在 abort 线程启动失败时会运行于取消调用线程，不能在其中直接派发等待的 provider 工厂。现以初始化时预启动的一个受跟踪 worker 合并处理迟到退休唤醒，abort 完成只设置信号；关闭停止并等待该 worker，状态目录责任保留到其退出。启动失败时构造清理，不以无限 inline 工作补偿；已实际启动后包装器抛错仍保留 worker 责任。
+
+五组隔离探针通过：abort/bridge 各两组 owner 满额后的第三请求零工厂/零持久化拒绝、满额去重回执、正常一批收尾加一活动重叠、迟到 abort 退休唤醒 B/C FIFO 与单次派发、关闭后不晚启动。探针等待真实 worker 完成交接，再检查等待队列，未以 active 清空代替收尾完成。网络和子进程尝试均为零；探针及合成状态只保留忽略目录，未调用真实模型、招聘 CLI、平台或桌面 UI。
+
+另六项边界验收通过：领取后的容量拒绝退回 queued、未启动失败的通知与 bridge tail 占额度、abort 启动失败时取消不等待其他工厂、唤醒 worker 构造/启动失败清理、实际启动后包装器抛错保留责任、关闭期限耗尽后仍保留状态目录至 worker 真正结束。唤醒通知合并且 queued turn 只派发一次；网络、DNS 与子进程尝试均为零。
+
+同时核对 Pi 已关闭 [Issue #11141](https://github.com/earendil-works/pi/issues/11141) 和落地主线的 `7e15f9601` afterRun 子任务。该实现先保存答案，再保持 generation 忙碌等待子任务。本项目异步、有界且可丢弃的 on_event 是观察机制；阻塞回调时同会话新回合仍可正常执行，不能据此承诺必达收尾。本地当前没有要求阻塞输入的收据归档消费者，普通审计可按 turnId/cursor 从持久日志派生，故暂不新增子任务或 finalizer API。若将来确需必需收尾，须先定义持久 intent、取消、幂等与重启人工复核契约。
+
 ## 第八十五轮：摘要并发额度跟随执行 owner 退休
 
 本项目 [Issue #191](https://github.com/can4hou6joeng4/boss-cli/issues/191) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 由真实 `ApplicationService`、独立合成 provider 和临时状态复现：容量 1 时跨三个会话启动并取消摘要，worker 已结束而 abort hook 继续阻塞，status 均为 cancelled、running 计数为 0，但 owner/provider/活跃 abort worker 依次增长至 1、2、3。成功摘要的终态通知阻塞时也能启动第二任务。旧准入只计 running 状态，与已有 owner 退休条件不一致。
