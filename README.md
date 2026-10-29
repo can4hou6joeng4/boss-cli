@@ -1,23 +1,52 @@
 # BOSS-CLI
 
-面向招聘任务的 Agent Harness，定位为“招聘垂直领域的 Pi”。招聘能力通过 `boss-agent-cli` 的进程接口接入；执行循环、模型接入、会话状态和桌面交互由本项目负责。
+<p align="center">
+  <strong>招聘垂直领域的 Agent Harness</strong><br>
+  把可控的模型回合、招聘工具和可恢复会话放在同一个工作台里。
+</p>
 
-## 当前能力
+<p align="center">
+  <a href="https://github.com/can4hou6joeng4/boss-cli/actions/workflows/build.yml"><img src="https://github.com/can4hou6joeng4/boss-cli/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+  <a href="https://github.com/can4hou6joeng4/boss-cli/issues"><img src="https://img.shields.io/github/issues/can4hou6joeng4/boss-cli" alt="Issues"></a>
+  <a href="https://github.com/can4hou6joeng4/boss-cli/pulls"><img src="https://img.shields.io/github/issues-pr/can4hou6joeng4/boss-cli" alt="Pull requests"></a>
+  <a href="https://github.com/can4hou6joeng4/boss-cli"><img src="https://img.shields.io/github/commit-activity/m/can4hou6joeng4/boss-cli" alt="Commit activity"></a>
+</p>
 
-- Electron / React 工作台通过双向 stdio JSON-RPC 连接 Python 内核。
-- OpenAI Responses、Anthropic Messages 和无模型的确定性模式。
-- 14 个允许清单工具：13 个只读工具、1 个逐次审批的招聘者打招呼工具。能力发现不会自动增加工具权限。
-- 会话内串行工具、按会话隔离并发、停止、steering / follow-up、审批及平台风控暂停。
-- SQLite 索引与 append-only JSONL、事件回放、冻结快照、完整回合分支及重启恢复；未知外部操作结果不自动重发。
-- 工具结果附来源编号，保留分页状态及本页数量语义；大结果保存在会话历史，可在桌面手动分段查看，重连不会重复执行工具。
-- 职位搜索支持明确的城市、薪资、经验/学历标签集合和页码；每次工具调用提交指定页的逻辑查询，网络尝试由业务 CLI 管理；筛选标签不等于个人资格核验。
-- 会话内官方登录浏览器及独立登录通道；模型与普通 renderer 不接收平台 Cookie。
-- 桌面输入区可显式选择工作区技能，随单次直接发送提供上下文，并可刷新技能目录。
-- 当前真实会话可查看上下文预算、核对保留近期完整回合的范围，并显式生成、观察和取消手动摘要。
+> **项目定位**：`boss-agent-cli` 负责招聘平台接入，BOSS-CLI 负责模型适配、执行循环、权限边界、会话状态和桌面交互。它借鉴 Pi 的 Agent Harness / Durable 设计思想，按本项目的招聘安全契约独立实现，不复制上游代码。
 
-当前仓库交付源码及 Python 内核构建。`npm run build` 生成 Electron main / preload / renderer，桌面启动仍依赖仓库布局和 Python 环境；独立安装包、签名和真实招聘平台的完整验收仍待完成。
+<p align="center">
+  <a href="#快速开始">快速开始</a> ·
+  <a href="#你会得到什么">能力地图</a> ·
+  <a href="#交互式工作流">交互示例</a> ·
+  <a href="#模型配置来源">模型配置</a> ·
+  <a href="CONTRIBUTING.md">参与贡献</a> ·
+  <a href="UPSTREAM.md">上游吸收记录</a>
+</p>
 
-## 本地开发
+## 你会得到什么
+
+| 你想解决的问题 | BOSS-CLI 的回答 |
+| --- | --- |
+| 让模型帮我查职位 | 结构化搜索参数、明确页码、保留分页事实，不自动扩大查询范围。 |
+| 让模型继续做事 | 会话内串行工具、`steering`、`follow-up` 和可观察队列，状态可重启恢复。 |
+| 不想重复执行招聘操作 | 工具调用有稳定身份、审批和结果未知边界；断连后不凭猜测重放外部副作用。 |
+| 长会话越来越难控 | 上下文预算、冻结快照、手动摘要、来源切点和有界 JSONL 冷读。 |
+| 希望换模型线路 | OpenAI Responses、Anthropic Messages 和 `none` 确定性模式共享同一内核契约。 |
+| 想在桌面里操作 | Electron / React 工作台通过双向 stdio JSON-RPC 连接 Python 内核。 |
+
+核心能力包括 14 个允许清单工具（13 个只读工具、1 个逐次审批的招聘者打招呼工具）、SQLite 索引与 append-only JSONL、事件回放、冻结快照、完整回合分支、技能上下文和重启恢复。能力发现不会自动增加工具权限；模型与普通 renderer 不接收平台 Cookie。
+
+```mermaid
+flowchart LR
+    U[桌面工作台<br/>Electron / React] <-->|stdio JSON-RPC| H[Harness 内核<br/>Python]
+    H --> M[模型适配器<br/>OpenAI / Anthropic / none]
+    H --> T[工具 allowlist<br/>审批与暂停门禁]
+    T --> B[boss-agent-cli<br/>招聘平台接入]
+    H --> S[会话状态<br/>JSONL + SQLite + 快照]
+    H --> Q[队列与回合<br/>并发 / 摘要 / 恢复]
+```
+
+## 快速开始
 
 使用 Node.js 24+、Python 3.12，桌面最低 macOS 12。内核声明支持 Python 3.10+，读取 TOML 配置需要 3.11+；当前验收环境为 macOS、Node 24 和 Python 3.12。
 
@@ -30,6 +59,66 @@ npm run typecheck
 npm run build
 BOSS_HARNESS_PROVIDER=none npm run dev
 ```
+
+启动后可以先在无模型模式体验交互：
+
+1. 输入 `/tools` 查看当前 allowlist 能力。
+2. 输入 `/search Python` 运行关键词快捷搜索。
+3. 在模型模式下尝试“上海 Python，20–50K，3–5 年，本科，先看第一页”。
+4. 在回合运行中发送一条 steering，或把新消息排成 follow-up，观察队列状态和回合边界。
+
+`none` 模式不会调用模型，但 `/tools`、`/search` 等仍可能调用配置的 `boss-agent-cli`。第一次运行建议使用临时工作区和只读工具；真实模型请求可能联网并产生费用，招聘平台操作仍需用户明确授权。
+
+<details>
+<summary>展开：一次可控的交互路径</summary>
+
+```text
+用户：上海 Python，20–50K，3–5 年，本科，先看第一页
+  ↓
+模型：生成结构化 boss_search 参数
+  ↓
+Harness：校验城市、薪资、经验、学历、页码与工具权限
+  ↓
+boss-agent-cli：提交指定逻辑页，返回结果和分页事实
+  ↓
+桌面：显示来源编号；用户决定是否查看下一页、摘要或继续追问
+```
+
+读取列表不会自动回复、投递、导出简历或翻页；需要外部写操作时，内核会进入逐次审批和结果核对边界。
+</details>
+
+## 交互式工作流
+
+### 1. 搜索：先给边界，再给结果
+
+模型会把自然语言条件转换为结构化请求。每次只查询指定逻辑页，下一页需要保留全部条件并显式把 `page` 改为 `2`；`has_more=null` 仍表示未知，不会把本页数量当作全量结果。
+
+```json
+{
+  "keyword": "Python",
+  "city": "上海",
+  "salary": "20-50K",
+  "experience": "3-5年",
+  "education": "本科",
+  "page": 1
+}
+```
+
+### 2. 回合：让消息进入正确的位置
+
+| 操作 | 何时生效 | 失败时发生什么 |
+| --- | --- | --- |
+| 直接发送 | 空闲回合立即开始 | 输入是否已保存会明确返回，不从 `error` 猜测执行事实。 |
+| `steering` | 当前工具批次结束、下一次模型请求前 | 取消或持久化失败时保留事实，不自动重放。 |
+| `follow-up` | 当前回合自然结束后按 FIFO 派发 | 并发、摘要或结算失败会保持 `queued`/`paused`，不误报为已执行。 |
+
+### 3. 上下文：可追溯地压缩，而不是删除历史
+
+会话原始记录保留在 JSONL；模型看到的是经过摘要、编辑和预算校验的投影。手动摘要可生成、观察、取消，摘要来源切点、usage、checkpoint 和重启结果都可追溯。冻结快照用于读取一致的历史切面，不会让模型重新执行已经完成的工具。
+
+### 4. 技能：只增加提示上下文，不增加权限
+
+将技能放在 `.boss-cli/skills/<id>/SKILL.md`，在输入区选择后随单次直接发送提供上下文。目录发现最多返回 100 个可读取普通文件，每个文件最多 64 KiB；坏编码、超大文件、符号链接和 FIFO 会被跳过。技能内容不会执行目录脚本，也不会扩大 allowlist 或审批范围。
 
 Electron 运行时从官方源单独下载和校验，失败后需先恢复安装再启动。`none` 模式不调用模型；使用 `/tools` 或 `/search 关键词` 时仍会调用配置的上游 CLI。
 
