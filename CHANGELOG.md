@@ -10,6 +10,7 @@
 
 ### 修复
 
+- [Issue #208](https://github.com/can4hou6joeng4/boss-cli/issues/208)：模型流传输失败沿 SDK 异常链提取固定原因分类及白名单 errno，并通过 `errorInfo` 与会话错误消息提供诊断；不保存 cause 原文或类型名、URL、请求内容或凭据，也不改变重试与恢复策略。
 - [Issue #205](https://github.com/can4hou6joeng4/boss-cli/issues/205)：为 OpenAI Responses 与 Anthropic Messages 单次传输增加不可重置的 600 秒总时限，覆盖连接建立及流式响应；支持用 `BOSS_HARNESS_MODEL_REQUEST_TIMEOUT_SECONDS` 配置 1–3600 秒。超时按可重试传输错误处理，不冒充用户取消或上下文溢出；OpenAI 仅在尚无输出时遵循既有重试，未增加跨重试恢复预算。
 - 将桌面构建工具 Vite 从 `6.4.4` 更新到 `6.4.5`，修复 [GHSA-8g5g-mxqh-grgj](https://github.com/advisories/GHSA-8g5g-mxqh-grgj) 报告的 `server.fs.deny` 查询绕过问题。
 - [Issue #202](https://github.com/can4hou6joeng4/boss-cli/issues/202)：`keepRecentTokens` 在消息前缀指纹、provider/model 与当前投影均精确匹配时，按相邻成功请求的 provider input usage 差值校准被覆盖的完整回合；未覆盖尾部和无法核验的范围沿用原字符估算，并在计划中报告方法与实际使用的锚点数。不宣称精确 tokenizer 或计费结果。

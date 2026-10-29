@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第九十轮：保留模型流传输错误 cause 的安全诊断
+
+Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的开放 [Issue #10697](https://github.com/earendil-works/pi/issues/10697) 提供 undici SSE 复现：idle body timeout 与对端关闭都被归一成 `terminated`，底层 cause 分别是 `BodyTimeoutError / UND_ERR_BODY_TIMEOUT` 与 `SocketError / UND_ERR_SOCKET`，但终态和 retry 分类只能看到外层消息；核对时该 issue 为 OPEN，未发现关联 PR。Pi 开放 [Issue #11071](https://github.com/earendil-works/pi/issues/11071) 对应更通用的原则：将 provider 已识别的错误事实作为结构化终态 metadata 传递。本项目已具备 `ModelErrorInfo`，本轮在其传输错误范围内独立扩展，不复制 Pi 实现或引入依赖。
+
+本项目 [Issue #208](https://github.com/can4hou6joeng4/boss-cli/issues/208) 复核发现 OpenAI 与 Anthropic SDK 的 `APIConnectionError` 会被报告为 `transport_error`，但原来传给分类器的是 `None`，因此无法区分 `ReadTimeout`、读取失败或协议错误。现在只沿有限深度的 Python exception cause/context 链，把已知异常基类归一为固定 transport cause；OS errno 仅保留 `ECONNABORTED`、`ECONNREFUSED`、`ECONNRESET`、`EHOSTUNREACH`、`ENETUNREACH`、`ETIMEDOUT`、`EPIPE`、`EAI_AGAIN` 与 `EAI_NONAME`。未知 cause 只报告 `unknown`，无 cause 省略字段；异常类型名和 cause 文本从不序列化。
+
+新增的 `transportCause` / `transportCode` 通过 `session/error.errorInfo` 与 `model_error` 持久记录传递，并在普通会话错误消息中显示固定中文摘要，帮助区分等待超时、网络断开和协议失败。Anthropic 私有请求也只公开上述固定分类及 OS code，不公开 provider code、cause 原文或配置细节。总时限超时没有 SDK cause，继续使用原有超时错误消息。传输 retryability、OpenAI attempt 重试、用户取消、回合重放及上下文溢出恢复保持不变；没有新增平台网络请求。
+
+离线验证需使用合成嵌套 timeout、peer disconnect、unknown/no cause 与白名单外 errno，检查两个 provider 的事件、会话记录及私有 Anthropic 路径只出现受控枚举；并复核既有 overflow / retry 语义。真实模型服务和招聘平台行为未由此模拟。
+
 ## 第八十九轮：按可验证的模型用量校准摘要保留范围
 
 参考 Pi MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 及开放 [Issue #10583](https://github.com/earendil-works/pi/issues/10583) 对 CJK 内容字符估算与 provider usage 偏差的讨论。本项目 [Issue #202](https://github.com/can4hou6joeng4/boss-cli/issues/202) 在固定 main `020cc8b83541f5d79bca04648cf2305bd2c6e0e1` 上以六个合成 CJK 回合复现：字符估算的保留切点与合成 provider 的相邻请求 usage 差值明显不同。Pi 的 tokenizer/compaction 实现与本项目消息、工具和持久化契约不同；本轮不复制源码或增加依赖。

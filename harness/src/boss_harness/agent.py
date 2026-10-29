@@ -36,6 +36,7 @@ from boss_harness.models.continuation import (
     anthropic_continuation,
 )
 from boss_harness.models.output_budget import OutputBudgetExceeded, ResponseTextBudget, utf8_chunks
+from boss_harness.models.errors import transport_diagnostic
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.types import (
     DEFAULT_MODEL_TOOL_RESULT_BYTES, ChatMessage, ModelRequest, ModelErrorInfo, TextBlock, ThinkingBlock,
@@ -978,6 +979,9 @@ class TurnRunner:
                     info = getattr(event, "error_info", None)
                     if isinstance(info, ModelErrorInfo) and info.provider == self.config.provider:
                         self.last_stream_error = info
+                        diagnostic = transport_diagnostic(info)
+                        if diagnostic is not None:
+                            error = f"{error}（传输诊断：{diagnostic}）"
                     break
         except Exception as exc:
             if self.cancelled():

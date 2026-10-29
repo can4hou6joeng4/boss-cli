@@ -723,7 +723,8 @@ class OpenAIResponsesProvider:
         except openai.APIConnectionError as exc:
             # 连接被掐断通常是瞬时的（网关抖动、代理换路），值得重试。
             self._last_error_retryable = True
-            error_info = openai_error_info(None, source="transport_error", retryable=True)
+            error_info = openai_error_info(None, source="transport_error", retryable=True,
+                                           transport_error=exc)
             yield StreamEvent(type="error", reason="error", error=self._redact(f"连接失败：{exc}"),
                               error_info=error_info)
             return

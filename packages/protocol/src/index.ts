@@ -167,6 +167,13 @@ export interface ProviderFailureInfo {
   statusCode?: number;
   /** Adapter transient-failure classification, not permission to replay a turn. */
   retryable?: boolean;
+  /** Sanitized cause category; raw exception details are never included. */
+  transportCause?: "connect_timeout" | "read_timeout" | "write_timeout" | "pool_timeout"
+    | "timeout" | "dns_error" | "tls_error" | "connect_error" | "read_error"
+    | "write_error" | "protocol_error" | "connection_error" | "os_error" | "unknown";
+  /** Portable allowlisted errno label, when available. */
+  transportCode?: "ECONNABORTED" | "ECONNREFUSED" | "ECONNRESET" | "EHOSTUNREACH"
+    | "ENETUNREACH" | "ETIMEDOUT" | "EPIPE" | "EAI_AGAIN" | "EAI_NONAME";
 }
 
 export interface SessionErrorNotification {

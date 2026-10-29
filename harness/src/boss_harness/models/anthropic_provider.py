@@ -385,7 +385,8 @@ class AnthropicProvider:
             yield StreamEvent(type="error", reason="aborted", error="请求已取消")
             return
         except anthropic.APIConnectionError as exc:
-            error_info = private_error_info(anthropic_error_info(None, source="transport_error"))
+            error_info = private_error_info(anthropic_error_info(
+                None, source="transport_error", transport_error=exc))
             message = "模型连接失败" if has_private() else f"连接失败：{exc}"
             yield StreamEvent(type="error", reason="error", error=self._redact(message),
                               error_info=error_info)
