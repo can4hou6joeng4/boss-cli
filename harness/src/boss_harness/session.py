@@ -18,6 +18,7 @@ import stat
 import threading
 import uuid
 from collections.abc import Callable
+from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,6 +34,11 @@ _EVENT_ID = re.compile(r"[a-f0-9]{32}\Z")
 _ATTACHMENT_DIGEST = re.compile(r"[a-f0-9]{64}\Z")
 _DELETE_INTENT = re.compile(r"\.delete-([a-f0-9]{12})\.json\Z")
 _TERMINAL = frozenset({"completed", "interrupted", "blocked", "error"})
+_EVENT_READ_CHUNK_BYTES = 64 * 1024
+# Event records are persisted from the same bounded JSON-RPC payloads as the
+# transport.  Keep one explicit line limit so a damaged append-only log cannot
+# make a cold index rebuild allocate without bound.
+MAX_EVENT_LINE_BYTES = 8 * 1024 * 1024
 
 
 def _now() -> str:
@@ -45,6 +51,44 @@ def _new_id() -> str:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def _iter_bounded_lines(path: Path, *, maximum: int, label: str = "JSONL",
+                        universal_newlines: bool = False):
+    """Yield decoded JSONL lines without materialising the complete file."""
+    pending = bytearray()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(_EVENT_READ_CHUNK_BYTES)
+            eof = not chunk
+            if chunk:
+                pending.extend(chunk)
+            while True:
+                newline = pending.find(b"\n")
+                carriage = pending.find(b"\r") if universal_newlines else -1
+                if carriage >= 0 and (newline < 0 or carriage < newline):
+                    if carriage + 1 == len(pending) and not eof:
+                        break
+                    separator_end = (carriage + 2 if carriage + 1 < len(pending)
+                                     and pending[carriage + 1] == 10 else carriage + 1)
+                    line = bytes(pending[:carriage])
+                    del pending[:separator_end]
+                elif newline >= 0:
+                    line = bytes(pending[:newline])
+                    del pending[:newline + 1]
+                else:
+                    if len(pending) > maximum:
+                        raise ValueError(f"{label}单行超过大小限制")
+                    break
+                if len(line) > maximum:
+                    raise ValueError(f"{label}单行超过大小限制")
+                yield line.decode("utf-8", errors="replace")
+            if eof:
+                break
+        if pending:
+            if len(pending) > maximum:
+                raise ValueError(f"{label}单行超过大小限制")
+            yield bytes(pending).decode("utf-8", errors="replace")
 
 
 def _limit(value: int, maximum: int = 200) -> int:
@@ -246,11 +290,12 @@ class SessionStore:
             if self._delete_intent_path(thread_id).exists():
                 raise ValueError("会话正在删除，暂不可读取")
             try:
-                with path.open(encoding="utf-8", errors="replace") as handle:
-                    header = json.loads(handle.readline())
+                with closing(_iter_bounded_lines(path, maximum=MAX_EVENT_LINE_BYTES,
+                             label="会话头", universal_newlines=True)) as lines:
+                    header = json.loads(next(lines))
             except FileNotFoundError:
                 raise ValueError("会话不存在") from None
-            except (ValueError, IndexError):
+            except (ValueError, IndexError, StopIteration):
                 raise ValueError("会话头损坏，请保留原文件后恢复") from None
             if not isinstance(header, dict) or header.get("type") != "session" or header.get("id") != thread_id:
                 raise ValueError("会话头无效")
@@ -513,10 +558,9 @@ class SessionStore:
     def read_entries(self, thread_id: str) -> list[dict]:
         with self._lock:
             self.require_thread(thread_id)
-            content = self.path_for(thread_id).read_bytes()
-        out: list[dict] = []
-        with io.TextIOWrapper(io.BytesIO(content), encoding="utf-8", errors="replace") as handle:
-            for line in handle:
+            out: list[dict] = []
+            for line in _iter_bounded_lines(self.path_for(thread_id), maximum=MAX_EVENT_LINE_BYTES,
+                                            label="会话日志", universal_newlines=True):
                 if not line.strip():
                     continue
                 try:
@@ -526,7 +570,7 @@ class SessionStore:
                 if (isinstance(data, dict) and data.get("type") != "session"
                         and isinstance(data.get("id"), str) and isinstance(data.get("payload"), dict)):
                     out.append(data)
-        return out
+            return out
 
     def open_snapshot_source(self, thread_id: str) -> tuple[io.BufferedReader, int, str]:
         """Pin one rollout inode and cursor while session writers are excluded."""
@@ -1358,7 +1402,7 @@ class SessionStore:
         checkpoint = connection.execute("SELECT value FROM checkpoints WHERE name='events'").fetchone()
         if checkpoint and checkpoint["value"] == fingerprint:
             return
-        for line in self.events_path.read_text(encoding="utf-8", errors="replace").split("\n"):
+        for line in _iter_bounded_lines(self.events_path, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"):
             try:
                 record = json.loads(line)
                 if not isinstance(record, dict) or not isinstance(record.get("params"), dict):
@@ -1404,7 +1448,10 @@ class SessionStore:
             inserted = connection.execute("INSERT INTO events(event_id,method,thread_id,params_json) VALUES(?,?,?,'{}')", (event_id, method, thread_id))
             payload.update(eventId=event_id, eventCursor=str(inserted.lastrowid))
             frame = {"method": method, "params": payload}
-            self._append_line(self.events_path, {"type": "event", "timestamp": _now(), **frame})
+            record = {"type": "event", "timestamp": _now(), **frame}
+            if len(_json(record).encode("utf-8")) > MAX_EVENT_LINE_BYTES:
+                raise ValueError("事件日志单行超过大小限制")
+            self._append_line(self.events_path, record)
             connection.execute("UPDATE events SET params_json=? WHERE cursor=?", (_json(payload), inserted.lastrowid))
             stat = self.events_path.stat()
             connection.execute("INSERT INTO checkpoints(name,value) VALUES('events',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", (f"{stat.st_size}:{stat.st_mtime_ns}",))
