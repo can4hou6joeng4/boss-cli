@@ -10,6 +10,7 @@
 
 ### 修复
 
+- 将桌面构建工具 Vite 从 `6.4.4` 更新到 `6.4.5`，修复 [GHSA-8g5g-mxqh-grgj](https://github.com/advisories/GHSA-8g5g-mxqh-grgj) 报告的 `server.fs.deny` 查询绕过问题。
 - [Issue #202](https://github.com/can4hou6joeng4/boss-cli/issues/202)：`keepRecentTokens` 在消息前缀指纹、provider/model 与当前投影均精确匹配时，按相邻成功请求的 provider input usage 差值校准被覆盖的完整回合；未覆盖尾部和无法核验的范围沿用原字符估算，并在计划中报告方法与实际使用的锚点数。不宣称精确 tokenizer 或计费结果。
 - [Issue #199](https://github.com/can4hou6joeng4/boss-cli/issues/199)：技能目录发现与读取增加有界资源策略；`load([])` 不扫描目录，发现过程不全量物化，坏 UTF-8、超大文件、符号链接、FIFO 和竞态替换不会阻断合法技能，最多返回 100 个可读取技能，单文件按 64 KiB 原始字节限制。
 - [Issue #197](https://github.com/can4hou6joeng4/boss-cli/issues/197)：修复 count-only 摘要与 `contextEdit.excluded` 同时存在时的上下文切点漂移；来源条目先按原始序列定位，再应用编辑投影，避免隐藏未摘要尾部用户消息。预览、保存、重开、fork、预算与后续模型请求保持一致，原始记录和持久格式不变。
