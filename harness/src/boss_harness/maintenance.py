@@ -13,6 +13,15 @@ from boss_harness.ownership import StateDirectoryOwner
 from boss_harness.session import SessionStore
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    descriptor = open_private_file(path, os.O_RDONLY)
+    with os.fdopen(descriptor, "rb") as handle:
+        while chunk := handle.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def repair_index(root: Path) -> dict:
     root = root.resolve()
     owner = StateDirectoryOwner(root)
@@ -32,7 +41,7 @@ def repair_index(root: Path) -> dict:
             restrict_private_file(source)
             if source.exists():
                 manifest.append({"name": name, "bytes": source.stat().st_size,
-                                 "sha256": hashlib.sha256(source.read_bytes()).hexdigest()})
+                                 "sha256": _sha256_file(source)})
                 os.replace(source, backup / name)
                 moved.append(name)
         descriptor = open_private_file(backup / "manifest.json", os.O_WRONLY | os.O_EXCL)
