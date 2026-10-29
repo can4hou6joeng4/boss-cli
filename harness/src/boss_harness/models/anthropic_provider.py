@@ -29,6 +29,7 @@ from boss_harness.models.output_budget import (
 )
 from boss_harness.models.provider import ModelConfig
 from boss_harness.models.secret import redact_secrets
+from boss_harness.models.stream_pump import AsyncStreamPump, StreamAborted, StreamDeadlineExceeded
 from boss_harness.models.types import (
     AssistantMessage,
     ChatMessage,
@@ -125,16 +126,19 @@ class AnthropicProvider:
         self._secret = (
             config.api_key.get() if config.api_key else ""
         ) or os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY") or ""
-        self._client = anthropic.Anthropic(timeout=30.0, max_retries=0)
+        self._request_timeout_seconds = config.request_timeout_seconds
         self._active_stream: object | None = None
         self._abort_requested = False
 
     def request_abort(self) -> None:
         self._abort_requested = True
-        close = getattr(self._active_stream, "close", None)
-        if callable(close):
+        stream = self._active_stream
+        cancel = getattr(stream, "cancel", None)
+        close = getattr(stream, "close", None)
+        stop = cancel if callable(cancel) else close
+        if callable(stop):
             try:
-                close()
+                stop()
             except Exception:
                 pass
 
@@ -205,19 +209,25 @@ class AnthropicProvider:
         yield StreamEvent(type="start")
 
         try:
-            # The SDK's .stream() adapter accumulates and partially parses tool JSON before yielding.
-            if self.server_side_fallback:
-                stream_ctx = self._client.beta.messages.create(
-                    **kwargs,  # type: ignore[arg-type]
-                    betas=[_FALLBACK_BETA],
-                    fallbacks="default",
-                    stream=True,
-                )
-            else:
-                stream_ctx = self._client.messages.create(**kwargs, stream=True)  # type: ignore[arg-type]
+            async def produce(send) -> None:
+                async with anthropic.AsyncAnthropic(timeout=30.0, max_retries=0) as client:
+                    if self.server_side_fallback:
+                        stream = await client.beta.messages.create(
+                            **kwargs,  # type: ignore[arg-type]
+                            betas=[_FALLBACK_BETA],
+                            fallbacks="default",
+                            stream=True,
+                        )
+                    else:
+                        stream = await client.messages.create(**kwargs, stream=True)  # type: ignore[arg-type]
+                    async with stream:
+                        async for event in stream:
+                            await send(event)
 
-            with stream_ctx as stream:
-                self._active_stream = stream
+            pump = AsyncStreamPump(produce, timeout=self._request_timeout_seconds,
+                                   name="anthropic-message-stream")
+            self._active_stream = pump
+            with pump as stream:
                 if self._abort_requested:
                     yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                     return
@@ -361,6 +371,19 @@ class AnthropicProvider:
                         index not in signatures or index not in closed_blocks
                         for index, value in block_types.items() if value == "thinking"):
                     raise ValueError("工具响应缺少完整的 thinking 签名")
+        except StreamDeadlineExceeded:
+            if self._abort_requested:
+                yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+            else:
+                error_info = private_error_info(
+                    anthropic_error_info(None, source="transport_error", retryable=True))
+                yield StreamEvent(type="error", reason="error",
+                                  error=f"模型请求超过 {self._request_timeout_seconds} 秒总时限",
+                                  error_info=error_info)
+            return
+        except StreamAborted:
+            yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+            return
         except anthropic.APIConnectionError as exc:
             error_info = private_error_info(anthropic_error_info(None, source="transport_error"))
             message = "模型连接失败" if has_private() else f"连接失败：{exc}"

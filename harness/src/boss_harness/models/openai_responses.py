@@ -33,6 +33,7 @@ from boss_harness.models.output_budget import (
 )
 from boss_harness.models.provider import ModelConfig
 from boss_harness.models.secret import redact_secrets
+from boss_harness.models.stream_pump import AsyncStreamPump, StreamAborted, StreamDeadlineExceeded
 from boss_harness.models.types import (
     AssistantMessage,
     ChatMessage,
@@ -182,8 +183,7 @@ class OpenAIResponsesProvider:
         self.effort = config.effort
         self.base_url = config.base_url
         self._secret = config.api_key.get()
-        self._client = openai.OpenAI(api_key=self._secret, base_url=config.base_url,
-                                     timeout=30.0, max_retries=0)
+        self._request_timeout_seconds = config.request_timeout_seconds
         self._max_attempts, self._retry_base_delay = _retry_settings()
         #: 当前正在读的流；`request_abort()` 从别的线程关掉它，用来打断卡住的连接。
         self._active_stream: object | None = None
@@ -236,9 +236,12 @@ class OpenAIResponsesProvider:
         self._abort_requested = True
         self._abort_event.set()
         stream = self._active_stream
-        if stream is not None:
+        cancel = getattr(stream, "cancel", None)
+        close = getattr(stream, "close", None)
+        stop = cancel if callable(cancel) else close
+        if callable(stop):
             try:
-                stream.close()
+                stop()
             except Exception:  # noqa: BLE001 - 关不上也不该把中断本身搞成异常
                 pass
 
@@ -387,15 +390,22 @@ class OpenAIResponsesProvider:
         yield StreamEvent(type="start")
 
         try:
-            # 用 create(stream=True) 取**原始事件流**，而不是 SDK 的 responses.stream()：
-            # 后者自带状态机，网关过载回 response.failed 时会抛裸 RuntimeError
-            # （"Expected to have received `response.created` before ..."），把端点原话吞掉；
-            # 而本项目本来就在自己维护状态（累积块、算停止原因），不需要它的状态机。
-            with self._client.responses.create(**kwargs, stream=True) as stream:
-                self._active_stream = stream
-                # `request_abort()` 可能发生在 SDK context manager 建立响应的窗口；
-                # 此前没有可关闭的句柄，因此必须在登记后重新检查。否则即使取消标志
-                # 已经置上，仍会进入 body iterator，把一个已取消的回合卡在传输读取上。
+            async def produce(send) -> None:
+                async with openai.AsyncOpenAI(api_key=self._secret, base_url=self.base_url,
+                                              timeout=30.0, max_retries=0) as client:
+                    stream = await client.responses.create(**kwargs, stream=True)
+                    async with stream:
+                        async for event in stream:
+                            await send(event)
+
+            pump = AsyncStreamPump(produce, timeout=self._request_timeout_seconds,
+                                   name="openai-response-stream")
+            self._active_stream = pump
+            # Keep raw Responses events so gateway errors inside HTTP 200 streams
+            # retain their provider diagnostics.
+            with pump as stream:
+                # The pump is registered before connecting, so abort also covers
+                # response-header waits as well as an active response body.
                 if self._abort_requested:
                     yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                     return
@@ -679,6 +689,20 @@ class OpenAIResponsesProvider:
                 if started_function_calls != final_items_seen:
                     raise ValueError("工具调用缺少完整的 output_item.done 事件")
 
+        except StreamDeadlineExceeded:
+            self._last_error_retryable = not self._abort_requested
+            error_info = openai_error_info(None, source="transport_error", retryable=True)
+            if self._abort_requested:
+                yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+            else:
+                yield StreamEvent(type="error", reason="error",
+                                  error=f"模型请求超过 {self._request_timeout_seconds} 秒总时限",
+                                  error_info=error_info)
+            return
+        except StreamAborted:
+            self._last_error_retryable = False
+            yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+            return
         except OutputBudgetExceeded as exc:
             self._last_error_retryable = False
             yield StreamEvent(type="error", reason="error", error=self._redact(exc))

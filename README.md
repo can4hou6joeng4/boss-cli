@@ -160,6 +160,8 @@ OpenAI Responses 的完整显式配置由以下三项组成，去除首尾空白
 
 当前文件适配要求文件自身同时提供 `model`、`model_provider` 及该 provider 的 `base_url` 才形成可用 profile；认证仅识别 `experimental_bearer_token`，尚未适配 Codex 的 `env_key`、OAuth 或任意 `wire_api`。配置解析只读本地文件，不探测真实服务。
 
+OpenAI Responses 与 Anthropic Messages 的单次传输默认最多运行 600 秒，可用 `BOSS_HARNESS_MODEL_REQUEST_TIMEOUT_SECONDS` 设置为 1–3600 的整数秒。该 wall-clock 总时限覆盖连接建立和流式响应；底层 SDK 另保留 30 秒连接/读取空闲时限，定期 SSE 心跳不会延长总时限。超时作为可重试传输错误结束，不标记为用户取消，也不进入上下文溢出恢复。OpenAI 只会在尚未向调用方输出内容时按既有策略重试，且每次尝试各自重新计时；Anthropic 不新增自动重试。此设置不是跨重试或 Agent 自动恢复的共享总预算。
+
 ## 明确条件搜索
 
 在模型会话中可以要求“上海 Python、20–50K、3–5 年、本科，先看第一页”，模型通过 `boss_search` 传递结构化条件：

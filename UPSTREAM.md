@@ -991,3 +991,13 @@ Pi Durable 开放 [Issue #11026](https://github.com/earendil-works/pi/issues/110
 本项目新增 host JSON-RPC `thread/delete({threadId})`。删除前持有线程准入、follow-up、runtime 与事件锁；活动回合、摘要、队列派发、worker 收尾和回执通知仍持有状态时返回 `THREAD_BUSY`。删除意图使用 owner-only sidecar，先隐藏目标线程，再幂等清除 session 与 checkpoint 临时文件、共享 `events.jsonl` 对应记录、SQLite turns/events/thread 投影、当前索引 WAL、修复备份中的 SQLite 副本以及没有存活 session/fork 引用的内容哈希附件。以稳定 event ID 追加不含正文的 `thread/deleted` 全局事件，维持游标前进；清理中断后启动恢复会继续处理，读取、列表和 event replay 都不会暴露 pending 线程。
 
 fork 是完整历史前缀的独立副本，父会话删除不级联删除 fork；被 fork 或其他会话引用的附件继续保留。仅保证清除应用管理的当前逻辑副本与索引修复副本，不覆盖 APFS/SSD 旧文件块、Time Machine/文件系统快照、模型或宿主此前取得的副本，也不回滚招聘 CLI 已执行的外部操作。桌面 renderer 暂未开放此 RPC，直到有明确的用户确认界面与桌面验收。
+
+## 模型流不可重置总时限
+
+参考 Pi 开放 [Issue #9474](https://github.com/earendil-works/pi/issues/9474)：空闲读取超时会被周期 SSE 事件重置，无法限制一个始终不发终态的模型请求。Pi 讨论的是 Codex Responses transport；本项目使用同步 Python SDK，不能直接移植其实现。本轮本地合成 HTTP/SSE 实验还确认，同步 SDK 的 `stream.close()` 未能及时唤醒阻塞读取。
+
+本项目通过官方异步 SDK 执行每次 transport attempt，并以有界事件队列桥接回既有同步 Provider 接口。事件循环独立计时，在期限到达时立即通知同步消费者并仅取消 producer 一次；超时或用户取消会清空尚未消费的 SDK 事件，让终态排在队首。默认 600 秒，可由 `BOSS_HARNESS_MODEL_REQUEST_TIMEOUT_SECONDS` 设置为 1–3600 秒，既有 30 秒 SDK idle timeout 保持。期限覆盖等待响应头及读取流，队列最多缓冲 64 个解码事件，限制生产者领先于回合处理的速度。计时依赖事件循环调度，同步 CPU 工作阻塞 loop 时信号可能延迟。关闭时最多等待 SDK 收尾 1 秒，不重复中断响应清理；极端情况下若底层协程拒绝取消，pump 使用 daemon 线程避免阻塞同步调用方和进程退出。
+
+超时映射为 `transport_error` 且 `retryable=true`，不会使用 `aborted` 或 `CONTEXT_OVERFLOW`。显式用户取消仍映射 `aborted`。OpenAI 沿用“尚无可见内容时才重试”的既有 attempt 策略，每个 attempt 单独计时；Anthropic 不新增重试。没有引入跨 provider、OpenAI 重试、fallback 或 Agent 层的共享 recovery budget，故不能把该单次时限理解为整轮任务总时限。
+
+本地合成服务验证覆盖心跳注释持续到达、响应头延迟、两家 provider 正常终态与显式取消；心跳及响应头两种超时均在配置期限附近返回 retryable transport error，正常响应产出 `done`，用户取消产出 `aborted`。pump 单元探针另覆盖吞掉取消及无限期取消清理，确保超时仍立即送达且同步关闭有界。测试和合成 server 代码仅在本地命令中，不提交测试材料；未使用有效凭据或真实会话内容。Pi Issue #9474 的跨层恢复预算以及实时供应商验收仍未覆盖。
