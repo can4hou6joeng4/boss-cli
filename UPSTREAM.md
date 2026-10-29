@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第八十四轮：finish checkpoint 失败的队列结算责任
+
+参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 对持久任务、执行 owner 与输入准入分离的讨论；固定 MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `scheduler.ts` 将 run/abort invocation 的责任保留到执行结束。本项目独立延伸既有 queue pause 门禁，不引入 Pi 调度器、afterRun 子任务或恢复重放，也不复制源码。
+
+本项目 [Issue #189](https://github.com/can4hou6joeng4/boss-cli/issues/189) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 的真实 `ApplicationService` 离线复现：容量 1、首回合活动时排入 follow-up，finish checkpoint 在写入前失败或写入后抛错均令首回合标为 `error / phasePersistenceFailure`，但已登记的容量 waiter 仍把 follow-up 执行为 delivered。此前队列结算基于 completed 只暂停 steering，新增阶段写入失败后未补全 follow-up 暂停责任。
+
+现在阶段失败分支在释放执行槽位前调用全队列 pause；暂停写入同时失败时，既有 pending-pause 责任阻止后续 claim 与新准入，恢复存储后旧输入仍变为 paused。保持原回合错误原因、已落盘事实和跨会话 FIFO 容量唤醒，不重放模型或工具。六场景隔离探针覆盖 finish 写前/写后失败、暂停持续失败及恢复、既有 steering settlement 失败、正常 completed 与 B/self/C 等待顺序；修复后错误回合只执行 first，其他会话依次执行 B/C，正常回合仍继续 follow-up。网络与外部进程尝试为零，探针与合成状态只保留在忽略目录；未调用真实模型、招聘 CLI、招聘平台或桌面 UI。
+
 ## 第八十一轮：回合阶段 checkpoint 与重启复核边界
 
 本项目 [Issue #185](https://github.com/can4hou6joeng4/boss-cli/issues/185) 基于 main `08dcccd28158548ff2fd0f0ac4f55c2198fe7746` 核对。参考 Pi Durable MIT main `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a` 的 `generation.ts` 分阶段执行、`live.ts` 持久运行态和 `harness-ownership.test.ts` / `harness-view-run.test.ts` 的崩溃重开覆盖；开放 Issue [#11332](https://github.com/earendil-works/pi/issues/11332) 仍讨论 task 所有权、abort 与 idle 边界。Pi 的实验性 Durable API 与本项目招聘回合、审批及外部工具副作用并不等价，本轮吸收的是“阶段状态须持久化并定义重启结果”的设计要求，不移植代码、不引入 Pi 依赖。

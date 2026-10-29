@@ -2154,6 +2154,13 @@ class ApplicationService:
                                                 job.get("phaseAttempt", 1))
                     except (OSError, ValueError):
                         status = "error"
+                        # Phase settlement failed after a successful runner may
+                        # already have left follow-ups eligible. Register the
+                        # full pause before releasing capacity to any waiter.
+                        try:
+                            self.queue.pause(thread_id)
+                        except (OSError, ValueError):
+                            pass
                         try:
                             self.sessions.record_turn(thread_id, job["turnId"], "error",
                                                       recoveryReason="phasePersistenceFailure")
