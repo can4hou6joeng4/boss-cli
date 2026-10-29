@@ -254,6 +254,21 @@ class OpenAIResponsesProvider:
     # ---------- 事件流 ----------
 
     def stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
+        events = self._stream(request)
+        try:
+            for event in events:
+                # The producer may already have queued EOF/an exception before
+                # abort reaches its pump. Cancellation still wins until this
+                # provider delivers a failure; valid completed output is kept.
+                if event.type == "error" and self._abort_requested:
+                    self._last_error_retryable = False
+                    self._last_error_retry_after = None
+                    event = StreamEvent(type="error", reason="aborted", error="请求已取消")
+                yield event
+        finally:
+            events.close()
+
+    def _stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
         """带重试的事件流。
 
         重试必须同时满足两条：

@@ -222,6 +222,19 @@ class AnthropicProvider:
     # ---------- 事件流 ----------
 
     def stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
+        events = self._stream(request)
+        try:
+            for event in events:
+                # A finished pump can retain an unread EOF or SDK failure.
+                # Normalize only failures before delivery, without rewriting
+                # a valid completed message or exposing private diagnostics.
+                if event.type == "error" and self._abort_requested:
+                    event = StreamEvent(type="error", reason="aborted", error="请求已取消")
+                yield event
+        finally:
+            events.close()
+
+    def _stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
         self._abort_requested = False
         kwargs = self._request_kwargs(request)
         prefix_digest = anthropic_prefix_digest(request.system, kwargs.get("tools"), kwargs["messages"])

@@ -1011,3 +1011,13 @@ fork 是完整历史前缀的独立副本，父会话删除不级联删除 fork�
 超时映射为 `transport_error`；SDK 清理已完成时 `retryable=true`，否则为 `false` 并停止自动重试，不会使用 `aborted` 或 `CONTEXT_OVERFLOW`。显式用户取消仍映射 `aborted`。OpenAI 沿用“尚无可见内容时才重试”的既有 attempt 策略，每个 attempt 单独计时；Anthropic 不新增重试。Anthropic 的凭据类型与端点在 provider 创建时按 SDK 规则解析并冻结，异步请求不从后续环境变更重新选择凭据或端点。没有引入跨 provider、OpenAI 重试、fallback 或 Agent 层的共享 recovery budget，故不能把该单次时限理解为整轮任务总时限。
 
 本地合成服务验证覆盖心跳注释持续到达、响应头延迟、两家 provider 正常终态与显式取消；心跳及响应头两种超时均在配置期限附近返回 retryable transport error，正常响应产出 `done`，用户取消产出 `aborted`。官方 SDK 组合 Anthropic 1.15.0 / OpenAI 3.35.1 和 Anthropic 2.3.0 / OpenAI 3.41.0 均通过。pump 探针另覆盖吞掉取消及无限期取消清理、8 个残留槽位与释放、SDK Pydantic 额外字段和大整数预算；凭据探针覆盖静态 key/token、请求头快照、动态凭据借用及最终关闭，重试探针确认清理未完成时不创建第二个 OpenAI 请求。测试和合成 server 代码仅在本地保留，不提交测试材料；未使用有效凭据、真实会话或招聘平台。Pi Issue #9474 的跨层恢复预算以及实时供应商验收仍未覆盖。
+
+## 模型失败交付前的晚取消优先级
+
+[Issue #211](https://github.com/can4hou6joeng4/boss-cli/issues/211) 面向招聘研究中断后的 provider 终态归属。在 [PR #210](https://github.com/can4hou6joeng4/boss-cli/pull/210) 固定 head `e4d1c047691f701947ac952dac745d572c88c556` 上，真实 provider 与 pump 的离线探针先消费部分文本，再等待后台 producer 已结束并排入 EOF 或异常，随后调用 `request_abort()`。pump 已完成，取消不会替换尚未消费的终态；provider 取消标志虽为真，OpenAI 仍返回缺少终态响应错误，Anthropic 返回普通流异常。此时序中 EOF 先于取消发生，证明的是失败交付前的取消优先级边界，不是取消导致 EOF 或普通桌面取消必然污染日志；回合消费者另有取事件前后的取消检查。
+
+2026-10-30 复核 Pi [Issue #10856](https://github.com/earendil-works/pi/issues/10856) 与 [Issue #11211](https://github.com/earendil-works/pi/issues/11211) 仍 OPEN。固定 MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 `packages/ai/src/api/openai-responses-shared.ts` 在未见终态时抛 EOF，`openai-responses.ts` 的 catch 按 signal 设置停止原因但保留格式化异常；`anthropic-messages.ts` 的 SSE reader 在读取前检查 signal，并在 finally 释放 reader lock。前者提供取消诊断一致性的需求依据，后者讨论自定义 body 取消与清理；本项目 #210 已以 pump 标记覆盖活动传输取消。本轮不声称这两个 Pi 问题原样存在或已被上游修复，不复制源码或新增依赖。
+
+本项目在两种内置 provider 的失败事件交付边界复查 `_abort_requested`。已经观察到取消时统一发送 `error(reason=aborted, error=请求已取消)`，不保留 SDK/EOF 错误及结构化诊断；OpenAI 同时清除可重试标志与退避信息。内层生成器由交付层 finally 关闭，保留 SDK/pump 的清理和额度责任；未取消失败与正常完成消息不改写。pump 的完成、取消和自动清理语义保持不变，JSON-RPC、持久格式与工具执行边界不变。
+
+本地探针直接加载生产 provider/pump，只在 SDK 流边界使用内存替身；覆盖两家 provider 的 producer 已完成 EOF、排队 SDK/通用异常、活动及重复取消、未取消 EOF/异常、正常完成和完成交付后的取消，并覆盖 Anthropic thinking 签名及 redacted 数据。修复后连续三轮 90/90 通过，取消错误不含 `errorInfo` 或私密 opaque 数据，正常完成仍保留合法私密续接数据；每例仅一次传输创建，流与客户端清理结束，每进程 8 个额度全部归还，网络/DNS 尝试为零。探针和报告仅在本地 `/tmp` 保留，不进入提交；未验收真实 SDK 网络传输、真实模型、招聘平台或桌面 UI。
