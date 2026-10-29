@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _AUTO_COMPACTION_REASONS = frozenset({"threshold", "budget", "overflow"})
@@ -10,7 +11,7 @@ _TERMINAL_TURNS = frozenset({"completed", "interrupted", "blocked", "error"})
 _TASK_PHASES = frozenset({"admission", "prepare", "model_request", "tool_execution", "finish"})
 
 
-def turn_snapshot(entries: list[dict], *, turn_ids: set[str] | None = None,
+def turn_snapshot(entries: Iterable[dict], *, turn_ids: set[str] | None = None,
                   queue_ids: set[str] | None = None, limit: int = 257
                   ) -> tuple[list[dict], set[str], bool]:
     """Project bounded task facts, excluding turn transcript and model metadata."""
@@ -70,7 +71,7 @@ def turn_snapshot(entries: list[dict], *, turn_ids: set[str] | None = None,
     return list(turns.values()), duplicates, overflow
 
 
-def queue_snapshot(entries: list[dict], *, queue_ids: set[str] | None = None,
+def queue_snapshot(entries: Iterable[dict], *, queue_ids: set[str] | None = None,
                    target_turn_id: str | None = None, receipt_turn_id: str | None = None,
                    limit: int = 257
                    ) -> tuple[dict[str, dict], set[str], bool]:
@@ -104,7 +105,7 @@ def queue_snapshot(entries: list[dict], *, queue_ids: set[str] | None = None,
     return states, conflicts, overflow
 
 
-def user_message_refs(entries: list[dict], queue_ids: set[str], *, per_queue_limit: int = 2,
+def user_message_refs(entries: Iterable[dict], queue_ids: set[str], *, per_queue_limit: int = 2,
                       revision_id_limit: int = 1_024
                       ) -> tuple[list[dict], set[str], set[str]]:
     """Project bounded identity facts for relevant user messages, never their text."""

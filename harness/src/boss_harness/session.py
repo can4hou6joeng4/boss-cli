@@ -60,12 +60,26 @@ def _json(value: Any) -> str:
 
 
 def _iter_bounded_raw_lines_from_handle(handle, *, maximum: int, label: str = "JSONL",
-                                        universal_newlines: bool = False):
+                                        universal_newlines: bool = False,
+                                        byte_limit: int | None = None):
     """Yield raw JSONL records from an already pinned handle with a line bound."""
+    if byte_limit is not None and (type(byte_limit) is not int or byte_limit < 0):
+        raise ValueError("JSONL 快照长度无效")
     pending = bytearray()
+    remaining = byte_limit
     while True:
-        chunk = handle.read(_EVENT_READ_CHUNK_BYTES)
-        eof = not chunk
+        if remaining is None:
+            chunk = handle.read(_EVENT_READ_CHUNK_BYTES)
+            eof = not chunk
+        elif remaining == 0:
+            chunk = b""
+            eof = True
+        else:
+            chunk = handle.read(min(_EVENT_READ_CHUNK_BYTES, remaining))
+            if not chunk:
+                raise ValueError(f"{label}快照读取不完整")
+            remaining -= len(chunk)
+            eof = remaining == 0
         if chunk:
             pending.extend(chunk)
         while True:
@@ -118,6 +132,43 @@ def _read_bounded_file(path: Path, *, maximum: int, label: str) -> bytes:
     if len(data) > maximum:
         raise ValueError(f"{label}超过大小限制")
     return data
+
+
+class SessionEntriesSnapshot:
+    """A rewindable, size-pinned view of one append-only session prefix."""
+
+    def __init__(self, source: io.BufferedReader, size: int) -> None:
+        self._source = source
+        self._size = size
+
+    def __enter__(self) -> SessionEntriesSnapshot:
+        if self._source.closed:
+            raise ValueError("会话快照已关闭")
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self._source.close()
+
+    def __iter__(self):
+        if self._source.closed:
+            raise ValueError("会话快照已关闭")
+        self._source.seek(0)
+        for raw_line in _iter_bounded_raw_lines_from_handle(
+                self._source, maximum=MAX_EVENT_LINE_BYTES, label="会话日志",
+                universal_newlines=True, byte_limit=self._size):
+            line = raw_line.decode("utf-8", errors="replace")
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (isinstance(data, dict) and data.get("type") != "session"
+                    and isinstance(data.get("id"), str) and isinstance(data.get("payload"), dict)):
+                yield data
 
 
 def _sha256_file(path: Path) -> str:
@@ -614,6 +665,18 @@ class SessionStore:
                         and isinstance(data.get("id"), str) and isinstance(data.get("payload"), dict)):
                     out.append(data)
             return out
+
+    def open_entries_snapshot(self, thread_id: str) -> SessionEntriesSnapshot:
+        """Pin a readable session prefix without holding the writer lock while scanning."""
+        with self._lock:
+            self.require_thread(thread_id)
+            source = self.path_for(thread_id).open("rb")
+            try:
+                size = os.fstat(source.fileno()).st_size
+                return SessionEntriesSnapshot(source, size)
+            except BaseException:
+                source.close()
+                raise
 
     def open_snapshot_source(self, thread_id: str) -> tuple[io.BufferedReader, int, str]:
         """Pin one rollout inode and cursor while session writers are excluded."""

@@ -40,7 +40,8 @@ from boss_harness.request_policy import ModelRequestRejected, check_model_reques
 from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
 from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUncertain, Entry,
-                                  SessionStore, ThreadNotFound, ToolRevisionPersistenceError)
+                                  SessionEntriesSnapshot, SessionStore, ThreadNotFound,
+                                  ToolRevisionPersistenceError)
 from boss_harness.snapshot_store import SnapshotStore
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
 from boss_harness.tool_bundle import ToolBundle
@@ -618,6 +619,23 @@ class ApplicationService:
         params = params or {}
         return self.sessions.list_turns(_text(params, "threadId"), cursor=params.get("cursor"), limit=params.get("limit", 50))
 
+    @contextmanager
+    def _task_read_snapshot(self, thread_id: str) -> Iterator[
+            tuple[SessionEntriesSnapshot, str | None, list[dict], str | None, str | None]]:
+        with self._thread_admission.hold(thread_id):
+            with self.runtimes.lock, self.queue.lock:
+                active = self.runtimes.active.get(thread_id)
+                active_turn_id = active.get("turnId") if active is not None else None
+                jobs = [{key: job.get(key) for key in
+                         ("jobId", "threadId", "turnId", "reason", "status", "throughTurnId")}
+                        for job in self._compaction_jobs.values() if job.get("threadId") == thread_id]
+                dispatch = self._follow_up_dispatches.get(thread_id)
+                dispatch_queue_id = dispatch.get("queueId") if dispatch is not None else None
+                compaction_owner_id = self._compaction_by_thread.get(thread_id)
+                entries = self.sessions.open_entries_snapshot(thread_id)
+            with entries:
+                yield entries, active_turn_id, jobs, dispatch_queue_id, compaction_owner_id
+
     def on_task_read(self, params: dict | None) -> dict:
         params = params or {}
         if set(params) != {"threadId", "kind", "id"}:
@@ -629,15 +647,11 @@ class ApplicationService:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", task_id):
             raise ValueError("id 格式无效")
 
-        with self.runtimes.lock, self.queue.lock:
-            entries = self.sessions.read_entries(thread_id)
+        with self._task_read_snapshot(thread_id) as snapshot:
+            entries, active_turn_id, jobs, dispatch_queue_id, compaction_owner_id = snapshot
             turns: list[dict] = []
             duplicate_turns: set[str] = set()
             turn_overflow = False
-            active_turn = self.runtimes.active.get(thread_id)
-            jobs = [{key: job.get(key) for key in
-                     ("jobId", "threadId", "turnId", "reason", "status", "throughTurnId")}
-                    for job in self._compaction_jobs.values() if job.get("threadId") == thread_id]
             checkpoint_turns: dict[str, set[str]] = {}
             checkpoint_ids: set[str] = set()
             checkpoint_jobs_by_turn: dict[str, dict] = {}
@@ -705,7 +719,7 @@ class ApplicationService:
                     entries, turn_ids=candidate_turn_ids, limit=MAX_TASK_RELATIONS * 4)
                 turns = candidate_turns
                 duplicate_turns.update(candidate_duplicates)
-                runtime_owned = active_turn is not None and active_turn.get("turnId") == task_id
+                runtime_owned = active_turn_id == task_id
                 phase = None
                 if isinstance(turn.get("taskPhase"), str):
                     phase = {"name": turn["taskPhase"],
@@ -795,10 +809,9 @@ class ApplicationService:
                                                   identity_conflict=task_id in queue_conflicts,
                                                   duplicate_user_message=task_id in duplicate_queues,
                                                   revision_conflict=task_id in revision_conflicts)
-                dispatch = self._follow_up_dispatches.get(thread_id)
-                runtime_owned = (dispatch is not None and dispatch.get("queueId") == task_id)
-                if (queue_item.get("kind") == "steering" and active_turn is not None
-                        and active_turn.get("turnId") == queue_item.get("expectedTurnId")
+                runtime_owned = dispatch_queue_id == task_id
+                if (queue_item.get("kind") == "steering" and active_turn_id is not None
+                        and active_turn_id == queue_item.get("expectedTurnId")
                         and queue_item.get("status") in {"queued", "delivering"}):
                     runtime_owned = True
                 related = []
@@ -844,7 +857,7 @@ class ApplicationService:
                     checkpoint_turn_id=checkpoint_turn_id, duplicate_turns=task_duplicate_turns)
                 if checkpoint_conflict or task_turn_overflow:
                     relation = {"ownership": "conflict", "turnId": None}
-                runtime_owned = self._compaction_by_thread.get(thread_id) == task_id
+                runtime_owned = compaction_owner_id == task_id
                 status = job.get("status", "unknown")
                 if task_id in checkpoint_ids and status == "running":
                     status = "completed"
