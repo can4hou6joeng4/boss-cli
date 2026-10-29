@@ -83,6 +83,7 @@ const RENDERER_METHODS = new Set([
   "event/list", "model/list", "config/read", "skills/list", "tool/list", "attachment/add", "attachment/read",
   "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "context/edit/read", "context/edit", "approval/respond",
   "connection/read", "connection/check",
+  "runtime/resources/read",
 ]);
 const THREAD_METHODS = new Set([
   "thread/read", "thread/resume", "thread/fork", "thread/archive", "thread/unarchive", "thread/name/set",
@@ -100,6 +101,9 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
   }
   if (payload.params !== undefined && !record(payload.params)) throw new Error("harness params must be an object");
   const params = payload.params as Record<string, unknown> | undefined;
+  if (payload.method === "runtime/resources/read" && params && Reflect.ownKeys(params).length > 0) {
+    throw new Error("runtime resource read does not accept params");
+  }
   if (payload.method === "connection/check" && (typeof params?.target !== "string" || !["local", "model", "platform"].includes(params.target))) {
     throw new Error("invalid connection target");
   }

@@ -17,6 +17,7 @@ import math
 import os
 from pathlib import Path
 import re
+from itertools import islice
 import threading
 import time
 import uuid
@@ -55,6 +56,8 @@ from boss_harness.turn_limits import model_request_limit, model_request_limit_fr
 PROTOCOL_VERSION = "0.2.0"
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
 MAX_RETAINED_COMPACTION_JOBS = 64
+MAX_RUNTIME_RESOURCE_WAITERS = 32
+MAX_RUNTIME_RESOURCE_OWNERS = 32
 MAX_COMPACTION_ERROR_CHARACTERS = 2_048
 
 
@@ -253,6 +256,7 @@ class ApplicationService:
             self._follow_up_admission_lock = threading.RLock()
             self._capacity_waiters: deque[str] = deque()
             self._capacity_waiter_ids: set[str] = set()
+            self._capacity_waiter_since: dict[str, float] = {}
             # Compaction jobs are independent of business turns and never own a
             # tool bridge. The per-thread index prevents a new turn from
             # changing the source while a summary is being generated.
@@ -401,6 +405,7 @@ class ApplicationService:
             "thread/item/content/read": self.on_item_content_read,
             "turn/start": self.on_turn_start, "turn/interrupt": self.on_turn_interrupt,
             "turn/steer": self.on_turn_steer, "turn/read": self.on_turn_read,
+            "runtime/resources/read": self.on_runtime_resources_read,
             "approval/respond": self.on_approval_respond, "event/list": self.on_event_list,
             "queue/add": self.on_queue_add, "queue/list": self.on_queue_list,
             "queue/remove": self.on_queue_remove, "tool/list": self.on_tool_list,
@@ -726,9 +731,10 @@ class ApplicationService:
 
     def on_thread_archive(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")
-        with self.runtimes.lock:
+        with self._follow_up_admission_lock, self.runtimes.lock:
             self._idle(thread_id)
             self.queue.pause(thread_id)
+            self._forget_capacity_waiter_locked(thread_id)
             thread = self.sessions.archive_thread(thread_id)
         self.events.emit("thread/archived", {"threadId": thread_id})
         return {"thread": thread}
@@ -775,6 +781,7 @@ class ApplicationService:
                         self._retire_deleted_compaction_jobs_locked(thread_id)
                         self._capacity_waiter_ids.discard(thread_id)
                         self._capacity_waiters = deque(value for value in self._capacity_waiters if value != thread_id)
+                        self._capacity_waiter_since.pop(thread_id, None)
                     if pending_deletion:
                         raise RpcError(-32012, "会话删除尚未完成；该会话已隐藏，内核重启后会继续清理",
                                        {"code": "THREAD_DELETE_INCOMPLETE", "threadId": thread_id}) from None
@@ -784,6 +791,7 @@ class ApplicationService:
                 self._tool_persistence_fences.discard(thread_id)
                 self._capacity_waiter_ids.discard(thread_id)
                 self._capacity_waiters = deque(value for value in self._capacity_waiters if value != thread_id)
+                self._capacity_waiter_since.pop(thread_id, None)
                 with self.queue.lock:
                     self.queue._pending_pauses.pop(thread_id, None)
                 if notify_deleted:
@@ -1146,6 +1154,8 @@ class ApplicationService:
                 # dispatch/observer failure must not rewrite the compaction
                 # result or turn it into a start failure.
                 pass
+        elif job.get("status") in {"failed", "cancelled"}:
+            self._forget_capacity_waiter(job["threadId"])
         self._close_application_resources_if_idle()
 
     def _retire_compaction_locked(self, job: dict) -> bool:
@@ -1318,7 +1328,7 @@ class ApplicationService:
                    "processedCharacters": 0, "totalCharacters": len(source),
                    "retainedItemCount": plan["retainedItemCount"], "firstKeptItemId": plan["firstKeptItemId"],
                    "estimatedRetainedTokens": plan["estimatedRetainedTokens"],
-                   "_launch_done": launch_done}
+                   "_launch_done": launch_done, "_startedMonotonic": time.monotonic()}
             worker = threading.Thread(target=self._run_compaction, args=(job,),
                                       name=f"compact-{job_id[:8]}", daemon=True)
             job["worker"] = worker
@@ -1676,6 +1686,7 @@ class ApplicationService:
                     "worker": turn["worker"], "status": "running", "reason": reason,
                     "modelRequestCount": 0, "processedCharacters": 0, "totalCharacters": len(source),
                     "retainedItemCount": plan["retainedItemCount"], "firstKeptItemId": plan["firstKeptItemId"],
+                    "_startedMonotonic": time.monotonic(),
                     "estimatedRetainedTokens": plan["estimatedRetainedTokens"]}
                 self._compaction_jobs[job_id] = job
                 self._compaction_by_thread[thread_id] = job_id
@@ -2067,6 +2078,8 @@ class ApplicationService:
                     with self.runtimes.lock:
                         self._follow_up_workers[job["turnId"]] = threading.current_thread()
                         self._follow_up_worker_threads[job["turnId"]] = job["threadId"]
+                else:
+                    self._forget_capacity_waiter(job["threadId"])
                 try:
                     if job["runner"] is not self.runner:
                         self.bridge_lifecycle.close(job["runner"].tool_bridge)
@@ -2330,8 +2343,11 @@ class ApplicationService:
 
     def on_queue_remove(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")
-        with self.runtimes.lock:
+        with self._follow_up_admission_lock, self.runtimes.lock:
             item = self.queue.transition(thread_id, _text(params, "queueId"), "cancelled")
+            if not any(q["kind"] == "followUp" and q["status"] == "queued"
+                       for q in self.queue.list(thread_id)):
+                self._forget_capacity_waiter_locked(thread_id)
         self.events.emit("queue/updated", {"threadId": thread_id, "queueId": item["id"]})
         return {"queueItem": item}
 
@@ -2343,6 +2359,7 @@ class ApplicationService:
             if thread_id not in self._capacity_waiter_ids:
                 self._capacity_waiter_ids.add(thread_id)
                 self._capacity_waiters.append(thread_id)
+                self._capacity_waiter_since[thread_id] = time.monotonic()
             self._drain_capacity_waiters_locked()
 
     def _drain_capacity_waiters(self) -> None:
@@ -2358,13 +2375,74 @@ class ApplicationService:
                     return
                 thread_id = self._capacity_waiters.popleft()
                 self._capacity_waiter_ids.discard(thread_id)
+                waiting_since = self._capacity_waiter_since.pop(thread_id, time.monotonic())
             outcome = self._dispatch_follow_up(thread_id)
             if outcome == "capacity":
                 with self.runtimes.lock:
                     if not self.runtimes.closed and thread_id not in self._capacity_waiter_ids:
                         self._capacity_waiters.appendleft(thread_id)
                         self._capacity_waiter_ids.add(thread_id)
+                        self._capacity_waiter_since[thread_id] = waiting_since
                 return
+
+    def _forget_capacity_waiter_locked(self, thread_id: str) -> None:
+        self._capacity_waiter_ids.discard(thread_id)
+        self._capacity_waiters = deque(value for value in self._capacity_waiters if value != thread_id)
+        self._capacity_waiter_since.pop(thread_id, None)
+
+    def _forget_capacity_waiter(self, thread_id: str) -> None:
+        with self._follow_up_admission_lock:
+            self._forget_capacity_waiter_locked(thread_id)
+
+    def on_runtime_resources_read(self, params: dict | None) -> dict:
+        if params not in (None, {}):
+            raise ValueError("runtime/resources/read 不接受参数")
+        now = time.monotonic()
+        with self._follow_up_admission_lock, self.runtimes.lock:
+            owners = []
+            for job in self.runtimes.jobs.values():
+                abort = job.get("_shutdown_abort")
+                active = self.runtimes.active.get(job["threadId"]) is job
+                phase = job.get("_taskPhase")
+                owners.append({
+                    "kind": "turn", "id": job["turnId"], "threadId": job["threadId"],
+                    "state": "active" if active else "cleanup",
+                    "ageSeconds": round(max(0.0, now - job.get("_startedMonotonic", now)), 3),
+                    "cancelRequested": job["cancel"].is_set(),
+                    "abortPending": abort is not None and not abort.done.is_set(),
+                    "phase": phase.get("phase") if isinstance(phase, dict) else None,
+                    "phaseStatus": phase.get("status") if isinstance(phase, dict) else None,
+                })
+            for job_id in self._compaction_by_thread.values():
+                job = self._compaction_jobs.get(job_id)
+                if job is None:
+                    continue
+                abort = job.get("_shutdown_abort")
+                owners.append({
+                    "kind": "automaticCompaction" if "turnId" in job else "manualCompaction",
+                    "id": job["jobId"], "threadId": job["threadId"],
+                    "state": "active" if job.get("status") == "running" else "cleanup",
+                    "ageSeconds": round(max(0.0, now - job.get("_startedMonotonic", now)), 3),
+                    "cancelRequested": job["cancel"].is_set(),
+                    "abortPending": abort is not None and not abort.done.is_set(),
+                    "phase": "compaction", "phaseStatus": job.get("status"),
+                })
+            waiters = [{
+                "threadId": thread_id, "position": index + 1,
+                "waitingSeconds": round(max(0.0, now - self._capacity_waiter_since.get(thread_id, now)), 3),
+            } for index, thread_id in enumerate(islice(self._capacity_waiters,
+                                                       MAX_RUNTIME_RESOURCE_WAITERS))]
+            return {
+                "turnCapacity": self.runtimes.capacity,
+                "activeTurnCount": len(self.runtimes.active),
+                "maxRetainedTurns": self.runtimes.owner_capacity,
+                "retainedTurnCount": len(self.runtimes.jobs),
+                "ownerCount": len(owners),
+                "owners": owners[:MAX_RUNTIME_RESOURCE_OWNERS],
+                "ownersTruncated": len(owners) > MAX_RUNTIME_RESOURCE_OWNERS,
+                "waiterCount": len(self._capacity_waiters), "waiters": waiters,
+                "waitersTruncated": len(self._capacity_waiters) > MAX_RUNTIME_RESOURCE_WAITERS,
+            }
 
     def _dispatch_follow_up(self, thread_id: str) -> str:
         with self.runtimes.lock:
@@ -2505,6 +2583,7 @@ class ApplicationService:
         with self._follow_up_admission_lock, self.runtimes.lock:
             self._capacity_waiters.clear()
             self._capacity_waiter_ids.clear()
+            self._capacity_waiter_since.clear()
         try:
             # Do not invert begin_login's connections -> runtime lock order.
             # Dispatch every cancel before any potentially blocking abort hook.
