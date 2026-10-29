@@ -12,6 +12,7 @@
 - [Issue #169](https://github.com/can4hou6joeng4/boss-cli/issues/169)：会话删除事务已提交或删除意图已持久化后清理失败时，同步退休该会话的容量等待项，避免已删除或隐藏会话阻断其他 follow-up 的 FIFO 唤醒；提交前失败仍保留有效等待工作。
 - [Issue #163](https://github.com/can4hou6joeng4/boss-cli/issues/163)：将摘要 worker 句柄与启动决策纳入 shutdown 所有权；关闭期间取消的摘要不会晚启动，正常启动仍由共享期限内的关闭流程等待收尾。
 - [Issue #165](https://github.com/can4hou6joeng4/boss-cli/issues/165)：关闭时的 `kernel/shutdown` 标记与 hook 失败诊断按共享期限等待 EventHub 锁；期限内无法取得时跳过该可选事件，不让诊断持久化延长关闭。
+- [Issue #177](https://github.com/can4hou6joeng4/boss-cli/issues/177)：校验 OpenAI Responses function_call 的 added/done output_index、call_id 与工具名；可选 item ID 在出现时必须一致，终态 output 按已知身份映射回流索引以兼容撤回项压缩，冲突时拒绝整轮且不重试、不派发工具。
 
 ### 兼容与验证
 
@@ -21,6 +22,7 @@
 - Issue #169 原复现及独立 7 项边界探针通过，覆盖删除意图落盘前失败保留有效 waiter、落盘后失败退休目标、其他会话 FIFO/单次执行、删除/归档/关闭门禁，以及重启继续清理且不重放；合并验收另覆盖提交后目录 `fsync` 失败时退休目标 waiter 与摘要终态、保留其他 waiter 和原始错误。类型检查、源码构建、Python 编译和 wheel/sdist 源码内容校验通过。探针仅保留本地，未调用真实模型、招聘 CLI 或平台。
 - Issue #163 离线并发屏障探针覆盖 shutdown 与摘要开始事件并发、取消后不启动 worker，以及无竞争时正常启动并由 close 收尾。Python 3.14 编译、TypeScript 检查、Electron 源码构建、Python wheel/sdist 构建、产物内容扫描和 `git diff --check` 均通过；探针使用合成对象，未调用真实模型、招聘 CLI 或招聘平台，测试代码未提交。
 - Issue #165 临时故障探针在 Started 事件持有 EventHub 锁超过关闭期限时验证 `close()` 有界返回、hook 收尾和取消后的摘要 worker 不启动；空闲锁下 shutdown marker 仍持久化。Python 编译与 `git diff --check` 通过；探针未调用真实模型、招聘 CLI 或招聘平台，测试代码未提交。
+- Issue #177 官方 OpenAI SDK 3.41.0、HTTPX MockTransport SSE 与真实 TurnRunner 探针覆盖五种合法路径（含可选 item ID 与终态撤回压缩）和九种身份冲突；合法工具完成并派发一次，所有冲突均单请求报错且 handler=0。Python 编译、TypeScript 检查、Electron 源码构建、wheel/sdist 构建、wheel 源码匹配及 `git diff --check` 通过；探针仅使用合成数据，网络和子进程尝试为零，测试代码未提交。
 
 ## 0.2.0-rc.14 - 2026-10-29
 
