@@ -41,6 +41,7 @@ from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
 from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUncertain, Entry,
                                   SessionStore, ThreadNotFound, ToolRevisionPersistenceError)
+from boss_harness.snapshot_store import SnapshotStore
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
 from boss_harness.tool_bundle import ToolBundle
 from boss_harness.summary import SUMMARY_MAX_REQUESTS, SummaryPlanner
@@ -234,6 +235,7 @@ class ApplicationService:
         self._owner = StateDirectoryOwner(state_dir)
         try:
             self.sessions = SessionStore(state_dir / "sessions", attachments_root=state_dir / "attachments")
+            self.snapshots = SnapshotStore(state_dir)
             self.events = EventHub(server, self.sessions, self.lifecycle_hooks)
             self.lifecycle_hooks.set_error_sink(self._record_hook_failure)
             self._restore_partial_streams()
@@ -284,7 +286,6 @@ class ApplicationService:
             self._protocol = "0.1.0"
             self._bidirectional = False
             self._server_approvals: dict[str, str] = {}
-            self._snapshot_pages: dict[str, tuple[str, list[dict], float, dict[str, dict[str, Any]]]] = {}
             self._register()
             server.before_dispatch = self._check_ready
         except Exception:
@@ -295,6 +296,8 @@ class ApplicationService:
             self.lifecycle_hooks.close()
             if hasattr(self, "sessions"):
                 self.sessions.close()
+            if hasattr(self, "snapshots"):
+                self.snapshots.close()
             self._owner.close()
             raise
 
@@ -530,28 +533,59 @@ class ApplicationService:
                                                archived=params.get("archived", False), project_id=params.get("projectId"))
 
     def _snapshot(self, thread_id: str, *, exclude: bool = False, paged: bool = False) -> dict:
+        if paged:
+            build = None
+            source = None
+            snapshot_id = uuid.uuid4().hex
+            try:
+                with self.events.lock:
+                    with self.sessions._lock:
+                        thread, snapshot_turns, turns_too_large = self.sessions.snapshot_projection(
+                            thread_id, max_turn_bytes=MAX_PAGE_BYTES)
+                        if turns_too_large:
+                            raise RpcError(-32010, "会话响应过大，请用 thread/resume snapshot=true 后分页读取条目",
+                                           {"code": "RESPONSE_TOO_LARGE", "recoveryMethod": "thread/resume",
+                                            "snapshot": True})
+                        job = self.runtimes.active.get(thread_id)
+                        build = self.snapshots.begin_build(thread_id)
+                        source, source_size, event_cursor = self.sessions.open_snapshot_source(thread_id)
+                        live = {key: dict(value) for key, value in self.events.live.get(thread_id, {}).items()}
+                item_count, _ = self.snapshots.create(build, snapshot_id, source, source_size, live)
+                snapshot_queue, queue_too_large = self.snapshots.queue(
+                    snapshot_id, thread_id, max_payload_bytes=MAX_PAGE_BYTES)
+                if queue_too_large:
+                    raise RpcError(-32010, "会话响应过大，请用 thread/resume snapshot=true 后分页读取条目",
+                                   {"code": "RESPONSE_TOO_LARGE", "recoveryMethod": "thread/resume",
+                                    "snapshot": True})
+                result = {"thread": thread, "items": [],
+                          "turns": None if exclude else snapshot_turns,
+                          "activeTurnId": job["turnId"] if job else None,
+                          "eventCursor": event_cursor, "queue": snapshot_queue,
+                          "snapshotId": snapshot_id, "itemCount": item_count}
+                self._check_response_budget(result)
+                return result
+            except BaseException:
+                self.snapshots.delete_snapshot(snapshot_id)
+                raise
+            finally:
+                if source is not None:
+                    source.close()
+                if build is not None:
+                    self.snapshots.cancel_build(build)
         with self.events.lock:
             thread = self.sessions.get_thread(thread_id)
             job = self.runtimes.active.get(thread_id)
-            canonical_items = [] if exclude and not paged else self.events.items(thread_id)
+            canonical_items = [] if exclude else self.events.items(thread_id)
             edit_states = self.context.context_edit_states(self.sessions.read_entries(thread_id))
-            snapshot_id = uuid.uuid4().hex if paged else None
-            items = [project_item(thread_id, item, snapshot_id=snapshot_id)
+            items = [project_item(thread_id, item)
                      for item in canonical_items]
             for item in items:
                 if item["id"] in edit_states:
                     item["contextEdit"] = edit_states[item["id"]]
-            result = {"thread": thread, "items": [] if exclude or paged else items,
+            result = {"thread": thread, "items": [] if exclude else items,
                     "turns": None if exclude else self.sessions.list_turns(thread_id)["turns"],
                     "activeTurnId": job["turnId"] if job else None,
                     "eventCursor": self.sessions.latest_event_cursor(), "queue": self.queue.list(thread_id)}
-            if paged:
-                self._snapshot_pages = {key: value for key, value in self._snapshot_pages.items()
-                                        if value[2] > time.monotonic()}
-                if len(self._snapshot_pages) >= 16:
-                    self._snapshot_pages.pop(next(iter(self._snapshot_pages)))
-                self._snapshot_pages[snapshot_id] = (thread_id, canonical_items, time.monotonic() + 120, edit_states)
-                result.update(snapshotId=snapshot_id, itemCount=len(items), items=[])
             self._check_response_budget(result)
             return result
 
@@ -599,28 +633,28 @@ class ApplicationService:
                     raise ValueError()
             except (ValueError, TypeError, AttributeError, UnicodeDecodeError, binascii.Error):
                 raise ValueError("条目分页游标无效") from None
+        item_count = None
         if snapshot_id is not None:
-            snapshot = self._snapshot_pages.get(snapshot_id) if isinstance(snapshot_id, str) else None
-            if snapshot is None or snapshot[0] != thread_id or snapshot[2] <= time.monotonic():
-                raise ValueError("会话快照已过期；请重新 resume")
-            items = snapshot[1]
-            edit_states = snapshot[3]
+            items, item_count = self.snapshots.page(snapshot_id, thread_id, offset, limit)
         else:
             items = self.events.items(thread_id)
             edit_states = self.context.context_edit_states(self.sessions.read_entries(thread_id))
-        if offset > len(items):
+        if snapshot_id is None and offset > len(items):
             raise ValueError("条目分页游标超出结果范围")
         page = []
         result = {"items": page, "nextCursor": None}
-        for raw_item in items[offset:offset + limit]:
+        for row in (items if snapshot_id is not None else items[offset:offset + limit]):
+            raw_item, snapshot_edit_state = row if snapshot_id is not None else (row, None)
             item = project_item(thread_id, raw_item,
                                 snapshot_id=snapshot_id if isinstance(snapshot_id, str) else None)
-            if item["id"] in edit_states:
-                item["contextEdit"] = edit_states[item["id"]]
+            edit_state = snapshot_edit_state if snapshot_id is not None else edit_states.get(item["id"])
+            if edit_state:
+                item["contextEdit"] = edit_state
             candidate = page + [item]
             next_offset = offset + len(candidate)
+            has_more = next_offset < (item_count if item_count is not None else len(items))
             next_cursor = (base64.urlsafe_b64encode(json.dumps([scope_id, next_offset]).encode()).decode()
-                           if next_offset < len(items) else None)
+                           if has_more else None)
             candidate_result = {"items": candidate, "nextCursor": next_cursor}
             if wire_size(candidate_result) > MAX_PAGE_BYTES:
                 if not page:
@@ -658,13 +692,11 @@ class ApplicationService:
             raise ValueError("snapshotId 格式无效")
         self.sessions.require_thread(thread_id)
         with self.events.lock:
-            if snapshot_id is not None:
-                snapshot = self._snapshot_pages.get(snapshot_id)
-                if snapshot is None or snapshot[0] != thread_id or snapshot[2] <= time.monotonic():
-                    raise ValueError("会话快照已过期；请重新 resume")
-                items = snapshot[1]
-            else:
+            if snapshot_id is None:
                 items = self.events.items(thread_id)
+        if snapshot_id is not None:
+            item = self.snapshots.item(snapshot_id, thread_id, item_id)
+        else:
             item = next((value for value in items if value.get("id") == item_id), None)
         if item is None:
             raise ValueError("条目不属于该会话或不存在")
@@ -727,8 +759,6 @@ class ApplicationService:
                 notify_deleted = (self.sessions.has_pending_deletion(thread_id)
                                   or self.sessions.path_for(thread_id).exists())
                 self.events.live.pop(thread_id, None)
-                self._snapshot_pages = {key: value for key, value in self._snapshot_pages.items()
-                                        if value[0] != thread_id}
                 try:
                     event = self.sessions.delete_thread(thread_id, _on_committed=mark_deletion_committed)
                 except ThreadNotFound:
@@ -737,6 +767,7 @@ class ApplicationService:
                 except Exception:
                     pending_deletion = self.sessions.has_pending_deletion(thread_id)
                     if pending_deletion or deletion_committed:
+                        self.snapshots.delete_thread(thread_id)
                         self._retire_deleted_compaction_jobs_locked(thread_id)
                         self._capacity_waiter_ids.discard(thread_id)
                         self._capacity_waiters = deque(value for value in self._capacity_waiters if value != thread_id)
@@ -745,6 +776,7 @@ class ApplicationService:
                                        {"code": "THREAD_DELETE_INCOMPLETE", "threadId": thread_id}) from None
                     raise
                 self._retire_deleted_compaction_jobs_locked(thread_id)
+                self.snapshots.delete_thread(thread_id)
                 self._tool_persistence_fences.discard(thread_id)
                 self._capacity_waiter_ids.discard(thread_id)
                 self._capacity_waiters = deque(value for value in self._capacity_waiters if value != thread_id)
@@ -2436,6 +2468,7 @@ class ApplicationService:
             except Exception:
                 pass
         self.lifecycle_hooks.close(deadline)
+        self.snapshots.close()
         self._close_application_resources_if_idle(deadline)
 
     def serve_forever(self) -> None:
