@@ -322,9 +322,10 @@ class OpenAIResponsesProvider:
         json_buffers: dict[int, str] = {}
         #: output_index -> arguments.done 中的权威原始 JSON
         arguments_done: dict[int, str | None] = {}
-        #: output_index -> function_call 的 call_id（回填工具结果要靠它）
-        call_ids: dict[int, str] = {}
+        #: output_index -> function_call 的稳定身份；Responses 的 item id 可选
+        function_call_identities: dict[int, tuple[str | None, str, str]] = {}
         item_ids: dict[str, int] = {}
+        call_id_indexes: dict[str, int] = {}
         started_function_calls: set[int] = set()
         final_argument_sources: dict[int, str] = {}
         final_items_seen: set[int] = set()
@@ -341,6 +342,47 @@ class OpenAIResponsesProvider:
         #: 流中曾出现、但终态已撤回的块不能继续落入最终 AssistantMessage，
         #: 否则调用方会把已撤回的工具调用交给执行器。
         terminal_indexes: set[int] | None = None
+
+        def function_call_identity(item: object) -> tuple[str | None, str, str]:
+            raw_item_id = getattr(item, "id", None)
+            identity = (
+                str(raw_item_id) if raw_item_id else None,
+                str(getattr(item, "call_id", "") or ""),
+                str(getattr(item, "name", "") or ""),
+            )
+            if not all(identity[1:]):
+                raise ValueError("工具调用缺少 call_id 或工具名")
+            return identity
+
+        def require_function_call_identity(index: int, item: object) -> tuple[str | None, str, str]:
+            actual = function_call_identity(item)
+            expected = function_call_identities.get(index)
+            if expected is None or expected[1:] != actual[1:]:
+                raise ValueError("工具调用身份与初始输出项不一致")
+            if expected[0] and actual[0] and expected[0] != actual[0]:
+                raise ValueError("工具调用输出项标识不一致")
+            item_id = expected[0] or actual[0]
+            if item_id:
+                existing_index = item_ids.get(item_id)
+                if existing_index is not None and existing_index != index:
+                    raise ValueError("响应重复使用输出项标识")
+                item_ids[item_id] = index
+            identity = (item_id, actual[1], actual[2])
+            function_call_identities[index] = identity
+            return identity
+
+        def require_event_item_id(index: int, event: object) -> None:
+            event_item_id = getattr(event, "item_id", None)
+            if not isinstance(event_item_id, str) or not event_item_id:
+                raise ValueError("工具参数事件缺少输出项标识")
+            identity = function_call_identities.get(index)
+            if identity is None or (identity[0] and event_item_id != identity[0]):
+                raise ValueError("工具参数事件的输出项标识不一致")
+            existing_index = item_ids.get(event_item_id)
+            if existing_index is not None and existing_index != index:
+                raise ValueError("工具参数事件重复使用输出项标识")
+            item_ids[event_item_id] = index
+            function_call_identities[index] = (event_item_id, identity[1], identity[2])
 
         yield StreamEvent(type="start")
 
@@ -388,12 +430,22 @@ class OpenAIResponsesProvider:
                         elif item_type == "function_call":
                             if index in started_function_calls:
                                 raise ValueError("响应重复使用工具调用索引")
+                            identity = (
+                                item_id or None,
+                                str(getattr(item, "call_id", "") or ""),
+                                str(getattr(item, "name", "") or ""),
+                            )
+                            if not all(identity[1:]):
+                                raise ValueError("工具调用初始项缺少 call_id 或工具名")
+                            if identity[1] in call_id_indexes:
+                                raise ValueError("响应重复使用工具调用 call_id")
+                            call_id_indexes[identity[1]] = index
                             initial = getattr(item, "arguments", "")
                             if not isinstance(initial, str):
                                 raise ValueError("工具调用初始参数不是文本")
                             budget.account(index, initial)
                             json_buffers[index] = initial
-                            call_ids[index] = str(getattr(item, "call_id", "") or "")
+                            function_call_identities[index] = identity
                             started_function_calls.add(index)
                             yield StreamEvent(type="toolcall_start", content_index=index)
 
@@ -428,6 +480,7 @@ class OpenAIResponsesProvider:
                     elif kind == "response.function_call_arguments.delta":
                         if index not in started_function_calls or index in final_items_seen:
                             raise ValueError("工具参数增量没有活动的工具调用")
+                        require_event_item_id(index, event)
                         if index in arguments_done:
                             raise ValueError("工具调用参数终态之后仍收到增量")
                         fragment = getattr(event, "delta", "")
@@ -442,6 +495,7 @@ class OpenAIResponsesProvider:
                         # 权威参数以 done 为准；只把新增后缀当作增量补发，避免重复。
                         if index not in started_function_calls or index in arguments_done or index in final_items_seen:
                             raise ValueError("工具参数终态没有对应的活动工具调用")
+                        require_event_item_id(index, event)
                         authoritative = getattr(event, "arguments", None)
                         if not isinstance(authoritative, str):
                             authoritative = None
@@ -476,7 +530,7 @@ class OpenAIResponsesProvider:
                         elif item_type == "function_call":
                             if index not in started_function_calls or index in final_items_seen:
                                 raise ValueError("工具调用终态没有对应的唯一初始项")
-                            name = str(getattr(item, "name", "") or "")
+                            _, call_id, name = require_function_call_identity(index, item)
                             buffered = json_buffers.pop(index, None)
                             has_done_arguments = index in arguments_done
                             done_raw = arguments_done.pop(index, None)
@@ -514,7 +568,7 @@ class OpenAIResponsesProvider:
                                 broken.append(name or str(getattr(item, "call_id", "") or ""))
                                 arguments = {}
                             call = ToolCallBlock(
-                                id=call_ids.get(index) or str(getattr(item, "call_id", "") or ""),
+                                id=call_id,
                                 name=name,
                                 arguments=arguments,
                             )
@@ -539,6 +593,18 @@ class OpenAIResponsesProvider:
                                     raise ValueError("响应终态重复使用输出项标识")
                                 terminal_ids.add(item_id)
                             item_index = item_ids.get(item_id, output_index) if item_id else output_index
+                            if item_type == "function_call":
+                                terminal_identity = function_call_identity(item)
+                                mapped_index = (
+                                    item_ids.get(
+                                        terminal_identity[0],
+                                        call_id_indexes.get(terminal_identity[1], output_index),
+                                    )
+                                    if terminal_identity[0]
+                                    else call_id_indexes.get(terminal_identity[1], output_index)
+                                )
+                                require_function_call_identity(mapped_index, item)
+                                item_index = mapped_index
                             if item_index in terminal_indexes:
                                 raise ValueError("响应终态重复使用输出项索引")
                             terminal_indexes.add(item_index)
