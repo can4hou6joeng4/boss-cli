@@ -9,6 +9,7 @@
 
 ### 修复
 
+- [Issue #191](https://github.com/can4hou6joeng4/boss-cli/issues/191)：手动摘要按仍持有的执行 owner 计入并发容量，取消后 abort 未结束或终态通知仍等待的任务不提前释放额度；历史终态与自动摘要不计入手动池，额度拒绝不创建 provider。
 - [Issue #189](https://github.com/can4hou6joeng4/boss-cli/issues/189)：回合 finish 阶段 checkpoint 持久化失败后，在释放容量前暂停全部待处理队列；暂停写入失败仍保留门禁，防止已标为 error 的回合继续自动派发 follow-up，同时保留其他会话的 FIFO 唤醒。
 - 收紧会话删除恢复、工具结果修订、附件引用扫描和索引修复备份的读取边界：删除标记与修复清单限制整体大小，JSONL 按块流式读取并限制单行，数据库哈希按块计算；损坏或超限输入 fail closed，避免恢复路径无界分配。
 - 参考 Pi Durable 的资源准入原则：每个会话的 `queued`/`delivering` 队列项最多 128 个，UTF-8 输入合计最多 4 MiB；已暂停、取消或完成的历史不占预算，超限返回 `QUEUE_LIMIT` 且不写入部分状态。

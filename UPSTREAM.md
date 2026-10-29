@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第八十五轮：摘要并发额度跟随执行 owner 退休
+
+本项目 [Issue #191](https://github.com/can4hou6joeng4/boss-cli/issues/191) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 由真实 `ApplicationService`、独立合成 provider 和临时状态复现：容量 1 时跨三个会话启动并取消摘要，worker 已结束而 abort hook 继续阻塞，status 均为 cancelled、running 计数为 0，但 owner/provider/活跃 abort worker 依次增长至 1、2、3。成功摘要的终态通知阻塞时也能启动第二任务。旧准入只计 running 状态，与已有 owner 退休条件不一致。
+
+参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 的状态与执行责任分离，以及开放 [Issue #11350](https://github.com/earendil-works/pi/issues/11350) 的资源准入讨论；核对 MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `scheduler.ts` invocation 在 run/abort 执行结束前保留责任。Pi codemode worker pool 与本项目摘要池不同，本轮只吸收生命周期原则，不复制源码、引入 Pi 依赖或改变取消策略。
+
+现在手动摘要按 `_compaction_by_thread` 的现有 owner 计入容量，直到 worker、终态通知与已认领 abort 全部结束后退休；终态缓存和重启恢复终态不占额度，带 turnId 的自动摘要继续受业务 turn 并发限制。超限仍返回 `COMPACTION_CONCURRENCY_LIMIT`，不创建 provider 或执行模型；没有自动等待或重试。七场景离线探针覆盖取消后 abort 阻塞、成功终态通知阻塞、abort 先结束/worker 后结束、正常完成回收、重启终态缓存、真实业务回合触发的自动摘要和 worker 未启动失败回收，全部通过。网络和子进程尝试为零；探针及合成状态只保留本地，未调用真实模型、招聘 CLI、平台或桌面 UI。
+
 ## 第八十四轮：finish checkpoint 失败的队列结算责任
 
 参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 对持久任务、执行 owner 与输入准入分离的讨论；固定 MIT main `e7a0df27c09d11bf4161d3605246cbf57a129cb2` 的 `scheduler.ts` 将 run/abort invocation 的责任保留到执行结束。本项目独立延伸既有 queue pause 门禁，不引入 Pi 调度器、afterRun 子任务或恢复重放，也不复制源码。
