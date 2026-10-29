@@ -1,5 +1,14 @@
 # 上游吸收记录
 
+## 第七十六轮：删除意图落盘前保留摘要终态观察
+
+继续参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 对任务执行责任、会话忙状态与取消策略的讨论；核对时 Pi main 为 `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`，许可证 MIT。本项目已将摘要任务的持久可观察终态与当前进程的 worker 所有权分离，本轮延伸这一生命周期原则；具体删除缓存缺陷来自本地复现，不移植 Pi task API、实现或依赖。
+
+本项目 [Issue #174](https://github.com/can4hou6joeng4/boss-cli/issues/174) 在固定 main `0cc2087a018d57b7cdf35f917803cd924af0f1c0` 上复现：真实 `ApplicationService` 从合成终态事件恢复任务后，`SessionStore._write_delete_intent()` 在落盘前发生合成 I/O 失败；会话、终态事件仍存在且没有删除标记，但删除入口已提前清除内存任务、终态 ID 与保留顺序，`context/compact/read` 因而返回 `COMPACTION_JOB_NOT_FOUND`，`context/read.compactionJob` 变为 `null`。正常重启后原任务又从事件完整恢复，没有模型请求或 checkpoint 重放。
+
+`SessionStore.delete_thread()` 现在在删除索引与权威 `thread/deleted` 事件的事务提交后发出仅供应用内部使用的提交信号。应用只在该信号已发出或删除意图仍持久存在时退休目标摘要任务与容量 waiter；前者也覆盖最后移除 intent 后目录 `fsync` 失败、此时没有 intent 可查询但删除已经提交的边界，原始 `fsync` 错误仍向调用方返回。落盘前失败保留原任务字段、集合与顺序。已存在权威删除事件的幂等重复删除在查询事务结束后同样发出提交信号。忙碌摘要及已显示终态但 abort 尚在收尾的任务仍由既有 `THREAD_BUSY` 门禁保护，其他会话相对顺序及最近 64 条终态逐出规则不变；不修改持久格式、摘要生成、checkpoint 或容量等待实现。
+
+本地隔离边界探针 9/9 通过：提交信号只在删除事务提交或已有权威删除事件时发出，缺失会话不发信号；连续三次落盘前故障保留 64 条终态与顺序，新终态只逐出最旧项；成功与重复删除只退休目标且删除事件恰一条；落盘后清理失败的显式重试及重启恢复均不恢复目标任务；提交后的最终目录 `fsync` 故障即使没有 intent 也退休目标任务且仍上抛原错误；真实摘要 worker 与阻塞的 abort 收尾期间拒绝删除，释放后可正常删除。Python 3.14 编译、类型检查、Electron 源码构建与 wheel/sdist 构建通过，45 个产品源码逐字节匹配候选，未发现额外测试或本地状态。探针使用临时状态和合成 provider，网络与外部进程尝试均为零；未调用真实模型、招聘 CLI 或平台，也未进行桌面 UI 验收。测试材料只保留本地。
 ## 第七十五轮：终态事件异常不丢失已受理的后续任务
 
 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332)，讨论持久任务事实与进程执行责任之间的边界；固定核对 Pi main `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`（MIT）。本项目已有明确分离的回合持久结算、终态事件及后续队列 owner；本轮不引入 Pi 未决的 task API，也不复制上游代码。
@@ -32,7 +41,7 @@ Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/113
 
 本项目 [Issue #169](https://github.com/can4hou6joeng4/boss-cli/issues/169) 在 main `0cc2087a018d57b7cdf35f917803cd924af0f1c0` 上通过真实 `ApplicationService` worker、容量 1 与合成 provider 复现：A 占用容量，B/C 的 follow-up 排队；B 的删除意图落盘后，附件清理发生合成 I/O 失败，RPC 返回 `THREAD_DELETE_INCOMPLETE`，B 已隐藏但仍在容量等待队列。A 以 error 退出后，调度器读取 B 时抛错并停止本轮唤醒，C 仍 queued、active 为 0，新的 D 回合因 `TURN_ADMISSION_WAITING` 被拒。
 
-删除失败分支只有在确认持久删除标记存在时，才同步移除目标 waiter ID 和 deque 项；与成功删除使用相同的 follow-up admission/runtime 锁，保留其他会话的相对顺序。删除意图落盘前失败不移除有效 waiter，RPC 的删除未完成错误、重启继续清理和不可自动重放规则保持不变；不在调度层宽泛捕获损坏或 I/O 异常。修复后同一探针得到 C delivered、D accepted、等待队列清空，合成 provider 在 D 之前仅执行 A/C 各一次；网络和外部进程尝试均为零，探针仅保留本地。
+删除失败分支只有在确认删除事务已提交或持久删除标记仍存在时，才同步退休目标摘要终态并移除 waiter ID/deque 项；与成功删除使用相同的 follow-up admission/runtime 锁，保留其他会话的相对顺序。删除提交前失败不移除有效 waiter 或摘要观察，RPC 的删除未完成错误、重启继续清理和不可自动重放规则保持不变；不在调度层宽泛捕获损坏或 I/O 异常。修复后同一探针得到 C delivered、D accepted、等待队列清空，合成 provider 在 D 之前仅执行 A/C 各一次；网络和外部进程尝试均为零，探针仅保留本地。
 
 独立 7 项边界探针通过：删除意图落盘前失败保留 B/C 的执行顺序；落盘后失败移除 B，C/D/E 仍按 FIFO 各执行一次，重复唤醒不重放；成功删除、归档和关闭均不启动对应工作；正常重开及稳定的运行中状态快照重开均继续完成删除，旧队列暂停、provider 调用为零，删除事件恰为一条。类型检查、Electron 源码构建、Python 编译和 wheel/sdist 构建通过，45 个包内产品源码文件逐字节匹配候选树，无额外测试或本地状态。独立代码审查未发现新锁序或有效工作丢失；测试材料未提交，未进行真实模型、平台或桌面 UI 验收。
 
