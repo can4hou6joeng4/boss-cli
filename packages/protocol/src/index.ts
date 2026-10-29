@@ -590,6 +590,9 @@ export interface ContextCompactPlan {
   retainedTurnIds: string[];
   firstKeptItemId: string | null;
   estimatedRetainedTokens: number;
+  retentionEstimateMethod?: string;
+  retentionUsageApplied?: boolean;
+  retentionUsageAnchorCount?: number;
 }
 export type ContextCompactionJobStatus = "running" | "completed" | "failed" | "cancelled";
 export interface ContextCompactStartParams {

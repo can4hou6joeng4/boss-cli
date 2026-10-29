@@ -26,7 +26,7 @@ from typing import Any, Callable, Iterator
 from boss_harness import __version__
 from boss_harness.agent import TurnRunner
 from boss_harness.bridge_lifecycle import BridgeLifecycle
-from boss_harness.context import ContextBudgetExceeded, ContextService, request_fingerprint
+from boss_harness.context import ContextBudgetExceeded, ContextService, describe_request, request_fingerprint
 from boss_harness.connections import ConnectionChecks
 from boss_harness.models import ModelConfig, Provider, resolve_config
 from boss_harness.models.secret import redact_secrets
@@ -1264,7 +1264,21 @@ class ApplicationService:
         keep = params.get("keepRecentTokens")
         if "keepRecentTokens" in params and (type(keep) is not int or not 1 <= keep <= 1_000_000):
             raise ValueError("keepRecentTokens 必须是 1 到 1000000 之间的整数")
-        return self.context.compaction_plan(_text(params, "threadId"), through, keep_recent_tokens=keep)
+        thread_id = _text(params, "threadId")
+        entries = self.sessions.read_entries(thread_id)
+        thread = self.sessions.get_thread(thread_id)
+        config = self._model_config(thread, {})
+        read_only = thread.get("toolPolicy") == "readOnly"
+        request = ModelRequest(model=config.model,
+            system=self._system_prompt(read_only, ""), messages=self.context.history(thread_id, entries=entries),
+            tools=model_tool_specs(self.registry.specs(read_only=read_only)),
+            max_tokens=config.max_tokens, effort=config.effort, thinking=config.thinking)
+        request = self._apply_session_reasoning(thread_id, config, request)
+        budget = describe_request(request, self.model_catalog.resolve(config.provider, request.model),
+                                  provider=config.provider)
+        request = replace(request, max_tokens=budget["outputReserve"])
+        return self.context.compaction_plan(thread_id, through, keep_recent_tokens=keep,
+            _retention_request=request, _retention_provider=config.provider, _entries=entries)
 
     def on_context_compact_start(self, params: dict | None) -> dict:
         params = params or {}
@@ -1603,7 +1617,8 @@ class ApplicationService:
                  budget["inputBudget"] * policy.trigger_percent)):
             turn["automaticCompactionRequestIndex"] = request_index
             replacement = self._compact_during_turn(turn, request,
-                "threshold" if budget["withinBudget"] else "budget", required=False)
+                "threshold" if budget["withinBudget"] else "budget", required=False,
+                retention_request=replace(request, max_tokens=budget["outputReserve"]))
             if replacement is not None:
                 replacement = self._apply_session_reasoning(turn["threadId"], config, replacement)
                 return self.context.prepare(replacement, capabilities, provider=config.provider,
@@ -1613,7 +1628,8 @@ class ApplicationService:
         return prepared, budget
 
     def _compact_during_turn(self, turn: dict, request: ModelRequest, reason: str,
-                             *, required: bool) -> ModelRequest | None:
+                             *, required: bool,
+                             retention_request: ModelRequest | None = None) -> ModelRequest | None:
         runner, thread_id = turn["runner"], turn["threadId"]
         config = self._compaction_model_config(turn["compactionPolicy"], runner.config,
                                                session_effort=request.effort)
@@ -1632,7 +1648,9 @@ class ApplicationService:
                 try:
                     plan = self.context.compaction_plan(thread_id,
                         keep_recent_tokens=turn["compactionPolicy"].keep_recent_tokens,
-                        _active_turn_id=turn["turnId"])
+                        _active_turn_id=turn["turnId"],
+                        _retention_request=retention_request or request,
+                        _retention_provider=runner.config.provider)
                     _, source = self.context.compaction_material(thread_id, plan["throughTurnId"],
                         plan["sourceDigest"], _active_turn_id=turn["turnId"])
                 except NoCompactionSource:
