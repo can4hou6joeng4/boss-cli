@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第七十七轮：限制冻结恢复快照的内存与缓存占用
+
+本项目 [Issue #179](https://github.com/can4hou6joeng4/boss-cli/issues/179) 在 main `f7832c70be77045225fb281b0f8b3dac20e86dc4` 上确认：`thread/resume(snapshot=true)` 原先完整物化 JSONL item、context edit 与投影列表，并在 120 秒内保留最多 16 份快照而没有总字节限制。常规分页响应预算不能约束这些中间集合和并发快照。
+
+该缺口属于本项目持久会话格式与 RPC 快照生命周期。本轮核对 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`（GitHub 未提供 SPDX 许可证标识）：开放 Issue #35/#34/#33/#32/#30/#27/#26/#23/#21/#20/#19/#16/#15/#4 及 PR #37/#29/#28/#25/#24/#22/#18/#12/#11/#8/#7/#6 聚焦招聘业务、平台登录、聊天和简历流程，没有对应的通用会话快照存储实现；本轮不复制其代码，也不增加依赖。Pi Durable 开放事项检索未发现对应分页快照内存管理的可直接采用议题。
+
+新增私有 SQLite `SnapshotStore`，以固定 JSONL 文件描述符与大小构造不可见的临时快照，流式归并 revision alias、终态 toolCall、context edit、running live delta 和队列最新状态；分页、内容引用和队列读取按需查询磁盘。快照捕获事件日志的 cursor 高水位、turn 索引、队列历史、线程与运行状态。会话 JSONL 条目和对应事件仍沿用分开提交的既有协议：若条目恰在 cursor 采样前落盘、对应事件随后才提交，该事件会出现在 cursor 后的 `event/list` 中；桌面恢复先加载快照，再按 item ID 幂等归并游标后的事件。限制单记录 16 MiB、来源 JSONL 1 GiB、item 128 MiB、单快照 256 MiB、已登记缓存 512 MiB、并发构建 2 份、缓存 16 份与 TTL 120 秒；SQLite 最大页数、无回滚日志的临时数据库及队列序索引将构建文件和缓存数据库总量限制在 1 GiB 内。删除或关闭会使在建快照失效；超限失败不会发布部分内容，清理兼容移除旧 SQLite journal/WAL/SHM。
+
+本地合成会话覆盖 20,003 条目与完整恢复 RPC，构建及端到端 `tracemalloc` 峰值均为约 0.89 MiB。独立检查 revision 与工具替换、最新 context edit、live delta、固定内容引用、构建期间追加后的 item/turn/queue 切点、JSONL 先于对应事件落盘时 cursor 后续事件可查询、队列顺序查询计划使用索引且无临时排序、逐页 1 MiB 响应、TTL/淘汰、超长记录、磁盘预算，以及删除/关闭与构建竞争；全部通过。探针仅位于 `/tmp`，网络和子进程尝试为零；未调用真实模型、招聘 CLI、平台或桌面 UI。
+
 ## 第七十六轮：删除意图落盘前保留摘要终态观察
 
 继续参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 对任务执行责任、会话忙状态与取消策略的讨论；核对时 Pi main 为 `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a`，许可证 MIT。本项目已将摘要任务的持久可观察终态与当前进程的 worker 所有权分离，本轮延伸这一生命周期原则；具体删除缓存缺陷来自本地复现，不移植 Pi task API、实现或依赖。

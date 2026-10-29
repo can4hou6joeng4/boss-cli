@@ -528,6 +528,60 @@ class SessionStore:
                     out.append(data)
         return out
 
+    def open_snapshot_source(self, thread_id: str) -> tuple[io.BufferedReader, int, str]:
+        """Pin one rollout inode and cursor while session writers are excluded."""
+        with self._lock:
+            self.require_thread(thread_id)
+            with self._index.connection() as connection:
+                event_checkpoint = connection.execute(
+                    "SELECT value FROM checkpoints WHERE name='events'").fetchone()
+                if self.events_path.exists():
+                    stat_result = self.events_path.stat()
+                    fingerprint = f"{stat_result.st_size}:{stat_result.st_mtime_ns}"
+                    if event_checkpoint is None or event_checkpoint["value"] != fingerprint:
+                        raise ValueError("事件索引与日志不同步，请重试冻结快照")
+                elif event_checkpoint is not None:
+                    raise ValueError("事件索引与日志不同步，请重试冻结快照")
+                cursor = str(connection.execute(
+                    "SELECT COALESCE(MAX(cursor),0) FROM events").fetchone()[0])
+            source = self.path_for(thread_id).open("rb")
+            try:
+                size = os.fstat(source.fileno()).st_size
+                return source, size, cursor
+            except BaseException:
+                source.close()
+                raise
+
+    def snapshot_projection(self, thread_id: str, *, include_turns: bool = True,
+                            max_turn_bytes: int = 1024 * 1024
+                            ) -> tuple[dict, list[dict], bool]:
+        """Read indexed metadata at the caller's cut; skipped turns are not budgeted."""
+        with self._lock:
+            if self._delete_intent_path(thread_id).exists():
+                raise ValueError("会话正在删除，暂不可读取")
+            with self._index.connection() as connection:
+                thread = connection.execute(
+                    "SELECT metadata_json,indexed_size,indexed_mtime_ns FROM threads WHERE id=?",
+                    (thread_id,)).fetchone()
+                if thread is None:
+                    raise ValueError("会话不存在")
+                stat_result = self.path_for(thread_id).stat()
+                if (thread["indexed_size"], thread["indexed_mtime_ns"]
+                        ) != (stat_result.st_size, stat_result.st_mtime_ns):
+                    raise ValueError("会话索引与日志不同步，请重试冻结快照")
+                turns = []
+                if not include_turns:
+                    return json.loads(thread["metadata_json"]), turns, False
+                rows = connection.execute("""SELECT metadata_json FROM turns
+                    WHERE thread_id=? ORDER BY first_ordinal,turn_id LIMIT 50""", (thread_id,))
+                turn_bytes = 0
+                for row in rows:
+                    turn_bytes += len(row["metadata_json"].encode("utf-8"))
+                    if turn_bytes > max_turn_bytes:
+                        return json.loads(thread["metadata_json"]), turns, True
+                    turns.append(json.loads(row["metadata_json"]))
+            return json.loads(thread["metadata_json"]), turns, False
+
     def read(self, thread_id: str) -> list[dict]:
         """Read all rollout entries, including queue/context/approval extension records."""
         return self.read_entries(thread_id)

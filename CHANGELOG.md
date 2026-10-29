@@ -4,6 +4,7 @@
 
 ### 修复
 
+- [Issue #179](https://github.com/can4hou6joeng4/boss-cli/issues/179)：将冻结恢复快照改为私有 SQLite 磁盘存储，按固定 JSONL 文件切面流式构建并按页读取；限制记录、来源、单快照与缓存磁盘预算，冻结 revision、toolCall、context edit、live delta、turn 与队列投影，并在过期、淘汰、删除、关闭或预算失败时清理。
 - [Issue #174](https://github.com/can4hou6joeng4/boss-cli/issues/174)：删除意图落盘前失败时保留原摘要任务终态、查询引用与缓存顺序；删除事务已提交或持久删除意图已存在时才退休目标任务，即使最终目录 `fsync` 失败也不会留下已删除会话的任务引用。
 - [Issue #173](https://github.com/can4hou6joeng4/boss-cli/issues/173)：回合与队列权威结算后，终态事件分别尽力发布；某类事件持久化或发送异常不再跳过另一事件，也不再丢失已排入后续回合的交接责任。事件不会重放，执行与队列结算异常仍按原路径处理。
 - [Issue #171](https://github.com/can4hou6joeng4/boss-cli/issues/171)：OpenAI Responses 在 `response.completed` 或 `response.incomplete` 后拒绝任何额外流事件，防止后置工具复用输出索引替换已确认的文本并进入执行器；协议错误不重试。
@@ -14,6 +15,7 @@
 
 ### 兼容与验证
 
+- Issue #179 离线真实 `ApplicationService` 探针覆盖 20,003 条目与完整分页恢复 RPC，测得 `tracemalloc` 峰值 0.89 MiB；验证 revision/toolCall 合并、编辑状态、live delta、内容引用、追加切点、turn/queue 冻结、cursor 后续事件可查询、队列排序索引、TTL/淘汰、记录与磁盘预算，以及删除/关闭并发清理。Python 编译、TypeScript 检查、Electron 源码构建、wheel/sdist 构建通过；网络和外部进程尝试为零，探针仅保留在 `/tmp`，未调用真实模型或招聘平台。
 - Issue #174 本地隔离探针 9/9 通过，覆盖提交信号/幂等与缺失线程边界、落盘前故障、最近 64 条缓存顺序与逐出、成功与重复删除、落盘后清理失败及显式重试/重启恢复、提交后的目录 `fsync` 失败、实际摘要 worker 与 abort 收尾中的删除门禁。Python 3.14 编译、类型检查、Electron 源码构建和 wheel/sdist 构建通过，45 个包内产品源码逐字节匹配候选；网络与外部进程尝试为零，测试材料未提交，未调用真实模型或招聘平台。
 - Issue #173 离线真实 `ApplicationService` 故障注入覆盖容量 1/2 下 `turn/completed` / `thread/updated` 的写入前失败与持久化后发送失败、同会话 FIFO/重复唤醒、跨会话 FIFO、终态与 queue settlement 持久化失败、取消、关闭、慢 bridge 和慢 abort。通知各最多尝试一次，已落盘事件不重写；正常后续回合只派发一次，关闭仍冻结派发并保留状态目录 owner。网络与进程尝试为零，探针仅保留本地。
 - Issue #171 使用官方 OpenAI SDK 3.41.0、离线 SSE 与真实 TurnRunner 完成八路径复现及十项独立边界验收：终态后工具、文本、错误及未知事件均拒绝且不重试，SSE 注释、`[DONE]`、正常 EOF 与完整工具续回合保持原行为。类型检查、源码构建、Python 编译及 wheel/sdist 源码逐字节核对通过；测试材料仅保留本地，未调用真实模型或招聘平台。
