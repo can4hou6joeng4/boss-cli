@@ -1,6 +1,6 @@
 # 上游吸收记录
 
-## 第九十四轮：等待 Harness 子进程完成优雅关闭
+## 第九十九轮：等待 Harness 子进程完成优雅关闭
 
 参考 Pi MIT [PR #11544](https://github.com/earendil-works/pi/pull/11544)，已合入 Pi main，合并提交 `a87b742ff4ce262c07b7830a25c73c1442dab41b`。该问题报告指出，客户端结束 daemon stdin 后立即发 `SIGTERM` 会跳过 EOF 收尾；PR 的 Unix daemon signal handling 不适用于本项目的 Python Harness，因此这里只采用“EOF 后给后端留出清理窗口”的生命周期原则，不复制 Pi 源码或增加依赖。本项目复现与修复基于 main `05ce291fb2670b78a107927b334836d3ef50e15f`。
 
@@ -14,6 +14,43 @@
 
 本轮 `npm run typecheck`、`npm run build`、Python `compileall`、wheel/sdist 构建、Source build、GitGuardian 与 `git diff --check` 通过。所有探针使用合成 provider、生命周期 hook 和临时状态，无真实模型或招聘平台请求；探针只保留于本地，不提交测试材料。真实 Electron 退出与用户界面验收尚未完成。
 
+## 第九十八轮：停止重试智谱五小时硬用量上限
+
+Pi MIT [Issue #11537](https://github.com/earendil-works/pi/issues/11537) 报告智谱/Z.ai 在五小时硬用量上限时返回 HTTP 429 与结构化 `code=1308`；消息含数小时后的重置时间，重复请求无法在当前窗口成功。Pi 已合并 [PR #11572](https://github.com/earendil-works/pi/pull/11572)，固定 merge commit `c719d5b08e5d9fb9bbcb1f1792281eea8b442812`，在 agent-level classifier 中精确识别 code 字段；该 PR 明确未调整 Pi provider-level 的 429 重试策略。上游实现仅作行为参考，本轮不复制源码或引入依赖。
+
+本项目 OpenAI Responses 适配器会对 HTTP 429 及带瞬时标记的流内错误自动重试。共享错误分类器现在只把结构化 `code` 精确等于整数或字符串 `1308` 视为硬用量上限，并将 provider code 安全规范为字符串；HTTP 与流内重试决策遵从该明确的不可重试结果。未命中既有终态分类的其他 429、非结构化消息和相似数字仍保持原行为。适配器面向 OpenAI 兼容端点，因此匹配范围刻意收窄到该 code 字段，不按自由文本推断供应商或配额语义。
+
+## 第九十七轮：JSONL 追加失败后的有界回滚
+
+参考 Pi 已合并 [PR #11486](https://github.com/earendil-works/pi/pull/11486) 对会话写入失败状态分叉的修复，并核对其 [Issue #11460](https://github.com/earendil-works/pi/issues/11460)。Pi 的故障点是内存 leaf 已更新而文件 append 失败；BOSS-CLI 不保留同类内存 transcript，但直接追加 JSONL 后若出现短写或 `ENOSPC`，SQLite 事务回滚无法撤销已写入的文件后缀，严格读取会因此失败。本轮针对本项目的持久化边界独立实现，不复制 Pi 源码。
+
+本项目 [Issue #229](https://github.com/can4hou6joeng4/boss-cli/issues/229) 通过临时 `SessionStore` 和半行 `ENOSPC` 故障注入复现：原日志增加残缺后缀，下一次 `read_entries()` 报 JSONL 损坏。现在共享 `_append_line()` 使用无缓冲文件描述符逐段写入，并记录起始 inode/长度和每次成功写入的字节数；追加或 `fsync` 失败时，只有目标身份、文件长度和已写后缀都与本次操作匹配才会尝试 `ftruncate` 回起点并再次 `fsync`。被替换、外部追加、回滚写入或回滚同步结果不确定时返回 `SessionAppendRollbackError`，不覆盖或假称未写入。普通会话追加和工具结果修订在写前校验当前索引切面，避免继续追加到已损坏日志；事件追加沿用事件日志 fingerprint 冷读校验。
+
+故障探针覆盖短写、`fsync` 失败、回滚失败与目标文件替换/追加，以及会话条目、事件与工具修订的共享调用边界；成功回滚须恢复原字节且可继续读取，无法确认时必须明确失败。Python compileall、wheel/sdist、TypeScript、Electron 源码构建、产物扫描及 `git diff --check` 按最新 PR head 验证；探针和测试材料仅保留本地。
+
+## 第九十六轮：删除清理复用严格事件 JSONL 解码
+
+参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的持久化恢复边界，并延续本项目 [Issue #221](https://github.com/can4hou6joeng4/boss-cli/issues/221) 的损坏日志约束：事件事实源在冷重建、读取和删除清理之间必须使用同一套可验证解析规则。本轮不复制 Pi 源码或引入依赖。
+
+本项目 [Issue #227](https://github.com/can4hou6joeng4/boss-cli/issues/227) 发现 `_rewrite_events_for_deletion()` 仍直接调用 `json.loads`，因此删除会话可能接受重复对象键、非有限浮点、坏 UTF-8 或过深 JSON，而事件索引重建会拒绝同一输入。严格解码还会拒绝 JSON 转义表示的孤立 UTF-16 代理项，避免 Python 字符串无法重新编码为持久 UTF-8 的记录。现在删除重写按 64 KiB 块流式读取，复用带行号的严格事件对象解码器；空白行与索引重建一样跳过但保留，写回的每条记录恢复 LF 分隔，避免删除后事件行粘连。任何损坏在临时文件发布前都停止清理，不截断、修补、重放或发布部分日志，原有删除意图可继续用于恢复。
+
+验证覆盖重复键、非有限浮点、孤立代理项、坏 UTF-8、过深结构、合法删除事件和损坏发生在目标事件前后的边界；网络、真实模型、招聘 CLI 和提交测试材料均为零。Python 编译、wheel/sdist、TypeScript、Electron 源码构建、`git diff --check` 与远程必需检查按最新 PR head 核对。
+
+## 第九十五轮：上游 CLI JSON 信封的严格边界
+
+本项目 [Issue #225](https://github.com/can4hou6joeng4/boss-cli/issues/225) 复现 `BossCliTool` 对 `boss-agent-cli --json` 输出使用宽松 `json.loads` 的缺口：重复键采用最后值，`NaN`/`Infinity` 和孤立代理项会进入 `ToolResult`，深层结构可能在后续投影才失败。该边界属于业务 CLI 进程契约，不把 Python 对象的合法性推断为上游信封合法。
+
+现在适配器在七键集合与退出码校验前拒绝重复对象键、非有限浮点、超过 64 层的 JSON 和孤立 Unicode 代理项。JSON 语法错误继续返回 `CLI_ERROR`；语法可解析但违反严格信封完整性的内容返回固定 `CLI_CONTRACT_ERROR`，不持久化其数据、不回交模型，且暂停当前回合、后续工具与队列，不自动重试。若该错误来自已派发写工具，工具结果仍以 `outcome_unknown` 持久化并要求核对外部状态。保留 `raw`/分页投影及其他写操作未知结果语义；不修改 `boss-agent-cli` 或平台行为，不复制 Pi 源码或引入依赖。
+
+离线假的子进程探针覆盖正常信封、重复键、`NaN`/`Infinity`、坏 Unicode、深度边界、失败退出码和下游错误投影；探针只使用合成 stdout，无真实进程、网络、模型或招聘平台调用。
+
+## 第九十四轮：JSON-RPC 帧的严格解析与坏帧后继续服务
+
+参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 RPC 输入循环，并结合本项目 [Issue #223](https://github.com/can4hou6joeng4/boss-cli/issues/223) 的本地边界复现。Python `json.loads` 默认会接受重复对象键的最后值、把 `1e999` 转为 `Infinity`，过深输入可能抛出未捕获 `RecursionError`；孤立代理项会在 handler 已执行后让响应 UTF-8 编码失败。审批响应中的重复 `approved` 键同样会被最后值覆盖。
+
+本轮独立增加对象键唯一性、有限浮点、64 层深度及 Unicode 代理项校验。解析失败在派发前返回 `-32700` 并继续读取后续帧；handler 已执行但结果含非有限数值、过深结构、孤立代理项或不可 JSON 序列化对象时返回 `RESPONSE_INVALID`，不重放 handler，也不把编码失败误报为业务成功。帧大小和 LF framing 规则保持不变；不复制 Pi 源码或引入依赖。
+
+内存 JSON-RPC 探针覆盖重复顶层/嵌套键、`1e999`、1500 层嵌套、孤立代理项、不可编码响应及每种坏帧后的正常请求；Python 编译、wheel/sdist、TypeScript 检查与 Electron 源码构建须以最新 PR head 为准。测试材料仅保留本地，未调用模型、招聘 CLI、网络或平台。
 ## 第九十三轮：共享附件容量与损坏日志的发布门禁
 
 参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 `packages/coding-agent/src/extensions/mcp/tools.ts` 及开放 [Issue #11386](https://github.com/earendil-works/pi/issues/11386)：Pi 对发给模型的 MCP 文本输出设有 20 KiB 默认上限，该提案希望支持分层配置。BOSS-CLI 的附件属于跨会话持久对象，与单次工具输出不同；本轮只采用显式资源预算原则，独立实现，不复制代码或新增依赖。
