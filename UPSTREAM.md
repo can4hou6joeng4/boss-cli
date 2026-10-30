@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第一百零六轮：会话内分支 leaf 指针（第一步）
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-manager.ts`：会话为 append-only 条目树，`leafId` 指向当前位置，`branch()` / `resetLeaf()` 只移动指针，`buildSessionContext()` 自叶节点沿 parent 链投影上下文，`branchWithSummary()` 另写被弃分支摘要。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：Pi 的 leaf 只在内存中，重新加载即回到最后条目；本项目把指针持久化为 append-only `leaf` 记录（目标为某回合最后一条终态 `turn` 记录，或 `null` 表示回到首回合之前），重启后保持所选分支。投影不信任写入时的 `parentId`（并行工具与恢复修订可能并发追加），而按文件顺序为每条记录记下追加时的投影尾部再回溯；迟到的条目修订、工具批次、阶段与编辑按所属回合归入或排除，摘要检查点按 `throughTurnId` 是否在当前分支保留（与 #236 分支摘要规则一致）。没有 `leaf` 记录的旧会话原样返回，行为不变；伪造或指向未知条目的 `leaf` 记录 fail closed。投影目前只作用于模型上下文、预算/压缩、续接预检与 `thread/fork`；`thread/read`、条目列表与线程元数据仍展示完整日志，留待后续步骤。新增 `thread/leaf/read` 与 `thread/leaf/set`（仅在 `capabilities.sessionLeaf` 声明后可用）及可选通知 `thread/leafChanged`，协议仍为 `0.2.0`；切换要求会话空闲、无未结束回合、未决审批、投递中队列与持久化围栏，并在 SQLite 写锁内读写。
+
+临时探针验证旧会话投影不变、切换分支后历史投影与新回合续写、切回原分支与重置到根、fork 仅复制当前分支、非法 / 运行中 / 伪造指针拒绝、压缩检查点在分支间的保留与排除、迟到修订归属、多线程并发切换与追加后日志可由另一 store 实例读取，以及一次 stdio JSON-RPC 端到端（能力声明、读写指针、`context/read` 消息数、续接预检在分支后返回 `CONTINUATION_NOT_LATEST`）；compileall、TypeScript typecheck、Electron 源码 build 与 `git diff --check` 通过。探针未提交；未调用真实模型、网络或招聘平台，未改 Electron 前端。
+
 ## 第一百零五轮：业务请求的受限 transformContext
 
 参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/agent/src/agent-loop.ts`（`streamAssistantResponse` 在 `convertToLlm` 前调用 `transformContext(messages, signal)`）与 `types.ts` 的说明：宿主可在每次模型调用前裁剪或改写发送给模型的消息，持久消息不变。本轮独立实现，不复制 Pi 源码或新增依赖。

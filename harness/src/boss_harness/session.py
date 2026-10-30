@@ -37,6 +37,10 @@ _ATTACHMENT_DIGEST = re.compile(r"[a-f0-9]{64}\Z")
 _ATTACHMENT_TEMP = re.compile(r"tmp-[a-f0-9]{32}\Z")
 _DELETE_INTENT = re.compile(r"\.delete-([a-f0-9]{12})\.json\Z")
 _TERMINAL = frozenset({"completed", "interrupted", "blocked", "error"})
+# In-session branch pointer (Pi session-manager leafId).  Sessions that never
+# record one keep the historical linear projection byte-for-byte.
+LEAF_ENTRY_TYPE = "leaf"
+MAX_LEAF_ACTIVE_TURN_IDS = 200
 _TASK_PHASES = frozenset({"admission", "prepare", "model_request", "tool_execution", "finish"})
 _EVENT_READ_CHUNK_BYTES = 64 * 1024
 # Event records are persisted from the same bounded JSON-RPC payloads as the
@@ -2082,10 +2086,131 @@ class SessionStore:
                        if len(rows) > limit else None)
         return {"turns": [json.loads(row["metadata_json"]) for row in page], "nextCursor": next_cursor}
 
+    _BRANCH_INDEPENDENT_TYPES = frozenset({"attachment", "thread_info", "queue"})
+
+    @classmethod
+    def _active_entries(cls, entries: list[dict]) -> list[dict]:
+        """Project the branch selected by the latest leaf record.
+
+        Entries keep file order.  Each appended entry continues the projection
+        tail at its append time, so the result does not trust writer-provided
+        parentId values.  Without any leaf record the input is returned as is.
+        """
+        if not any(entry.get("type") == LEAF_ENTRY_TYPE for entry in entries):
+            return entries
+        previous: dict[str, str | None] = {}
+        records: dict[str, dict] = {}
+        tail: str | None = None
+        for entry in entries:
+            if entry.get("type") == LEAF_ENTRY_TYPE:
+                payload = entry.get("payload")
+                target = payload.get("targetId") if isinstance(payload, dict) else None
+                if target is not None and (not isinstance(target, str) or target not in records
+                                           or records[target].get("type") != "turn"):
+                    raise ValueError("会话分支指针指向未知或无效的条目")
+                tail = target
+                continue
+            if entry["id"] in records:
+                raise ValueError("会话条目编号重复，无法投影分支")
+            records[entry["id"]] = entry
+            previous[entry["id"]] = tail
+            tail = entry["id"]
+        path: set[str] = set()
+        cursor = tail
+        while cursor is not None:
+            path.add(cursor)
+            cursor = previous[cursor]
+        included_turns = {entry["payload"].get("turnId") for entry in entries
+                          if entry["id"] in path and entry.get("type") == "turn"
+                          and isinstance(entry.get("payload"), dict)}
+        included_turns.discard(None)
+        owners = cls._item_owners([entry for entry in entries if entry.get("type") != LEAF_ENTRY_TYPE])
+
+        def keep(entry: dict) -> bool:
+            kind = entry.get("type")
+            if kind == LEAF_ENTRY_TYPE:
+                return False
+            payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            if kind == "item":
+                owner = owners.get(entry["id"])
+                # Late revisions follow their owning turn, not the physical tail.
+                return owner in included_turns if owner is not None else entry["id"] in path
+            if entry["id"] in path:
+                return True
+            if kind in cls._BRANCH_INDEPENDENT_TYPES:
+                # Session-level state (uploaded files, title, queue) is shared by
+                # every branch; only content owned by abandoned turns is dropped.
+                return True
+            if kind in {"turn", "task_phase", "tool_batch"}:
+                return payload.get("turnId", payload.get("taskId")) in included_turns
+            if kind == "context_edit":
+                return owners.get(payload.get("targetItemId")) in included_turns
+            if kind == "context_checkpoint":
+                return payload.get("throughTurnId") in included_turns
+            return False
+
+        return [entry for entry in entries if keep(entry)]
+
+    def read_active_entries(self, thread_id: str) -> list[dict]:
+        return self._active_entries(self.read_entries(thread_id))
+
+    def _leaf_state(self, thread_id: str, entries: list[dict]) -> dict:
+        active = self._active_entries(entries)
+        turns = self._turns(active, thread_id)
+        turn_ids = [turn["turnId"] for turn in turns]
+        return {"threadId": thread_id,
+                "branched": any(entry.get("type") == LEAF_ENTRY_TYPE for entry in entries),
+                "leafTurnId": turn_ids[-1] if turn_ids else None,
+                "activeTurnCount": len(turn_ids),
+                "activeTurnIds": turn_ids[-MAX_LEAF_ACTIVE_TURN_IDS:],
+                "activeTurnIdsTruncated": len(turn_ids) > MAX_LEAF_ACTIVE_TURN_IDS}
+
+    def read_leaf(self, thread_id: str) -> dict:
+        with self._lock:
+            return self._leaf_state(thread_id, self.read_entries(thread_id))
+
+    def set_leaf(self, thread_id: str, turn_id: str | None) -> dict:
+        """Move the in-session branch pointer to a settled turn (None = before the first turn)."""
+        if turn_id is not None:
+            _identifier(turn_id, "turnId")
+        with self._lock, self._index.transaction() as connection:
+            self.require_thread(thread_id)
+            self._index_thread(thread_id, connection)
+            entries = self.read_entries(thread_id)
+            current = self._leaf_state(thread_id, entries)
+            if current["leafTurnId"] == turn_id and (turn_id is not None or current["activeTurnCount"] == 0):
+                return {**current, "changed": False}
+            target_id: str | None = None
+            if turn_id is not None:
+                records = [entry for entry in entries if entry.get("type") == "turn"
+                           and isinstance(entry.get("payload"), dict)
+                           and entry["payload"].get("turnId") == turn_id]
+                if not records or records[-1]["payload"].get("status") not in _TERMINAL:
+                    raise ValueError("仅可把分支指针移到已经结束的回合")
+                target_id = records[-1]["id"]
+            all_turns = self._turns(entries, thread_id)
+            if any(turn.get("status") not in _TERMINAL for turn in all_turns):
+                raise ValueError("会话仍有未结束的回合，不能切换分支")
+            for item in self._project_items(thread_id, entries):
+                approval = item.get("approval") or {}
+                if item.get("status") == "running" or (approval and not approval.get("decision")):
+                    raise ValueError("会话中仍有未收尾条目或审批，不能切换分支")
+            entry = Entry(type=LEAF_ENTRY_TYPE, parent_id=target_id,
+                          payload={"targetId": target_id, "turnId": turn_id,
+                                   "fromTurnId": current["leafTurnId"]})
+            candidate = entries + [entry.to_dict()]
+            state = self._leaf_state(thread_id, candidate)
+            if state["leafTurnId"] != turn_id:
+                raise ValueError("分支指针目标与回合边界不一致")
+            self._append_line(self.path_for(thread_id), entry.to_dict())
+            self._index_thread(thread_id, connection)
+            return {**state, "changed": True}
+
     def fork_thread(self, thread_id: str, *, turn_id: str | None = None, title: str | None = None) -> dict:
         with self._lock:
             source = self.get_thread(thread_id)
-            entries = self.read_entries(thread_id)
+            # A fork copies only the active branch; leaf records never travel.
+            entries = self._active_entries(self.read_entries(thread_id))
             turns = self._turns(entries, thread_id)
             if turn_id is None:
                 selected = turns[-1] if turns else None
