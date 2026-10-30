@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第一百零二轮：工具批次 sequential / parallel 调度模式
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/agent/src/agent-loop.ts`：工具调用先按模型顺序逐个 prepare，批内任一工具为 sequential 则整批串行，全部为 parallel 时并发执行，结果按源顺序回填。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：`ToolDefinition.execution_mode` 默认 `sequential`，非法值（含不可哈希值）报规范 `ValueError`，`requires_approval=True` 不得声明 parallel；默认 BOSS 工具共享上游 data_dir、浏览器与登录态，全部保持串行，不因只读自动并发。只有整批显式 parallel、无审批、宿主能提供独立工具桥时才并发。参数校验、生命周期策略与 start 持久化在回合主线程按模型顺序惰性进行，仅在有空闲槽位即将派发时才 prepare；有界线程池只并发 handler 调用；finish 持久化、暂停判定与通知在主线程按源顺序写入，历史重建与 live 结果一致。在途 handler 与工具桥数量均受 worker 上限约束，工具桥按需创建、批内复用、每个至多关闭一次，额外工具桥创建失败后本批不再重试；暂停、策略拒绝或取消后尚未 prepare 的调用与串行一致只经 `_skip_calls` 以 `not_executed` 收尾；prepare 或 finish 异常时先等待在途 handler 并按序收尾已 prepare 的调用，再原样传播。回退串行仅在首个独立工具桥不可用、尚无任何调用落库或启动时发生。
+
+临时探针验证默认与混合批次串行、并行重叠且结果/持久化/历史按源顺序、取消与暂停后未启动项不执行、工具桥数量受限且各关闭一次、工具桥不可用时无副作用回退、策略拒绝第 k 项与串行持久化形态一致、prepare 异常不多留孤儿 start、额外工具桥工厂失败只再调用一次及非法模式报错；compileall、TypeScript typecheck、Electron 源码 build 与 `git diff --check` 通过。探针未提交；未调用真实模型、网络或招聘平台，也未启用任何并行业务工具。
+
 ## 第一百零一轮：共享 provider 与 agent 的有限恢复预算
 
 参考 Pi MIT 开放 [Issue #9474](https://github.com/earendil-works/pi/issues/9474)，截至 2026-10-30 仍为 OPEN；核对 Pi `main@50d9f823e414eafb5f4459d16728a2464cd7939f`。该议题的单次传输总期限已由本项目 [Issue #205](https://github.com/can4hou6joeng4/boss-cli/issues/205) 覆盖，剩余缺口是 provider 重试与 agent 恢复各自计数、彼此叠加。本轮不复制 Pi 源码或新增依赖。
