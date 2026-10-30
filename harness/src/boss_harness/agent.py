@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
@@ -80,6 +81,27 @@ class ToolCompletionNotificationError(RuntimeError):
     """The result is durable, but its observer notification failed."""
 
 
+class _ParallelUnavailable(RuntimeError):
+    """并行批次在任何调用落库或 handler 启动前即无法获得独立工具桥。"""
+
+
+@dataclass
+class _PreparedTool:
+    """已在主线程完成校验、策略与 start 持久化、等待派发的一次工具调用。"""
+
+    name: str
+    arguments: dict[str, Any]
+    call_id: str | None
+    entry: Entry
+    approval: dict[str, Any] | None
+    invalid: ToolResult | None
+    policy_denied: bool
+    handler: Callable[[Any, dict[str, Any]], ToolResult] | None
+    dispatched: bool = False
+    dispatch_persistence_failed: bool = False
+    cancelled_before_dispatch: bool = False
+
+
 @dataclass
 class _ApprovalWait:
     """一次待决定的审批。`event` 负责唤醒等待方，`decision` 是用户的裁决。"""
@@ -116,6 +138,10 @@ class TurnRunner:
         persistence_fence: Callable[[str], None] | None = None,
         phase_recorder: Callable[[str, int], None] | None = None,
         dispatch_lock: Any | None = None,
+        execution_modes: Mapping[str, str] | None = None,
+        parallel_bridge_factory: Callable[[], Any] | None = None,
+        parallel_bridge_close: Callable[[Any], None] | None = None,
+        parallel_max_workers: int = 4,
         max_model_requests: int = DEFAULT_MAX_MODEL_REQUESTS,
     ) -> None:
         self.sessions = sessions
@@ -152,6 +178,17 @@ class TurnRunner:
         self.phase_recorder = phase_recorder
         # The application shares this lock with interrupt acceptance.
         self._dispatch_lock = dispatch_lock or threading.Lock()
+        if execution_modes is not None and (
+                not isinstance(execution_modes, Mapping)
+                or any(type(key) is not str or type(mode) is not str or mode not in {"sequential", "parallel"}
+                       for key, mode in execution_modes.items())):
+            raise ValueError("工具执行模式映射无效")
+        if type(parallel_max_workers) is not int or not 1 <= parallel_max_workers <= 8:
+            raise ValueError("并行工具 worker 上限必须是 1 到 8")
+        self._execution_modes = dict(execution_modes or {})
+        self._parallel_bridge_factory = parallel_bridge_factory
+        self._parallel_bridge_close = parallel_bridge_close or (lambda bridge: None)
+        self._parallel_max_workers = parallel_max_workers
         self.context_abort: Callable[[], None] | None = None
         self.last_stream_error: ModelErrorInfo | None = None
         self.last_stream_recoverable = False
@@ -399,6 +436,19 @@ class TurnRunner:
         闸门对应 Pi 的 `beforeToolCall`（它可以阻断一次调用）：被拒绝的调用不执行，
         而是以 `is_error` 的工具结果回填给模型，让模型知道没被批准，而不是静默跳过。
         """
+        prepared = self._prepare_tool(thread_id, name, arguments, call_id, batch_id, provider_continuation)
+        if isinstance(prepared, ToolResultItem):
+            return prepared
+        result = self._begin_dispatch(thread_id, prepared)
+        if result is None:
+            result = self._call_handler(prepared, self.tool_bridge)
+        return self._finish_tool(thread_id, prepared, result)
+
+    def _prepare_tool(
+        self, thread_id: str, name: str, arguments: dict[str, Any], call_id: str | None,
+        batch_id: str | None, provider_continuation: dict[str, Any] | None,
+    ) -> _PreparedTool | ToolResultItem:
+        """校验、生命周期策略、审批与 start 持久化；只在回合主线程按模型顺序执行。"""
         approval: dict[str, Any] | None = None
         invalid: ToolResult | None = None
         try:
@@ -495,39 +545,49 @@ class TurnRunner:
         handler = self.handlers.get(name)
         if name == MODEL_RESULT_READ_TOOL:
             handler = lambda _bridge, values: read_model_tool_result(self.sessions, thread_id, values)
-        dispatched = False
-        dispatch_persistence_failed = False
+        return _PreparedTool(name=name, arguments=arguments, call_id=call_id, entry=entry,
+                             approval=approval, invalid=invalid, policy_denied=policy_denied,
+                             handler=handler)
+
+    def _begin_dispatch(self, thread_id: str, prepared: _PreparedTool) -> ToolResult | None:
+        """在主线程写入 executing 阶段并确认可派发；返回 None 表示 handler 可以开始。"""
+        name = prepared.name
         if self.cancelled():
-            cancelled_before_dispatch = True
-            result = ToolResult(ok=False, command=name, error={"code": "CANCELLED", "message": "操作已取消，未执行工具"})
-        elif invalid is not None:
-            cancelled_before_dispatch = False
-            result = invalid
-        elif handler is None:
-            cancelled_before_dispatch = False
-            result = ToolResult(ok=False, command=name, error={"code": "NOT_SUPPORTED", "message": f"未知工具 {name}"})
-        else:
-            cancelled_before_dispatch = False
-            try:
-                self._tool_phase(thread_id, entry, "executing", approval)
-                with self._dispatch_lock:
-                    cancelled_before_dispatch = self.cancelled()
-                    dispatched = not cancelled_before_dispatch
-                if cancelled_before_dispatch:
-                    result = ToolResult(ok=False, command=name,
-                        error={"code": "CANCELLED", "message": "操作已取消，未执行工具"})
-                else:
-                    result = snapshot_result(handler(self.tool_bridge, arguments))
-            except Exception as exc:
-                if dispatched:
-                    result = ToolResult(ok=False, command=name, error={"code": "TOOL_ERROR", "message": self.safe_error(exc)})
-                else:
-                    dispatch_persistence_failed = True
-                    result = ToolResult(ok=False, command=name, error={
-                        "code": "SESSION_PERSISTENCE_ERROR",
-                        "message": "执行状态未能持久化，工具未派发；请检查会话状态后再继续",
-                    })
-                    self._blocked = result
+            prepared.cancelled_before_dispatch = True
+            return ToolResult(ok=False, command=name, error={"code": "CANCELLED", "message": "操作已取消，未执行工具"})
+        if prepared.invalid is not None:
+            return prepared.invalid
+        if prepared.handler is None:
+            return ToolResult(ok=False, command=name, error={"code": "NOT_SUPPORTED", "message": f"未知工具 {name}"})
+        try:
+            self._tool_phase(thread_id, prepared.entry, "executing", prepared.approval)
+            with self._dispatch_lock:
+                prepared.cancelled_before_dispatch = self.cancelled()
+                prepared.dispatched = not prepared.cancelled_before_dispatch
+        except Exception:
+            prepared.dispatch_persistence_failed = True
+            result = ToolResult(ok=False, command=name, error={
+                "code": "SESSION_PERSISTENCE_ERROR",
+                "message": "执行状态未能持久化，工具未派发；请检查会话状态后再继续",
+            })
+            self._blocked = result
+            return result
+        if prepared.cancelled_before_dispatch:
+            return ToolResult(ok=False, command=name, error={"code": "CANCELLED", "message": "操作已取消，未执行工具"})
+        return None
+
+    def _call_handler(self, prepared: _PreparedTool, bridge: Any) -> ToolResult:
+        """只调用 handler；可在并行 worker 中运行，不触碰会话持久化或回合状态。"""
+        try:
+            return snapshot_result(prepared.handler(bridge, prepared.arguments))
+        except Exception as exc:
+            return ToolResult(ok=False, command=prepared.name,
+                              error={"code": "TOOL_ERROR", "message": self.safe_error(exc)})
+
+    def _finish_tool(self, thread_id: str, prepared: _PreparedTool, result: ToolResult) -> ToolResultItem:
+        """暂停判定、finish 持久化与通知；只在回合主线程按模型顺序执行。"""
+        name, call_id, entry, approval = prepared.name, prepared.call_id, prepared.entry, prepared.approval
+        dispatched = prepared.dispatched
         pause = False
         if not result.ok and name != MODEL_RESULT_READ_TOOL and self.pause_on_result is not None:
             try:
@@ -537,7 +597,7 @@ class TurnRunner:
             except Exception:
                 result = ToolResult(ok=False, command=name, error={"code": "TOOL_ERROR", "message": "工具暂停策略回调失败"})
                 pause = True
-        if policy_denied:
+        if prepared.policy_denied:
             self._blocked = result
         if not result.ok and (pause
                               or (name in self.approval_required and (result.error or {}).get("code") not in {"INVALID_PARAM", "CANCELLED"})):
@@ -546,8 +606,9 @@ class TurnRunner:
                    and (result.error or {}).get("code") in {
                        "CANCELLED", "TOOL_TIMEOUT", "TOOL_ERROR", "CLI_ERROR", "CLI_CONTRACT_ERROR", "CLI_OUTPUT_LIMIT", "INVALID_ENVELOPE",
                        "GREET_RESULT_UNKNOWN", "ACTION_UNCONFIRMED"})
-        execution_state = ("not_executed" if policy_denied or dispatch_persistence_failed
-                           or cancelled_before_dispatch or invalid is not None or handler is None
+        execution_state = ("not_executed" if prepared.policy_denied or prepared.dispatch_persistence_failed
+                           or prepared.cancelled_before_dispatch or prepared.invalid is not None
+                           or prepared.handler is None
                            else "outcome_unknown" if unknown else None)
         try:
             recovered_persistence = self.finish_tool_call(thread_id, entry, name, result, call_id, approval,
@@ -598,6 +659,111 @@ class TurnRunner:
                                  item_id=entry.id, max_bytes=self._tool_result_limit(name)),
             is_error=not result.ok,
         )
+
+    def _parallel_batch_enabled(self, calls: tuple[ToolCallBlock, ...]) -> bool:
+        """整批显式 parallel、均无审批且宿主能提供独立工具桥时才并发（任一 sequential 即整批串行）。"""
+        if len(calls) < 2 or self._parallel_bridge_factory is None or self._parallel_max_workers < 2:
+            return False
+        return all(self._execution_modes.get(call.name) == "parallel"
+                   and call.name not in self.approval_required and call.name in self.handlers
+                   for call in calls)
+
+    def _execute_parallel_batch(
+        self, thread_id: str, calls: tuple[ToolCallBlock, ...], batch_id: str,
+        provider_continuation: dict[str, Any] | None,
+    ) -> list[ToolResultItem]:
+        """按模型顺序 prepare，有界并发 handler，按模型顺序落 finish。
+
+        在途 handler 不超过 worker 上限，工具桥按需创建并在批内复用，每个至多关闭一次。
+        暂停或取消后尚未派发的调用不再启动，以确定的未执行结果收尾。只有首个工具桥
+        创建失败时抛出 `_ParallelUnavailable`，此时尚无任何调用落库或启动。
+        """
+        bridges: list[Any] = []
+        free: list[Any] = []
+
+        def new_bridge() -> Any | None:
+            try:
+                bridge = self._parallel_bridge_factory()
+            except Exception:
+                return None
+            if bridge is None or bridge is self.tool_bridge or any(bridge is known for known in bridges):
+                return None
+            try:
+                bridge.cancel_event = self._cancel
+            except Exception:
+                try:
+                    self._parallel_bridge_close(bridge)
+                except Exception:
+                    pass
+                return None
+            bridges.append(bridge)
+            return bridge
+
+        first = new_bridge()
+        if first is None:
+            raise _ParallelUnavailable("并行工具桥无法安全创建")
+        free.append(first)
+        try:
+            prepared: list[_PreparedTool | ToolResultItem] = [
+                self._prepare_tool(thread_id, call.name, dict(call.arguments), call.id, batch_id,
+                                   provider_continuation if index == 0 else None)
+                for index, call in enumerate(calls)
+            ]
+            results: list[ToolResultItem] = []
+            limit = min(self._parallel_max_workers, len(calls))
+            in_flight: dict[int, tuple[Future[ToolResult], Any]] = {}
+            early: dict[int, ToolResult] = {}
+            next_index = 0
+            stopped = False
+            with ThreadPoolExecutor(max_workers=limit) as executor:
+                for index in range(len(calls)):
+                    while not stopped and next_index < len(calls) and len(in_flight) < limit:
+                        item = prepared[next_index]
+                        if isinstance(item, _PreparedTool) and item.policy_denied:
+                            # 与串行一致：策略拒绝会暂停回合，其后的调用不再启动。
+                            early[next_index] = item.invalid
+                            stopped = True
+                        elif isinstance(item, _PreparedTool) and self._blocked is None:
+                            bridge = free.pop() if free else new_bridge()
+                            if bridge is None:
+                                # 额外工具桥不可用时等待在途调用释放已有工具桥。
+                                break
+                            outcome = self._begin_dispatch(thread_id, item)
+                            if outcome is None:
+                                in_flight[next_index] = (executor.submit(self._call_handler, item, bridge), bridge)
+                            else:
+                                early[next_index] = outcome
+                                free.append(bridge)
+                        next_index += 1
+                    item = prepared[index]
+                    if isinstance(item, ToolResultItem):
+                        results.append(item)
+                        continue
+                    if index in in_flight:
+                        future, bridge = in_flight.pop(index)
+                        outcome = future.result()
+                        free.append(bridge)
+                    elif index in early:
+                        outcome = early.pop(index)
+                    else:
+                        item.cancelled_before_dispatch = True
+                        outcome = ToolResult(ok=False, command=item.name, error=(
+                            {"code": "CANCELLED", "message": "操作已取消，未执行工具"} if self.cancelled()
+                            else {"code": "NOT_EXECUTED", "message": "回合中断或平台暂停，该工具未执行"}))
+                    results.append(self._finish_tool(thread_id, item, outcome))
+                    if self._blocked is not None or self.cancelled():
+                        stopped = True
+            return results
+        finally:
+            for bridge in bridges:
+                try:
+                    bridge.cancel_event = None
+                except Exception:
+                    pass
+                try:
+                    self._parallel_bridge_close(bridge)
+                except Exception:
+                    pass
 
     # ---------- 历史重建 ----------
 
@@ -792,25 +958,44 @@ class TurnRunner:
                 results: list[ToolResultItem] = []
                 batch_id = uuid.uuid4().hex[:12]
                 self._record_phase("tool_execution", _round + 1)
-                for index, call in enumerate(calls):
+                if self._parallel_batch_enabled(calls):
                     if self.cancelled():
-                        self._skip_calls(thread_id, calls[index:], batch_id,
-                                         provider_continuation=continuation if index == 0 else None)
+                        self._skip_calls(thread_id, calls, batch_id, provider_continuation=continuation)
                         return "interrupted"
-                    results.append(
-                        self.execute_tool(thread_id, call.name, dict(call.arguments), call.id, batch_id,
-                                          continuation if index == 0 else None)
-                    )
-                    if self._blocked is not None:
-                        self._skip_calls(thread_id, calls[index + 1:], batch_id)
-                        result = self._blocked
-                        code = (result.error or {}).get("code", "UNKNOWN")
-                        recovery = (result.error or {}).get("recovery_action") or "请核对操作结果，处理后再明确发起下一步；不要自动重试。"
-                        self.append_agent(thread_id, f"操作已暂停（{code}）：{summarize_result(result)}\n\n恢复提示：{recovery}")
-                        return "blocked"
-                    if self.cancelled():
-                        self._skip_calls(thread_id, calls[index + 1:], batch_id)
-                        return "interrupted"
+                    try:
+                        results = self._execute_parallel_batch(thread_id, calls, batch_id, continuation)
+                    except _ParallelUnavailable:
+                        # 首个独立工具桥不可用：尚无调用落库或启动，回到串行路径。
+                        results = []
+                    if results:
+                        if self._blocked is not None:
+                            result = self._blocked
+                            code = (result.error or {}).get("code", "UNKNOWN")
+                            recovery = (result.error or {}).get("recovery_action") or "请核对操作结果，处理后再明确发起下一步；不要自动重试。"
+                            self.append_agent(thread_id, f"操作已暂停（{code}）：{summarize_result(result)}\n\n恢复提示：{recovery}")
+                            return "blocked"
+                        if self.cancelled():
+                            return "interrupted"
+                if not results:
+                    for index, call in enumerate(calls):
+                        if self.cancelled():
+                            self._skip_calls(thread_id, calls[index:], batch_id,
+                                             provider_continuation=continuation if index == 0 else None)
+                            return "interrupted"
+                        results.append(
+                            self.execute_tool(thread_id, call.name, dict(call.arguments), call.id, batch_id,
+                                              continuation if index == 0 else None)
+                        )
+                        if self._blocked is not None:
+                            self._skip_calls(thread_id, calls[index + 1:], batch_id)
+                            result = self._blocked
+                            code = (result.error or {}).get("code", "UNKNOWN")
+                            recovery = (result.error or {}).get("recovery_action") or "请核对操作结果，处理后再明确发起下一步；不要自动重试。"
+                            self.append_agent(thread_id, f"操作已暂停（{code}）：{summarize_result(result)}\n\n恢复提示：{recovery}")
+                            return "blocked"
+                        if self.cancelled():
+                            self._skip_calls(thread_id, calls[index + 1:], batch_id)
+                            return "interrupted"
                 messages.append(ToolResultsMessage(results=tuple(results)))
 
             message = (f"已达到模型调用上限（{max_model_requests} 次请求），本回合已暂停。"
