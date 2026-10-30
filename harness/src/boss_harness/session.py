@@ -173,11 +173,28 @@ def _finite_json_float(value: str) -> float:
     return parsed
 
 
+def _validate_json_unicode(value: Any) -> None:
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            try:
+                current.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError from None
+        elif isinstance(current, dict):
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+
+
 def _decode_jsonl_object(line: str | bytes, *, label: str, line_number: int) -> dict:
     try:
         text = line.decode("utf-8") if isinstance(line, bytes) else line
         record = json.loads(text, object_pairs_hook=_unique_json_object,
                             parse_constant=_reject_json_constant, parse_float=_finite_json_float)
+        _validate_json_unicode(record)
     except (ValueError, RecursionError):
         raise ValueError(f"{label}第 {line_number} 行损坏，读取已停止") from None
     if not isinstance(record, dict):
