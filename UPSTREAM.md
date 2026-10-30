@@ -8,6 +8,10 @@
 
 本地 Python 应用并发探针另对照 Pi 开放 [Issue #10982](https://github.com/earendil-works/pi/issues/10982)：摘要 provider 被事件门控时，直接 `turn/start` 被拒绝，follow-up 保持 queued；摘要完成事件先于后续 `turn/started`，队列只交付一次。现有 thread admission 和 compaction owner 已覆盖该路径，无对应运行时代码改动。
 
+另核对 Pi MIT 开放 [PR #9126](https://github.com/earendil-works/pi/pull/9126)，截至 2026-10-30 仍为 OPEN，目标为 `main@f1b2e77f5b13b2a199b1052cb79c235451afe7d7`。它报告活动工具尚未结算时 runtime disposal 先断开持久化；提议在 shutdown/dispose 前等待 `session.abort()`，作者注明等待没有超时，忽略取消的工具不在此改动范围内。该问题位于 session 持久化结算边界，与本 PR 延长 Harness 子进程 EOF 后宽限期的客户端生命周期边界不同，Pi 的无超时等待不直接适用于本项目的有界关闭策略。
+
+本项目以真实 `ApplicationService` 和工具 handler 做了关机时序探针：handler 在 close 开始时已派发并阻塞 2.15 秒；`close()` 约 2.006 秒返回时 runtime job 与 state owner 仍存活。handler 约在 2.151 秒返回，随后 JSONL 先追加同一工具调用从 `executing/running` 到 `completed/completed` 的修订，再追加 `turn interrupted`；worker 约在 2.168 秒退出后 runtime job 归零并释放 state owner。重启后工具仍为 completed、回合仍为 interrupted，没有重放或第二次模型请求，handler/provider 各调用一次。超过内核等待期限时若进程在工具结算前退出，隔离对照恢复为 `failed / outcome_unknown / SESSION_INTERRUPTED`，同样不重放；因此本地证据验证的是 owner 在 worker 结束前不释放以及有界关闭内完成的工具结果可持久化，不承诺超出进程存活窗口的工具也能结算。
+
 本轮 `npm run typecheck`、`npm run build`、Python `compileall`、wheel/sdist 构建、Source build、GitGuardian 与 `git diff --check` 通过。所有探针使用合成 provider、生命周期 hook 和临时状态，无真实模型或招聘平台请求；探针只保留于本地，不提交测试材料。真实 Electron 退出与用户界面验收尚未完成。
 
 ## 第九十三轮：共享附件容量与损坏日志的发布门禁
