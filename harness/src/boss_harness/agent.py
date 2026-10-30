@@ -40,7 +40,8 @@ from boss_harness.models.output_budget import OutputBudgetExceeded, ResponseText
 from boss_harness.models.errors import transport_diagnostic
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.types import (
-    DEFAULT_MODEL_TOOL_RESULT_BYTES, ChatMessage, ModelRequest, ModelErrorInfo, TextBlock, ThinkingBlock,
+    DEFAULT_MODEL_TOOL_RESULT_BYTES, ChatMessage, ModelRequest, ModelErrorInfo, ModelRecoveryBudget,
+    TextBlock, ThinkingBlock,
 )
 from boss_harness.model_tools import (
     MODEL_RESULT_READ_SPEC, MODEL_RESULT_READ_TOOL, model_tool_specs,
@@ -627,6 +628,7 @@ class TurnRunner:
         self.tool_bridge.cancel_event = self._cancel
         self._blocked = None
         self.last_preparation = None
+        recovery_budget = ModelRecoveryBudget()
 
         try:
             messages = list(self.history(thread_id))
@@ -655,6 +657,7 @@ class TurnRunner:
                     max_tokens=self.config.max_tokens,
                     effort=self.config.effort,
                     thinking=self.config.thinking,
+                    recovery_budget=recovery_budget,
                 )
                 request_budget: dict[str, Any] = {}
                 if self.request_preparer is not None:
@@ -708,20 +711,27 @@ class TurnRunner:
                     return "interrupted"
 
                 if error is not None:
+                    recovery_blocked = False
                     if (self.last_stream_recoverable and self.recover_context is not None and
                             not overflow_retried and _round + 1 < max_model_requests):
-                        overflow_retried = True
-                        try:
-                            replacement = self.recover_context(request)
-                        except ContextCompactionFailed as exc:
-                            return self._context_failed(thread_id, exc)
-                        except ModelRequestRejected as exc:
-                            return self._request_rejected(thread_id, exc)
-                        if self.cancelled():
-                            return "interrupted"
-                        if replacement is not None:
-                            messages = list(replacement.messages)
-                            continue
+                        if recovery_budget.consume_retry(self._cancel):
+                            overflow_retried = True
+                            try:
+                                replacement = self.recover_context(request)
+                            except ContextCompactionFailed as exc:
+                                return self._context_failed(thread_id, exc)
+                            except ModelRequestRejected as exc:
+                                return self._request_rejected(thread_id, exc)
+                            if self.cancelled():
+                                return "interrupted"
+                            if replacement is not None:
+                                messages = list(replacement.messages)
+                                continue
+                        else:
+                            if self.cancelled():
+                                return "interrupted"
+                            recovery_blocked = True
+                            error = f"{error}（共享模型恢复次数已用尽，未启动自动上下文恢复）"
                     self.append_agent(thread_id, f"模型调用失败：{error}")
                     details = {"threadId": thread_id, "message": error,
                                "outputObserved": self.last_stream_output_observed}
@@ -729,7 +739,8 @@ class TurnRunner:
                         details["errorInfo"] = self.last_stream_error.event_payload()
                         if self.last_stream_error.code is not None:
                             details.update(code=self.last_stream_error.code,
-                                           recoveryAttempted=overflow_retried)
+                                           recoveryAttempted=overflow_retried,
+                                           recoveryBlocked=recovery_blocked)
                     self.notify(N_SESSION_ERROR, details)
                     return "error"
 
