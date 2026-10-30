@@ -1,6 +1,6 @@
 # 上游吸收记录
 
-## 第一百轮：共享 provider 与 agent 的有限恢复预算
+## 第一百零一轮：共享 provider 与 agent 的有限恢复预算
 
 参考 Pi MIT 开放 [Issue #9474](https://github.com/earendil-works/pi/issues/9474)，截至 2026-10-30 仍为 OPEN；核对 Pi `main@50d9f823e414eafb5f4459d16728a2464cd7939f`。该议题的单次传输总期限已由本项目 [Issue #205](https://github.com/can4hou6joeng4/boss-cli/issues/205) 覆盖，剩余缺口是 provider 重试与 agent 恢复各自计数、彼此叠加。本轮不复制 Pi 源码或新增依赖。
 
@@ -9,6 +9,14 @@
 `ModelRequest.recovery_budget` 是运行时对象，不进入 session JSONL、RPC、模型请求、请求指纹或任务上下文身份。自动 compaction 的分片请求沿用触发它的业务回合预算，使摘要 provider 重试也扣同一额度；独立手动 compaction 使用自己的预算。Anthropic SDK 已禁用内置重试。每回合原有普通模型请求上限、摘要正常分片上限及每次传输时限继续独立生效；本轮不声称新增逻辑回合总墙钟期限，也不把正常请求/分片误记为 recovery。
 
 Python 临时会话与合成 provider 探针验证跨 `stream()` 调用的 provider 预算共享、无预算直接调用保留原重试次数、退避取消归还额度、overflow 与 provider retry 共享额度、耗尽后不调用自动恢复、摘要片段继承运行时预算及 request copy 保留对象身份。`compileall`、TypeScript typecheck、Electron 源码 build、wheel/sdist build 与 `git diff --check` 通过。探针未提交；未调用真实模型、网络或招聘平台。真实 provider 长会话、Electron 桌面交互与用户验收仍未完成。
+
+## 第一百轮：分支按摘要来源保留上下文检查点
+
+本项目 [Issue #235](https://github.com/can4hou6joeng4/boss-cli/issues/235) 在主线 `382dbc2b43e9c1b836ce7d7893605379168baeb0` 上复现：父会话先保存 `throughTurnId=t1` 的摘要，再包含已结束回合 `t2`；父 `ContextService.history()` 正确显示摘要和 `t2` 尾部，但 `fork_thread(..., turn_id="t2")` 仅按物理 boundary 复制 JSONL，丢弃追加在边界后的 checkpoint，使 `t1` 原始用户和助手内容重新进入子会话模型上下文。此行为与本项目 [Issue #53](https://github.com/can4hou6joeng4/boss-cli/issues/53) 已记录的分支契约不符：上下文 checkpoint 及其来源字段应随对话历史保留。
+
+分支现在按所选回合在完整 turn 序列中的位置筛选 checkpoint：来源 `throughTurnId` 位于所选回合之前或等于所选回合时，即使记录位于物理 boundary 后也纳入；覆盖更晚回合或引用未知来源回合的 checkpoint 不进入该分支。符合条件的多个 checkpoint 保持原记录顺序，现有 `_validated_checkpoint()` 继续负责来源校验；无效来源仍安全回退为完整原始历史。上下文编辑、工具修订、父历史和分支再分叉保持各自来源边界。本轮独立实现，不复制 Pi 源码或增加依赖。
+
+合成离线 `SessionStore` / `ContextService` 探针覆盖 `t1→checkpoint(t1)→t2→t3→checkpoint(t2)`：fork `t1` 仅显示摘要 `t1`；fork `t2` 显示摘要 `t2`，不把被摘要覆盖的原始 `t1`/`t2` 文本重新带入；fork 后再 fork 继续保留正确摘要，父日志逐字不变。探针无模型、网络、招聘 CLI 或子进程调用，代码仅保留本地。
 
 ## 第九十九轮：等待 Harness 子进程完成优雅关闭
 

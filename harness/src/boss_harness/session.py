@@ -1551,17 +1551,15 @@ class SessionStore:
         thread_id = intent["threadId"]
         with self._lock, self._index.transaction() as connection:
             connection.execute("PRAGMA secure_delete=ON")
-            self._remove_thread_files(thread_id)
+            self._index_events(connection)
             event = self._rewrite_events_for_deletion(connection, intent)
+            self._remove_thread_files(thread_id)
             self._purge_unreferenced_attachments(intent["attachmentDigests"])
             self._purge_repair_backups(thread_id)
-            connection.execute("DELETE FROM events WHERE thread_id=?", (thread_id,))
+            connection.execute("DELETE FROM events")
+            connection.execute("DELETE FROM checkpoints WHERE name='events'")
+            self._index_events(connection)
             connection.execute("DELETE FROM threads WHERE id=?", (thread_id,))
-            self._index_deletion_event(connection, event)
-            stat_result = self.events_path.stat()
-            connection.execute("INSERT INTO checkpoints(name,value) VALUES('events',?) "
-                               "ON CONFLICT(name) DO UPDATE SET value=excluded.value",
-                               (f"{stat_result.st_size}:{stat_result.st_mtime_ns}",))
         if _on_committed is not None:
             _on_committed()
         self._checkpoint_and_truncate_wal()
@@ -1655,6 +1653,8 @@ class SessionStore:
         event: dict | None = None
         event_count = 0
         maximum_cursor = self._event_high_water(connection)
+        seen_cursors: set[int] = set()
+        seen_event_ids: set[str] = set()
         last_byte = b"\n"
         try:
             with os.fdopen(descriptor, "wb") as output:
@@ -1670,8 +1670,14 @@ class SessionStore:
                                 raw_line, label="事件日志", line_number=line_number)
                         except ValueError as exc:
                             raise ValueError(f"事件日志损坏，无法安全删除会话：{exc}") from None
-                        if (not isinstance(record, dict) or record.get("type") != "event"
-                                or not isinstance(record.get("method"), str)
+                        if not isinstance(record, dict):
+                            raise ValueError("事件日志格式无效，无法安全删除会话")
+                        method = record.get("method")
+                        timestamp = record.get("timestamp")
+                        if (record.get("type") != "event"
+                                or not isinstance(timestamp, str)
+                                or not isinstance(method, str) or not method or len(method) > 256
+                                or any(ord(char) < 32 for char in method)
                                 or not isinstance(record.get("params"), dict)):
                             raise ValueError("事件日志格式无效，无法安全删除会话")
                         params = record["params"]
@@ -1679,6 +1685,20 @@ class SessionStore:
                         event_id = params.get("eventId")
                         if cursor < 1 or not isinstance(event_id, str) or not _EVENT_ID.fullmatch(event_id):
                             raise ValueError("事件日志游标无效，无法安全删除会话")
+                        if cursor in seen_cursors:
+                            raise ValueError("事件日志存在重复游标，无法安全删除会话")
+                        if event_id in seen_event_ids:
+                            raise ValueError("事件日志存在重复事件 ID，无法安全删除会话")
+                        seen_cursors.add(cursor)
+                        seen_event_ids.add(event_id)
+                        event_thread_id = params.get("threadId")
+                        if event_thread_id is not None:
+                            if not isinstance(event_thread_id, str):
+                                raise ValueError("事件日志会话 ID 无效，无法安全删除会话")
+                            try:
+                                self.path_for(event_thread_id)
+                            except ValueError:
+                                raise ValueError("事件日志会话 ID 无效，无法安全删除会话") from None
                         maximum_cursor = max(maximum_cursor, cursor)
                         if event_id == intent["eventId"]:
                             event_count += 1
@@ -1728,24 +1748,6 @@ class SessionStore:
         if event is None:
             raise RuntimeError("删除事件未能生成")
         return event
-
-    @staticmethod
-    def _index_deletion_event(connection: sqlite3.Connection, event: dict) -> None:
-        params = event["params"]
-        existing = connection.execute("SELECT cursor,method,thread_id,params_json FROM events WHERE event_id=?",
-                                      (params["eventId"],)).fetchone()
-        if existing is not None:
-            if (existing["cursor"] != int(params["eventCursor"]) or existing["method"] != event["method"]
-                    or existing["thread_id"] is not None or json.loads(existing["params_json"]) != params):
-                raise ValueError("会话删除事件索引与日志冲突")
-            return
-        collision = connection.execute("SELECT event_id FROM events WHERE cursor=?",
-                                       (int(params["eventCursor"]),)).fetchone()
-        if collision is not None:
-            raise ValueError("会话删除事件游标与现有事件冲突")
-        connection.execute("INSERT INTO events(cursor,event_id,method,thread_id,params_json) VALUES(?,?,?,?,?)",
-                           (int(params["eventCursor"]), params["eventId"], event["method"], None,
-                            _json(params)))
 
     def _purge_unreferenced_attachments(self, digests: list[str]) -> None:
         candidates = set(digests)
@@ -2033,7 +2035,17 @@ class SessionStore:
             if selected is None or selected.get("status") not in _TERMINAL:
                 raise ValueError("仅可从已经结束的回合创建分支")
             cutoff = selected.get("boundaryOrdinal", selected["lastOrdinal"])
-            prefix = entries[:cutoff + 1]
+            turn_positions = {turn["turnId"]: position for position, turn in enumerate(turns)}
+            selected_position = turn_positions[selected["turnId"]]
+
+            def checkpoint_in_branch(entry: dict) -> bool:
+                payload = entry.get("payload")
+                through_turn_id = payload.get("throughTurnId") if isinstance(payload, dict) else None
+                position = turn_positions.get(through_turn_id) if isinstance(through_turn_id, str) else None
+                return position is not None and position <= selected_position
+
+            prefix = [entry for entry in entries[:cutoff + 1]
+                      if entry.get("type") != "context_checkpoint" or checkpoint_in_branch(entry)]
             included_turns = {entry["payload"]["turnId"] for entry in prefix
                               if entry.get("type") == "turn" and "turnId" in entry["payload"]}
             owners = self._item_owners(entries)
@@ -2043,7 +2055,8 @@ class SessionStore:
                 if ((entry.get("type") == "item" and owners.get(entry["id"]) in included_turns)
                         or (entry.get("type") == "turn" and entry["payload"].get("turnId") in included_turns)
                         or (entry.get("type") == "context_edit"
-                            and owners.get(entry["payload"].get("targetItemId")) in included_turns)):
+                            and owners.get(entry["payload"].get("targetItemId")) in included_turns)
+                        or (entry.get("type") == "context_checkpoint" and checkpoint_in_branch(entry))):
                     prefix.append(entry)
             projected = self._project_items(thread_id, prefix)
             for item in projected:
@@ -2166,15 +2179,22 @@ class SessionStore:
 
     def _index_events(self, connection: sqlite3.Connection) -> None:
         pending = self._pending_deletion_ids()
+        if pending:
+            connection.execute("PRAGMA secure_delete=ON")
         for thread_id in pending:
             connection.execute("DELETE FROM events WHERE thread_id=?", (thread_id,))
         if not self.events_path.exists():
+            connection.execute("PRAGMA secure_delete=ON")
+            connection.execute("DELETE FROM events")
+            connection.execute("DELETE FROM checkpoints WHERE name='events'")
             return
         stat = self.events_path.stat()
         fingerprint = f"{stat.st_size}:{stat.st_mtime_ns}"
         checkpoint = connection.execute("SELECT value FROM checkpoints WHERE name='events'").fetchone()
         if checkpoint and checkpoint["value"] == fingerprint:
             return
+        connection.execute("PRAGMA secure_delete=ON")
+        connection.execute("DELETE FROM events")
         for line_number, line in enumerate(_iter_bounded_lines(
                 self.events_path, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"), start=1):
             if not line.strip():
@@ -2200,14 +2220,16 @@ class SessionStore:
                     self.path_for(thread_id)
                 except ValueError:
                     raise ValueError(f"事件日志第 {line_number} 行 threadId 无效，读取已停止") from None
-                if thread_id in pending:
-                    continue
             previous = connection.execute("SELECT event_id FROM events WHERE cursor=?", (cursor,)).fetchone()
             if previous and previous["event_id"] != event_id:
                 raise ValueError("事件日志存在重复游标，请保留原文件后恢复")
-            connection.execute("""INSERT INTO events(cursor,event_id,method,thread_id,params_json)
-                VALUES(?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING""",
-                (cursor, event_id, method, thread_id, _json(params)))
+            try:
+                connection.execute("""INSERT INTO events(cursor,event_id,method,thread_id,params_json)
+                    VALUES(?,?,?,?,?)""", (cursor, event_id, method, thread_id, _json(params)))
+            except sqlite3.IntegrityError:
+                raise ValueError(f"事件日志第 {line_number} 行包含重复 eventId，读取已停止") from None
+        for thread_id in pending:
+            connection.execute("DELETE FROM events WHERE thread_id=?", (thread_id,))
         connection.execute("INSERT INTO checkpoints(name,value) VALUES('events',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", (fingerprint,))
 
     def append_event(self, method: str, params: dict[str, Any] | None = None) -> dict:
