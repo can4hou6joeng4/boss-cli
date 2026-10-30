@@ -1,5 +1,11 @@
 # 上游吸收记录
 
+## 第九十八轮：停止重试智谱五小时硬用量上限
+
+Pi MIT [Issue #11537](https://github.com/earendil-works/pi/issues/11537) 报告智谱/Z.ai 在五小时硬用量上限时返回 HTTP 429 与结构化 `code=1308`；消息含数小时后的重置时间，重复请求无法在当前窗口成功。Pi 已合并 [PR #11572](https://github.com/earendil-works/pi/pull/11572)，固定 merge commit `c719d5b08e5d9fb9bbcb1f1792281eea8b442812`，在 agent-level classifier 中精确识别 code 字段；该 PR 明确未调整 Pi provider-level 的 429 重试策略。上游实现仅作行为参考，本轮不复制源码或引入依赖。
+
+本项目 OpenAI Responses 适配器会对 HTTP 429 及带瞬时标记的流内错误自动重试。共享错误分类器现在只把结构化 `code` 精确等于整数或字符串 `1308` 视为硬用量上限，并将 provider code 安全规范为字符串；HTTP 与流内重试决策遵从该明确的不可重试结果。未命中既有终态分类的其他 429、非结构化消息和相似数字仍保持原行为。适配器面向 OpenAI 兼容端点，因此匹配范围刻意收窄到该 code 字段，不按自由文本推断供应商或配额语义。
+
 ## 第九十七轮：JSONL 追加失败后的有界回滚
 
 参考 Pi 已合并 [PR #11486](https://github.com/earendil-works/pi/pull/11486) 对会话写入失败状态分叉的修复，并核对其 [Issue #11460](https://github.com/earendil-works/pi/issues/11460)。Pi 的故障点是内存 leaf 已更新而文件 append 失败；BOSS-CLI 不保留同类内存 transcript，但直接追加 JSONL 后若出现短写或 `ENOSPC`，SQLite 事务回滚无法撤销已写入的文件后缀，严格读取会因此失败。本轮针对本项目的持久化边界独立实现，不复制 Pi 源码。
