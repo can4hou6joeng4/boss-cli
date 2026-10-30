@@ -2169,6 +2169,8 @@ class SessionStore:
         for thread_id in pending:
             connection.execute("DELETE FROM events WHERE thread_id=?", (thread_id,))
         if not self.events_path.exists():
+            connection.execute("DELETE FROM events")
+            connection.execute("DELETE FROM checkpoints WHERE name='events'")
             return
         stat = self.events_path.stat()
         fingerprint = f"{stat.st_size}:{stat.st_mtime_ns}"
