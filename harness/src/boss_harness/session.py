@@ -2033,7 +2033,17 @@ class SessionStore:
             if selected is None or selected.get("status") not in _TERMINAL:
                 raise ValueError("仅可从已经结束的回合创建分支")
             cutoff = selected.get("boundaryOrdinal", selected["lastOrdinal"])
-            prefix = entries[:cutoff + 1]
+            turn_positions = {turn["turnId"]: position for position, turn in enumerate(turns)}
+            selected_position = turn_positions[selected["turnId"]]
+
+            def checkpoint_in_branch(entry: dict) -> bool:
+                payload = entry.get("payload")
+                through_turn_id = payload.get("throughTurnId") if isinstance(payload, dict) else None
+                position = turn_positions.get(through_turn_id) if isinstance(through_turn_id, str) else None
+                return position is not None and position <= selected_position
+
+            prefix = [entry for entry in entries[:cutoff + 1]
+                      if entry.get("type") != "context_checkpoint" or checkpoint_in_branch(entry)]
             included_turns = {entry["payload"]["turnId"] for entry in prefix
                               if entry.get("type") == "turn" and "turnId" in entry["payload"]}
             owners = self._item_owners(entries)
@@ -2043,7 +2053,8 @@ class SessionStore:
                 if ((entry.get("type") == "item" and owners.get(entry["id"]) in included_turns)
                         or (entry.get("type") == "turn" and entry["payload"].get("turnId") in included_turns)
                         or (entry.get("type") == "context_edit"
-                            and owners.get(entry["payload"].get("targetItemId")) in included_turns)):
+                            and owners.get(entry["payload"].get("targetItemId")) in included_turns)
+                        or (entry.get("type") == "context_checkpoint" and checkpoint_in_branch(entry))):
                     prefix.append(entry)
             projected = self._project_items(thread_id, prefix)
             for item in projected:
