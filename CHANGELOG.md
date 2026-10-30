@@ -14,6 +14,10 @@
 ### 修复
 
 - 参考 Pi MIT [Issue #11537](https://github.com/earendil-works/pi/issues/11537) 与已合并 [PR #11572](https://github.com/earendil-works/pi/pull/11572)（merge commit `c719d5b08e5d9fb9bbcb1f1792281eea8b442812`）：OpenAI 兼容接口返回结构化 `code=1308` 时，将智谱/Z.ai 的硬用量上限识别为不可重试；覆盖 HTTP 错误与流内错误，未命中既有终态分类的其他 429 仍按原策略重试。
+- [Issue #229](https://github.com/can4hou6joeng4/boss-cli/issues/229)：会话、工具结果及事件日志共用的 JSONL 追加失败时，按文件身份、原长度和本次写入后缀核验后尽力截回起点并 `fsync`；无法证明安全回滚时返回明确的不确定错误。普通会话追加在写前校验当前索引切面，避免向已损坏日志继续追加。
+- [Issue #227](https://github.com/can4hou6joeng4/boss-cli/issues/227)：会话删除重写事件日志时复用严格 JSONL 解码，与索引语义一致跳过空白行并保留每条记录的换行分隔；拒绝重复对象键、非有限浮点、无效 Unicode、坏 UTF-8、过深结构及损坏记录；删除在发现损坏前不发布部分日志，保留可恢复的清理暂停语义。
+- [Issue #225](https://github.com/can4hou6joeng4/boss-cli/issues/225)：严格校验 `boss-agent-cli --json` 七键信封，拒绝重复键、非有限浮点、超过 64 层的 JSON 和孤立 Unicode 代理项；语法错误保持 `CLI_ERROR`，结构或完整性违反返回 `CLI_CONTRACT_ERROR` 并暂停当前回合，不把坏数据交给后续模型或工具。写工具已派发时仍按 `outcome_unknown` 持久化并要求核对。
+- [Issue #223](https://github.com/can4hou6joeng4/boss-cli/issues/223)：JSON-RPC 输入帧拒绝重复键、非有限浮点、超过 64 层的 JSON 和孤立 Unicode 代理项；坏帧返回协议错误后继续服务。handler 已执行但结果无法编码时返回有界 `RESPONSE_INVALID`，不重放副作用。
 - [Issue #208](https://github.com/can4hou6joeng4/boss-cli/issues/208)：模型流传输失败沿 SDK 异常链提取固定原因分类及白名单 errno，并通过 `errorInfo` 与会话错误消息提供诊断；不保存 cause 原文或类型名、URL、请求内容或凭据，也不改变重试与恢复策略。
 - [Issue #211](https://github.com/can4hou6joeng4/boss-cli/issues/211)：OpenAI Responses 与 Anthropic Messages 在失败终态交付前复查取消标志；即使后台 producer 已结束并排入 EOF 或异常，也统一返回 `aborted`、清除错误诊断及重试状态，保留未取消的真实失败与已确认的正常结果。
 - [Issue #205](https://github.com/can4hou6joeng4/boss-cli/issues/205)：为 OpenAI Responses 与 Anthropic Messages 单次传输增加不可重置的 600 秒总时限，覆盖连接建立及流式响应；支持用 `BOSS_HARNESS_MODEL_REQUEST_TIMEOUT_SECONDS` 配置 1–3600 秒。清理确认后超时按可重试传输错误处理；无法确认后台清理时停止自动重试，并由每进程 8 个 pump 槽位限制残留传输。事件缓冲估算限制为总计 4 MiB、单事件 2 MiB，不冒充用户取消或上下文溢出；OpenAI 仅在尚无输出时遵循既有重试，未增加跨重试恢复预算。

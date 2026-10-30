@@ -173,11 +173,28 @@ def _finite_json_float(value: str) -> float:
     return parsed
 
 
+def _validate_json_unicode(value: Any) -> None:
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            try:
+                current.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError from None
+        elif isinstance(current, dict):
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+
+
 def _decode_jsonl_object(line: str | bytes, *, label: str, line_number: int) -> dict:
     try:
         text = line.decode("utf-8") if isinstance(line, bytes) else line
         record = json.loads(text, object_pairs_hook=_unique_json_object,
                             parse_constant=_reject_json_constant, parse_float=_finite_json_float)
+        _validate_json_unicode(record)
     except (ValueError, RecursionError):
         raise ValueError(f"{label}第 {line_number} 行损坏，读取已停止") from None
     if not isinstance(record, dict):
@@ -359,6 +376,14 @@ class ToolRevisionPersistenceError(OSError):
         super().__init__("工具结果无法确认已持久化")
 
 
+class SessionAppendRollbackError(OSError):
+    """An append failed and its partial file state could not be rolled back safely."""
+
+    def __init__(self) -> None:
+        self.outcome = "unknown"
+        super().__init__("会话日志追加失败且无法确认已回滚；状态可能需要人工检查")
+
+
 class ThreadNotFound(ValueError):
     pass
 
@@ -489,17 +514,71 @@ class SessionStore:
     def _append_line(path: Path, value: dict) -> None:
         encoded = _encode_session_line(value)
         descriptor = open_private_file(path, os.O_RDWR | os.O_APPEND)
-        with os.fdopen(descriptor, "a+b") as handle:
-            handle.seek(0, 2)
-            if handle.tell():
-                handle.seek(-1, 2)
-                if handle.read(1) != b"\n":
-                    handle.seek(0, 2)
-                    handle.write(b"\n")
-            handle.seek(0, 2)
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
+        try:
+            original = os.fstat(descriptor)
+            visible = path.lstat()
+            identity = (original.st_dev, original.st_ino, original.st_mode, original.st_uid,
+                        original.st_gid, original.st_nlink)
+            if (not stat.S_ISREG(original.st_mode) or original.st_nlink != 1
+                    or (visible.st_dev, visible.st_ino) != identity[:2]):
+                raise ValueError("会话日志不是稳定的私有单链接文件")
+            start = original.st_size
+            prefix = b""
+            if start:
+                os.lseek(descriptor, start - 1, os.SEEK_SET)
+                last_byte = os.read(descriptor, 1)
+                if len(last_byte) != 1:
+                    raise OSError("会话日志末尾读取不完整")
+                if last_byte != b"\n":
+                    prefix = b"\n"
+            suffix = prefix + encoded
+            written = 0
+            try:
+                os.lseek(descriptor, 0, os.SEEK_END)
+                while written < len(suffix):
+                    count = os.write(descriptor, suffix[written:])
+                    if count <= 0:
+                        raise OSError("会话日志追加未取得进展")
+                    written += count
+                os.fsync(descriptor)
+            except BaseException as append_error:
+                try:
+                    current = os.fstat(descriptor)
+                    visible = path.lstat()
+                    current_identity = (current.st_dev, current.st_ino, current.st_mode,
+                                        current.st_uid, current.st_gid, current.st_nlink)
+                    if (current_identity != identity or (visible.st_dev, visible.st_ino) != identity[:2]
+                            or current.st_size != start + written):
+                        raise OSError("会话日志身份或长度已变化")
+                    os.lseek(descriptor, start, os.SEEK_SET)
+                    remaining = written
+                    appended = bytearray()
+                    while remaining:
+                        chunk = os.read(descriptor, min(remaining, _EVENT_READ_CHUNK_BYTES))
+                        if not chunk:
+                            raise OSError("会话日志追加后缀读取不完整")
+                        appended.extend(chunk)
+                        remaining -= len(chunk)
+                    if appended != suffix[:written]:
+                        raise OSError("会话日志追加后缀与本次写入不一致")
+                    os.ftruncate(descriptor, start)
+                    os.fsync(descriptor)
+                    rolled_back = os.fstat(descriptor)
+                    visible = path.lstat()
+                    rolled_identity = (rolled_back.st_dev, rolled_back.st_ino, rolled_back.st_mode,
+                                       rolled_back.st_uid, rolled_back.st_gid, rolled_back.st_nlink)
+                    if (rolled_identity != identity or rolled_back.st_size != start
+                            or (visible.st_dev, visible.st_ino) != identity[:2]):
+                        raise OSError("会话日志回滚结果无法确认")
+                except BaseException:
+                    raise SessionAppendRollbackError from append_error
+                raise
+        finally:
+            try:
+                os.close(descriptor)
+            except OSError:
+                # Successful fsync is the durability boundary; close errors do not undo it.
+                pass
 
     def _write_new(self, header: dict, entries: list[dict] | None = None) -> dict:
         path = self.path_for(header["id"])
@@ -536,6 +615,7 @@ class SessionStore:
         # SQLite's writer transaction also serializes JSONL appends across store instances.
         with self._lock, self._index.transaction() as connection:
             self.require_thread(thread_id)
+            self._index_thread(thread_id, connection)
             self._append_line(self.path_for(thread_id), entry.to_dict())
             self._index_thread(thread_id, connection)
         return entry
@@ -642,6 +722,7 @@ class SessionStore:
         try:
             with self._lock, self._index.transaction() as connection:
                 self.require_thread(thread_id)
+                self._index_thread(thread_id, connection)
                 self._append_line(path, expected)
                 self._index_thread(thread_id, connection)
             return entry, False
@@ -1578,12 +1659,17 @@ class SessionStore:
         try:
             with os.fdopen(descriptor, "wb") as output:
                 if source_handle is not None:
-                    for raw_line in _iter_bounded_raw_lines_from_handle(
-                            source_handle, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"):
+                    for line_number, raw_line in enumerate(_iter_bounded_raw_lines_from_handle(
+                            source_handle, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"), start=1):
+                        if not raw_line.strip():
+                            output.write(raw_line + b"\n")
+                            last_byte = b"\n"
+                            continue
                         try:
-                            record = json.loads(raw_line)
-                        except (json.JSONDecodeError, UnicodeDecodeError):
-                            raise ValueError("事件日志损坏，无法安全删除会话") from None
+                            record = _decode_jsonl_object(
+                                raw_line, label="事件日志", line_number=line_number)
+                        except ValueError as exc:
+                            raise ValueError(f"事件日志损坏，无法安全删除会话：{exc}") from None
                         if (not isinstance(record, dict) or record.get("type") != "event"
                                 or not isinstance(record.get("method"), str)
                                 or not isinstance(record.get("params"), dict)):
@@ -1601,11 +1687,11 @@ class SessionStore:
                                     or "threadId" in params):
                                 raise ValueError("会话删除事件与恢复标记冲突")
                             event = {"method": record["method"], "params": params}
-                            output.write(raw_line)
-                            last_byte = raw_line[-1:] or last_byte
+                            output.write(raw_line + b"\n")
+                            last_byte = b"\n"
                         elif params.get("threadId") != thread_id:
-                            output.write(raw_line)
-                            last_byte = raw_line[-1:] or last_byte
+                            output.write(raw_line + b"\n")
+                            last_byte = b"\n"
                 if event_count > 1:
                     raise ValueError("事件日志含重复的会话删除事件")
                 if event is None:
