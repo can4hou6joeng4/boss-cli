@@ -4,6 +4,7 @@
 
 ### 新增
 
+- 参考 Pi `session-manager.ts` 的 `leafId` / `branch()`：会话内分支第一步。新增持久 append-only `leaf` 指针与只读 `thread/leaf/read`、写入 `thread/leaf/set`（`turnId` 为已结束回合或 `null`），模型上下文、预算与压缩、续接预检和 `thread/fork` 改为按当前分支投影；无指针的旧会话行为不变，伪造指针 fail closed。能力以 `capabilities.sessionLeaf` 声明，切换后发送可选通知 `thread/leafChanged`；协议仍为 `0.2.0`。会话展示类读取与 Electron 入口留待后续步骤。
 - 参考 Pi `agent-loop.ts` 的 `transformContext`：生命周期 hook 新增可选 `transform_context(context) -> ContextTransform | None`，在业务回合每次模型请求的 `before_request` 之前运行。内核把请求历史按“以用户输入开头的单元”给出有界元数据（脱敏输入预览、消息数、工具名与字符数），宿主只能省略除当前输入外的整单元，不能新增或改写消息，工具调用与结果保持成对；持久历史、摘要与连接检查请求不受影响。hook 异常、超时、非法返回或省略当前单元时拒绝该次请求（fail closed）。协议仍为 `0.2.0`；`@boss-cli/protocol` 补齐 `ConfigReadResponse` 与可选 `steeringMode` 类型声明。
 - 参考 Pi `agent.ts` 的 `steeringMode`：新增 `BOSS_HARNESS_STEERING_MODE`（`all` / `one-at-a-time`，默认 `all` 保持原行为）。`one-at-a-time` 时每个投递点只注入最早一条 steering，其余留在持久队列等待后续模型请求，压缩后的追补也不会在同一请求叠加第二条；非法值启动即报错，`config/read` 公开 `steeringMode`。协议仍为 `0.2.0`，持久格式不变。
 - 参考 Pi `agent-session.ts` 的 `auto_retry_start` / `auto_retry_end`：业务回合中 provider 在首个输出前进入自动重试时，新增可选通知 `model/retryStarted`（即将发起的尝试序号、尝试上限、退避毫秒与脱敏失败说明）与 `model/retryEnded`（成功，或以 `error` / `aborted` 结束并附最终错误）。通知仅供观测，不改变重试判定、恢复额度或会话条目；协议仍为 `0.2.0`，旧客户端忽略未知通知即可，也可经 `optOutNotificationMethods` 屏蔽。摘要与连接检查请求不发送该通知。

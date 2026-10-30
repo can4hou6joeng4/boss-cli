@@ -453,6 +453,7 @@ class ApplicationService:
             "thread/unarchive": self.on_thread_unarchive, "thread/name/set": self.on_thread_name,
             "thread/reasoning/read": self.on_thread_reasoning_read,
             "thread/reasoning/set": self.on_thread_reasoning_set,
+            "thread/leaf/read": self.on_thread_leaf_read, "thread/leaf/set": self.on_thread_leaf_set,
             "thread/turns/list": self.on_turn_list, "thread/items/list": self.on_items_list,
             "thread/item/result/read": self.on_tool_result_read,
             "thread/item/content/read": self.on_item_content_read,
@@ -531,7 +532,8 @@ class ApplicationService:
         return {"serverName": "boss-harness", "serverVersion": __version__, "protocolVersion": protocol,
             "capabilities": {"bidirectionalRequests": True, "eventReplay": True,
                              "pagination": True, "parallelThreads": True,
-                             "durableApprovals": True, "explicitTurnContinuation": True},
+                             "durableApprovals": True, "explicitTurnContinuation": True,
+                             "sessionLeaf": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -1264,6 +1266,38 @@ class ApplicationService:
             updated = self.sessions.update_thread(thread_id, reasoningEffort=effort)
         self.events.emit("thread/reasoning/updated", {"threadId": thread_id, "effort": effort})
         return {"thread": updated}
+
+    def on_thread_leaf_read(self, params: dict | None) -> dict:
+        params = params or {}
+        if set(params) != {"threadId"}:
+            raise ValueError("thread/leaf/read 只接受 threadId")
+        return self.sessions.read_leaf(_text(params, "threadId"))
+
+    def on_thread_leaf_set(self, params: dict | None) -> dict:
+        params = params or {}
+        if set(params) != {"threadId", "turnId"}:
+            raise ValueError("thread/leaf/set 只接受 threadId 与 turnId（可为 null）")
+        thread_id = _text(params, "threadId")
+        turn_id = params["turnId"]
+        if turn_id is not None and not isinstance(turn_id, str):
+            raise ValueError("turnId 必须是字符串或 null")
+        with self._follow_up_admission_lock, self.runtimes.lock:
+            self._idle(thread_id)
+            if thread_id in self._tool_persistence_fences:
+                raise RpcError(-32004, "工具结果持久化状态需要人工核对，暂不能切换分支")
+            if any(owner == thread_id for owner in self._follow_up_worker_threads.values()):
+                raise RpcError(-32004, "该会话仍有后续任务正在收尾")
+            if any(notice.get("threadId") == thread_id for notice in self._receipt_notices.values()):
+                raise RpcError(-32004, "该会话请求回执仍在收尾")
+            with self.queue.lock:
+                if any(item.get("status") == "delivering" for item in self.queue.list(thread_id)):
+                    raise RpcError(-32004, "队列中仍有投递状态未核对的请求")
+                if self.sessions.get_thread(thread_id).get("archived"):
+                    raise RpcError(-32004, "请先恢复会话，再切换分支")
+                result = self.sessions.set_leaf(thread_id, turn_id)
+        if result.get("changed"):
+            self.events.emit("thread/leafChanged", {"threadId": thread_id, "leafTurnId": result["leafTurnId"]})
+        return result
 
     def on_thread_reasoning_read(self, params: dict | None) -> dict:
         params = params or {}
@@ -2249,7 +2283,8 @@ class ApplicationService:
                 session_path = self.sessions.path_for(thread_id)
                 if session_path.stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
                     return fail("CONTINUATION_HISTORY_LIMIT", "会话历史超过续接读取上限。")
-                entries = self.sessions.read_entries(thread_id)
+                # Only the active branch's latest turn may continue after a leaf move.
+                entries = self.sessions._active_entries(self.sessions.read_entries(thread_id))
             turns = self.sessions._turns(entries, thread_id)
             if not turns or turns[-1].get("turnId") != source_turn_id:
                 return fail("CONTINUATION_NOT_LATEST", "只有最新回合可以续接。")

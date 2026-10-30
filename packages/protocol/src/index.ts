@@ -71,7 +71,8 @@ export interface InitializeResponse {
   modelBridge: { provider: string; model: string; driven: boolean };
   approval: { requiredTools: string[]; timeoutSeconds: number };
   capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean;
-    parallelThreads: boolean; durableApprovals?: boolean; explicitTurnContinuation?: boolean };
+    parallelThreads: boolean; durableApprovals?: boolean; explicitTurnContinuation?: boolean;
+    sessionLeaf?: boolean };
   eventCursor?: string;
 }
 
@@ -85,6 +86,8 @@ export const ClientMethods = {
   threadRead: "thread/read",
   threadResume: "thread/resume",
   threadFork: "thread/fork",
+  threadLeafRead: "thread/leaf/read",
+  threadLeafSet: "thread/leaf/set",
   threadArchive: "thread/archive",
   threadDelete: "thread/delete",
   threadUnarchive: "thread/unarchive",
@@ -146,6 +149,7 @@ export const ServerNotifications = {
   harnessDisconnected: "harness/disconnected",
   connectionStatus: "harness/connectionStatus",
   threadCreated: "thread/created",
+  threadLeafChanged: "thread/leafChanged",
   threadArchived: "thread/archived",
   threadDeleted: "thread/deleted",
   threadUnarchived: "thread/unarchived",
@@ -885,3 +889,14 @@ export interface PlatformLoginContext {
 export interface SkillDescriptor { id: string; name: string; description: string; digest: string; bytes: number }
 export interface SkillListResponse { skills: SkillDescriptor[] }
 export interface AttachmentDescriptor { id: string; name: string; digest: string; bytes: number; mediaType: string }
+
+/** `thread/leaf/read` / `thread/leaf/set` 结果；仅在 `capabilities.sessionLeaf` 为真时可用。 */
+export interface ThreadLeafState {
+  threadId: string;
+  branched: boolean;
+  leafTurnId: string | null;
+  activeTurnCount: number;
+  activeTurnIds: string[];
+  activeTurnIdsTruncated: boolean;
+  changed?: boolean;
+}

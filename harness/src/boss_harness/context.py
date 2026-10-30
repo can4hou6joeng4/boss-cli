@@ -631,9 +631,9 @@ class ContextService:
 
     def _entries(self, thread_id: str, entries: list[dict] | None) -> list[dict]:
         if entries is None:
-            return self.sessions.read_entries(thread_id)
+            return self.sessions._active_entries(self.sessions.read_entries(thread_id))
         self.sessions.require_thread(thread_id)
-        return entries
+        return self.sessions._active_entries(entries)
 
     def history(self, thread_id: str, *, entries: list[dict] | None = None) -> tuple[ChatMessage, ...]:
         entries = self._entries(thread_id, entries)
