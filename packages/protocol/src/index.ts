@@ -158,6 +158,8 @@ export const ServerNotifications = {
   contextCompactionFailed: "context/compactionFailed",
   contextEdited: "context/edited",
   kernelHookError: "kernel/hookError",
+  modelRetryStarted: "model/retryStarted",
+  modelRetryEnded: "model/retryEnded",
 } as const;
 
 export type ServerNotification =
@@ -180,6 +182,33 @@ export interface ProviderFailureInfo {
   /** Portable allowlisted errno label, when available. */
   transportCode?: "ECONNABORTED" | "ECONNREFUSED" | "ECONNRESET" | "EHOSTUNREACH"
     | "ENETUNREACH" | "ETIMEDOUT" | "EPIPE" | "EAI_AGAIN" | "EAI_NONAME";
+}
+
+/**
+ * 模型请求在首个输出前遇到瞬时失败、即将退避重试（仅观测；不代表授权重放回合）。
+ * 可选通知：旧客户端忽略即可，也可经 optOutNotificationMethods 屏蔽。
+ */
+export interface ModelRetryStartedNotification {
+  threadId: string;
+  turnId?: string | null;
+  /** 即将发起的第几次尝试（从 2 起）。 */
+  attempt: number;
+  /** 本次请求的总尝试上限。 */
+  maxAttempts: number;
+  delayMs: number;
+  /** 已脱敏的上一次失败说明。 */
+  errorMessage: string;
+}
+
+/** 一段自动重试结束：成功产出首个事件，或最终失败 / 被取消。 */
+export interface ModelRetryEndedNotification {
+  threadId: string;
+  turnId?: string | null;
+  /** 最后一次发起的尝试序号。 */
+  attempt: number;
+  success: boolean;
+  reason?: "error" | "aborted";
+  finalError?: string;
 }
 
 export interface SessionErrorNotification {

@@ -32,7 +32,13 @@ from boss_harness.models.output_budget import (
     bounded_error,
 )
 from boss_harness.models.provider import ModelConfig
-from boss_harness.models.retry import retry_after_seconds, retry_delay, retry_settings
+from boss_harness.models.retry import (
+    retry_after_seconds,
+    retry_delay,
+    retry_settings,
+    retry_start_event,
+    with_retry_outcome,
+)
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.stream_pump import (
     AsyncStreamPump,
@@ -237,6 +243,10 @@ class OpenAIResponsesProvider:
     # ---------- 事件流 ----------
 
     def stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
+        # retry_end 要看到取消归一化之后的终态，所以包在最外层。
+        return with_retry_outcome(self._normalized_stream(request))
+
+    def _normalized_stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
         events = self._stream(request)
         try:
             for event in events:
@@ -260,7 +270,8 @@ class OpenAIResponsesProvider:
         2. 失败是可重试的：连接/超时、HTTP 408/409/429/5xx、以及网关在流里回的
            `service_unavailable_error` 一类过载标记。参数错、鉴权错等不重试。
 
-        `start` 只发一次；重试期间对调用方是静默的，只往 stderr 记一行。
+        `start` 只发一次；每次退避前产出不含内容的 `retry_start`，结束时补 `retry_end`
+        （见 `with_retry_outcome`），调用方可忽略二者。
         """
         self._abort_requested = False
         self._abort_event.clear()
@@ -332,6 +343,7 @@ class OpenAIResponsesProvider:
                     f"[harness] 模型请求第 {attempt}/{attempts} 次尝试失败，{delay:.1f}s 后重试：{retry_message}",
                     file=sys.stderr,
                 )
+                yield retry_start_event(attempt + 1, attempts, delay, self._redact(retry_message or ""))
                 if self._abort_event.wait(delay):
                     if reservation is not None:
                         reservation.release()

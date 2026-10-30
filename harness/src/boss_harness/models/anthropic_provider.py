@@ -33,7 +33,13 @@ from boss_harness.models.output_budget import (
     bounded_error,
 )
 from boss_harness.models.provider import ModelConfig
-from boss_harness.models.retry import retry_after_seconds, retry_delay, retry_settings
+from boss_harness.models.retry import (
+    retry_after_seconds,
+    retry_delay,
+    retry_settings,
+    retry_start_event,
+    with_retry_outcome,
+)
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.stream_pump import (
     AsyncStreamPump,
@@ -235,6 +241,10 @@ class AnthropicProvider:
     # ---------- 事件流 ----------
 
     def stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
+        # retry_end 要看到取消归一化之后的终态，所以包在最外层。
+        return with_retry_outcome(self._normalized_stream(request))
+
+    def _normalized_stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
         events = self._stream(request)
         try:
             for event in events:
@@ -255,7 +265,7 @@ class AnthropicProvider:
         只在**尚未向调用方产出任何内容**、失败可重试（连接失败、HTTP 408/409/429/5xx/529、
         流内 overloaded 等瞬时错误）且未取消时重试；硬用量上限、上下文溢出、参数/鉴权错误照实上报。
         每次重试先向回合共享的模型恢复预算预留一次，预算耗尽即停止；等待尊重 Retry-After。
-        `start` 只发一次；重试期间对调用方静默，只往 stderr 记一行。
+        `start` 只发一次；每次退避前产出不含内容的 `retry_start`，结束时补 `retry_end`。
         """
         self._abort_requested = False
         self._abort_event.clear()
@@ -320,6 +330,7 @@ class AnthropicProvider:
                 f"[harness] 模型请求第 {attempt}/{attempts} 次尝试失败，{delay:.1f}s 后重试：{retry_message}",
                 file=sys.stderr,
             )
+            yield retry_start_event(attempt + 1, attempts, delay, self._redact(retry_message or ""))
             if self._abort_event.wait(delay):
                 if reservation is not None:
                     reservation.release()
