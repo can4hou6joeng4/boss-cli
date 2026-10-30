@@ -471,13 +471,17 @@ class SessionStore:
             try:
                 with closing(_iter_bounded_lines(path, maximum=MAX_SESSION_HEADER_BYTES,
                              label="会话头", universal_newlines=True)) as lines:
-                    header = json.loads(next(lines))
+                    header = _decode_jsonl_object(next(lines), label="会话头", line_number=1)
             except FileNotFoundError:
                 raise ValueError("会话不存在") from None
-            except (ValueError, IndexError, StopIteration):
+            except ValueError as exc:
+                if "第 1 行" in str(exc):
+                    raise
                 raise ValueError("会话头损坏，请保留原文件后恢复") from None
-            if not isinstance(header, dict) or header.get("type") != "session" or header.get("id") != thread_id:
-                raise ValueError("会话头无效")
+            except (IndexError, StopIteration):
+                raise ValueError("会话头损坏，请保留原文件后恢复") from None
+            if header.get("type") != "session" or header.get("id") != thread_id:
+                raise ValueError("会话头第 1 行格式无效")
             return header
 
     @staticmethod
