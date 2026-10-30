@@ -198,13 +198,18 @@ class JsonRpcServer:
                 if not raw:
                     break
                 try:
-                    encoded = raw.encode("utf-8")
+                    encoded = raw.encode("utf-8", errors="surrogateescape")
                 except UnicodeEncodeError:
                     self.respond_error(None, -32700, "无效的 JSON 帧")
-                    continue
+                    break
                 if len(encoded) > MAX_FRAME_BYTES or not raw.endswith("\n"):
                     self.respond_error(None, -32600, "协议帧过大或缺少 LF 终止符")
                     break
+                try:
+                    raw = encoded.decode("utf-8")
+                except UnicodeDecodeError:
+                    self.respond_error(None, -32700, "无效的 JSON 帧")
+                    continue
                 if not raw.strip():
                     continue
                 try:
@@ -274,7 +279,7 @@ class JsonRpcServer:
                 # Encoding failed before stdout was touched. Never rerun the
                 # handler: it may already have performed a consequential action.
                 self._respond_too_large(request_id)
-            except (RecursionError, UnicodeEncodeError, ValueError):
+            except (RecursionError, TypeError, UnicodeEncodeError, ValueError):
                 # The handler has already run; return a bounded error without
                 # retrying it when its result cannot be encoded as JSON.
                 self._respond_invalid(request_id)

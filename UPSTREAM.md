@@ -4,7 +4,7 @@
 
 参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 RPC 输入循环，并结合本项目 [Issue #223](https://github.com/can4hou6joeng4/boss-cli/issues/223) 的本地边界复现。Python `json.loads` 默认会接受重复对象键的最后值、把 `1e999` 转为 `Infinity`，过深输入可能抛出未捕获 `RecursionError`；孤立代理项会在 handler 已执行后让响应 UTF-8 编码失败。审批响应中的重复 `approved` 键同样会被最后值覆盖。
 
-本轮独立增加对象键唯一性、有限浮点、64 层深度及 Unicode 代理项校验。解析失败在派发前返回 `-32700` 并继续读取后续帧；handler 已执行但结果含非有限数值、过深结构或孤立代理项时返回 `RESPONSE_INVALID`，不重放 handler，也不把编码失败误报为业务成功。帧大小和 LF framing 规则保持不变；不复制 Pi 源码或引入依赖。
+本轮独立增加对象键唯一性、有限浮点、64 层深度及 Unicode 代理项校验。解析失败在派发前返回 `-32700` 并继续读取后续帧；handler 已执行但结果含非有限数值、过深结构、孤立代理项或不可 JSON 序列化对象时返回 `RESPONSE_INVALID`，不重放 handler，也不把编码失败误报为业务成功。帧大小和 LF framing 规则保持不变；不复制 Pi 源码或引入依赖。
 
 内存 JSON-RPC 探针覆盖重复顶层/嵌套键、`1e999`、1500 层嵌套、孤立代理项、不可编码响应及每种坏帧后的正常请求；Python 编译、wheel/sdist、TypeScript 检查与 Electron 源码构建须以最新 PR head 为准。测试材料仅保留本地，未调用模型、招聘 CLI、网络或平台。
 
