@@ -1,5 +1,11 @@
 # 上游吸收记录
 
+## 第一百零九轮：被放弃分支摘要（第三步）
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-manager.ts`：`branchWithSummary()` 移动 leaf 时为被放弃分支追加摘要条目，进入新分支上下文。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：Pi 同步写入调用方提供的摘要；本项目复用压缩的可取消后台任务（`SummaryPlanner` 分片、隔离 provider、`before_request` 检查、用量记录、事件恢复与终态上限），仅换用分支专用系统提示。来源为原 leaf 沿回合树回溯至与目标共同祖先之前的回合条目（尊重上下文编辑排除）。摘要条目紧随本次 `leaf` 记录追加，提交时校验该记录仍是最新且其后无新回合，因此只投影在该分支；投影时置于目标回合之后，与压缩检查点不合并（检查点覆盖锚点时紧随摘要前缀），`compacted_request` 前缀校验同步包含。切换前完成模型线路、来源与并发预检，失败则不切换；指针移动后摘要失败 / 取消不回滚，任务运行期间会话按摘要占用处理。hook 提供摘要与 Electron 入口留待后续。
+
 ## 第一百零八轮：会话内分支端点枚举（第二步收尾子集）
 
 参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-manager.ts`：`getTree()` / `getChildren()` 由条目 `parentId` 构建会话树供分支选择器使用。本轮独立实现，不复制 Pi 源码或新增依赖。

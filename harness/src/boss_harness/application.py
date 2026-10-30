@@ -40,7 +40,7 @@ from boss_harness.request_identity import resolve_request
 from boss_harness.request_policy import ModelRequestRejected, check_model_request, record_model_rejection
 from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
-from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUncertain, Entry,
+from boss_harness.session import (BRANCH_SUMMARY_ENTRY_TYPE, CheckpointCommittedError, CheckpointCommitUncertain, Entry,
                                   ApprovalDecisionError, ItemLookupError, SessionEntriesSnapshot,
                                   SessionSizeLimitExceeded, SessionStore, ThreadNotFound,
                                   ToolRevisionPersistenceError,
@@ -48,7 +48,7 @@ from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUnce
 from boss_harness.snapshot_store import SnapshotStore
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
 from boss_harness.tool_bundle import ToolBundle
-from boss_harness.summary import SUMMARY_MAX_REQUESTS, SummaryPlanner
+from boss_harness.summary import BRANCH_SUMMARY_SYSTEM, SUMMARY_MAX_REQUESTS, SummaryPlanner
 from boss_harness.compaction import CompactionPolicy, ContextCompactionFailed
 from boss_harness.context import NoCompactionSource
 from boss_harness.shutdown import TrackedAbort, join_until
@@ -545,7 +545,7 @@ class ApplicationService:
                              "pagination": True, "parallelThreads": True,
                              "durableApprovals": True, "explicitTurnContinuation": True,
                              "sessionLeaf": True, "sessionBranchViews": True,
-                             "sessionBranchTree": True},
+                             "sessionBranchTree": True, "sessionBranchSummary": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -1319,12 +1319,16 @@ class ApplicationService:
 
     def on_thread_leaf_set(self, params: dict | None) -> dict:
         params = params or {}
-        if set(params) != {"threadId", "turnId"}:
-            raise ValueError("thread/leaf/set 只接受 threadId 与 turnId（可为 null）")
+        if not {"threadId", "turnId"} <= set(params) <= {"threadId", "turnId", "summarize"}:
+            raise ValueError("thread/leaf/set 只接受 threadId、turnId（可为 null）与可选 summarize")
         thread_id = _text(params, "threadId")
         turn_id = params["turnId"]
         if turn_id is not None and not isinstance(turn_id, str):
             raise ValueError("turnId 必须是字符串或 null")
+        summarize = params.get("summarize", False)
+        if type(summarize) is not bool:
+            raise ValueError("summarize 必须是布尔值")
+        job: dict[str, Any] | None = None
         with self._follow_up_admission_lock, self.runtimes.lock:
             self._idle(thread_id)
             if thread_id in self._tool_persistence_fences:
@@ -1338,10 +1342,153 @@ class ApplicationService:
                     raise RpcError(-32004, "队列中仍有投递状态未核对的请求")
                 if self.sessions.get_thread(thread_id).get("archived"):
                     raise RpcError(-32004, "请先恢复会话，再切换分支")
-                result = self.sessions.set_leaf(thread_id, turn_id)
+                # Preflight failures (no model lane, nothing abandoned) leave the
+                # leaf untouched; once the pointer moves, a later summary failure
+                # or cancellation never rolls it back.
+                prepared = self._prepare_branch_summary(thread_id, turn_id) if summarize else None
+                result = self.sessions.set_leaf(thread_id, turn_id, _with_entry_id=summarize)
+                leaf_entry_id = result.pop("_leafEntryId", None)
+                if prepared is not None and leaf_entry_id is not None:
+                    job = self._register_branch_summary(thread_id, leaf_entry_id, *prepared)
         if result.get("changed"):
             self.events.emit("thread/leafChanged", {"threadId": thread_id, "leafTurnId": result["leafTurnId"]})
+        if job is not None:
+            result["summaryJob"] = self._launch_branch_summary(job)
         return result
+
+    def _prepare_branch_summary(self, thread_id: str, turn_id: str | None) -> tuple:
+        """Validate everything a branch summary needs before the leaf moves (runtimes.lock held)."""
+        if self.runtimes.closed:
+            raise RpcError(-32003, "内核正在关闭")
+        try:
+            meta, source = self.context.branch_summary_material(thread_id, turn_id)
+        except NoCompactionSource as exc:
+            raise RpcError(-32013, str(exc) + "；分支未切换",
+                           {"code": "BRANCH_SUMMARY_NO_SOURCE", "threadId": thread_id}) from None
+        base = self._model_config(self.sessions.get_thread(thread_id), {})
+        try:
+            config = self._compaction_model_config(self.compaction_policy, base)
+        except RpcError as exc:
+            data = dict(exc.data or {}) if isinstance(getattr(exc, "data", None), dict) else {}
+            if data.get("code") == "COMPACTION_MODEL_UNAVAILABLE":
+                raise RpcError(-32013, "被放弃分支摘要需要可用模型线路（当前 provider="
+                               + str(data.get("provider")) + "）；分支未切换，可不带 summarize 重试",
+                               {**data, "code": "BRANCH_SUMMARY_MODEL_UNAVAILABLE"}) from None
+            raise
+        if self.provider_factory is None:
+            raise RpcError(-32013, "当前内核未配置独立摘要供应商；分支未切换",
+                           {"code": "BRANCH_SUMMARY_MODEL_UNAVAILABLE", "provider": config.provider})
+        active_manual = sum(1 for job_id in self._compaction_by_thread.values()
+                            if "turnId" not in self._compaction_jobs[job_id])
+        if active_manual >= self.runtimes.capacity:
+            raise RpcError(-32005, "已达到后台摘要并发上限",
+                           {"code": "COMPACTION_CONCURRENCY_LIMIT", "limit": self.runtimes.capacity})
+        try:
+            provider = self._compaction_provider(config)
+        except ValueError as exc:
+            raise RpcError(-32013, str(exc) + "；分支未切换",
+                           {"code": "BRANCH_SUMMARY_MODEL_UNAVAILABLE", "provider": config.provider}) from None
+        if any(job["runner"].provider is provider for job in self.runtimes.jobs.values()) \
+                or any(existing.get("provider") is provider for existing in self._compaction_jobs.values()):
+            raise RpcError(-32005, "模型供应商实例正在被其他任务使用，无法安全隔离摘要请求")
+        return meta, source, config, provider
+
+    def _register_branch_summary(self, thread_id: str, leaf_entry_id: str, meta: dict, source: str,
+                                 config: ModelConfig, provider: Provider) -> dict:
+        job_id = uuid.uuid4().hex
+        job = {"jobId": job_id, "threadId": thread_id, "kind": "branchSummary",
+               # The summarized range ends at the abandoned leaf.
+               "throughTurnId": meta["fromTurnId"], "sourceDigest": meta["sourceDigest"],
+               "targetTurnId": meta["targetTurnId"], "fromTurnId": meta["fromTurnId"],
+               "commonTurnId": meta["commonTurnId"], "abandonedTurnIds": meta["abandonedTurnIds"],
+               "_leafEntryId": leaf_entry_id, "_source": source,
+               "config": config, "provider": provider, "recoveryBudget": ModelRecoveryBudget(),
+               "summaryProvider": config.provider, "summaryModel": config.model, "summaryEffort": config.effort,
+               "cancel": threading.Event(), "status": "running", "modelRequestCount": 0,
+               "processedCharacters": 0, "totalCharacters": len(source),
+               "_launch_done": threading.Event(), "_startedMonotonic": time.monotonic()}
+        job["worker"] = threading.Thread(target=self._run_branch_summary, args=(job,),
+                                         name=f"branch-summary-{job_id[:8]}", daemon=True)
+        self._compaction_jobs[job_id] = job
+        self._compaction_by_thread[thread_id] = job_id
+        return job
+
+    def _launch_branch_summary(self, job: dict) -> dict:
+        worker = job["worker"]
+        try:
+            self.events.emit("context/compactionStarted", self._compaction_public(job))
+            with self.runtimes.lock:
+                cancelled_before_start = self.runtimes.closed or job["cancel"].is_set()
+                if cancelled_before_start:
+                    job.update(status="cancelled", code="COMPACTION_CANCELLED", message="摘要已取消")
+                else:
+                    worker.start()
+            if cancelled_before_start:
+                self.events.emit("context/compactionFailed", self._compaction_public(job))
+                self._finish_compaction(job)
+        except Exception as exc:
+            if worker.ident is not None:
+                raise
+            # The leaf already moved; report the summary failure without undoing it.
+            with self.runtimes.lock:
+                job.update(status="failed", code="COMPACTION_START_FAILED",
+                           message=self._compaction_safe_error(job, exc))
+            try:
+                self.events.emit("context/compactionFailed", self._compaction_public(job))
+            except Exception:
+                pass
+            finally:
+                self._finish_compaction(job)
+        finally:
+            launch_done = job.pop("_launch_done", None)
+            if launch_done is not None:
+                launch_done.set()
+        with self.runtimes.lock:
+            return self._compaction_public(job)
+
+    def _run_branch_summary(self, job: dict) -> None:
+        thread_id = job["threadId"]
+        try:
+            source = job.pop("_source")
+            config: ModelConfig = job["config"]
+            summary, planner = self._generate_compaction(job, source, system=BRANCH_SUMMARY_SYSTEM)
+            with self.runtimes.lock:
+                if job["cancel"].is_set():
+                    raise _CompactionCancelled
+                self.sessions.append_branch_summary(thread_id, job["_leafEntryId"], {
+                    "summary": summary, "origin": "model", "targetTurnId": job["targetTurnId"],
+                    "fromTurnId": job["fromTurnId"], "commonTurnId": job["commonTurnId"],
+                    "abandonedTurnIds": job["abandonedTurnIds"], "summaryJobId": job["jobId"],
+                    "summaryProvider": config.provider, "summaryModel": config.model,
+                    "summaryEffort": config.effort, "modelRequestCount": job["modelRequestCount"],
+                    "sourceCharacters": len(source), "sourceTextDigest": planner.source_digest},
+                    on_committed=lambda: job.update(status="completed"))
+                job.update(result=self.sessions.read_leaf(thread_id))
+        except _CompactionCancelled:
+            with self.runtimes.lock:
+                job.update(status="cancelled", code="COMPACTION_CANCELLED", message="摘要已取消")
+            self.events.emit("context/compactionFailed", self._compaction_public(job))
+        except ContextBudgetExceeded as exc:
+            self._compaction_failed(job, "COMPACTION_INPUT_TOO_LARGE", exc)
+        except _CompactionFailure as exc:
+            self._compaction_failed(job, exc.code, exc)
+        except ModelRequestRejected as exc:
+            self._compaction_failed(job, exc.code, exc)
+        except ValueError as exc:
+            message = str(exc)
+            code = "BRANCH_SUMMARY_LEAF_CHANGED" if "分支指针" in message or "切换后" in message else "COMPACTION_FAILED"
+            self._compaction_failed(job, code, message)
+        except Exception as exc:
+            self._compaction_failed(job, "COMPACTION_FAILED", exc)
+        finally:
+            try:
+                if job["status"] == "completed":
+                    try:
+                        self.events.emit("context/compactionCompleted", self._compaction_public(job))
+                    except Exception as exc:
+                        self._compaction_committed_warning(job, exc)
+            finally:
+                self._finish_compaction(job)
 
     def on_thread_reasoning_read(self, params: dict | None) -> dict:
         params = params or {}
@@ -1498,7 +1645,7 @@ class ApplicationService:
                 # Session files may be removed independently of the append-only global event log.
                 continue
             checkpoint_committed = any(
-                entry.get("type") == "context_checkpoint"
+                entry.get("type") in {"context_checkpoint", BRANCH_SUMMARY_ENTRY_TYPE}
                 and entry.get("payload", {}).get("summaryJobId") == job_id
                 for entry in entries
             )
@@ -1541,9 +1688,12 @@ class ApplicationService:
                   "status": job["status"]}
         for key in ("code", "message", "result", "modelRequestCount", "processedCharacters", "totalCharacters",
                     "retainedItemCount", "firstKeptItemId", "estimatedRetainedTokens", "reason", "turnId",
-                    "summaryProvider", "summaryModel", "summaryEffort", "requestRejected"):
+                    "summaryProvider", "summaryModel", "summaryEffort", "requestRejected",
+                    "kind", "targetTurnId", "fromTurnId", "abandonedTurnIds"):
             if key in job and job[key] is not None:
                 result[key] = job[key]
+        if job.get("kind") == "branchSummary":
+            result["targetTurnId"] = job.get("targetTurnId")
         return result
 
     def _remember_compaction_terminal(self, job: dict) -> None:
@@ -1902,11 +2052,13 @@ class ApplicationService:
             payload["rejectedCode"] = failure_code
         self.sessions.append(job["threadId"], Entry(type="context_summary_usage", payload=payload))
 
-    def _generate_compaction(self, job: dict, source: str) -> tuple[str, SummaryPlanner]:
+    def _generate_compaction(self, job: dict, source: str, *,
+                             system: str | None = None) -> tuple[str, SummaryPlanner]:
         config: ModelConfig = job["config"]
         thread_id = job["threadId"]
         capabilities = self.model_catalog.resolve(config.provider, config.model)
-        planner = SummaryPlanner(source, config, capabilities)
+        planner = (SummaryPlanner(source, config, capabilities) if system is None
+                   else SummaryPlanner(source, config, capabilities, system=system))
         offset, summary = 0, ""
         for index in range(1, SUMMARY_MAX_REQUESTS + 1):
             if job["cancel"].is_set():

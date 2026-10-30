@@ -72,7 +72,8 @@ export interface InitializeResponse {
   approval: { requiredTools: string[]; timeoutSeconds: number };
   capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean;
     parallelThreads: boolean; durableApprovals?: boolean; explicitTurnContinuation?: boolean;
-    sessionLeaf?: boolean; sessionBranchViews?: boolean; sessionBranchTree?: boolean };
+    sessionLeaf?: boolean; sessionBranchViews?: boolean; sessionBranchTree?: boolean;
+    sessionBranchSummary?: boolean };
   eventCursor?: string;
 }
 
@@ -823,6 +824,11 @@ export interface ContextCompactJob {
   summaryModel?: string;
   summaryEffort?: string | null;
   requestRejected?: boolean;
+  /** `branchSummary`：`thread/leaf/set` 的被放弃分支摘要任务；缺省为上下文压缩。 */
+  kind?: "branchSummary";
+  targetTurnId?: string | null;
+  fromTurnId?: string;
+  abandonedTurnIds?: string[];
 }
 export interface ContextCompactAbortResponse extends ContextCompactJob { aborted: boolean }
 export interface ContextBudget {
@@ -861,6 +867,16 @@ export interface ContextReadResponse extends ContextBudget {
   lastBudget?: ContextBudget & { turnId: string } | null;
   /** Active ownership is process-local; retained terminal jobs are reconstructed from durable events. Missing means an older service; null means no retained job. */
   compactionJob?: { jobId: string; status: ContextCompactionJobStatus; active: boolean } | null;
+  /** 当前分支上已注入模型上下文的被放弃分支摘要；无则缺省。 */
+  branchSummaries?: ContextBranchSummary[];
+}
+export interface ContextBranchSummary {
+  entryId: string;
+  targetTurnId: string | null;
+  fromTurnId: string | null;
+  abandonedTurnIds: string[];
+  summaryJobId: string | null;
+  characters: number;
 }
 export type ConnectionTarget = "local" | "model" | "platform";
 export interface ConnectionCheck {
@@ -937,4 +953,12 @@ export interface ThreadLeafState {
   activeTurnIds: string[];
   activeTurnIdsTruncated: boolean;
   changed?: boolean;
+  /** 仅在请求 `summarize: true` 且指针已移动时返回；任务失败或取消不回滚指针。 */
+  summaryJob?: ContextCompactJob;
+}
+/** `thread/leaf/set` 参数；`summarize` 仅在 `capabilities.sessionBranchSummary` 为真时可用。 */
+export interface ThreadLeafSetParams {
+  threadId: string;
+  turnId: string | null;
+  summarize?: boolean;
 }
