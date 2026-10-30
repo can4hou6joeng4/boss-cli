@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第九十五轮：删除清理复用严格事件 JSONL 解码
+
+参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的持久化恢复边界，并延续本项目 [Issue #221](https://github.com/can4hou6joeng4/boss-cli/issues/221) 的损坏日志约束：事件事实源在冷重建、读取和删除清理之间必须使用同一套可验证解析规则。本轮不复制 Pi 源码或引入依赖。
+
+本项目 [Issue #227](https://github.com/can4hou6joeng4/boss-cli/issues/227) 发现 `_rewrite_events_for_deletion()` 仍直接调用 `json.loads`，因此删除会话可能接受重复对象键、非有限浮点、坏 UTF-8 或过深 JSON，而事件索引重建会拒绝同一输入。现在删除重写按 64 KiB 块流式读取，复用带行号的严格事件对象解码器；任何损坏在临时文件发布前都停止清理，不截断、修补、重放或发布部分日志，原有删除意图可继续用于恢复。
+
+验证覆盖重复键、非有限浮点、坏 UTF-8、过深结构、合法删除事件和损坏发生在目标事件前后的边界；网络、真实模型、招聘 CLI 和提交测试材料均为零。Python 编译、wheel/sdist、TypeScript、Electron 源码构建、`git diff --check` 与远程必需检查按最新 PR head 核对。
+
 ## 第九十三轮：共享附件容量与损坏日志的发布门禁
 
 参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 `packages/coding-agent/src/extensions/mcp/tools.ts` 及开放 [Issue #11386](https://github.com/earendil-works/pi/issues/11386)：Pi 对发给模型的 MCP 文本输出设有 20 KiB 默认上限，该提案希望支持分层配置。BOSS-CLI 的附件属于跨会话持久对象，与单次工具输出不同；本轮只采用显式资源预算原则，独立实现，不复制代码或新增依赖。

@@ -1578,12 +1578,13 @@ class SessionStore:
         try:
             with os.fdopen(descriptor, "wb") as output:
                 if source_handle is not None:
-                    for raw_line in _iter_bounded_raw_lines_from_handle(
-                            source_handle, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"):
+                    for line_number, raw_line in enumerate(_iter_bounded_raw_lines_from_handle(
+                            source_handle, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"), start=1):
                         try:
-                            record = json.loads(raw_line)
-                        except (json.JSONDecodeError, UnicodeDecodeError):
-                            raise ValueError("事件日志损坏，无法安全删除会话") from None
+                            record = _decode_jsonl_object(
+                                raw_line, label="事件日志", line_number=line_number)
+                        except ValueError as exc:
+                            raise ValueError(f"事件日志损坏，无法安全删除会话：{exc}") from None
                         if (not isinstance(record, dict) or record.get("type") != "event"
                                 or not isinstance(record.get("method"), str)
                                 or not isinstance(record.get("params"), dict)):
