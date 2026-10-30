@@ -13,6 +13,7 @@
 
 ### 修复
 
+- [Issue #235](https://github.com/can4hou6joeng4/boss-cli/issues/235)：创建会话分支时按摘要 `throughTurnId` 与所选回合的来源顺序保留适用 checkpoint，即使 checkpoint 在 JSONL 中位于分支物理边界之后；排除覆盖更晚回合的摘要，防止被摘要覆盖的旧消息重新进入分支上下文。
 - [Issue #233](https://github.com/can4hou6joeng4/boss-cli/issues/233)：事件事实源 `events.jsonl` 缺失或 fingerprint 改变时，在 SQLite 事务内从当前日志完整重建事件投影，避免过期尾事件继续可见；会话删除先验证日志、再发布重写并重建投影。安全清除 SQLite 旧页并保留自增游标高水位；损坏日志在文件变更前 fail closed。
 - 参考 Pi MIT [Issue #11537](https://github.com/earendil-works/pi/issues/11537) 与已合并 [PR #11572](https://github.com/earendil-works/pi/pull/11572)（merge commit `c719d5b08e5d9fb9bbcb1f1792281eea8b442812`）：OpenAI 兼容接口返回结构化 `code=1308` 时，将智谱/Z.ai 的硬用量上限识别为不可重试；覆盖 HTTP 错误与流内错误，未命中既有终态分类的其他 429 仍按原策略重试。
 - [Issue #229](https://github.com/can4hou6joeng4/boss-cli/issues/229)：会话、工具结果及事件日志共用的 JSONL 追加失败时，按文件身份、原长度和本次写入后缀核验后尽力截回起点并 `fsync`；无法证明安全回滚时返回明确的不确定错误。普通会话追加在写前校验当前索引切面，避免向已损坏日志继续追加。

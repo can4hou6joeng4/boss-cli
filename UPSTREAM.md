@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第一百轮：分支按摘要来源保留上下文检查点
+
+本项目 [Issue #235](https://github.com/can4hou6joeng4/boss-cli/issues/235) 在主线 `382dbc2b43e9c1b836ce7d7893605379168baeb0` 上复现：父会话先保存 `throughTurnId=t1` 的摘要，再包含已结束回合 `t2`；父 `ContextService.history()` 正确显示摘要和 `t2` 尾部，但 `fork_thread(..., turn_id="t2")` 仅按物理 boundary 复制 JSONL，丢弃追加在边界后的 checkpoint，使 `t1` 原始用户和助手内容重新进入子会话模型上下文。此行为与本项目 [Issue #53](https://github.com/can4hou6joeng4/boss-cli/issues/53) 已记录的分支契约不符：上下文 checkpoint 及其来源字段应随对话历史保留。
+
+分支现在按所选回合在完整 turn 序列中的位置筛选 checkpoint：来源 `throughTurnId` 位于所选回合之前或等于所选回合时，即使记录位于物理 boundary 后也纳入；覆盖更晚回合或引用未知来源回合的 checkpoint 不进入该分支。符合条件的多个 checkpoint 保持原记录顺序，现有 `_validated_checkpoint()` 继续负责来源校验；无效来源仍安全回退为完整原始历史。上下文编辑、工具修订、父历史和分支再分叉保持各自来源边界。本轮独立实现，不复制 Pi 源码或增加依赖。
+
+合成离线 `SessionStore` / `ContextService` 探针覆盖 `t1→checkpoint(t1)→t2→t3→checkpoint(t2)`：fork `t1` 仅显示摘要 `t1`；fork `t2` 显示摘要 `t2`，不把被摘要覆盖的原始 `t1`/`t2` 文本重新带入；fork 后再 fork 继续保留正确摘要，父日志逐字不变。探针无模型、网络、招聘 CLI 或子进程调用，代码仅保留本地。
+
 ## 第九十九轮：等待 Harness 子进程完成优雅关闭
 
 参考 Pi MIT [PR #11544](https://github.com/earendil-works/pi/pull/11544)，已合入 Pi main，合并提交 `a87b742ff4ce262c07b7830a25c73c1442dab41b`。该问题报告指出，客户端结束 daemon stdin 后立即发 `SIGTERM` 会跳过 EOF 收尾；PR 的 Unix daemon signal handling 不适用于本项目的 Python Harness，因此这里只采用“EOF 后给后端留出清理窗口”的生命周期原则，不复制 Pi 源码或增加依赖。本项目复现与修复基于 main `05ce291fb2670b78a107927b334836d3ef50e15f`。
