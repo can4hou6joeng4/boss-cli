@@ -119,6 +119,12 @@ RPC 客户端可通过 `thread/item/result/read`，传入 `threadId`、`itemId`�
 
 会话条目和事件回放还按约 1 MiB 响应预算分页，游标只推进到实际返回的数据。非分页读取或单条记录无法传输时会返回明确的 `RESPONSE_TOO_LARGE` 错误，连接继续可用；支持快照的客户端应通过 `thread/resume` 的冻结分页恢复。原始记录不被裁剪，读取不触发招聘工具。
 
+### 持久附件存储
+
+文本附件单文件最多 2 MiB，每回合注入上下文的附件合计最多 2 MiB；会话状态目录中的持久附件另有默认 512 MiB 和 4096 个文件对象上限，可分别用 `BOSS_HARNESS_MAX_ATTACHMENT_STORAGE_BYTES` 与 `BOSS_HARNESS_MAX_ATTACHMENT_STORAGE_OBJECTS` 设置为 1 至 `2^63-1` 的十进制整数；`config/read` 返回实际生效的 `maxAttachmentStorageBytes` 与 `maxAttachmentStorageObjects`。字节按文件逻辑长度计量；容量扫描包含已引用附件和孤儿对象。进程中断留下的临时文件会在下次启动时按私有文件规则清理；未引用的内容寻址对象保留并计入容量。降低上限不会阻止读取已有附件，但会拒绝新增的唯一内容；相同 SHA-256 内容复用现有可信对象，不增加容量。
+
+附件准入、对象发布及会话引用追加共用 SQLite 写事务，与会话删除的引用扫描和清理串行。写入失败后会在同一写锁下检查所有会话引用，再清理新发布且未引用的对象。对象目录中出现符号链接、非普通文件、非当前用户文件、额外硬链接或目标摘要与内容不符时，相关操作会 fail closed。容量拒绝通过 `attachment/add` 返回 JSON-RPC `-32005`，错误数据包含 `code=ATTACHMENT_STORAGE_LIMIT`、当前用量、限制和本次请求量；容量拒绝不会写入会话引用或部分附件。
+
 ## 模块边界
 
 | 路径 | 职责 |
