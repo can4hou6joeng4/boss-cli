@@ -72,7 +72,7 @@ export interface InitializeResponse {
   approval: { requiredTools: string[]; timeoutSeconds: number };
   capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean;
     parallelThreads: boolean; durableApprovals?: boolean; explicitTurnContinuation?: boolean;
-    sessionLeaf?: boolean };
+    sessionLeaf?: boolean; sessionBranchViews?: boolean };
   eventCursor?: string;
 }
 
@@ -408,7 +408,12 @@ export interface ThreadReadParams {
   threadId: string;
   excludeTurns?: boolean;
   snapshot?: boolean;
+  /** 仅在 `capabilities.sessionBranchViews` 为真时可用；`branch` 暂不支持与 `snapshot` 同用。 */
+  view?: ThreadReadView;
 }
+
+/** `log`（默认）展示完整日志；`branch` 按当前 leaf 分支投影。 */
+export type ThreadReadView = "log" | "branch";
 
 export interface ThreadReadResponse {
   thread: ThreadSummary;
@@ -419,6 +424,8 @@ export interface ThreadReadResponse {
   queue?: QueueItem[];
   snapshotId?: string;
   itemCount?: number;
+  view?: "branch";
+  branch?: ThreadLeafState;
 }
 
 export interface ThreadDeleteParams {
@@ -619,7 +626,8 @@ export interface TurnSummary {
   taskRecoveryReason?: "processExit" | "terminalStateRecovered";
   taskResumePolicy?: TurnTaskResumePolicy;
 }
-export interface TurnListResponse { turns: TurnSummary[]; nextCursor: string | null }
+export interface TurnListResponse { turns: TurnSummary[]; nextCursor: string | null;
+  view?: "branch"; branch?: ThreadLeafState }
 export interface ItemListResponse { items: ThreadItem[]; nextCursor: string | null }
 
 export interface DurableEvent {

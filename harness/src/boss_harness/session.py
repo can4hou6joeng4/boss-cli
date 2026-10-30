@@ -2086,6 +2086,49 @@ class SessionStore:
                        if len(rows) > limit else None)
         return {"turns": [json.loads(row["metadata_json"]) for row in page], "nextCursor": next_cursor}
 
+    def list_branch_turns(self, thread_id: str, *, cursor: str | None = None, limit: int = 50) -> dict:
+        """Indexed turn metadata restricted to the current branch (same order/cursor shape as list_turns)."""
+        _limit(limit)
+        self.path_for(thread_id)
+        scope = {"threadId": thread_id, "view": "branch"}
+        key = _read_page_cursor(cursor, "turns", scope)
+        if key is not None:
+            if len(key) != 2 or type(key[0]) is not int or key[0] < 0:
+                raise ValueError("回合分页游标无效")
+            _identifier(key[1], "turnId")
+        self._sync_thread(thread_id)
+        with self._lock:
+            entries = self.read_entries(thread_id)
+            active_ids = {turn["turnId"] for turn in self._turns(self._active_entries(entries), thread_id)}
+            with self._index.connection() as connection:
+                rows = connection.execute("SELECT * FROM turns WHERE thread_id=? ORDER BY first_ordinal,turn_id",
+                                          (thread_id,)).fetchall()
+        selected = []
+        for row in rows:
+            if row["turn_id"] not in active_ids:
+                continue
+            if key is not None and (row["first_ordinal"], row["turn_id"]) <= (key[0], key[1]):
+                continue
+            selected.append(row)
+            if len(selected) > limit:
+                break
+        page = selected[:limit]
+        next_cursor = (_page_cursor("turns", scope, [page[-1]["first_ordinal"], page[-1]["turn_id"]])
+                       if len(selected) > limit else None)
+        return {"turns": [json.loads(row["metadata_json"]) for row in page], "nextCursor": next_cursor}
+
+    def branch_last_turn(self, thread_id: str) -> dict | None:
+        """Indexed metadata of the current branch's last turn (None before the first turn)."""
+        with self._lock:
+            leaf = self._leaf_state(thread_id, self.read_entries(thread_id))
+        if leaf["leafTurnId"] is None:
+            return None
+        self._sync_thread(thread_id)
+        with self._index.connection() as connection:
+            row = connection.execute("SELECT metadata_json FROM turns WHERE thread_id=? AND turn_id=?",
+                                     (thread_id, leaf["leafTurnId"])).fetchone()
+        return json.loads(row["metadata_json"]) if row is not None else None
+
     _BRANCH_INDEPENDENT_TYPES = frozenset({"attachment", "thread_info", "queue"})
 
     @classmethod

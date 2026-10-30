@@ -71,6 +71,14 @@ CONTINUATION_WARNING = ("续接会发起新的模型请求，可能重复调用�
                         "不会再次执行旧工具，新写操作仍需逐次审批。")
 
 
+def _branch_view(params: dict | None) -> bool:
+    """Optional read view: "log" (default, full rollout) or "branch" (current leaf projection)."""
+    view = (params or {}).get("view", "log")
+    if view not in {"log", "branch"}:
+        raise ValueError("view 必须是 log 或 branch")
+    return view == "branch"
+
+
 def _record_checkpoint_turn(turns_by_job: dict[str, set[str]], job_id: str,
                            turn_id: Any) -> None:
     candidate = (turn_id if isinstance(turn_id, str)
@@ -218,10 +226,12 @@ class EventHub:
                 pass
             self.lifecycle_hooks.observe_event(method, payload)
 
-    def items(self, thread_id: str) -> list[dict]:
+    def items(self, thread_id: str, *, entries: list[dict] | None = None) -> list[dict]:
         with self.lock:
+            source = (self.sessions.read_items(thread_id) if entries is None
+                      else self.sessions._project_items(thread_id, entries))
             return [{**item, **(self.live.get(thread_id, {}).get(item["id"], {}) if item.get("status") == "running" else {})}
-                    for item in self.sessions.read_items(thread_id)]
+                    for item in source]
 
 
 class ApplicationService:
@@ -533,7 +543,7 @@ class ApplicationService:
             "capabilities": {"bidirectionalRequests": True, "eventReplay": True,
                              "pagination": True, "parallelThreads": True,
                              "durableApprovals": True, "explicitTurnContinuation": True,
-                             "sessionLeaf": True},
+                             "sessionLeaf": True, "sessionBranchViews": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -604,7 +614,10 @@ class ApplicationService:
         return self.sessions.list_threads_page(cursor=params.get("cursor"), limit=params.get("limit", 50),
                                                archived=params.get("archived", False), project_id=params.get("projectId"))
 
-    def _snapshot(self, thread_id: str, *, exclude: bool = False, paged: bool = False) -> dict:
+    def _snapshot(self, thread_id: str, *, exclude: bool = False, paged: bool = False,
+                  branch: bool = False) -> dict:
+        if paged and branch:
+            raise ValueError("view=branch 暂不支持 snapshot=true，请改用非快照读取")
         if paged:
             build = None
             source = None
@@ -647,17 +660,26 @@ class ApplicationService:
         with self.events.lock:
             thread = self.sessions.get_thread(thread_id)
             job = self.runtimes.active.get(thread_id)
-            canonical_items = [] if exclude else self.events.items(thread_id)
-            edit_states = self.context.context_edit_states(self.sessions.read_entries(thread_id))
+            entries = self.sessions.read_entries(thread_id)
+            if branch:
+                entries = self.sessions._active_entries(entries)
+                thread = {**thread, "lastTurn": self.sessions.branch_last_turn(thread_id)}
+            canonical_items = [] if exclude else self.events.items(
+                thread_id, entries=entries if branch else None)
+            edit_states = self.context.context_edit_states(entries)
             items = [project_item(thread_id, item)
                      for item in canonical_items]
             for item in items:
                 if item["id"] in edit_states:
                     item["contextEdit"] = edit_states[item["id"]]
             result = {"thread": thread, "items": [] if exclude else items,
-                    "turns": None if exclude else self.sessions.list_turns(thread_id)["turns"],
+                    "turns": None if exclude else (self.sessions.list_branch_turns(thread_id) if branch
+                                                   else self.sessions.list_turns(thread_id))["turns"],
                     "activeTurnId": job["turnId"] if job else None,
                     "eventCursor": self.sessions.latest_event_cursor(), "queue": self.queue.list(thread_id)}
+            if branch:
+                result["view"] = "branch"
+                result["branch"] = self.sessions.read_leaf(thread_id)
             self._check_response_budget(result)
             return result
 
@@ -669,7 +691,7 @@ class ApplicationService:
 
     def on_thread_read(self, params: dict | None) -> dict:
         return self._snapshot(_text(params, "threadId"), exclude=bool((params or {}).get("excludeTurns", False)),
-                              paged=(params or {}).get("snapshot") is True)
+                              paged=(params or {}).get("snapshot") is True, branch=_branch_view(params))
 
     def on_thread_resume(self, params: dict | None) -> dict:
         return self.on_thread_read(params)
@@ -683,6 +705,11 @@ class ApplicationService:
 
     def on_turn_list(self, params: dict | None) -> dict:
         params = params or {}
+        if _branch_view(params):
+            thread_id = _text(params, "threadId")
+            result = self.sessions.list_branch_turns(thread_id, cursor=params.get("cursor"),
+                                                     limit=params.get("limit", 50))
+            return {**result, "view": "branch", "branch": self.sessions.read_leaf(thread_id)}
         return self.sessions.list_turns(_text(params, "threadId"), cursor=params.get("cursor"), limit=params.get("limit", 50))
 
     @contextmanager
@@ -988,7 +1015,10 @@ class ApplicationService:
             raise ValueError("limit 必须是 1 到 200 的整数")
         offset = 0
         snapshot_id = params.get("snapshotId")
-        scope_id = thread_id + (":" + snapshot_id if isinstance(snapshot_id, str) else "")
+        branch = _branch_view(params)
+        if branch and snapshot_id is not None:
+            raise ValueError("view=branch 暂不支持 snapshotId 分页")
+        scope_id = thread_id + (":" + snapshot_id if isinstance(snapshot_id, str) else "") + (":branch" if branch else "")
         cursor = params.get("cursor")
         if cursor is not None:
             try:
@@ -1003,8 +1033,11 @@ class ApplicationService:
         if snapshot_id is not None:
             items, item_count = self.snapshots.page(snapshot_id, thread_id, offset, limit)
         else:
-            items = self.events.items(thread_id)
-            edit_states = self.context.context_edit_states(self.sessions.read_entries(thread_id))
+            entries = self.sessions.read_entries(thread_id)
+            if branch:
+                entries = self.sessions._active_entries(entries)
+            items = self.events.items(thread_id, entries=entries if branch else None)
+            edit_states = self.context.context_edit_states(entries)
         if snapshot_id is None and offset > len(items):
             raise ValueError("条目分页游标超出结果范围")
         page = []
