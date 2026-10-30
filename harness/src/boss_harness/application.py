@@ -35,7 +35,7 @@ from boss_harness.models.capabilities import ModelCatalog
 from boss_harness.models.types import AssistantMessage, ModelRequest, UserMessage
 from boss_harness.model_tools import MODEL_RESULT_READ_TOOL, model_tool_specs
 from boss_harness.ownership import StateDirectoryOwner
-from boss_harness.resources import AttachmentStore, SkillCatalog, ToolRegistry
+from boss_harness.resources import AttachmentQuotaExceeded, AttachmentStore, SkillCatalog, ToolRegistry
 from boss_harness.request_identity import resolve_request
 from boss_harness.request_policy import ModelRequestRejected, check_model_request, record_model_rejection
 from boss_harness.rpc import JsonRpcServer, RpcError
@@ -214,6 +214,8 @@ class ApplicationService:
         self.server, self.config, self.provider = server, config, provider
         self.max_model_requests = (model_request_limit_from_environment() if max_model_requests is None
                                    else model_request_limit(max_model_requests))
+        attachment_limits = AttachmentStore.limits_from_environment()
+        self.attachment_limits = attachment_limits
         if type(config.max_tokens) is not int or config.max_tokens <= 0:
             raise ValueError("max_tokens 必须是正整数")
         self.model_catalog = model_catalog if model_catalog is not None else ModelCatalog.from_environment()
@@ -282,7 +284,8 @@ class ApplicationService:
             self.context = ContextService(self.sessions)
             self._restore_compaction_jobs()
             self.skills = SkillCatalog(self.workspace / ".boss-cli" / "skills")
-            self.attachments = AttachmentStore(self.sessions, state_dir / "attachments", self.workspace)
+            self.attachments = AttachmentStore(self.sessions, state_dir / "attachments", self.workspace,
+                                               limits=attachment_limits)
             self.tools = self._new_bridge()
             self.connections = ConnectionChecks(config, request_preparer=lambda request: self.context.prepare(
                 request, self.model_catalog.resolve(config.provider, request.model), provider=config.provider)[0],
@@ -533,6 +536,8 @@ class ApplicationService:
                 "maxOutputTokens": self.config.max_tokens, "parallelThreads": self.runtimes.capacity,
                 "maxRetainedTurns": self.runtimes.owner_capacity,
                 "maxModelRequests": self.max_model_requests,
+                "maxAttachmentStorageBytes": self.attachment_limits.max_bytes,
+                "maxAttachmentStorageObjects": self.attachment_limits.max_objects,
                 "modelCapabilities": self.model_catalog.resolve(self.config.provider, self.config.model).describe(),
                 "toolBundleId": self.tool_bundle.id,
                 "autoCompaction": self.compaction_policy.describe(),
@@ -1927,7 +1932,11 @@ class ApplicationService:
             return self._compaction_plan(params or {})
 
     def on_attachment_add(self, params: dict | None) -> dict:
-        return {"attachment": self.attachments.add(_text(params, "threadId"), _text(params, "path", maximum=4096))}
+        try:
+            attachment = self.attachments.add(_text(params, "threadId"), _text(params, "path", maximum=4096))
+        except AttachmentQuotaExceeded as exc:
+            raise RpcError(-32005, str(exc), exc.data) from None
+        return {"attachment": attachment}
 
     def on_attachment_read(self, params: dict | None) -> dict:
         return {"attachment": self.attachments.read(_text(params, "threadId"), _text(params, "attachmentId"))}

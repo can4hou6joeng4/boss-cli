@@ -4,6 +4,7 @@
 
 ### 新增
 
+- [Issue #219](https://github.com/can4hou6joeng4/boss-cli/issues/219)：持久文本附件增加默认 512 MiB / 4096 对象的目录级配额，可用环境变量调整并通过 `config/read` 查看生效值；配额按实际目录对象计入已引用附件和孤儿，相同 SHA-256 内容去重。附件准入、文件发布、会话引用追加与删除清理共享 SQLite 写锁，发布前严格校验目标会话日志，异常后只清理确认未引用的新对象，重启清理中断遗留的临时文件；容量拒绝返回结构化 `ATTACHMENT_STORAGE_LIMIT`，不写会话引用。
 - [Issue #187](https://github.com/can4hou6joeng4/boss-cli/issues/187)：新增只读 `task/read`，按会话与任务类型读取 turn、队列或摘要任务的状态、阶段、运行时 owner、恢复策略及已验证关系；查询使用固定长度会话快照流式投影，不将完整历史载入内存；仅将相互印证的 follow-up/steering 与自动摘要关联到回合，手动摘要保持独立，冲突和孤儿不推断为所有权。
 - [Issue #213](https://github.com/can4hou6joeng4/boss-cli/issues/213)：新增 `runtime/resources/read` 进程内只读快照，展示 turn/摘要执行与清理 owner、FIFO follow-up 等待位置和耗时；列表最多各 32 项并返回截断标志，不读取历史、改变调度或暴露任务正文。
 - [Issue #193](https://github.com/can4hou6joeng4/boss-cli/issues/193)：活动及收尾业务回合合计最多保留 `2 * parallelThreads` 个 owner，配置读取公开 `maxRetainedTurns`；超限返回 `TURN_OWNER_LIMIT`，不创建 provider 或写入新输入。follow-up 保持 queued/FIFO，迟到 abort 退休后也唤醒等待者，保留正常执行与收尾重叠。

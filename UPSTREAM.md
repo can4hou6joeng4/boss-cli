@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第九十三轮：共享附件容量与损坏日志的发布门禁
+
+参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 `packages/coding-agent/src/extensions/mcp/tools.ts` 及开放 [Issue #11386](https://github.com/earendil-works/pi/issues/11386)：Pi 对发给模型的 MCP 文本输出设有 20 KiB 默认上限，该提案希望支持分层配置。BOSS-CLI 的附件属于跨会话持久对象，与单次工具输出不同；本轮只采用显式资源预算原则，独立实现，不复制代码或新增依赖。
+
+本项目 [Issue #219](https://github.com/can4hou6joeng4/boss-cli/issues/219) 记录了单附件和单回合均受限、共享对象目录却可持续增长的缺口。附件存储现在默认限制为 512 MiB / 4096 个对象，允许配置正整数上限；按对象目录的逻辑长度和文件数计量，包括未引用的孤儿。内容去重复用可信对象，新增唯一内容在发布前检查配额；发布、引用追加与删除清理共用 SQLite 写锁，失败清理须确认全局无引用，中断临时对象在启动时按私有文件约束清理。
+
+与 [PR #222](https://github.com/can4hou6joeng4/boss-cli/pull/222) 的严格 JSONL 校验组合时，离线探针发现：目标会话正文已损坏但头部有效，原附件路径会先追加引用，随后索引读取才报错。现在对象发布前在同一写锁内流式校验完整会话，预先存在的损坏不得改变日志或对象目录。容量扫描和这次日志校验都在写锁内执行；目录越大、会话越长，写入等待可能越久，当前未承诺恒定延迟。
+
+隔离探针覆盖配额精确边界、去重、共享引用删除、孤儿计量、损坏头部及七种中间正文损坏，后者对共享与唯一内容分别验证日志和对象字节不变；跨两个 `SessionStore` 实例的并发新增和删除/共享新增各运行 16 轮通过。网络与子进程尝试为零；探针仅保留本地。Python 3.12 编译、wheel/sdist 构建及包内容核对通过；类型检查与桌面源码构建通过，真实模型、平台及桌面交互未做验收。
+
 ## 第九十二轮：损坏的持久 JSONL 必须显式失败
 
 参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 `packages/coding-agent/src/core/session-manager.ts`：`loadEntriesFromFile()` 与 `parseSessionEntryLine()` 会跳过 JSON 解析失败的行。这种 salvage 行为适合 Pi 的会话加载契约；BOSS-CLI 的冻结恢复会报告 `itemCount` 并提供完整历史页，静默丢弃记录会把部分历史伪装成完整快照，因此不沿用该容错语义，也不复制 Pi 代码。

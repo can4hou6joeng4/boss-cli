@@ -34,6 +34,7 @@ _THREAD_ID = re.compile(r"[a-f0-9]{12}\Z")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _EVENT_ID = re.compile(r"[a-f0-9]{32}\Z")
 _ATTACHMENT_DIGEST = re.compile(r"[a-f0-9]{64}\Z")
+_ATTACHMENT_TEMP = re.compile(r"tmp-[a-f0-9]{32}\Z")
 _DELETE_INTENT = re.compile(r"\.delete-([a-f0-9]{12})\.json\Z")
 _TERMINAL = frozenset({"completed", "interrupted", "blocked", "error"})
 _TASK_PHASES = frozenset({"admission", "prepare", "model_request", "tool_execution", "finish"})
@@ -538,6 +539,62 @@ class SessionStore:
             self._append_line(self.path_for(thread_id), entry.to_dict())
             self._index_thread(thread_id, connection)
         return entry
+
+    def append_attachment(self, thread_id: str, entry: Entry, publish: Callable[[], None]) -> Entry:
+        """Publish an attachment and its durable reference under the shared writer lock."""
+        payload = entry.payload or {}
+        if entry.type != "attachment" or not _ATTACHMENT_DIGEST.fullmatch(str(payload.get("digest", ""))):
+            raise ValueError("附件记录格式无效")
+        if not callable(publish):
+            raise ValueError("附件发布器无效")
+        with self._lock, self._index.transaction() as connection:
+            # Reject damaged history before publishing content or appending a reference.
+            with self.open_entries_snapshot(thread_id) as entries:
+                for _entry in entries:
+                    pass
+            publish()
+            _fsync_directory(self.attachments_root)
+            self._append_line(self.path_for(thread_id), entry.to_dict())
+            self._index_thread(thread_id, connection)
+        return entry
+
+    def cleanup_unreferenced_attachments(self, digests: list[str]) -> None:
+        """Serialize failed-publication cleanup with attachment adds and deletion."""
+        with self._lock, self._index.transaction():
+            self._purge_unreferenced_attachments(digests)
+
+    def cleanup_attachment_temporaries(self) -> None:
+        """Remove only private temp names left by interrupted attachment publication."""
+        with self._lock, self._index.transaction():
+            try:
+                directory_stat = self.attachments_root.lstat()
+            except FileNotFoundError:
+                return
+            current_uid = getattr(os, "getuid", lambda: -1)()
+            if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != current_uid:
+                raise ValueError("附件目录不可信，临时文件清理已暂停")
+            changed = False
+            try:
+                entries = os.scandir(self.attachments_root)
+            except OSError:
+                raise ValueError("附件目录不可读取，临时文件清理已暂停") from None
+            with entries:
+                for entry in entries:
+                    if _ATTACHMENT_TEMP.fullmatch(entry.name) is None:
+                        continue
+                    path = self.attachments_root / entry.name
+                    try:
+                        original = path.lstat()
+                    except OSError:
+                        raise ValueError("附件临时文件发生变化，清理已暂停") from None
+                    if (not stat.S_ISREG(original.st_mode) or original.st_uid != current_uid
+                            or original.st_nlink != 1):
+                        raise ValueError("附件临时文件不可信，清理已暂停")
+                    restrict_private_file(path)
+                    path.unlink()
+                    changed = True
+            if changed:
+                _fsync_directory(self.attachments_root)
 
     def append_tool_revision(self, thread_id: str, entry: Entry) -> tuple[Entry, bool]:
         """Append a terminal tool revision, reconciling one ambiguous failure.
