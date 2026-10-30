@@ -1555,13 +1555,10 @@ class SessionStore:
             event = self._rewrite_events_for_deletion(connection, intent)
             self._purge_unreferenced_attachments(intent["attachmentDigests"])
             self._purge_repair_backups(thread_id)
-            connection.execute("DELETE FROM events WHERE thread_id=?", (thread_id,))
+            connection.execute("DELETE FROM events")
+            connection.execute("DELETE FROM checkpoints WHERE name='events'")
+            self._index_events(connection)
             connection.execute("DELETE FROM threads WHERE id=?", (thread_id,))
-            self._index_deletion_event(connection, event)
-            stat_result = self.events_path.stat()
-            connection.execute("INSERT INTO checkpoints(name,value) VALUES('events',?) "
-                               "ON CONFLICT(name) DO UPDATE SET value=excluded.value",
-                               (f"{stat_result.st_size}:{stat_result.st_mtime_ns}",))
         if _on_committed is not None:
             _on_committed()
         self._checkpoint_and_truncate_wal()
@@ -1728,24 +1725,6 @@ class SessionStore:
         if event is None:
             raise RuntimeError("删除事件未能生成")
         return event
-
-    @staticmethod
-    def _index_deletion_event(connection: sqlite3.Connection, event: dict) -> None:
-        params = event["params"]
-        existing = connection.execute("SELECT cursor,method,thread_id,params_json FROM events WHERE event_id=?",
-                                      (params["eventId"],)).fetchone()
-        if existing is not None:
-            if (existing["cursor"] != int(params["eventCursor"]) or existing["method"] != event["method"]
-                    or existing["thread_id"] is not None or json.loads(existing["params_json"]) != params):
-                raise ValueError("会话删除事件索引与日志冲突")
-            return
-        collision = connection.execute("SELECT event_id FROM events WHERE cursor=?",
-                                       (int(params["eventCursor"]),)).fetchone()
-        if collision is not None:
-            raise ValueError("会话删除事件游标与现有事件冲突")
-        connection.execute("INSERT INTO events(cursor,event_id,method,thread_id,params_json) VALUES(?,?,?,?,?)",
-                           (int(params["eventCursor"]), params["eventId"], event["method"], None,
-                            _json(params)))
 
     def _purge_unreferenced_attachments(self, digests: list[str]) -> None:
         candidates = set(digests)
@@ -2177,6 +2156,7 @@ class SessionStore:
         checkpoint = connection.execute("SELECT value FROM checkpoints WHERE name='events'").fetchone()
         if checkpoint and checkpoint["value"] == fingerprint:
             return
+        connection.execute("DELETE FROM events")
         for line_number, line in enumerate(_iter_bounded_lines(
                 self.events_path, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"), start=1):
             if not line.strip():

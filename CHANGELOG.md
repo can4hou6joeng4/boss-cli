@@ -13,7 +13,7 @@
 
 ### 修复
 
-- [Issue #233](https://github.com/can4hou6joeng4/boss-cli/issues/233)：事件事实源 `events.jsonl` 缺失时，在 SQLite 事务内清除不可重建的旧事件投影与 checkpoint；保留自增游标高水位，后续新事件不会与已丢失日志中的过期记录混合。
+- [Issue #233](https://github.com/can4hou6joeng4/boss-cli/issues/233)：事件事实源 `events.jsonl` 缺失或 fingerprint 改变时，在 SQLite 事务内从当前日志完整重建事件投影，避免过期尾事件继续可见；会话删除重写日志后也完整重建投影。保留自增游标高水位；日志损坏时事务回滚并继续 fail closed。
 - 参考 Pi MIT [Issue #11537](https://github.com/earendil-works/pi/issues/11537) 与已合并 [PR #11572](https://github.com/earendil-works/pi/pull/11572)（merge commit `c719d5b08e5d9fb9bbcb1f1792281eea8b442812`）：OpenAI 兼容接口返回结构化 `code=1308` 时，将智谱/Z.ai 的硬用量上限识别为不可重试；覆盖 HTTP 错误与流内错误，未命中既有终态分类的其他 429 仍按原策略重试。
 - [Issue #229](https://github.com/can4hou6joeng4/boss-cli/issues/229)：会话、工具结果及事件日志共用的 JSONL 追加失败时，按文件身份、原长度和本次写入后缀核验后尽力截回起点并 `fsync`；无法证明安全回滚时返回明确的不确定错误。普通会话追加在写前校验当前索引切面，避免向已损坏日志继续追加。
 - [Issue #227](https://github.com/can4hou6joeng4/boss-cli/issues/227)：会话删除重写事件日志时复用严格 JSONL 解码，与索引语义一致跳过空白行并保留每条记录的换行分隔；拒绝重复对象键、非有限浮点、无效 Unicode、坏 UTF-8、过深结构及损坏记录；删除在发现损坏前不发布部分日志，保留可恢复的清理暂停语义。
