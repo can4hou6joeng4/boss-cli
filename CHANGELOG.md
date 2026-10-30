@@ -5,12 +5,18 @@
 ### 新增
 
 - [Issue #187](https://github.com/can4hou6joeng4/boss-cli/issues/187)：新增只读 `task/read`，按会话与任务类型读取 turn、队列或摘要任务的状态、阶段、运行时 owner、恢复策略及已验证关系；查询使用固定长度会话快照流式投影，不将完整历史载入内存；仅将相互印证的 follow-up/steering 与自动摘要关联到回合，手动摘要保持独立，冲突和孤儿不推断为所有权。
+- [Issue #213](https://github.com/can4hou6joeng4/boss-cli/issues/213)：新增 `runtime/resources/read` 进程内只读快照，展示 turn/摘要执行与清理 owner、FIFO follow-up 等待位置和耗时；列表最多各 32 项并返回截断标志，不读取历史、改变调度或暴露任务正文。
 - [Issue #193](https://github.com/can4hou6joeng4/boss-cli/issues/193)：活动及收尾业务回合合计最多保留 `2 * parallelThreads` 个 owner，配置读取公开 `maxRetainedTurns`；超限返回 `TURN_OWNER_LIMIT`，不创建 provider 或写入新输入。follow-up 保持 queued/FIFO，迟到 abort 退休后也唤醒等待者，保留正常执行与收尾重叠。
 - [Issue #185](https://github.com/can4hou6joeng4/boss-cli/issues/185)：回合 admission、准备、模型请求、工具执行和 finish 阶段写入 append-only `task_phase` checkpoint，并从 `turn/read`、`turn/list` 与线程 `lastTurn` 查询；重启只收敛未完成阶段并标记人工复核，不自动重放模型或工具副作用，分支不会继承进程级阶段状态。
 - 参考 Pi Durable [Issue #10845](https://github.com/earendil-works/pi/issues/10845)：自定义 provider 可通过不可变 `ModelRequest.task_context` 区分业务回合、摘要分片与连接检查，并关联固定的会话、回合、摘要任务及请求编号；身份与宿主策略一致，不进入内置供应商 HTTP 参数、模型输入或预算指纹。
 
 ### 修复
 
+- [Issue #208](https://github.com/can4hou6joeng4/boss-cli/issues/208)：模型流传输失败沿 SDK 异常链提取固定原因分类及白名单 errno，并通过 `errorInfo` 与会话错误消息提供诊断；不保存 cause 原文或类型名、URL、请求内容或凭据，也不改变重试与恢复策略。
+- [Issue #211](https://github.com/can4hou6joeng4/boss-cli/issues/211)：OpenAI Responses 与 Anthropic Messages 在失败终态交付前复查取消标志；即使后台 producer 已结束并排入 EOF 或异常，也统一返回 `aborted`、清除错误诊断及重试状态，保留未取消的真实失败与已确认的正常结果。
+- [Issue #205](https://github.com/can4hou6joeng4/boss-cli/issues/205)：为 OpenAI Responses 与 Anthropic Messages 单次传输增加不可重置的 600 秒总时限，覆盖连接建立及流式响应；支持用 `BOSS_HARNESS_MODEL_REQUEST_TIMEOUT_SECONDS` 配置 1–3600 秒。清理确认后超时按可重试传输错误处理；无法确认后台清理时停止自动重试，并由每进程 8 个 pump 槽位限制残留传输。事件缓冲估算限制为总计 4 MiB、单事件 2 MiB，不冒充用户取消或上下文溢出；OpenAI 仅在尚无输出时遵循既有重试，未增加跨重试恢复预算。
+- 将桌面构建工具 Vite 从 `6.4.4` 更新到 `6.4.5`，修复 [GHSA-8g5g-mxqh-grgj](https://github.com/advisories/GHSA-8g5g-mxqh-grgj) 报告的 `server.fs.deny` 查询绕过问题。
+- [Issue #202](https://github.com/can4hou6joeng4/boss-cli/issues/202)：`keepRecentTokens` 在消息前缀指纹、provider/model 与当前投影均精确匹配时，按相邻成功请求的 provider input usage 差值校准被覆盖的完整回合；未覆盖尾部和无法核验的范围沿用原字符估算，并在计划中报告方法与实际使用的锚点数。不宣称精确 tokenizer 或计费结果。
 - [Issue #199](https://github.com/can4hou6joeng4/boss-cli/issues/199)：技能目录发现与读取增加有界资源策略；`load([])` 不扫描目录，发现过程不全量物化，坏 UTF-8、超大文件、符号链接、FIFO 和竞态替换不会阻断合法技能，最多返回 100 个可读取技能，单文件按 64 KiB 原始字节限制。
 - [Issue #197](https://github.com/can4hou6joeng4/boss-cli/issues/197)：修复 count-only 摘要与 `contextEdit.excluded` 同时存在时的上下文切点漂移；来源条目先按原始序列定位，再应用编辑投影，避免隐藏未摘要尾部用户消息。预览、保存、重开、fork、预算与后续模型请求保持一致，原始记录和持久格式不变。
 - [Issue #195](https://github.com/can4hou6joeng4/boss-cli/issues/195)：会话正文与冻结快照共用 32 MiB 单条记录预算，header/event 保持 8 MiB；追加、新会话/分支和 checkpoint 在写入前校验最终 UTF-8 JSON，避免大型工具结果先落盘再因读取超限而使整个会话从冷重建列表消失。超限沿用结果持久化失败的暂停与人工核对路径，不截断或重放；原始 CLI 输出预算不能代替序列化记录预算，旧内核无法读取新产生的合法大行。

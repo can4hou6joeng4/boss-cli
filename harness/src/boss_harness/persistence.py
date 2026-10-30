@@ -1,6 +1,6 @@
 """SQLite projection index; JSONL rollout and event journals remain rebuildable sources.
 
-Schema version 1 separates thread metadata, turn metadata and ordered transport events.
+Schema version 2 adds a rebuildable, parameter-free approval projection.
 Each operation owns its SQLite connection, so worker threads never share a cursor or
 an uncommitted transaction. WAL readers do not block the single serialized writer.
 """
@@ -15,7 +15,7 @@ from typing import Iterator
 from boss_harness.private_files import ensure_private_directory, open_private_file, restrict_private_file
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class PersistenceIndex:
@@ -67,6 +67,24 @@ class PersistenceIndex:
                     ):
                         connection.execute(statement)
                     connection.execute("PRAGMA user_version=1")
+                    version = 1
+                if version < 2:
+                    for statement in (
+                        """CREATE TABLE approvals (
+                            approval_id TEXT NOT NULL,
+                            thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+                            item_id TEXT NOT NULL, turn_id TEXT NOT NULL, tool_name TEXT NOT NULL,
+                            deadline REAL NOT NULL, params_digest TEXT NOT NULL,
+                            decision TEXT, status TEXT NOT NULL, execution_state TEXT NOT NULL,
+                            PRIMARY KEY(approval_id, thread_id, item_id)
+                        )""",
+                        "CREATE INDEX approvals_lookup ON approvals(approval_id)",
+                        "CREATE INDEX approvals_expiry ON approvals(decision, deadline, thread_id)",
+                        "CREATE INDEX approvals_thread ON approvals(thread_id, decision)",
+                    ):
+                        connection.execute(statement)
+                    connection.execute("UPDATE threads SET indexed_size=-1")
+                    connection.execute("PRAGMA user_version=2")
                 connection.commit()
             except BaseException:
                 connection.rollback()

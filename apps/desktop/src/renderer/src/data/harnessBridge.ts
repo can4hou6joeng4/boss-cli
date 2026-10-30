@@ -32,6 +32,7 @@ import {
   type ContextCompactJob,
   type ContextCompactAbortResponse,
   type ContextEditReadResponse,
+  type ApprovalRespondResponse,
 } from "@boss-cli/protocol";
 import { formatRelativeTime } from "@boss-cli/shared";
 import type { MessageItem, SessionItem } from "./mockData";
@@ -234,8 +235,8 @@ export async function respondApproval(approvalId: string, approved: boolean): Pr
   const api = bridge();
   if (!api) return false;
   try {
-    await api.request(ClientMethods.approvalRespond, { approvalId, approved });
-    return true;
+    const response = await api.request<ApprovalRespondResponse>(ClientMethods.approvalRespond, { approvalId, approved });
+    return response.accepted === true;
   } catch {
     return false;
   }

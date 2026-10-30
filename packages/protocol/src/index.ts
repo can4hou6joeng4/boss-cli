@@ -70,7 +70,8 @@ export interface InitializeResponse {
   toolBridge: ToolBridgeStatus;
   modelBridge: { provider: string; model: string; driven: boolean };
   approval: { requiredTools: string[]; timeoutSeconds: number };
-  capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean; parallelThreads: boolean };
+  capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean;
+    parallelThreads: boolean; durableApprovals?: boolean };
   eventCursor?: string;
 }
 
@@ -100,6 +101,7 @@ export const ClientMethods = {
   turnSteer: "turn/steer",
   turnRead: "turn/read",
   taskRead: "task/read",
+  approvalList: "approval/list",
   approvalRespond: "approval/respond",
   eventList: "event/list",
   queueAdd: "queue/add",
@@ -107,6 +109,7 @@ export const ClientMethods = {
   queueRemove: "queue/remove",
   modelList: "model/list",
   configRead: "config/read",
+  runtimeResourcesRead: "runtime/resources/read",
   connectionRead: "connection/read",
   connectionCheck: "connection/check",
   skillsList: "skills/list",
@@ -168,6 +171,13 @@ export interface ProviderFailureInfo {
   statusCode?: number;
   /** Adapter transient-failure classification, not permission to replay a turn. */
   retryable?: boolean;
+  /** Sanitized cause category; raw exception details are never included. */
+  transportCause?: "connect_timeout" | "read_timeout" | "write_timeout" | "pool_timeout"
+    | "timeout" | "dns_error" | "tls_error" | "connect_error" | "read_error"
+    | "write_error" | "protocol_error" | "connection_error" | "os_error" | "unknown";
+  /** Portable allowlisted errno label, when available. */
+  transportCode?: "ECONNABORTED" | "ECONNREFUSED" | "ECONNRESET" | "EHOSTUNREACH"
+    | "ENETUNREACH" | "ETIMEDOUT" | "EPIPE" | "EAI_AGAIN" | "EAI_NONAME";
 }
 
 export interface SessionErrorNotification {
@@ -487,6 +497,45 @@ export interface ApprovalRespondParams {
   approved: boolean;
 }
 
+export interface ApprovalListParams { threadId?: string; limit?: number }
+export interface PendingApproval {
+  approvalId: string;
+  threadId: string;
+  turnId?: string;
+  itemId: string;
+  toolName: string;
+  summary: string;
+  deadline: number;
+  paramsDigest: string;
+}
+export interface ApprovalListResponse { approvals: PendingApproval[] }
+export type ApprovalRespondResponse =
+  | { accepted: true }
+  | {
+      approvalId: string;
+      approved: boolean;
+      accepted: true;
+      durable: true;
+      executionPending: true;
+    }
+  | {
+      approvalId: string;
+      approved: boolean;
+      accepted: true;
+      executed: boolean;
+      recovered: true;
+      executionState: string;
+      status: string;
+    }
+  | {
+      approvalId: string;
+      approved: false;
+      accepted: false;
+      expired: true;
+      executed: false;
+      executionState: "not_executed";
+    };
+
 export const ServerRequests = { toolRequestApproval: "item/tool/requestApproval" } as const;
 
 export interface ToolApprovalResponse { approved: boolean }
@@ -569,6 +618,36 @@ export interface TaskReadTask {
   historyWindow?: { terminalCompactions: number; checkpointRelations: "durable" };
 }
 export interface TaskReadResponse { task: TaskReadTask }
+export interface RuntimeResourceOwner {
+  kind: "turn" | "manualCompaction" | "automaticCompaction";
+  id: string;
+  threadId: string;
+  state: "active" | "cleanup";
+  ageSeconds: number;
+  cancelRequested: boolean;
+  abortPending: boolean;
+  phase: string | null;
+  phaseStatus: string | null;
+}
+
+export interface RuntimeResourceWaiter {
+  threadId: string;
+  position: number;
+  waitingSeconds: number;
+}
+
+export interface RuntimeResourcesReadResponse {
+  turnCapacity: number;
+  activeTurnCount: number;
+  maxRetainedTurns: number;
+  retainedTurnCount: number;
+  ownerCount: number;
+  owners: RuntimeResourceOwner[];
+  ownersTruncated: boolean;
+  waiterCount: number;
+  waiters: RuntimeResourceWaiter[];
+  waitersTruncated: boolean;
+}
 
 export interface ModelCapabilities {
   contextWindow: number;
@@ -616,6 +695,9 @@ export interface ContextCompactPlan {
   retainedTurnIds: string[];
   firstKeptItemId: string | null;
   estimatedRetainedTokens: number;
+  retentionEstimateMethod?: string;
+  retentionUsageApplied?: boolean;
+  retentionUsageAnchorCount?: number;
 }
 export type ContextCompactionJobStatus = "running" | "completed" | "failed" | "cancelled";
 export interface ContextCompactStartParams {

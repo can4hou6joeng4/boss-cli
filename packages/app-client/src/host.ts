@@ -153,12 +153,15 @@ export class HarnessHostConnection {
       const route = this.#approvals.get(params.approvalId);
       if (route) {
         if (route.generation !== this.#generation) throw new Error("approval belongs to a previous connection");
-        clearTimeout(route.timer);
-        this.#approvals.delete(params.approvalId);
-        client.respond(route.requestId, { approved: params.approved });
-        return { accepted: true } as T;
+        if (this.#initialized?.capabilities?.durableApprovals !== true) {
+          clearTimeout(route.timer);
+          this.#approvals.delete(params.approvalId);
+          client.respond(route.requestId, { approved: params.approved });
+          return { accepted: true } as T;
+        }
       }
-      if (this.#initialized?.protocolVersion !== "0.1.0") throw new Error("approval is no longer pending");
+      if (this.#initialized?.capabilities?.durableApprovals !== true &&
+          this.#initialized?.protocolVersion !== "0.1.0") throw new Error("approval is no longer pending");
       // v0.1 kernels can still issue approval notifications and accept the legacy method.
     }
     return client.request<T>(method, params);

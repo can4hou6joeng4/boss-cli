@@ -126,6 +126,11 @@ class ToolSpec:
 
 
 RequestPurpose = Literal["turn", "compaction", "connection_check"]
+TransportCause = Literal[
+    "connect_timeout", "read_timeout", "write_timeout", "pool_timeout", "timeout",
+    "dns_error", "tls_error", "connect_error", "read_error", "write_error",
+    "protocol_error", "connection_error", "os_error", "unknown",
+]
 
 
 @dataclass(frozen=True)
@@ -169,6 +174,8 @@ class ModelErrorInfo:
     provider_code: str | None = None
     status_code: int | None = None
     retryable: bool | None = None
+    transport_cause: TransportCause | None = None
+    transport_code: str | None = None
 
     def event_payload(self) -> dict[str, Any]:
         """Return the camelCase public notification shape, omitting unknown facts."""
@@ -181,6 +188,10 @@ class ModelErrorInfo:
             payload["statusCode"] = self.status_code
         if self.retryable is not None:
             payload["retryable"] = self.retryable
+        if self.transport_cause is not None:
+            payload["transportCause"] = self.transport_cause
+        if self.transport_code is not None:
+            payload["transportCode"] = self.transport_code
         return payload
 
 

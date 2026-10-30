@@ -1,14 +1,22 @@
 """Read-only projections for relationships already present in durable records."""
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _AUTO_COMPACTION_REASONS = frozenset({"threshold", "budget", "overflow"})
-_QUEUE_IDENTITY_FIELDS = ("kind", "input", "expectedTurnId", "clientUserMessageId")
+_QUEUE_IDENTITY_FIELDS = ("kind", "inputDigest", "expectedTurnId", "clientUserMessageId")
 _TERMINAL_TURNS = frozenset({"completed", "interrupted", "blocked", "error"})
 _TASK_PHASES = frozenset({"admission", "prepare", "model_request", "tool_execution", "finish"})
+
+
+def _input_digest(value: str) -> str:
+    digest = hashlib.sha256()
+    for offset in range(0, len(value), 4_096):
+        digest.update(value[offset:offset + 4_096].encode("utf-8"))
+    return digest.hexdigest()
 
 
 def turn_snapshot(entries: Iterable[dict], *, turn_ids: set[str] | None = None,
@@ -27,6 +35,7 @@ def turn_snapshot(entries: Iterable[dict], *, turn_ids: set[str] | None = None,
             turn_id = payload.get("turnId")
             status = payload.get("status")
             if (not isinstance(turn_id, str) or not _IDENTIFIER.fullmatch(turn_id)
+                    or not isinstance(status, str)
                     or status not in _TERMINAL_TURNS | {"running"}):
                 continue
             if (turn_ids is not None and turn_id not in turn_ids
@@ -43,7 +52,11 @@ def turn_snapshot(entries: Iterable[dict], *, turn_ids: set[str] | None = None,
                 duplicates.add(turn_id)
             turn["status"] = status
             if "queueId" in payload:
-                turn["queueId"] = payload["queueId"]
+                queue_id = payload["queueId"]
+                if isinstance(queue_id, str) and _IDENTIFIER.fullmatch(queue_id):
+                    turn["queueId"] = queue_id
+                else:
+                    duplicates.add(turn_id)
         elif entry.get("type") == "task_phase":
             task_id = payload.get("taskId")
             phase, status = payload.get("phase"), payload.get("status")
@@ -55,7 +68,20 @@ def turn_snapshot(entries: Iterable[dict], *, turn_ids: set[str] | None = None,
                     and (turn_ids is None or task_id in turn_ids) and type(attempt) is int
                     and 1 <= attempt <= 1_000 and type(restart_limit) is int
                     and 0 <= restart_limit <= 32):
-                phases[task_id] = payload
+                phases[task_id] = {
+                    "phase": phase,
+                    "status": status,
+                    "attempt": attempt,
+                    "restartLimit": restart_limit,
+                    "recoveryReason": (payload.get("recoveryReason")
+                                       if isinstance(payload.get("recoveryReason"), str)
+                                       and payload["recoveryReason"] in {
+                                           "processExit", "terminalStateRecovered"
+                                       } else None),
+                    "resumePolicy": (payload.get("resumePolicy")
+                                     if isinstance(payload.get("resumePolicy"), str)
+                                     and payload["resumePolicy"] in {"manual", "closed"} else None),
+                }
     for task_id, phase in phases.items():
         turn = turns.get(task_id)
         if turn is None:
@@ -97,11 +123,49 @@ def queue_snapshot(entries: Iterable[dict], *, queue_ids: set[str] | None = None
         if queue_id not in states and len(states) >= limit:
             overflow = True
             continue
+        if (not isinstance(payload.get("kind"), str)
+                or not isinstance(payload.get("status"), str)):
+            conflicts.add(queue_id)
+        input_value = payload.get("input")
+        if isinstance(input_value, str):
+            try:
+                input_digest = _input_digest(input_value)
+            except UnicodeEncodeError:
+                input_digest = None
+                conflicts.add(queue_id)
+        else:
+            input_digest = None
+            conflicts.add(queue_id)
+        kind_value, status_value = payload.get("kind"), payload.get("status")
+        current = {
+            "id": queue_id,
+            "kind": (kind_value if isinstance(kind_value, str)
+                     and kind_value in {"steering", "followUp"} else None),
+            "status": (status_value if isinstance(status_value, str) and status_value in {
+                "queued", "delivering", "delivered", "paused", "cancelled"
+            } else None),
+            "turnId": payload.get("turnId"),
+            "expectedTurnId": payload.get("expectedTurnId"),
+            "clientUserMessageId": payload.get("clientUserMessageId"),
+            "inputDigest": input_digest,
+        }
+        for key in ("turnId", "expectedTurnId"):
+            value = current[key]
+            if value is not None and (not isinstance(value, str) or not _IDENTIFIER.fullmatch(value)):
+                current[key] = None
+                conflicts.add(queue_id)
+        client_id = current["clientUserMessageId"]
+        if client_id is not None and (not isinstance(client_id, str)
+                                      or re.fullmatch(r"[A-Za-z0-9_-]{1,128}", client_id) is None):
+            current["clientUserMessageId"] = None
+            conflicts.add(queue_id)
+        if current["kind"] is None or current["status"] is None:
+            conflicts.add(queue_id)
         previous = states.get(queue_id)
-        if previous is not None and any(previous.get(key) != payload.get(key)
+        if previous is not None and any(previous.get(key) != current.get(key)
                                         for key in _QUEUE_IDENTITY_FIELDS):
             conflicts.add(queue_id)
-        states[queue_id] = dict(payload)
+        states[queue_id] = current
     return states, conflicts, overflow
 
 
@@ -139,13 +203,13 @@ def user_message_refs(entries: Iterable[dict], queue_ids: set[str], *, per_queue
         if entry.get("type") != "item":
             continue
         item_id = entry.get("id")
-        if not isinstance(item_id, str):
+        if not isinstance(item_id, str) or not _IDENTIFIER.fullmatch(item_id):
             continue
         target_id = payload.get("revises")
         root = roots.get(target_id) if isinstance(target_id, str) else None
         if root is None and payload.get("kind") == "userMessage":
             queue_id = payload.get("queueId")
-            if queue_id not in queue_ids:
+            if not isinstance(queue_id, str) or queue_id not in queue_ids:
                 continue
             counts[queue_id] = counts.get(queue_id, 0) + 1
             if counts[queue_id] > 1:
@@ -154,7 +218,17 @@ def user_message_refs(entries: Iterable[dict], queue_ids: set[str], *, per_queue
                 continue
             root = len(refs)
             explicit_turn_id = payload.get("turnId")
-            refs.append({**{key: payload[key] for key in fields if key in payload},
+            if (explicit_turn_id is not None and (not isinstance(explicit_turn_id, str)
+                    or not _IDENTIFIER.fullmatch(explicit_turn_id))):
+                explicit_turn_id = ""
+                conflicts.add(queue_id)
+            source = payload.get("source")
+            if source not in (None, "steering"):
+                source = "invalid"
+                conflicts.add(queue_id)
+            refs.append({"kind": "userMessage", "queueId": queue_id,
+                         **({"turnId": explicit_turn_id} if "turnId" in payload else {}),
+                         **({"source": source} if "source" in payload else {}),
                          "id": item_id, "inferredTurnId": explicit_turn_id
                          if isinstance(explicit_turn_id, str) else active_turn,
                          "revisionOverflow": False})
@@ -163,12 +237,12 @@ def user_message_refs(entries: Iterable[dict], queue_ids: set[str], *, per_queue
             else:
                 refs[root]["revisionOverflow"] = True
                 conflicts.add(queue_id)
-            if not isinstance(explicit_turn_id, str) and active_turn is None and not first_turn_seen:
+            if explicit_turn_id is None and active_turn is None and not first_turn_seen:
                 pending.append(root)
         elif root is not None:
             reference = refs[root]
             previous_queue_id = reference.get("queueId")
-            if previous_queue_id not in queue_ids:
+            if not isinstance(previous_queue_id, str) or previous_queue_id not in queue_ids:
                 continue
             if len(roots) >= revision_id_limit and item_id not in roots:
                 reference["revisionOverflow"] = True
@@ -177,11 +251,26 @@ def user_message_refs(entries: Iterable[dict], queue_ids: set[str], *, per_queue
             roots[item_id] = root
             for key in fields:
                 if key in payload:
-                    if key == "queueId" and payload[key] != previous_queue_id:
+                    value = payload[key]
+                    if key == "queueId":
+                        if value != previous_queue_id:
+                            conflicts.add(previous_queue_id)
+                            if isinstance(value, str) and value in queue_ids:
+                                conflicts.add(value)
+                        continue
+                    value = payload[key]
+                    if key == "turnId" and value is not None and (
+                            not isinstance(value, str) or not _IDENTIFIER.fullmatch(value)):
+                        value = ""
                         conflicts.add(previous_queue_id)
-                        if payload[key] in queue_ids:
-                            conflicts.add(payload[key])
-                    reference[key] = payload[key]
+                    elif key == "source":
+                        if value not in (None, "steering"):
+                            value = "invalid"
+                            conflicts.add(previous_queue_id)
+                    elif key == "kind" and value != "userMessage":
+                        value = "invalid"
+                        conflicts.add(previous_queue_id)
+                    reference[key] = value
         if root is not None and item_id not in roots and len(roots) < revision_id_limit:
             roots.setdefault(item_id, root)
     return refs, duplicates, conflicts
@@ -280,7 +369,7 @@ def resolve_compaction_relation(job: dict, thread_id: str, turns: list[dict], *,
             return {"ownership": "conflict", "turnId": None}
         return {"ownership": "independent", "turnId": None}
     if (not isinstance(turn_id, str) or not _IDENTIFIER.fullmatch(turn_id)
-            or reason not in _AUTO_COMPACTION_REASONS):
+            or not isinstance(reason, str) or reason not in _AUTO_COMPACTION_REASONS):
         return {"ownership": "unresolved", "turnId": None}
     if checkpoint_turn_id is not None and checkpoint_turn_id != turn_id:
         return {"ownership": "conflict", "turnId": None}
@@ -294,6 +383,8 @@ def resolve_compaction_relation(job: dict, thread_id: str, turns: list[dict], *,
 
 def recovery_policy(kind: str, status: str, *, runtime_owned: bool,
                     persisted_policy: str | None = None) -> str:
+    if not isinstance(status, str):
+        return "manual_review"
     if runtime_owned:
         return "process_owned"
     if (kind == "turn" and persisted_policy == "manual" and status == "interrupted"):

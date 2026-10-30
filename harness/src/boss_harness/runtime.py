@@ -106,7 +106,8 @@ class RuntimeManager:
         with self.lock:
             self.check_admission(thread_id)
             job = {"threadId": thread_id, "turnId": uuid.uuid4().hex, "input": text,
-                   "cancel": threading.Event(), "runner": runner, "worker": None}
+                   "cancel": threading.Event(), "runner": runner, "worker": None,
+                   "_startedMonotonic": time.monotonic()}
             self.active[thread_id] = job
             self.jobs[job["turnId"]] = job
             return job

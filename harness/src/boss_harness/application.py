@@ -17,6 +17,7 @@ import math
 import os
 from pathlib import Path
 import re
+from itertools import islice
 import threading
 import time
 import uuid
@@ -26,7 +27,7 @@ from typing import Any, Callable, Iterator
 from boss_harness import __version__
 from boss_harness.agent import TurnRunner
 from boss_harness.bridge_lifecycle import BridgeLifecycle
-from boss_harness.context import ContextBudgetExceeded, ContextService, request_fingerprint
+from boss_harness.context import ContextBudgetExceeded, ContextService, describe_request, request_fingerprint
 from boss_harness.connections import ConnectionChecks
 from boss_harness.models import ModelConfig, Provider, resolve_config
 from boss_harness.models.secret import redact_secrets
@@ -40,8 +41,8 @@ from boss_harness.request_policy import ModelRequestRejected, check_model_reques
 from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
 from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUncertain, Entry,
-                                  ItemLookupError, SessionEntriesSnapshot, SessionStore,
-                                  ThreadNotFound, ToolRevisionPersistenceError)
+                                  ApprovalDecisionError, ItemLookupError, SessionEntriesSnapshot,
+                                  SessionStore, ThreadNotFound, ToolRevisionPersistenceError)
 from boss_harness.snapshot_store import SnapshotStore
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
 from boss_harness.tool_bundle import ToolBundle
@@ -59,8 +60,19 @@ from boss_harness.turn_limits import model_request_limit, model_request_limit_fr
 PROTOCOL_VERSION = "0.2.0"
 DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
 MAX_RETAINED_COMPACTION_JOBS = 64
+MAX_RUNTIME_RESOURCE_WAITERS = 32
+MAX_RUNTIME_RESOURCE_OWNERS = 32
 MAX_COMPACTION_ERROR_CHARACTERS = 2_048
 MAX_TASK_RELATIONS = 256
+
+
+def _record_checkpoint_turn(turns_by_job: dict[str, set[str]], job_id: str,
+                           turn_id: Any) -> None:
+    candidate = (turn_id if isinstance(turn_id, str)
+                 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", turn_id) else "")
+    values = turns_by_job.setdefault(job_id, set())
+    if candidate in values or len(values) < 2:
+        values.add(candidate)
 
 
 class _CompactionFailure(Exception):
@@ -258,6 +270,7 @@ class ApplicationService:
             self._follow_up_admission_lock = threading.RLock()
             self._capacity_waiters: deque[str] = deque()
             self._capacity_waiter_ids: set[str] = set()
+            self._capacity_waiter_since: dict[str, float] = {}
             # Compaction jobs are independent of business turns and never own a
             # tool bridge. The per-thread index prevents a new turn from
             # changing the source while a summary is being generated.
@@ -294,6 +307,10 @@ class ApplicationService:
             self._register()
             server.before_dispatch = self._check_ready
             self.runtimes.start_capacity_notifications(self._drain_capacity_waiters)
+            self._approval_expiry_stop = threading.Event()
+            self._approval_expiry_thread = threading.Thread(
+                target=self._approval_expiry_loop, name="approval-expiry", daemon=True)
+            self._approval_expiry_thread.start()
         except Exception:
             if hasattr(self, "runtimes"):
                 self.runtimes.stop()
@@ -407,7 +424,9 @@ class ApplicationService:
             "turn/start": self.on_turn_start, "turn/interrupt": self.on_turn_interrupt,
             "turn/steer": self.on_turn_steer, "turn/read": self.on_turn_read,
             "task/read": self.on_task_read,
-            "approval/respond": self.on_approval_respond, "event/list": self.on_event_list,
+            "runtime/resources/read": self.on_runtime_resources_read,
+            "approval/list": self.on_approval_list, "approval/respond": self.on_approval_respond,
+            "event/list": self.on_event_list,
             "queue/add": self.on_queue_add, "queue/list": self.on_queue_list,
             "queue/remove": self.on_queue_remove, "tool/list": self.on_tool_list,
             "model/list": self.on_model_list, "config/read": self.on_config_read,
@@ -474,7 +493,8 @@ class ApplicationService:
         self._state = "initializing" if protocol == PROTOCOL_VERSION else "ready"
         return {"serverName": "boss-harness", "serverVersion": __version__, "protocolVersion": protocol,
             "capabilities": {"bidirectionalRequests": True, "eventReplay": True,
-                             "pagination": True, "parallelThreads": True},
+                             "pagination": True, "parallelThreads": True,
+                             "durableApprovals": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -674,25 +694,47 @@ class ApplicationService:
                 turn_id = payload.get("turnId")
                 if (kind == "turn" and isinstance(job_id, str)
                         and (turn_id == task_id or job_id in relevant_job_ids)):
+                    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", job_id):
+                        checkpoint_overflow = True
+                        continue
                     if job_id in checkpoint_jobs_by_turn or len(checkpoint_jobs_by_turn) < MAX_TASK_RELATIONS + 1:
                         checkpoint_ids.add(job_id)
-                        checkpoint_turns.setdefault(job_id, set()).add(turn_id if isinstance(turn_id, str) else "")
+                        _record_checkpoint_turn(checkpoint_turns, job_id, turn_id)
                         checkpoint_jobs_by_turn[job_id] = {"jobId": job_id, "threadId": thread_id,
-                            "turnId": turn_id, "reason": payload.get("reason"), "status": "completed"}
+                            "turnId": turn_id if isinstance(turn_id, str) and re.fullmatch(
+                                r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", turn_id) else None,
+                            "reason": payload.get("reason") if isinstance(payload.get("reason"), str)
+                            and payload["reason"] in {"threshold", "budget", "overflow"} else None,
+                            "status": "completed"}
                     else:
                         checkpoint_overflow = True
                 elif kind == "compaction" and (job_id == task_id or entry.get("id") == task_id):
-                    if len(checkpoint_entries) < 3:
-                        checkpoint_entries.append({"entryId": entry.get("id"), "jobId": job_id,
-                                                   "turnId": turn_id, "reason": payload.get("reason"),
-                                                   "origin": payload.get("origin")})
-                    else:
+                    entry_id = (entry.get("id") if isinstance(entry.get("id"), str)
+                                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", entry["id"])
+                                else None)
+                    valid_job_id = (job_id if isinstance(job_id, str) and re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", job_id) else None)
+                    checkpoint_turn_id = (turn_id if isinstance(turn_id, str) and re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", turn_id) else None)
+                    matches_job = valid_job_id == task_id
+                    matches_independent_entry = entry_id == task_id and job_id is None
+                    if matches_job or matches_independent_entry:
+                        if len(checkpoint_entries) < 3:
+                            checkpoint_entries.append({"entryId": entry_id,
+                                "jobId": valid_job_id if matches_job else None,
+                                "turnId": checkpoint_turn_id,
+                                "reason": payload.get("reason") if isinstance(payload.get("reason"), str)
+                                and payload["reason"] in {"threshold", "budget", "overflow"} else None,
+                                "origin": payload.get("origin") if isinstance(payload.get("origin"), str)
+                                and payload["origin"] in {"user", "model"} else None})
+                        else:
+                            checkpoint_overflow = True
+                    elif entry_id == task_id:
                         checkpoint_overflow = True
-                    if isinstance(job_id, str):
-                        checkpoint_ids.add(job_id)
-                        if isinstance(turn_id, str):
-                            checkpoint_turns.setdefault(job_id, set()).add(turn_id)
-                    elif entry.get("id") == task_id:
+                    if matches_job:
+                        checkpoint_ids.add(task_id)
+                        _record_checkpoint_turn(checkpoint_turns, task_id, checkpoint_turn_id)
+                    elif matches_independent_entry:
                         checkpoint_ids.add(task_id)
 
             if kind == "turn":
@@ -1010,9 +1052,10 @@ class ApplicationService:
 
     def on_thread_archive(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")
-        with self.runtimes.lock:
+        with self._follow_up_admission_lock, self.runtimes.lock:
             self._idle(thread_id)
             self.queue.pause(thread_id)
+            self._forget_capacity_waiter_locked(thread_id)
             thread = self.sessions.archive_thread(thread_id)
         self.events.emit("thread/archived", {"threadId": thread_id})
         return {"thread": thread}
@@ -1059,6 +1102,7 @@ class ApplicationService:
                         self._retire_deleted_compaction_jobs_locked(thread_id)
                         self._capacity_waiter_ids.discard(thread_id)
                         self._capacity_waiters = deque(value for value in self._capacity_waiters if value != thread_id)
+                        self._capacity_waiter_since.pop(thread_id, None)
                     if pending_deletion:
                         raise RpcError(-32012, "会话删除尚未完成；该会话已隐藏，内核重启后会继续清理",
                                        {"code": "THREAD_DELETE_INCOMPLETE", "threadId": thread_id}) from None
@@ -1068,6 +1112,7 @@ class ApplicationService:
                 self._tool_persistence_fences.discard(thread_id)
                 self._capacity_waiter_ids.discard(thread_id)
                 self._capacity_waiters = deque(value for value in self._capacity_waiters if value != thread_id)
+                self._capacity_waiter_since.pop(thread_id, None)
                 with self.queue.lock:
                     self.queue._pending_pauses.pop(thread_id, None)
                 if notify_deleted:
@@ -1430,6 +1475,8 @@ class ApplicationService:
                 # dispatch/observer failure must not rewrite the compaction
                 # result or turn it into a start failure.
                 pass
+        elif job.get("status") in {"failed", "cancelled"}:
+            self._forget_capacity_waiter(job["threadId"])
         self._close_application_resources_if_idle()
 
     def _retire_compaction_locked(self, job: dict) -> bool:
@@ -1548,7 +1595,21 @@ class ApplicationService:
         keep = params.get("keepRecentTokens")
         if "keepRecentTokens" in params and (type(keep) is not int or not 1 <= keep <= 1_000_000):
             raise ValueError("keepRecentTokens 必须是 1 到 1000000 之间的整数")
-        return self.context.compaction_plan(_text(params, "threadId"), through, keep_recent_tokens=keep)
+        thread_id = _text(params, "threadId")
+        entries = self.sessions.read_entries(thread_id)
+        thread = self.sessions.get_thread(thread_id)
+        config = self._model_config(thread, {})
+        read_only = thread.get("toolPolicy") == "readOnly"
+        request = ModelRequest(model=config.model,
+            system=self._system_prompt(read_only, ""), messages=self.context.history(thread_id, entries=entries),
+            tools=model_tool_specs(self.registry.specs(read_only=read_only)),
+            max_tokens=config.max_tokens, effort=config.effort, thinking=config.thinking)
+        request = self._apply_session_reasoning(thread_id, config, request)
+        budget = describe_request(request, self.model_catalog.resolve(config.provider, request.model),
+                                  provider=config.provider)
+        request = replace(request, max_tokens=budget["outputReserve"])
+        return self.context.compaction_plan(thread_id, through, keep_recent_tokens=keep,
+            _retention_request=request, _retention_provider=config.provider, _entries=entries)
 
     def on_context_compact_start(self, params: dict | None) -> dict:
         params = params or {}
@@ -1588,7 +1649,7 @@ class ApplicationService:
                    "processedCharacters": 0, "totalCharacters": len(source),
                    "retainedItemCount": plan["retainedItemCount"], "firstKeptItemId": plan["firstKeptItemId"],
                    "estimatedRetainedTokens": plan["estimatedRetainedTokens"],
-                   "_launch_done": launch_done}
+                   "_launch_done": launch_done, "_startedMonotonic": time.monotonic()}
             worker = threading.Thread(target=self._run_compaction, args=(job,),
                                       name=f"compact-{job_id[:8]}", daemon=True)
             job["worker"] = worker
@@ -1887,7 +1948,8 @@ class ApplicationService:
                  budget["inputBudget"] * policy.trigger_percent)):
             turn["automaticCompactionRequestIndex"] = request_index
             replacement = self._compact_during_turn(turn, request,
-                "threshold" if budget["withinBudget"] else "budget", required=False)
+                "threshold" if budget["withinBudget"] else "budget", required=False,
+                retention_request=replace(request, max_tokens=budget["outputReserve"]))
             if replacement is not None:
                 replacement = self._apply_session_reasoning(turn["threadId"], config, replacement)
                 return self.context.prepare(replacement, capabilities, provider=config.provider,
@@ -1897,7 +1959,8 @@ class ApplicationService:
         return prepared, budget
 
     def _compact_during_turn(self, turn: dict, request: ModelRequest, reason: str,
-                             *, required: bool) -> ModelRequest | None:
+                             *, required: bool,
+                             retention_request: ModelRequest | None = None) -> ModelRequest | None:
         runner, thread_id = turn["runner"], turn["threadId"]
         config = self._compaction_model_config(turn["compactionPolicy"], runner.config,
                                                session_effort=request.effort)
@@ -1916,7 +1979,9 @@ class ApplicationService:
                 try:
                     plan = self.context.compaction_plan(thread_id,
                         keep_recent_tokens=turn["compactionPolicy"].keep_recent_tokens,
-                        _active_turn_id=turn["turnId"])
+                        _active_turn_id=turn["turnId"],
+                        _retention_request=retention_request or request,
+                        _retention_provider=runner.config.provider)
                     _, source = self.context.compaction_material(thread_id, plan["throughTurnId"],
                         plan["sourceDigest"], _active_turn_id=turn["turnId"])
                 except NoCompactionSource:
@@ -1942,6 +2007,7 @@ class ApplicationService:
                     "worker": turn["worker"], "status": "running", "reason": reason,
                     "modelRequestCount": 0, "processedCharacters": 0, "totalCharacters": len(source),
                     "retainedItemCount": plan["retainedItemCount"], "firstKeptItemId": plan["firstKeptItemId"],
+                    "_startedMonotonic": time.monotonic(),
                     "estimatedRetainedTokens": plan["estimatedRetainedTokens"]}
                 self._compaction_jobs[job_id] = job
                 self._compaction_by_thread[thread_id] = job_id
@@ -2318,10 +2384,27 @@ class ApplicationService:
                 result = future.result()
                 if not isinstance(result, dict) or type(result.get("approved")) is not bool:
                     raise ValueError("审批响应无效")
-                job["runner"].resolve_approval(approval_id, result["approved"])
+                job["runner"].resolve_approval(approval_id, result["approved"], persist=lambda:
+                    self.sessions.decide_approval(approval_id, result["approved"], live_owner=True))
             except Exception:
                 job["runner"].expire_approval(approval_id)
         request.future.add_done_callback(completed)
+
+    def _approval_expiry_loop(self) -> None:
+        try:
+            while not self._approval_expiry_stop.is_set():
+                try:
+                    for approval_id in self.sessions.expired_pending_approvals():
+                        result = self.sessions.expire_approval(approval_id)
+                        if result is not None:
+                            self._publish_recovered_approval_decision(result)
+                    deadline = self.sessions.next_recoverable_approval_deadline()
+                    delay = (5.0 if deadline is None else min(5.0, max(0.05, deadline - time.time())))
+                except Exception:
+                    delay = 5.0
+                self._approval_expiry_stop.wait(delay)
+        finally:
+            self._close_application_resources_if_idle()
 
     def _run_turn(self, job: dict) -> None:
         status = None
@@ -2333,6 +2416,8 @@ class ApplicationService:
                     with self.runtimes.lock:
                         self._follow_up_workers[job["turnId"]] = threading.current_thread()
                         self._follow_up_worker_threads[job["turnId"]] = job["threadId"]
+                else:
+                    self._forget_capacity_waiter(job["threadId"])
                 try:
                     if job["runner"] is not self.runner:
                         self.bridge_lifecycle.close(job["runner"].tool_bridge)
@@ -2366,6 +2451,8 @@ class ApplicationService:
         with self.runtimes.lock:
             if (not self.runtimes.closed or self._shutdown_preparing
                     or self.runtimes.jobs or not self.runtimes.capacity_notifications_stopped
+                    or (self._approval_expiry_thread.is_alive()
+                        and self._approval_expiry_thread is not threading.current_thread())
                     or self._compaction_by_thread
                     or self._follow_up_workers or self._follow_up_dispatches or self._receipt_notices
                     or not self.lifecycle_hooks.closed):
@@ -2511,20 +2598,80 @@ class ApplicationService:
             abort.start()
         return {"interrupted": True}
 
+    def _publish_recovered_approval_decision(self, result: dict) -> None:
+        if not result.get("changed"):
+            return
+        payload = {"threadId": result["threadId"], "turnId": result.get("turnId"),
+                   "itemId": result["itemId"], "approval": result["approval"]}
+        self.events.emit("approval/decided", payload)
+        self.events.emit("toolCall/completed", {
+            **payload, "toolName": result["toolName"], "status": result["status"], "ok": False,
+            "executionState": result["executionState"],
+            "error": {"code": result.get("errorCode"), "message": result.get("resultSummary")},
+            "resultSummary": result.get("resultSummary"),
+        })
+
+    def on_approval_list(self, params: dict | None) -> dict:
+        if params is not None and not isinstance(params, dict):
+            raise ValueError("审批查询参数必须是对象")
+        params = params or {}
+        if set(params) - {"threadId", "limit"}:
+            raise ValueError("审批查询只接受 threadId 和 limit")
+        thread_id = params.get("threadId")
+        if thread_id is not None:
+            thread_id = _text(params, "threadId", maximum=64)
+        limit = params.get("limit", 100)
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("limit 必须是 1 到 200 之间的整数")
+        return {"approvals": self.sessions.pending_approvals(thread_id, limit=limit)}
+
     def on_approval_respond(self, params: dict | None) -> dict:
-        approval_id = _text(params, "approvalId")
-        approved = (params or {}).get("approved")
+        if not isinstance(params, dict) or set(params) != {"approvalId", "approved"}:
+            raise ValueError("审批响应只能包含 approvalId 和 approved")
+        approval_id = _text(params, "approvalId", maximum=64)
+        approved = params["approved"]
         if type(approved) is not bool:
             raise ValueError("approved 必须是布尔值")
         runners = [job["runner"] for job in tuple(self.runtimes.active.values())]
         if self.runner not in runners:
             runners.append(self.runner)
-        if not any(runner.resolve_approval(approval_id, approved) for runner in runners):
-            raise ValueError("审批不存在、已处理或已过期")
+        resolved_live = False
+        live_result: dict | None = None
+        for runner in runners:
+            persisted: dict[str, Any] = {}
+
+            def persist_decision() -> dict[str, Any]:
+                result = self.sessions.decide_approval(approval_id, approved, live_owner=True)
+                persisted.update(result)
+                return result
+
+            try:
+                resolved_live = runner.resolve_approval(approval_id, approved, persist=persist_decision)
+            except ApprovalDecisionError as exc:
+                raise RpcError(-32004, str(exc), {"code": exc.code, "approvalId": approval_id}) from None
+            if resolved_live:
+                live_result = persisted
+                break
         request_id = self._server_approvals.pop(approval_id, None)
         if request_id:
             self.server.cancel_request(request_id)
-        return {"approvalId": approval_id, "approved": approved}
+        if resolved_live:
+            if live_result and live_result.get("decision") == "expired":
+                return {"approvalId": approval_id, "approved": False, "accepted": False,
+                        "expired": True, "executed": False, "executionState": "not_executed"}
+            return {"approvalId": approval_id, "approved": approved, "accepted": True,
+                    "durable": True, "executionPending": True}
+        try:
+            result = self.sessions.decide_approval(approval_id, approved, live_owner=False)
+        except ApprovalDecisionError as exc:
+            raise RpcError(-32004, str(exc), {"code": exc.code, "approvalId": approval_id}) from None
+        self._publish_recovered_approval_decision(result)
+        if result["decision"] == "expired":
+            return {"approvalId": approval_id, "approved": False, "accepted": False,
+                    "expired": True, "executed": False, "executionState": "not_executed"}
+        return {"approvalId": approval_id, "approved": approved, "accepted": True,
+                "executed": result["executed"], "recovered": True,
+                "executionState": result["executionState"], "status": result["status"]}
 
     def _stage_steering(self, job: dict) -> tuple[list[UserMessage], Callable[[], None]]:
         items = []
@@ -2596,8 +2743,11 @@ class ApplicationService:
 
     def on_queue_remove(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")
-        with self.runtimes.lock:
+        with self._follow_up_admission_lock, self.runtimes.lock:
             item = self.queue.transition(thread_id, _text(params, "queueId"), "cancelled")
+            if not any(q["kind"] == "followUp" and q["status"] == "queued"
+                       for q in self.queue.list(thread_id)):
+                self._forget_capacity_waiter_locked(thread_id)
         self.events.emit("queue/updated", {"threadId": thread_id, "queueId": item["id"]})
         return {"queueItem": item}
 
@@ -2609,6 +2759,7 @@ class ApplicationService:
             if thread_id not in self._capacity_waiter_ids:
                 self._capacity_waiter_ids.add(thread_id)
                 self._capacity_waiters.append(thread_id)
+                self._capacity_waiter_since[thread_id] = time.monotonic()
             self._drain_capacity_waiters_locked()
 
     def _drain_capacity_waiters(self) -> None:
@@ -2624,13 +2775,74 @@ class ApplicationService:
                     return
                 thread_id = self._capacity_waiters.popleft()
                 self._capacity_waiter_ids.discard(thread_id)
+                waiting_since = self._capacity_waiter_since.pop(thread_id, time.monotonic())
             outcome = self._dispatch_follow_up(thread_id)
             if outcome == "capacity":
                 with self.runtimes.lock:
                     if not self.runtimes.closed and thread_id not in self._capacity_waiter_ids:
                         self._capacity_waiters.appendleft(thread_id)
                         self._capacity_waiter_ids.add(thread_id)
+                        self._capacity_waiter_since[thread_id] = waiting_since
                 return
+
+    def _forget_capacity_waiter_locked(self, thread_id: str) -> None:
+        self._capacity_waiter_ids.discard(thread_id)
+        self._capacity_waiters = deque(value for value in self._capacity_waiters if value != thread_id)
+        self._capacity_waiter_since.pop(thread_id, None)
+
+    def _forget_capacity_waiter(self, thread_id: str) -> None:
+        with self._follow_up_admission_lock:
+            self._forget_capacity_waiter_locked(thread_id)
+
+    def on_runtime_resources_read(self, params: dict | None) -> dict:
+        if params not in (None, {}):
+            raise ValueError("runtime/resources/read 不接受参数")
+        now = time.monotonic()
+        with self._follow_up_admission_lock, self.runtimes.lock:
+            owners = []
+            for job in self.runtimes.jobs.values():
+                abort = job.get("_shutdown_abort")
+                active = self.runtimes.active.get(job["threadId"]) is job
+                phase = job.get("_taskPhase")
+                owners.append({
+                    "kind": "turn", "id": job["turnId"], "threadId": job["threadId"],
+                    "state": "active" if active else "cleanup",
+                    "ageSeconds": round(max(0.0, now - job.get("_startedMonotonic", now)), 3),
+                    "cancelRequested": job["cancel"].is_set(),
+                    "abortPending": abort is not None and not abort.done.is_set(),
+                    "phase": phase.get("phase") if isinstance(phase, dict) else None,
+                    "phaseStatus": phase.get("status") if isinstance(phase, dict) else None,
+                })
+            for job_id in self._compaction_by_thread.values():
+                job = self._compaction_jobs.get(job_id)
+                if job is None:
+                    continue
+                abort = job.get("_shutdown_abort")
+                owners.append({
+                    "kind": "automaticCompaction" if "turnId" in job else "manualCompaction",
+                    "id": job["jobId"], "threadId": job["threadId"],
+                    "state": "active" if job.get("status") == "running" else "cleanup",
+                    "ageSeconds": round(max(0.0, now - job.get("_startedMonotonic", now)), 3),
+                    "cancelRequested": job["cancel"].is_set(),
+                    "abortPending": abort is not None and not abort.done.is_set(),
+                    "phase": "compaction", "phaseStatus": job.get("status"),
+                })
+            waiters = [{
+                "threadId": thread_id, "position": index + 1,
+                "waitingSeconds": round(max(0.0, now - self._capacity_waiter_since.get(thread_id, now)), 3),
+            } for index, thread_id in enumerate(islice(self._capacity_waiters,
+                                                       MAX_RUNTIME_RESOURCE_WAITERS))]
+            return {
+                "turnCapacity": self.runtimes.capacity,
+                "activeTurnCount": len(self.runtimes.active),
+                "maxRetainedTurns": self.runtimes.owner_capacity,
+                "retainedTurnCount": len(self.runtimes.jobs),
+                "ownerCount": len(owners),
+                "owners": owners[:MAX_RUNTIME_RESOURCE_OWNERS],
+                "ownersTruncated": len(owners) > MAX_RUNTIME_RESOURCE_OWNERS,
+                "waiterCount": len(self._capacity_waiters), "waiters": waiters,
+                "waitersTruncated": len(self._capacity_waiters) > MAX_RUNTIME_RESOURCE_WAITERS,
+            }
 
     def _dispatch_follow_up(self, thread_id: str) -> str:
         with self.runtimes.lock:
@@ -2761,6 +2973,7 @@ class ApplicationService:
 
     def close(self) -> None:
         deadline = time.monotonic() + 2
+        self._approval_expiry_stop.set()
         with self.runtimes.lock:
             self._state = "stopped"
             self._shutdown_deadline = (deadline if self._shutdown_deadline is None
@@ -2771,6 +2984,7 @@ class ApplicationService:
         with self._follow_up_admission_lock, self.runtimes.lock:
             self._capacity_waiters.clear()
             self._capacity_waiter_ids.clear()
+            self._capacity_waiter_since.clear()
         try:
             # Do not invert begin_login's connections -> runtime lock order.
             # Dispatch every cancel before any potentially blocking abort hook.
@@ -2784,6 +2998,7 @@ class ApplicationService:
         self.connections.wait_for_stop(deadline)
         self._wait_compaction_jobs(deadline)
         self.runtimes.wait_for_stop(deadline)
+        join_until([self._approval_expiry_thread], deadline)
         with self.runtimes.lock:
             follow_up_workers = list(self._follow_up_workers.values())
             dispatches = list(self._follow_up_dispatches.values())

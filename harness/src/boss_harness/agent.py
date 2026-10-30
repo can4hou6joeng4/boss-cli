@@ -16,6 +16,7 @@ import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, field, replace
+from datetime import datetime, timezone
 from typing import Any
 
 from boss_harness.context import ContextBudgetExceeded, messages_from_items
@@ -36,6 +37,7 @@ from boss_harness.models.continuation import (
     anthropic_continuation,
 )
 from boss_harness.models.output_budget import OutputBudgetExceeded, ResponseTextBudget, utf8_chunks
+from boss_harness.models.errors import transport_diagnostic
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.types import (
     DEFAULT_MODEL_TOOL_RESULT_BYTES, ChatMessage, ModelRequest, ModelErrorInfo, TextBlock, ThinkingBlock,
@@ -44,7 +46,8 @@ from boss_harness.model_tools import (
     MODEL_RESULT_READ_SPEC, MODEL_RESULT_READ_TOOL, model_tool_specs,
     read_model_tool_result, validate_model_result_read,
 )
-from boss_harness.session import Entry, SessionStore, ToolRevisionPersistenceError
+from boss_harness.session import (Entry, SessionStore, ToolRevisionPersistenceError,
+                                  approval_parameters_digest)
 from boss_harness.toolkit import ToolResult, snapshot_result
 from boss_harness.tool_results import (
     model_result_content, model_result_for_item, project_error, project_item,
@@ -83,6 +86,7 @@ class _ApprovalWait:
     event: threading.Event = field(default_factory=threading.Event)
     decision: str | None = None
     deadline: float = float("inf")
+    decision_record: dict[str, Any] | None = None
 
 
 class TurnRunner:
@@ -187,14 +191,18 @@ class TurnRunner:
     def cancelled(self) -> bool:
         return self._cancel is not None and self._cancel.is_set()
 
-    def resolve_approval(self, approval_id: str, approved: bool) -> bool:
+    def resolve_approval(self, approval_id: str, approved: bool,
+                         persist: Callable[[], dict[str, Any]] | None = None) -> bool:
         """落下一次审批裁决；返回 False 表示这个 id 不认得（已过期或不存在）。"""
         with self._approval_lock:
             wait = self._pending_approvals.get(approval_id)
             if (wait is None or wait.decision is not None or self.cancelled()
                     or time.monotonic() >= wait.deadline):
                 return False
-            wait.decision = "approve" if approved else "deny"
+            if persist is not None:
+                wait.decision_record = persist()
+            wait.decision = (wait.decision_record.get("decision") if wait.decision_record
+                             else "approve" if approved else "deny")
             wait.event.set()
             return True
 
@@ -209,13 +217,15 @@ class TurnRunner:
         """等一次审批；超时或回合被取消都返回未批准。"""
         wait = self._pending_approvals[approval_id]
         while True:
-            if self.cancelled():
-                return "expired"
-            remaining = wait.deadline - time.monotonic()
-            if remaining <= 0:
-                return "expired"
-            if wait.event.wait(min(0.2, remaining)):
-                return wait.decision or "deny"
+            with self._approval_lock:
+                if wait.decision is not None:
+                    return wait.decision
+                if self.cancelled() or time.monotonic() >= wait.deadline:
+                    wait.decision = "expired"
+                    wait.event.set()
+                    return "expired"
+                remaining = wait.deadline - time.monotonic()
+            wait.event.wait(min(0.2, remaining))
 
     def safe_error(self, error: object) -> str:
         secrets = (self.config.api_key.get(),) if self.config.api_key else ()
@@ -305,7 +315,7 @@ class TurnRunner:
         if approval is not None:
             payload["approval"] = dict(approval)
         self.sessions.append(thread_id, Entry(type="item", payload=payload))
-        if approval is not None and phase in {"approved", "not_approved"}:
+        if approval is not None and phase in {"approved", "not_approved", "not_executed"}:
             self.notify("approval/decided", {"threadId": thread_id, "itemId": entry.id, "approval": dict(approval)})
 
     def finish_tool_call(
@@ -426,6 +436,7 @@ class TurnRunner:
                 "toolName": name,
                 "description": f"需要你批准后才会执行：{name}",
                 "params": arguments,
+                "paramsDigest": approval_parameters_digest(arguments),
                 "consequential": True,
                 "deadline": time.time() + self.approval_timeout,
             }
@@ -452,17 +463,27 @@ class TurnRunner:
             )
             decision = self._await_approval(approval["approvalId"])
             with self._approval_lock:
-                self._pending_approvals.pop(approval["approvalId"], None)
+                wait = self._pending_approvals.pop(approval["approvalId"], None)
             approval["decision"] = decision
+            if wait is not None and wait.decision_record is not None:
+                approval.update(wait.decision_record["approval"])
+            else:
+                approval["decidedAt"] = datetime.now(timezone.utc).isoformat()
             # Persist consent before any side effect. A restart never consumes it again.
-            self._tool_phase(thread_id, entry, "approved" if decision == "approve" else "not_approved", approval)
+            decision_phase = ("approved" if decision == "approve" else
+                              "not_approved" if decision == "deny" else "not_executed")
+            self._tool_phase(thread_id, entry, decision_phase, approval)
             if decision != "approve":
-                message = "用户拒绝了这个操作" if decision == "deny" else "审批超时，按未批准处理"
+                message = ("用户拒绝了这个操作" if decision == "deny" else
+                           "审批已过期或等待已取消，工具未执行")
+                error_code = "NOT_APPROVED" if decision == "deny" else (
+                    "CANCELLED" if self.cancelled() else "APPROVAL_EXPIRED")
+                execution_state = "not_approved" if decision == "deny" else "not_executed"
                 denied = ToolResult(
-                    ok=False, command=name, error={"code": "NOT_APPROVED", "message": message}
+                    ok=False, command=name, error={"code": error_code, "message": message}
                 )
                 self.finish_tool_call(thread_id, entry, name, denied, call_id, approval,
-                                      "not_approved")
+                                      execution_state)
                 return ToolResultItem(
                     tool_call_id=call_id or entry.id,
                     content=model_result(denied, source=tool_source(thread_id, entry, name),
@@ -978,6 +999,9 @@ class TurnRunner:
                     info = getattr(event, "error_info", None)
                     if isinstance(info, ModelErrorInfo) and info.provider == self.config.provider:
                         self.last_stream_error = info
+                        diagnostic = transport_diagnostic(info)
+                        if diagnostic is not None:
+                            error = f"{error}（传输诊断：{diagnostic}）"
                     break
         except Exception as exc:
             if self.cancelled():
