@@ -2211,9 +2211,11 @@ class SessionStore:
             previous = connection.execute("SELECT event_id FROM events WHERE cursor=?", (cursor,)).fetchone()
             if previous and previous["event_id"] != event_id:
                 raise ValueError("事件日志存在重复游标，请保留原文件后恢复")
-            connection.execute("""INSERT INTO events(cursor,event_id,method,thread_id,params_json)
-                VALUES(?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING""",
-                (cursor, event_id, method, thread_id, _json(params)))
+            try:
+                connection.execute("""INSERT INTO events(cursor,event_id,method,thread_id,params_json)
+                    VALUES(?,?,?,?,?)""", (cursor, event_id, method, thread_id, _json(params)))
+            except sqlite3.IntegrityError:
+                raise ValueError(f"事件日志第 {line_number} 行包含重复 eventId，读取已停止") from None
         connection.execute("INSERT INTO checkpoints(name,value) VALUES('events',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", (fingerprint,))
 
     def append_event(self, method: str, params: dict[str, Any] | None = None) -> dict:
