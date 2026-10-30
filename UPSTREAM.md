@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第九十四轮：等待 Harness 子进程完成优雅关闭
+
+参考 Pi MIT [PR #11544](https://github.com/earendil-works/pi/pull/11544)，已合入 Pi main，合并提交 `a87b742ff4ce262c07b7830a25c73c1442dab41b`。该问题报告指出，客户端结束 daemon stdin 后立即发 `SIGTERM` 会跳过 EOF 收尾；PR 的 Unix daemon signal handling 不适用于本项目的 Python Harness，因此这里只采用“EOF 后给后端留出清理窗口”的生命周期原则，不复制 Pi 源码或增加依赖。本项目复现与修复基于 main `05ce291fb2670b78a107927b334836d3ef50e15f`。
+
+本项目 `HarnessClient.dispose()` 在结束 stdin 后原等待 250ms 即发送 `SIGTERM`，而 `ApplicationService.close()` 对取消、worker、摘要、生命周期 hook、快照与资源收尾使用共享 2 秒期限。真实离线集成探针通过 `HarnessClient` 启动 CLI 与 `ApplicationService`，注入 650ms `kernel/shutdown` hook；旧等待时间只记录 hook `entered`，随后子进程被 `SIGTERM` 中断，50ms 对照正常退出。现在等待 2.5 秒后才发 `SIGTERM`，其后 1 秒仍发 `SIGKILL` 兜底；同一 650ms 场景约 677ms 正常结束，hook 完成且 CLI 返回 0。该结果证明关闭流程不再被 250ms 客户端计时器打断，不代表所有操作系统级故障或超出内核期限的回调都可完成。
+
+本地 Python 应用并发探针另对照 Pi 开放 [Issue #10982](https://github.com/earendil-works/pi/issues/10982)：摘要 provider 被事件门控时，直接 `turn/start` 被拒绝，follow-up 保持 queued；摘要完成事件先于后续 `turn/started`，队列只交付一次。现有 thread admission 和 compaction owner 已覆盖该路径，无对应运行时代码改动。
+
+本轮 `npm run typecheck`、`npm run build`、Python `compileall`、wheel/sdist 构建、Source build、GitGuardian 与 `git diff --check` 通过。所有探针使用合成 provider、生命周期 hook 和临时状态，无真实模型或招聘平台请求；探针只保留于本地，不提交测试材料。真实 Electron 退出与用户界面验收尚未完成。
+
 ## 第九十三轮：共享附件容量与损坏日志的发布门禁
 
 参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 `packages/coding-agent/src/extensions/mcp/tools.ts` 及开放 [Issue #11386](https://github.com/earendil-works/pi/issues/11386)：Pi 对发给模型的 MCP 文本输出设有 20 KiB 默认上限，该提案希望支持分层配置。BOSS-CLI 的附件属于跨会话持久对象，与单次工具输出不同；本轮只采用显式资源预算原则，独立实现，不复制代码或新增依赖。
