@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第九十五轮：上游 CLI JSON 信封的严格边界
+
+本项目 [Issue #225](https://github.com/can4hou6joeng4/boss-cli/issues/225) 复现 `BossCliTool` 对 `boss-agent-cli --json` 输出使用宽松 `json.loads` 的缺口：重复键采用最后值，`NaN`/`Infinity` 和孤立代理项会进入 `ToolResult`，深层结构可能在后续投影才失败。该边界属于业务 CLI 进程契约，不把 Python 对象的合法性推断为上游信封合法。
+
+现在适配器在七键集合与退出码校验前拒绝重复对象键、非有限浮点、超过 64 层的 JSON 和孤立 Unicode 代理项。JSON 语法错误继续返回 `CLI_ERROR`；语法可解析但违反严格信封完整性的内容返回固定 `CLI_CONTRACT_ERROR`，不持久化其数据、不回交模型，且暂停当前回合、后续工具与队列，不自动重试。若该错误来自已派发写工具，工具结果仍以 `outcome_unknown` 持久化并要求核对外部状态。保留 `raw`/分页投影及其他写操作未知结果语义；不修改 `boss-agent-cli` 或平台行为，不复制 Pi 源码或引入依赖。
+
+离线假的子进程探针覆盖正常信封、重复键、`NaN`/`Infinity`、坏 Unicode、深度边界、失败退出码和下游错误投影；探针只使用合成 stdout，无真实进程、网络、模型或招聘平台调用。
+
 ## 第九十四轮：JSON-RPC 帧的严格解析与坏帧后继续服务
 
 参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 RPC 输入循环，并结合本项目 [Issue #223](https://github.com/can4hou6joeng4/boss-cli/issues/223) 的本地边界复现。Python `json.loads` 默认会接受重复对象键的最后值、把 `1e999` 转为 `Infinity`，过深输入可能抛出未捕获 `RecursionError`；孤立代理项会在 handler 已执行后让响应 UTF-8 编码失败。审批响应中的重复 `approved` 键同样会被最后值覆盖。
