@@ -61,16 +61,17 @@ npm run build
 BOSS_HARNESS_PROVIDER=none npm run dev
 ```
 
-`none` 是不调用模型的确定性模式，适合第一次检查桌面交互；`/tools` 和 `/search` 仍可能调用配置的 `boss-agent-cli`。真实模型请求可能联网并产生费用。
+`none` 会跳过模型调用，但输入 `/tools` 或 `/search` 仍会尝试调用上游 `boss-agent-cli`；未安装或未配置该 CLI 时，这两个命令不可用。真实模型请求可能联网并产生费用。
 
 ## 试跑一条任务
 
-桌面启动后，可以按下面的顺序从只读入口开始：
+桌面启动并完成上游 CLI 配置后，可以按下面的顺序从只读入口开始：
 
-1. 输入 `/tools`，查看当前 allowlist 能力。
-2. 配好 `boss-agent-cli` 后输入 `/search Python`，确认上游 CLI 和工作区连接正常。
-3. 配置模型后输入：`上海 Python，20–50K，3–5 年，本科，先看第一页`。
-4. 回合运行中发送新消息，选择转向当前回合，或将它排到当前回合结束后的队列。
+1. 确保 `boss-agent-cli` 已安装，并按[上游 CLI 设置](docs/USER_GUIDE.md#上游-cli-设置)确认本项目能找到其可执行文件。
+2. 输入 `/tools`，查看上游当前提供的能力目录；它不是本地授权清单，实际可调用范围仍受 Harness allowlist 限制。
+3. 输入 `/search Python`，确认上游 CLI 和工作区连接正常。
+4. 配置模型后输入：`上海 Python，20–50K，3–5 年，本科，先看第一页`。
+5. 回合运行中发送新消息，选择转向当前回合，或将它排到当前回合结束后的队列。
 
 <details>
 <summary>展开：这条搜索请求经过了什么</summary>
