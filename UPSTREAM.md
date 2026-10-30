@@ -1,5 +1,31 @@
 # 上游吸收记录
 
+## 第一百零二轮：工具批次 sequential / parallel 调度模式
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/agent/src/agent-loop.ts`：工具调用先按模型顺序逐个 prepare，批内任一工具为 sequential 则整批串行，全部为 parallel 时并发执行，结果按源顺序回填。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：`ToolDefinition.execution_mode` 默认 `sequential`，非法值（含不可哈希值）报规范 `ValueError`，`requires_approval=True` 不得声明 parallel；默认 BOSS 工具共享上游 data_dir、浏览器与登录态，全部保持串行，不因只读自动并发。只有整批显式 parallel、无审批、宿主能提供独立工具桥时才并发。参数校验、生命周期策略与 start 持久化在回合主线程按模型顺序惰性进行，仅在有空闲槽位即将派发时才 prepare；有界线程池只并发 handler 调用；finish 持久化、暂停判定与通知在主线程按源顺序写入，历史重建与 live 结果一致。在途 handler 与工具桥数量均受 worker 上限约束，工具桥按需创建、批内复用、每个至多关闭一次，额外工具桥创建失败后本批不再重试；暂停、策略拒绝或取消后尚未 prepare 的调用与串行一致只经 `_skip_calls` 以 `not_executed` 收尾；prepare 或 finish 异常时先等待在途 handler 并按序收尾已 prepare 的调用，再原样传播。回退串行仅在首个独立工具桥不可用、尚无任何调用落库或启动时发生。
+
+临时探针验证默认与混合批次串行、并行重叠且结果/持久化/历史按源顺序、取消与暂停后未启动项不执行、工具桥数量受限且各关闭一次、工具桥不可用时无副作用回退、策略拒绝第 k 项与串行持久化形态一致、prepare 异常不多留孤儿 start、额外工具桥工厂失败只再调用一次及非法模式报错；compileall、TypeScript typecheck、Electron 源码 build 与 `git diff --check` 通过。探针未提交；未调用真实模型、网络或招聘平台，也未启用任何并行业务工具。
+
+## 第一百零一轮：共享 provider 与 agent 的有限恢复预算
+
+参考 Pi MIT 开放 [Issue #9474](https://github.com/earendil-works/pi/issues/9474)，截至 2026-10-30 仍为 OPEN；核对 Pi `main@50d9f823e414eafb5f4459d16728a2464cd7939f`。该议题的单次传输总期限已由本项目 [Issue #205](https://github.com/can4hou6joeng4/boss-cli/issues/205) 覆盖，剩余缺口是 provider 重试与 agent 恢复各自计数、彼此叠加。本轮不复制 Pi 源码或新增依赖。
+
+本项目 [Issue #237](https://github.com/can4hou6joeng4/boss-cli/issues/237) 固定基线 `main@382dbc2b43e9c1b836ce7d7893605379168baeb0`，为每个逻辑业务回合建立默认 8 次的运行时恢复预算。OpenAI Responses 仅在瞬时失败、尚未输出且后台传输清理确认后，为每次额外 transport attempt 预留一次额度；正常首次调用不计入。退避期间取消会释放预留额度，预算耗尽时不再等待或启动 transport，并将流终态标为不可重试。上下文溢出进入自动恢复前也消耗同一额度；恢复被预算阻止时回合错误明确带有 `recoveryBlocked=true`。因此 provider 多请求重试与一次 agent overflow recovery 不再分别拥有完整上限。
+
+`ModelRequest.recovery_budget` 是运行时对象，不进入 session JSONL、RPC、模型请求、请求指纹或任务上下文身份。自动 compaction 的分片请求沿用触发它的业务回合预算，使摘要 provider 重试也扣同一额度；独立手动 compaction 使用自己的预算。Anthropic SDK 已禁用内置重试。每回合原有普通模型请求上限、摘要正常分片上限及每次传输时限继续独立生效；本轮不声称新增逻辑回合总墙钟期限，也不把正常请求/分片误记为 recovery。
+
+Python 临时会话与合成 provider 探针验证跨 `stream()` 调用的 provider 预算共享、无预算直接调用保留原重试次数、退避取消归还额度、overflow 与 provider retry 共享额度、耗尽后不调用自动恢复、摘要片段继承运行时预算及 request copy 保留对象身份。`compileall`、TypeScript typecheck、Electron 源码 build、wheel/sdist build 与 `git diff --check` 通过。探针未提交；未调用真实模型、网络或招聘平台。真实 provider 长会话、Electron 桌面交互与用户验收仍未完成。
+
+## 第一百轮：分支按摘要来源保留上下文检查点
+
+本项目 [Issue #235](https://github.com/can4hou6joeng4/boss-cli/issues/235) 在主线 `382dbc2b43e9c1b836ce7d7893605379168baeb0` 上复现：父会话先保存 `throughTurnId=t1` 的摘要，再包含已结束回合 `t2`；父 `ContextService.history()` 正确显示摘要和 `t2` 尾部，但 `fork_thread(..., turn_id="t2")` 仅按物理 boundary 复制 JSONL，丢弃追加在边界后的 checkpoint，使 `t1` 原始用户和助手内容重新进入子会话模型上下文。此行为与本项目 [Issue #53](https://github.com/can4hou6joeng4/boss-cli/issues/53) 已记录的分支契约不符：上下文 checkpoint 及其来源字段应随对话历史保留。
+
+分支现在按所选回合在完整 turn 序列中的位置筛选 checkpoint：来源 `throughTurnId` 位于所选回合之前或等于所选回合时，即使记录位于物理 boundary 后也纳入；覆盖更晚回合或引用未知来源回合的 checkpoint 不进入该分支。符合条件的多个 checkpoint 保持原记录顺序，现有 `_validated_checkpoint()` 继续负责来源校验；无效来源仍安全回退为完整原始历史。上下文编辑、工具修订、父历史和分支再分叉保持各自来源边界。本轮独立实现，不复制 Pi 源码或增加依赖。
+
+合成离线 `SessionStore` / `ContextService` 探针覆盖 `t1→checkpoint(t1)→t2→t3→checkpoint(t2)`：fork `t1` 仅显示摘要 `t1`；fork `t2` 显示摘要 `t2`，不把被摘要覆盖的原始 `t1`/`t2` 文本重新带入；fork 后再 fork 继续保留正确摘要，父日志逐字不变。探针无模型、网络、招聘 CLI 或子进程调用，代码仅保留本地。
+
 ## 第九十九轮：等待 Harness 子进程完成优雅关闭
 
 参考 Pi MIT [PR #11544](https://github.com/earendil-works/pi/pull/11544)，已合入 Pi main，合并提交 `a87b742ff4ce262c07b7830a25c73c1442dab41b`。该问题报告指出，客户端结束 daemon stdin 后立即发 `SIGTERM` 会跳过 EOF 收尾；PR 的 Unix daemon signal handling 不适用于本项目的 Python Harness，因此这里只采用“EOF 后给后端留出清理窗口”的生命周期原则，不复制 Pi 源码或增加依赖。本项目复现与修复基于 main `05ce291fb2670b78a107927b334836d3ef50e15f`。

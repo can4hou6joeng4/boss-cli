@@ -32,7 +32,7 @@ from boss_harness.connections import ConnectionChecks
 from boss_harness.models import ModelConfig, Provider, resolve_config
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.capabilities import ModelCatalog
-from boss_harness.models.types import AssistantMessage, ModelRequest, UserMessage
+from boss_harness.models.types import AssistantMessage, ModelRecoveryBudget, ModelRequest, UserMessage
 from boss_harness.model_tools import MODEL_RESULT_READ_TOOL, model_tool_specs
 from boss_harness.ownership import StateDirectoryOwner
 from boss_harness.resources import AttachmentQuotaExceeded, AttachmentStore, SkillCatalog, ToolRegistry
@@ -411,6 +411,9 @@ class ApplicationService:
             lifecycle_hooks=self.lifecycle_hooks,
             persistence_fence=self._fence_tool_persistence,
             dispatch_lock=self.runtimes.lock,
+            execution_modes=self.registry.execution_modes(),
+            parallel_bridge_factory=self._new_bridge,
+            parallel_bridge_close=self.bridge_lifecycle.close,
             max_model_requests=self.max_model_requests,
             history_provider=self.context.history,
             request_preparer=lambda request: self.context.prepare(request,
@@ -1655,6 +1658,7 @@ class ApplicationService:
             launch_done = threading.Event()
             job = {"jobId": job_id, "threadId": thread_id, "throughTurnId": through_turn_id,
                    "sourceDigest": plan["sourceDigest"], "config": config, "provider": provider,
+                   "recoveryBudget": ModelRecoveryBudget(),
                    "summaryProvider": config.provider, "summaryModel": config.model,
                    "summaryEffort": config.effort,
                    "cancel": threading.Event(), "status": "running", "modelRequestCount": 0,
@@ -1806,7 +1810,8 @@ class ApplicationService:
                 raise _CompactionCancelled
             planner.config = config
             fragment = planner.fragment(offset, summary, index)
-            prepared, budget = self.context.prepare(fragment.request, capabilities, provider=config.provider)
+            summary_request = replace(fragment.request, recovery_budget=job["recoveryBudget"])
+            prepared, budget = self.context.prepare(summary_request, capabilities, provider=config.provider)
             try:
                 prepared = check_model_request(self.lifecycle_hooks, config, prepared, budget,
                     purpose="compaction", request_index=index - 1, cancel_event=job["cancel"],
@@ -2018,6 +2023,7 @@ class ApplicationService:
                 job = {"jobId": job_id, "threadId": thread_id, "turnId": turn["turnId"],
                     "throughTurnId": plan["throughTurnId"], "sourceDigest": plan["sourceDigest"],
                     "config": config, "provider": provider, "cancel": turn["cancel"],
+                    "recoveryBudget": request.recovery_budget or ModelRecoveryBudget(),
                     "summaryProvider": config.provider, "summaryModel": config.model,
                     "summaryEffort": config.effort,
                     "worker": turn["worker"], "status": "running", "reason": reason,

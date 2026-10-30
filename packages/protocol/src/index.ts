@@ -411,6 +411,8 @@ export interface ToolDescriptor {
   requiresApproval: boolean;
   inputSchema: Record<string, unknown>;
   maxModelResultBytes?: number;
+  /** 批次调度模式；任一 sequential 则整批串行。 */
+  executionMode?: "sequential" | "parallel";
 }
 
 export interface ToolListResponse {
