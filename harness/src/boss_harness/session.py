@@ -1653,7 +1653,8 @@ class SessionStore:
         event: dict | None = None
         event_count = 0
         maximum_cursor = self._event_high_water(connection)
-        seen_cursors: dict[int, str] = {}
+        seen_cursors: set[int] = set()
+        seen_event_ids: set[str] = set()
         last_byte = b"\n"
         try:
             with os.fdopen(descriptor, "wb") as output:
@@ -1684,10 +1685,12 @@ class SessionStore:
                         event_id = params.get("eventId")
                         if cursor < 1 or not isinstance(event_id, str) or not _EVENT_ID.fullmatch(event_id):
                             raise ValueError("事件日志游标无效，无法安全删除会话")
-                        previous_event_id = seen_cursors.get(cursor)
-                        if previous_event_id is not None and previous_event_id != event_id:
+                        if cursor in seen_cursors:
                             raise ValueError("事件日志存在重复游标，无法安全删除会话")
-                        seen_cursors[cursor] = event_id
+                        if event_id in seen_event_ids:
+                            raise ValueError("事件日志存在重复事件 ID，无法安全删除会话")
+                        seen_cursors.add(cursor)
+                        seen_event_ids.add(event_id)
                         event_thread_id = params.get("threadId")
                         if event_thread_id is not None:
                             if not isinstance(event_thread_id, str):
