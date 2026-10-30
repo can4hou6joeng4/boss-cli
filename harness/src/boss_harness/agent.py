@@ -675,8 +675,10 @@ class TurnRunner:
         """按模型顺序 prepare，有界并发 handler，按模型顺序落 finish。
 
         在途 handler 不超过 worker 上限，工具桥按需创建并在批内复用，每个至多关闭一次。
-        暂停或取消后尚未派发的调用不再启动，以确定的未执行结果收尾。只有首个工具桥
-        创建失败时抛出 `_ParallelUnavailable`，此时尚无任何调用落库或启动。
+        prepare 惰性进行：仅在有空闲槽位即将派发时才运行钩子并落 start；拒绝、暂停或取消
+        后未 prepare 的调用与串行一致只经 `_skip_calls` 收尾；异常时先收尾已 prepare 的调用
+        再传播。额外工具桥创建失败后本批不再重试。只有首个工具桥创建失败时抛出
+        `_ParallelUnavailable`，此时尚无任何调用落库或启动。
         """
         bridges: list[Any] = []
         free: list[Any] = []
@@ -703,56 +705,87 @@ class TurnRunner:
         if first is None:
             raise _ParallelUnavailable("并行工具桥无法安全创建")
         free.append(first)
+        bridge_failed = False
         try:
-            prepared: list[_PreparedTool | ToolResultItem] = [
-                self._prepare_tool(thread_id, call.name, dict(call.arguments), call.id, batch_id,
-                                   provider_continuation if index == 0 else None)
-                for index, call in enumerate(calls)
-            ]
             results: list[ToolResultItem] = []
             limit = min(self._parallel_max_workers, len(calls))
-            in_flight: dict[int, tuple[Future[ToolResult], Any]] = {}
-            early: dict[int, ToolResult] = {}
+            # 已 prepare 但尚未 finalize 的调用：index -> (prepared, future|None, bridge|None, early outcome|None)
+            pending: dict[int, tuple[_PreparedTool | ToolResultItem, Future[ToolResult] | None, Any, ToolResult | None]] = {}
             next_index = 0
             stopped = False
             with ThreadPoolExecutor(max_workers=limit) as executor:
-                for index in range(len(calls)):
-                    while not stopped and next_index < len(calls) and len(in_flight) < limit:
-                        item = prepared[next_index]
-                        if isinstance(item, _PreparedTool) and item.policy_denied:
-                            # 与串行一致：策略拒绝会暂停回合，其后的调用不再启动。
-                            early[next_index] = item.invalid
-                            stopped = True
-                        elif isinstance(item, _PreparedTool) and self._blocked is None:
-                            bridge = free.pop() if free else new_bridge()
-                            if bridge is None:
-                                # 额外工具桥不可用时等待在途调用释放已有工具桥。
+                try:
+                    for index in range(len(calls)):
+                        while (not stopped and next_index < len(calls)
+                               and sum(1 for p in pending.values() if p[1] is not None) < limit):
+                            if self._blocked is not None or self.cancelled():
+                                stopped = True
                                 break
-                            outcome = self._begin_dispatch(thread_id, item)
-                            if outcome is None:
-                                in_flight[next_index] = (executor.submit(self._call_handler, item, bridge), bridge)
+                            if free:
+                                bridge = free.pop()
+                            elif bridge_failed:
+                                break
                             else:
-                                early[next_index] = outcome
+                                bridge = new_bridge()
+                                if bridge is None:
+                                    # 本批不再尝试新建工具桥，等待在途调用释放已有工具桥。
+                                    bridge_failed = True
+                                    break
+                            call = calls[next_index]
+                            try:
+                                # 惰性按源顺序 prepare：仅在即将派发时运行钩子并落 start。
+                                item = self._prepare_tool(thread_id, call.name, dict(call.arguments), call.id,
+                                                          batch_id, provider_continuation if next_index == 0 else None)
+                            except BaseException:
                                 free.append(bridge)
-                        next_index += 1
-                    item = prepared[index]
-                    if isinstance(item, ToolResultItem):
-                        results.append(item)
-                        continue
-                    if index in in_flight:
-                        future, bridge = in_flight.pop(index)
-                        outcome = future.result()
-                        free.append(bridge)
-                    elif index in early:
-                        outcome = early.pop(index)
-                    else:
-                        item.cancelled_before_dispatch = True
-                        outcome = ToolResult(ok=False, command=item.name, error=(
-                            {"code": "CANCELLED", "message": "操作已取消，未执行工具"} if self.cancelled()
-                            else {"code": "NOT_EXECUTED", "message": "回合中断或平台暂停，该工具未执行"}))
-                    results.append(self._finish_tool(thread_id, item, outcome))
-                    if self._blocked is not None or self.cancelled():
-                        stopped = True
+                                raise
+                            if isinstance(item, ToolResultItem):
+                                free.append(bridge)
+                                pending[next_index] = (item, None, None, None)
+                            elif item.policy_denied:
+                                # 与串行一致：策略拒绝会暂停回合，其后的调用不再 prepare。
+                                free.append(bridge)
+                                pending[next_index] = (item, None, None, item.invalid)
+                                stopped = True
+                            else:
+                                outcome = self._begin_dispatch(thread_id, item)
+                                if outcome is None:
+                                    pending[next_index] = (item, executor.submit(self._call_handler, item, bridge),
+                                                           bridge, None)
+                                else:
+                                    free.append(bridge)
+                                    pending[next_index] = (item, None, None, outcome)
+                                    if self._blocked is not None:
+                                        stopped = True
+                            next_index += 1
+                        if index >= next_index:
+                            break
+                        item, future, bridge, outcome = pending.pop(index)
+                        if isinstance(item, ToolResultItem):
+                            results.append(item)
+                        else:
+                            if future is not None:
+                                outcome = future.result()
+                                free.append(bridge)
+                            results.append(self._finish_tool(thread_id, item, outcome))
+                        if self._blocked is not None or self.cancelled():
+                            stopped = True
+                except BaseException:
+                    # 异常前已 prepare 的调用：等待在途 handler 并按序收尾，不留孤儿 start，再原样传播。
+                    for index in sorted(pending):
+                        item, future, _bridge, outcome = pending.pop(index)
+                        try:
+                            if future is not None:
+                                outcome = future.result()
+                            if isinstance(item, _PreparedTool):
+                                self._finish_tool(thread_id, item, outcome)
+                        except Exception:
+                            pass
+                    raise
+            if next_index < len(calls):
+                # 与串行一致：拒绝 / 暂停 / 取消后未 prepare 的调用只经 `_skip_calls` 收尾。
+                self._skip_calls(thread_id, calls[next_index:], batch_id,
+                                 provider_continuation=provider_continuation if next_index == 0 else None)
             return results
         finally:
             for bridge in bridges:
