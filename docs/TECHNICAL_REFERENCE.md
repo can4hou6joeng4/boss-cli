@@ -62,7 +62,7 @@ OpenAI Responses 的 `response.completed` / `response.incomplete` 与 Anthropic 
 
 每回合默认最多 6 次业务模型请求；启动环境变量 `BOSS_HARNESS_MAX_MODEL_REQUESTS` 可设为 1–64 的十进制整数，嵌入方可传入 `ApplicationService(max_model_requests=...)` 显式指定并覆盖环境配置。`config/read.maxModelRequests` 返回宿主上限；`turn/start.maxModelRequests` 只可为本回合收紧，必须是 1 到宿主上限的整数，不修改后续回合或队列默认值。非法配置在预留回合、保存输入或创建该回合 provider 前拒绝，布尔值、字符串和小数不作为 RPC 整数接受。
 
-每个工具回路、steering 续答和上下文溢出恢复重试均计入本回合上限；provider/SDK 内部传输重试不在此计数中。另有每个逻辑业务回合默认 8 次的运行时恢复预算，由 OpenAI 瞬时传输重试、自动上下文溢出恢复及自动摘要中的 provider 重试共同消耗；退避期间取消会退还预留额度，预算耗尽后不再等待或发起后续恢复。手动摘要使用独立预算。该预算不进入会话记录、RPC 或模型请求，也不计正常模型请求或摘要分片；摘要仍使用独立的 32 次生成上限。最后一次工具批次后仍需续答时，以 `blocked / TURN_ROUND_LIMIT` 暂停并保留结果，需核对后明确发起新回合；通知带 `maxModelRequests` 和 `modelRequestCount`，回合历史记录实际上限。最后一次正常最终文本仍可完成，最后到达而未能响应的 steering 保留为暂停队列项；已执行工具和审批不会重放。
+每个工具回路、steering 续答和上下文溢出恢复重试均计入本回合上限；provider/SDK 内部传输重试不在此计数中。另有每个逻辑业务回合默认 8 次的运行时恢复预算，由 OpenAI / Anthropic 瞬时传输重试、自动上下文溢出恢复及自动摘要中的 provider 重试共同消耗；退避期间取消会退还预留额度，预算耗尽后不再等待或发起后续恢复。手动摘要使用独立预算。该预算不进入会话记录、RPC 或模型请求，也不计正常模型请求或摘要分片；摘要仍使用独立的 32 次生成上限。最后一次工具批次后仍需续答时，以 `blocked / TURN_ROUND_LIMIT` 暂停并保留结果，需核对后明确发起新回合；通知带 `maxModelRequests` 和 `modelRequestCount`，回合历史记录实际上限。最后一次正常最终文本仍可完成，最后到达而未能响应的 steering 保留为暂停队列项；已执行工具和审批不会重放。
 
 ## 模型容量与请求预算
 

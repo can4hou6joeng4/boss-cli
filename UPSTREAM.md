@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第一百零三轮：Anthropic provider 补齐自动重试
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/agent-session.ts`：`isRetryableAssistantError` 判断瞬时错误，`retryDelayMs` 指数退避，`auto_retry_start` / `auto_retry_end` 通知重试过程。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+现状核对：OpenAI Responses 已具备首个输出前重试、Retry-After、硬用量上限不重试及共享恢复预算（第九十八、一百零一轮），而 Anthropic provider 禁用了 SDK 内置重试却没有自己的重试循环，瞬时 429/529/连接失败直接让回合失败，两条线路行为不一致。本轮把退避参数、Retry-After 解析与延迟计算抽到 `models/retry.py` 由两条线路共用，Anthropic 按 OpenAI 同一规则拆成重试外层与单次尝试：只在尚未产出任何内容事件前重试；HTTP 408/409/429/5xx 与 Anthropic 529 可重试，SSE 内错误只认 errors.py 明确标为瞬时的 provider code；智谱 1308、配额类 code、上下文溢出及 `retryable=False` 不重试；后台流泵未确认收尾时停止重试；每次额外尝试先向回合共享 `ModelRecoveryBudget` 预留，耗尽时终态标为不可重试，退避期间取消释放预留。
+
+适配差异：Pi 在会话层重试整条助手消息并发 `auto_retry_*` 事件；本项目重试位于 provider 内、首个输出前，对调用方静默，仅写 stderr，不新增通知或协议字段，因此已输出内容不会重复。
+
+Python 3.14 临时探针用合成 SDK 客户端验证 429 带 Retry-After-Ms 与 529 后成功、尝试次数用尽、400 与智谱 1308 / billing_error 不重试、已输出文本后不重试、流内 overloaded 首输出前重试、连接失败重试、预算耗尽停止且标不可重试、成功重试只扣一次额度及退避期间取消退还额度；`compileall`、TypeScript typecheck、Electron 源码 build 与 `git diff --check` 通过。探针未提交；未调用真实模型、网络或招聘平台。
+
 ## 第一百零二轮：工具批次 sequential / parallel 调度模式
 
 参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/agent/src/agent-loop.ts`：工具调用先按模型顺序逐个 prepare，批内任一工具为 sequential 则整批串行，全部为 parallel 时并发执行，结果按源顺序回填。本轮独立实现，不复制 Pi 源码或新增依赖。
