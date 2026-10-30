@@ -114,7 +114,8 @@ def project_error(error: dict | None) -> dict | None:
 def project_item(thread_id: str, item: dict, *, snapshot_id: str | None = None) -> dict:
     """Never mutate durable/model history while preparing renderer-facing items."""
     projected = {key: value for key, value in item.items()
-                 if key not in {"modelResult", "modelResultLimitBytes", "resultOmitted", "resultRef"}}
+                 if key not in {"modelResult", "modelResultLimitBytes", "resultOmitted", "resultRef",
+                                "_anthropicContinuation"}}
     projected = project_item_content(thread_id, projected, snapshot_id=snapshot_id)
     result = item.get("result")
     if isinstance(result, dict):

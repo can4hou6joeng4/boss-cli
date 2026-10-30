@@ -1,14 +1,16 @@
 """Conservative overflow classification at the trusted provider error boundary.
 
 Pi d5b3de22d0e24a3e9c38a9410d3329b099717283 ai/utils/overflow separates overflow
-from transient retries. This adapter deliberately accepts fewer signals: the exact
-OpenAI error code, the bounded llama.cpp exhaustion message, or Anthropic's typed,
-numeric prompt rejection. Length stops, estimates and generic request byte limits
-are not token overflow.
+from transient retries. This adapter accepts only an exact OpenAI error code,
+bounded provider-specific context rejections, or Anthropic's typed numeric prompt
+rejection. Length stops, estimates and generic request byte limits are not overflow.
 """
 from __future__ import annotations
 
+import errno
+import importlib
 import re
+import socket
 from typing import Literal
 
 from boss_harness.models.types import ModelErrorInfo
@@ -26,6 +28,78 @@ _ANTHROPIC_PROMPT_LIMIT = re.compile(
     re.IGNORECASE,
 )
 _LLAMA_CONTEXT_EXHAUSTED = re.compile(r"context size has been exceeded\.?", re.IGNORECASE)
+_LITELLM_CONTEXT_WINDOW = re.compile(
+    r"^litellm\.ContextWindowExceededError:.*?Context Window exceeded for given call\."
+    r".*?\bMax Input Tokens=([0-9]{1,12}),\s*Got=([0-9]{1,12})\b",
+    re.DOTALL,
+)
+_MAX_LITELLM_ERROR_MESSAGE = 2048
+_PROXY_BODY_TOO_LARGE = re.compile(r"(?:request body|payload) too large\.?", re.IGNORECASE)
+_MAX_PROXY_ERROR_MESSAGE = 512
+_TRANSPORT_CAUSE_BY_TYPE = {
+    "ConnectTimeout": "connect_timeout",
+    "ReadTimeout": "read_timeout",
+    "WriteTimeout": "write_timeout",
+    "PoolTimeout": "pool_timeout",
+    "TimeoutException": "timeout",
+    "TimeoutError": "timeout",
+    "gaierror": "dns_error",
+    "SSLError": "tls_error",
+    "CertificateError": "tls_error",
+    "ConnectError": "connect_error",
+    "ConnectionRefusedError": "connect_error",
+    "ReadError": "read_error",
+    "WriteError": "write_error",
+    "RemoteProtocolError": "protocol_error",
+    "LocalProtocolError": "protocol_error",
+    "ProtocolError": "protocol_error",
+    "ConnectionError": "connection_error",
+    "ConnectionResetError": "connection_error",
+    "ConnectionAbortedError": "connection_error",
+    "BrokenPipeError": "connection_error",
+    "OSError": "os_error",
+}
+_TRANSPORT_ERRNO_CODES = frozenset({
+    "ECONNABORTED", "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH",
+    "ENETUNREACH", "ETIMEDOUT", "EPIPE",
+})
+_TRANSPORT_SOCKET_CODES = {
+    value: name for name in ("EAI_AGAIN", "EAI_NONAME")
+    if type(value := getattr(socket, name, None)) is int
+}
+_TRANSPORT_LABELS = {
+    "connect_timeout": "连接建立超时",
+    "read_timeout": "读取响应超时",
+    "write_timeout": "发送请求超时",
+    "pool_timeout": "等待连接资源超时",
+    "timeout": "传输超时",
+    "dns_error": "域名解析失败",
+    "tls_error": "TLS 连接失败",
+    "connect_error": "连接建立失败",
+    "read_error": "读取响应失败",
+    "write_error": "发送请求失败",
+    "protocol_error": "传输协议错误",
+    "connection_error": "连接中断",
+    "os_error": "底层网络错误",
+    "unknown": "传输原因未识别",
+}
+
+
+def _sdk_transport_errors() -> tuple[type[Exception], ...]:
+    """Use public transport types from either supported SDK dependency family."""
+    classes: list[type[Exception]] = []
+    for name in ("httpx", "httpx2"):
+        try:
+            module = importlib.import_module(name)
+        except ModuleNotFoundError as exc:
+            if exc.name != name:
+                raise
+            continue
+        classes.append(module.TransportError)
+    return tuple(classes)
+
+
+SDK_TRANSPORT_ERRORS = _sdk_transport_errors()
 
 
 def _field(value: object, name: str) -> object:
@@ -35,6 +109,65 @@ def _field(value: object, name: str) -> object:
 def _error_payload(value: object) -> object:
     nested = _field(value, "error")
     return nested if nested is not None else value
+
+
+def _transport_diagnostics(error: BaseException | None) -> tuple[str | None, str | None]:
+    """Extract fixed transport categories and allowlisted errno names only."""
+    if error is None:
+        return None, None
+
+    cause: str | None = None
+    code: str | None = None
+    current: BaseException | None = error
+    visited: set[int] = set()
+    has_nested_cause = False
+    while current is not None and len(visited) < 8:
+        identity = id(current)
+        if identity in visited:
+            break
+        visited.add(identity)
+        if current is not error:
+            has_nested_cause = True
+
+        if cause is None:
+            for exception_type in type(current).__mro__:
+                mapped = _TRANSPORT_CAUSE_BY_TYPE.get(exception_type.__name__)
+                if mapped is not None:
+                    cause = mapped
+                    break
+
+        if code is None and isinstance(current, OSError):
+            error_number = current.errno
+            if type(error_number) is int:
+                # getaddrinfo codes have a separate namespace and can overlap
+                # ordinary errno values (for example ENOENT on macOS).
+                if isinstance(current, socket.gaierror):
+                    code = _TRANSPORT_SOCKET_CODES.get(error_number)
+                else:
+                    error_name = errno.errorcode.get(error_number)
+                    if error_name in _TRANSPORT_ERRNO_CODES:
+                        code = error_name
+
+        # Match Python's displayed causal chain: an explicit cause wins over
+        # context, and `raise ... from None` must not expose suppressed context.
+        linked = current.__cause__
+        if linked is None and not current.__suppress_context__:
+            linked = current.__context__
+        current = linked if isinstance(linked, BaseException) else None
+
+    if cause is None and has_nested_cause:
+        cause = "unknown"
+    return cause, code
+
+
+def transport_diagnostic(info: ModelErrorInfo) -> str | None:
+    """Return a user-facing summary built only from fixed labels and safe codes."""
+    if info.transport_cause is None:
+        return None
+    label = _TRANSPORT_LABELS[info.transport_cause]
+    if info.transport_code is not None:
+        return f"{label}（{info.transport_code}）"
+    return label
 
 
 def _valid_source(source: str, status_code: int | None) -> bool:
@@ -85,39 +218,76 @@ def _llama_context_exhausted(error: object) -> bool:
             and _LLAMA_CONTEXT_EXHAUSTED.fullmatch(message.strip()) is not None)
 
 
+def _litellm_context_window_exceeded(error: object) -> bool:
+    """Recognize LiteLLM's explicit pre-call window rejection, not generic 400 text."""
+    message = _field(_error_payload(error), "message")
+    if type(message) is not str or len(message) > _MAX_LITELLM_ERROR_MESSAGE:
+        return False
+    match = _LITELLM_CONTEXT_WINDOW.search(message)
+    if match is None:
+        return False
+    maximum, received = map(int, match.groups())
+    return maximum > 0 and received > maximum
+
+
+def _proxy_body_too_large(error: object, *, source: str, status_code: int | None) -> bool:
+    """Recognize only bounded, explicit proxy body-size rejections."""
+    if source != "http_error" or status_code != 413:
+        return False
+    message = _field(_error_payload(error), "message")
+    return (type(message) is str and len(message) <= _MAX_PROXY_ERROR_MESSAGE
+            and _PROXY_BODY_TOO_LARGE.fullmatch(message.strip()) is not None)
+
+
 def openai_error_info(error: object, *, source: ErrorSource,
                       status_code: int | None = None,
-                      retryable: bool | None = None) -> ModelErrorInfo | None:
-    """Preserve bounded provider facts; classify overflow only by exact code/source."""
+                      retryable: bool | None = None,
+                      transport_error: BaseException | None = None) -> ModelErrorInfo | None:
+    """Preserve bounded provider facts; classify overflow by explicit signals and source."""
     if not _valid_source(source, status_code):
         return None
     raw_code = _field(_error_payload(error), "code")
     structured_overflow = type(raw_code) is str and raw_code == "context_length_exceeded"
     text_overflow = status_code in {400, 200} and _llama_context_exhausted(error)
-    overflow = _is_overflow_source(source, status_code) and (structured_overflow or text_overflow)
+    litellm_overflow = (source == "http_error" and status_code == 400
+                        and _litellm_context_window_exceeded(error))
+    proxy_body_overflow = _proxy_body_too_large(error, source=source, status_code=status_code)
+    overflow = (
+        _is_overflow_source(source, status_code)
+        and (structured_overflow or text_overflow or litellm_overflow)
+    ) or proxy_body_overflow
+    transport_cause, transport_code = (
+        _transport_diagnostics(transport_error) if source == "transport_error" else (None, None)
+    )
     return ModelErrorInfo(provider="openai", source=source,
                           code="CONTEXT_OVERFLOW" if overflow else None,
                           provider_code=_safe_provider_code(error), status_code=status_code,
-                          retryable=retryable if retryable is not None else _retryable_hint(error, status_code))
+                          retryable=retryable if retryable is not None else _retryable_hint(error, status_code),
+                          transport_cause=transport_cause, transport_code=transport_code)
 
 
 def anthropic_error_info(error: object, *, source: ErrorSource,
                          status_code: int | None = None,
-                         retryable: bool | None = None) -> ModelErrorInfo | None:
+                         retryable: bool | None = None,
+                         transport_error: BaseException | None = None) -> ModelErrorInfo | None:
     """Preserve bounded provider facts; classify only typed numeric prompt overflow."""
     if not _valid_source(source, status_code):
         return None
     payload = _error_payload(error)
     message = _field(payload, "message")
-    overflow = False
+    overflow = _proxy_body_too_large(error, source=source, status_code=status_code)
     if (_is_overflow_source(source, status_code)
             and _field(payload, "type") == "invalid_request_error"
             and type(message) is str and len(message) <= 512):
         match = _ANTHROPIC_PROMPT_LIMIT.fullmatch(message.strip())
         if match is not None:
             actual, limit = map(int, match.groups())
-            overflow = limit > 0 and actual > limit
+            overflow = overflow or (limit > 0 and actual > limit)
+    transport_cause, transport_code = (
+        _transport_diagnostics(transport_error) if source == "transport_error" else (None, None)
+    )
     return ModelErrorInfo(provider="anthropic", source=source,
                           code="CONTEXT_OVERFLOW" if overflow else None,
                           provider_code=_safe_provider_code(error), status_code=status_code,
-                          retryable=retryable if retryable is not None else _retryable_hint(error, status_code))
+                          retryable=retryable if retryable is not None else _retryable_hint(error, status_code),
+                          transport_cause=transport_cause, transport_code=transport_code)

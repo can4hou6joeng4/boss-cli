@@ -70,7 +70,8 @@ export interface InitializeResponse {
   toolBridge: ToolBridgeStatus;
   modelBridge: { provider: string; model: string; driven: boolean };
   approval: { requiredTools: string[]; timeoutSeconds: number };
-  capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean; parallelThreads: boolean };
+  capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean;
+    parallelThreads: boolean; durableApprovals?: boolean };
   eventCursor?: string;
 }
 
@@ -85,6 +86,7 @@ export const ClientMethods = {
   threadResume: "thread/resume",
   threadFork: "thread/fork",
   threadArchive: "thread/archive",
+  threadDelete: "thread/delete",
   threadUnarchive: "thread/unarchive",
   threadNameSet: "thread/name/set",
   threadModelSet: "thread/model/set",
@@ -99,6 +101,8 @@ export const ClientMethods = {
   turnInterrupt: "turn/interrupt",
   turnSteer: "turn/steer",
   turnRead: "turn/read",
+  taskRead: "task/read",
+  approvalList: "approval/list",
   approvalRespond: "approval/respond",
   eventList: "event/list",
   queueAdd: "queue/add",
@@ -106,6 +110,7 @@ export const ClientMethods = {
   queueRemove: "queue/remove",
   modelList: "model/list",
   configRead: "config/read",
+  runtimeResourcesRead: "runtime/resources/read",
   connectionRead: "connection/read",
   connectionCheck: "connection/check",
   skillsList: "skills/list",
@@ -141,6 +146,7 @@ export const ServerNotifications = {
   connectionStatus: "harness/connectionStatus",
   threadCreated: "thread/created",
   threadArchived: "thread/archived",
+  threadDeleted: "thread/deleted",
   threadUnarchived: "thread/unarchived",
   threadRenamed: "thread/renamed",
   threadReasoningUpdated: "thread/reasoning/updated",
@@ -167,6 +173,13 @@ export interface ProviderFailureInfo {
   statusCode?: number;
   /** Adapter transient-failure classification, not permission to replay a turn. */
   retryable?: boolean;
+  /** Sanitized cause category; raw exception details are never included. */
+  transportCause?: "connect_timeout" | "read_timeout" | "write_timeout" | "pool_timeout"
+    | "timeout" | "dns_error" | "tls_error" | "connect_error" | "read_error"
+    | "write_error" | "protocol_error" | "connection_error" | "os_error" | "unknown";
+  /** Portable allowlisted errno label, when available. */
+  transportCode?: "ECONNABORTED" | "ECONNREFUSED" | "ECONNRESET" | "EHOSTUNREACH"
+    | "ENETUNREACH" | "ETIMEDOUT" | "EPIPE" | "EAI_AGAIN" | "EAI_NONAME";
 }
 
 export interface SessionErrorNotification {
@@ -199,7 +212,7 @@ export interface ThreadSummary {
   title: string;
   createdAt: string;
   updatedAt: string;
-  lastTurn?: { turnId: string; status: TurnStatus } | null;
+  lastTurn?: Pick<TurnSummary, "turnId" | "status" | "taskPhase" | "taskPhaseStatus" | "taskAttempt" | "taskRestartLimit" | "taskRecoveryReason" | "taskResumePolicy"> | null;
   sessionId?: string;
   projectId?: string | null;
   provider?: string;
@@ -384,6 +397,21 @@ export interface ThreadReadResponse {
   itemCount?: number;
 }
 
+export interface ThreadDeleteParams {
+  threadId: string;
+}
+
+export interface ThreadDeleteResponse {
+  threadId: string;
+  deleted: true;
+}
+
+export interface ThreadDeletedNotification {
+  deletedThreadId: string;
+  eventId: string;
+  eventCursor: string;
+}
+
 /** 内核允许清单中的工具；写操作需要逐次批准。 */
 export interface ToolDescriptor {
   name: string;
@@ -443,6 +471,8 @@ export interface TurnStartResponse {
 }
 
 export type TurnStatus = "running" | "completed" | "interrupted" | "blocked" | "error";
+export type TurnTaskPhase = "admission" | "prepare" | "model_request" | "tool_execution" | "finish";
+export type TurnTaskResumePolicy = "manual" | "closed";
 
 export interface ThreadUpdatedParams {
   threadId: string;
@@ -479,13 +509,66 @@ export interface ApprovalRespondParams {
   approved: boolean;
 }
 
+export interface ApprovalListParams { threadId?: string; limit?: number }
+export interface PendingApproval {
+  approvalId: string;
+  threadId: string;
+  turnId?: string;
+  itemId: string;
+  toolName: string;
+  summary: string;
+  deadline: number;
+  paramsDigest: string;
+}
+export interface ApprovalListResponse { approvals: PendingApproval[] }
+export type ApprovalRespondResponse =
+  | { accepted: true }
+  | {
+      approvalId: string;
+      approved: boolean;
+      accepted: true;
+      durable: true;
+      executionPending: true;
+    }
+  | {
+      approvalId: string;
+      approved: boolean;
+      accepted: true;
+      executed: boolean;
+      recovered: true;
+      executionState: string;
+      status: string;
+    }
+  | {
+      approvalId: string;
+      approved: false;
+      accepted: false;
+      expired: true;
+      executed: false;
+      executionState: "not_executed";
+    };
+
 export const ServerRequests = { toolRequestApproval: "item/tool/requestApproval" } as const;
 
 export interface ToolApprovalResponse { approved: boolean }
 
 export interface PageParams { cursor?: string | null; limit?: number }
 export interface ThreadListParams extends PageParams { archived?: boolean; projectId?: string }
-export interface TurnSummary { turnId: string; threadId: string; status: TurnStatus; model?: string; startedAt?: string; updatedAt?: string; maxModelRequests?: number }
+export interface TurnSummary {
+  turnId: string;
+  threadId: string;
+  status: TurnStatus;
+  model?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  maxModelRequests?: number;
+  taskPhase?: TurnTaskPhase;
+  taskPhaseStatus?: TurnStatus;
+  taskAttempt?: number;
+  taskRestartLimit?: number;
+  taskRecoveryReason?: "processExit" | "terminalStateRecovered";
+  taskResumePolicy?: TurnTaskResumePolicy;
+}
 export interface TurnListResponse { turns: TurnSummary[]; nextCursor: string | null }
 export interface ItemListResponse { items: ThreadItem[]; nextCursor: string | null }
 
@@ -522,6 +605,61 @@ export interface QueueAddParams {
 }
 export interface QueueListResponse { items: QueueItem[] }
 export interface QueueItemResponse { queueItem: QueueItem }
+
+export type TaskKind = "turn" | "queue" | "compaction";
+export type TaskOwnership = "root" | "resolved" | "unassigned" | "unresolved" | "conflict" | "independent";
+export type TaskRecoveryPolicy = "process_owned" | "manual_review" | "queue_pending" | "closed";
+export interface TaskLocator { kind: TaskKind; id: string }
+export interface TaskRelation {
+  relation: "input_queue" | "steering_input" | "queue_candidate" | "delivered_as" | "targets"
+    | "turn_candidate" | "summary_child" | "summary_candidate" | "owner_turn";
+  ownership: Extract<TaskOwnership, "resolved" | "unresolved" | "conflict">;
+  task?: TaskLocator;
+}
+export interface TaskReadParams { threadId: string; kind: TaskKind; id: string }
+export interface TaskReadTask {
+  locator: TaskLocator;
+  threadId: string;
+  status: string;
+  ownership: TaskOwnership;
+  runtimeOwned: boolean;
+  recoveryPolicy: TaskRecoveryPolicy;
+  phase?: { name: TurnTaskPhase; status: TurnStatus; attempt: number; restartLimit: number; recoveryReason?: string };
+  relations: TaskRelation[];
+  relationsTruncated?: boolean;
+  historyWindow?: { terminalCompactions: number; checkpointRelations: "durable" };
+}
+export interface TaskReadResponse { task: TaskReadTask }
+export interface RuntimeResourceOwner {
+  kind: "turn" | "manualCompaction" | "automaticCompaction";
+  id: string;
+  threadId: string;
+  state: "active" | "cleanup";
+  ageSeconds: number;
+  cancelRequested: boolean;
+  abortPending: boolean;
+  phase: string | null;
+  phaseStatus: string | null;
+}
+
+export interface RuntimeResourceWaiter {
+  threadId: string;
+  position: number;
+  waitingSeconds: number;
+}
+
+export interface RuntimeResourcesReadResponse {
+  turnCapacity: number;
+  activeTurnCount: number;
+  maxRetainedTurns: number;
+  retainedTurnCount: number;
+  ownerCount: number;
+  owners: RuntimeResourceOwner[];
+  ownersTruncated: boolean;
+  waiterCount: number;
+  waiters: RuntimeResourceWaiter[];
+  waitersTruncated: boolean;
+}
 
 export interface ModelCapabilities {
   contextWindow: number;
@@ -569,6 +707,9 @@ export interface ContextCompactPlan {
   retainedTurnIds: string[];
   firstKeptItemId: string | null;
   estimatedRetainedTokens: number;
+  retentionEstimateMethod?: string;
+  retentionUsageApplied?: boolean;
+  retentionUsageAnchorCount?: number;
 }
 export type ContextCompactionJobStatus = "running" | "completed" | "failed" | "cancelled";
 export interface ContextCompactStartParams {
@@ -636,7 +777,7 @@ export interface ContextReadResponse extends ContextBudget {
   usage: Record<string, unknown> | null;
   summaryUsage?: Record<string, unknown> | null;
   lastBudget?: ContextBudget & { turnId: string } | null;
-  /** Process-local discovery only. Missing means an older service; null means no retained job. */
+  /** Active ownership is process-local; retained terminal jobs are reconstructed from durable events. Missing means an older service; null means no retained job. */
   compactionJob?: { jobId: string; status: ContextCompactionJobStatus; active: boolean } | null;
 }
 export type ConnectionTarget = "local" | "model" | "platform";

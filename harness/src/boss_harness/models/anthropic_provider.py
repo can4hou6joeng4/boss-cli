@@ -8,13 +8,22 @@
 """
 from __future__ import annotations
 
+import inspect
 import json
 import os
+import weakref
 from collections.abc import Iterator, Sequence
+from dataclasses import replace
+from typing import Any
 
 import anthropic
 
-from boss_harness.models.errors import anthropic_error_info
+from boss_harness.models.errors import SDK_TRANSPORT_ERRORS, anthropic_error_info
+from boss_harness.models.continuation import (
+    MAX_ANTHROPIC_SIGNATURE_BYTES,
+    MAX_ANTHROPIC_SIGNATURE_TOTAL_BYTES,
+    anthropic_prefix_digest,
+)
 from boss_harness.models.output_budget import (
     OutputBudgetExceeded,
     ResponseTextBudget,
@@ -23,6 +32,12 @@ from boss_harness.models.output_budget import (
 )
 from boss_harness.models.provider import ModelConfig
 from boss_harness.models.secret import redact_secrets
+from boss_harness.models.stream_pump import (
+    AsyncStreamPump,
+    StreamAborted,
+    StreamDeadlineExceeded,
+    StreamPumpCapacityExceeded,
+)
 from boss_harness.models.types import (
     AssistantMessage,
     ChatMessage,
@@ -59,11 +74,9 @@ def _parse_tool_arguments(raw: str) -> dict[str, object] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def to_sdk_messages(messages: Sequence[ChatMessage]) -> list[dict[str, object]]:
-    """把内部消息翻成 SDK 形状。
-
-    注意：ThinkingBlock 在回放时被丢弃（我们没有可回传的签名），这不影响对话有效性。
-    """
+def to_sdk_messages(messages: Sequence[ChatMessage], *, system: str | None = None,
+                    tools: object = None) -> list[dict[str, object]]:
+    """把内部消息翻成 SDK 形状，并原样回放已签名的 thinking blocks。"""
     out: list[dict[str, object]] = []
     for message in messages:
         if isinstance(message, ToolResultsMessage):
@@ -84,9 +97,19 @@ def to_sdk_messages(messages: Sequence[ChatMessage]) -> list[dict[str, object]]:
             continue
         if isinstance(message, AssistantMessage):
             blocks: list[dict[str, object]] = []
+            prefix_digest = anthropic_prefix_digest(system, tools, out) if system is not None else None
             for block in message.blocks:
                 if isinstance(block, TextBlock):
                     blocks.append({"type": "text", "text": block.text})
+                elif isinstance(block, ThinkingBlock):
+                    if (prefix_digest is not None and block.prefix_digest is not None
+                            and block.prefix_digest != prefix_digest):
+                        continue
+                    if block.redacted_data is not None:
+                        blocks.append({"type": "redacted_thinking", "data": block.redacted_data})
+                    elif block.signature is not None:
+                        blocks.append({"type": "thinking", "thinking": block.thinking,
+                                       "signature": block.signature})
                 elif isinstance(block, ToolCallBlock):
                     blocks.append(
                         {"type": "tool_use", "id": block.id, "name": block.name, "input": dict(block.arguments)}
@@ -96,6 +119,24 @@ def to_sdk_messages(messages: Sequence[ChatMessage]) -> list[dict[str, object]]:
             continue
         out.append({"role": "user", "content": message.text})  # type: ignore[union-attr]
     return out
+
+
+class _BorrowedCredentials:
+    """Keep attempt-client cleanup from closing the provider's credential owner."""
+
+    def __init__(self, provider) -> None:
+        self._provider = provider
+        try:
+            parameters = inspect.signature(provider).parameters.values()
+            self._supports_refresh = any(parameter.name == "force_refresh"
+                or parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters)
+        except (TypeError, ValueError):
+            self._supports_refresh = False
+
+    def __call__(self, *, force_refresh: bool = False):
+        if self._supports_refresh:
+            return self._provider(force_refresh=force_refresh)
+        return self._provider()
 
 
 class AnthropicProvider:
@@ -111,41 +152,67 @@ class AnthropicProvider:
         self._secret = (
             config.api_key.get() if config.api_key else ""
         ) or os.environ.get("ANTHROPIC_AUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY") or ""
-        self._client = anthropic.Anthropic(timeout=30.0, max_retries=0)
+        # Resolve SDK credential precedence once, as the previous sync client did.
+        # A later environment change must not silently reroute an existing provider.
+        snapshot = anthropic.Anthropic(timeout=30.0, max_retries=0)
+        close_snapshot = True
+        try:
+            self._client_options: dict[str, Any] = {"base_url": str(snapshot.base_url)}
+            if snapshot.api_key is not None:
+                self._client_options["api_key"] = snapshot.api_key
+            if snapshot.auth_token is not None:
+                self._client_options["auth_token"] = snapshot.auth_token
+            if not ("api_key" in self._client_options or "auth_token" in self._client_options) \
+                    and getattr(snapshot, "credentials", None) is not None:
+                self._client_options["credentials"] = _BorrowedCredentials(snapshot.credentials)
+                self._credential_finalizer = weakref.finalize(self, snapshot.close)
+                close_snapshot = False
+            if len(self._client_options) == 1:
+                raise ValueError("Anthropic 线路未配置可用凭据")
+            self._request_headers = {name: value for name, value in snapshot.default_headers.items()
+                if not name.lower().startswith("x-stainless-") and name.lower() != "user-agent"}
+            self._request_header_names = {name.lower() for name in self._request_headers}
+            self._credential_secrets = tuple(value for value in
+                (self._secret, snapshot.api_key, snapshot.auth_token,
+                 *self._request_headers.values()) if isinstance(value, str) and value)
+        finally:
+            if close_snapshot:
+                snapshot.close()
+        self._request_timeout_seconds = config.request_timeout_seconds
         self._active_stream: object | None = None
         self._abort_requested = False
 
     def request_abort(self) -> None:
         self._abort_requested = True
-        close = getattr(self._active_stream, "close", None)
-        if callable(close):
+        stream = self._active_stream
+        cancel = getattr(stream, "cancel", None)
+        close = getattr(stream, "close", None)
+        stop = cancel if callable(cancel) else close
+        if callable(stop):
             try:
-                close()
+                stop()
             except Exception:
                 pass
 
     def _redact(self, text: object) -> str:
         """错误文本会被写进会话文件并推给外壳，落盘前先把凭据抹掉。"""
-        return bounded_error("", redact_secrets(str(text), extra=(self._secret,)))
+        return bounded_error("", redact_secrets(str(text), extra=self._credential_secrets))
 
     # ---------- 请求参数 ----------
 
     def _request_kwargs(self, request: ModelRequest) -> dict[str, object]:
+        tools = [
+            {"name": spec.name, "description": spec.description, "input_schema": dict(spec.input_schema)}
+            for spec in request.tools
+        ]
         kwargs: dict[str, object] = {
             "model": request.model,
             "max_tokens": request.max_tokens,
             "system": request.system,
-            "messages": to_sdk_messages(request.messages),
+            "messages": to_sdk_messages(request.messages, system=request.system, tools=tools),
         }
         if request.tools:
-            kwargs["tools"] = [
-                {
-                    "name": spec.name,
-                    "description": spec.description,
-                    "input_schema": dict(spec.input_schema),
-                }
-                for spec in request.tools
-            ]
+            kwargs["tools"] = tools
         if request.thinking:
             kwargs["thinking"] = dict(request.thinking)
         if request.effort:
@@ -155,9 +222,26 @@ class AnthropicProvider:
     # ---------- 事件流 ----------
 
     def stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
+        events = self._stream(request)
+        try:
+            for event in events:
+                # A finished pump can retain an unread EOF or SDK failure.
+                # Normalize only failures before delivery, without rewriting
+                # a valid completed message or exposing private diagnostics.
+                if event.type == "error" and self._abort_requested:
+                    event = StreamEvent(type="error", reason="aborted", error="请求已取消")
+                yield event
+        finally:
+            events.close()
+
+    def _stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
         self._abort_requested = False
         kwargs = self._request_kwargs(request)
+        prefix_digest = anthropic_prefix_digest(request.system, kwargs.get("tools"), kwargs["messages"])
         buffers: dict[int, list[str]] = {}
+        signatures: dict[int, str] = {}
+        signature_sizes: dict[int, int] = {}
+        redacted_data: dict[int, str] = {}
         tool_argument_buffers: dict[int, list[str]] = {}
         tool_names: dict[int, str] = {}
         tool_ids: dict[int, str] = {}
@@ -165,29 +249,58 @@ class AnthropicProvider:
         started_tools: set[int] = set()
         snapshot_only_tools: set[int] = set()
         closed_tool_blocks: set[int] = set()
+        closed_blocks: set[int] = set()
         budget = ToolArgumentBudget()
         text_budget = ResponseTextBudget()
+        signature_bytes = 0
         usage = {"input_tokens": 0, "output_tokens": 0,
                  "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
         stop_reason: str | None = None
         saw_message_stop = False
+        request_has_private = any(
+            isinstance(message, AssistantMessage)
+            and any(isinstance(block, ThinkingBlock)
+                    and (block.signature is not None or block.redacted_data is not None)
+                    for block in message.blocks)
+            for message in request.messages
+        )
+
+        def has_private() -> bool:
+            return request_has_private or bool(signatures or redacted_data)
+
+        def private_error_info(info):
+            return replace(info, provider_code=None) if has_private() else info
 
         yield StreamEvent(type="start")
 
         try:
-            # The SDK's .stream() adapter accumulates and partially parses tool JSON before yielding.
-            if self.server_side_fallback:
-                stream_ctx = self._client.beta.messages.create(
-                    **kwargs,  # type: ignore[arg-type]
-                    betas=[_FALLBACK_BETA],
-                    fallbacks="default",
-                    stream=True,
-                )
-            else:
-                stream_ctx = self._client.messages.create(**kwargs, stream=True)  # type: ignore[arg-type]
+            async def produce(send) -> None:
+                async with anthropic.AsyncAnthropic(timeout=30.0, max_retries=0,
+                                                    **self._client_options) as client:
+                    headers = {name: anthropic.omit for name in client.default_headers
+                        if name.lower() not in self._request_header_names
+                        and not name.lower().startswith("x-stainless-")
+                        and name.lower() != "user-agent"}
+                    headers.update(self._request_headers)
+                    if self.server_side_fallback:
+                        stream = await client.beta.messages.create(
+                            **kwargs,  # type: ignore[arg-type]
+                            extra_headers=headers,
+                            betas=[_FALLBACK_BETA],
+                            fallbacks="default",
+                            stream=True,
+                        )
+                    else:
+                        stream = await client.messages.create(**kwargs, stream=True,
+                                                              extra_headers=headers)  # type: ignore[arg-type]
+                    async with stream:
+                        async for event in stream:
+                            await send(event)
 
-            with stream_ctx as stream:
-                self._active_stream = stream
+            pump = AsyncStreamPump(produce, timeout=self._request_timeout_seconds,
+                                   name="anthropic-message-stream")
+            self._active_stream = pump
+            with pump as stream:
                 if self._abort_requested:
                     yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                     return
@@ -195,6 +308,8 @@ class AnthropicProvider:
                     if self._abort_requested:
                         yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                         return
+                    if saw_message_stop:
+                        raise ValueError("message_stop 之后收到额外模型流事件")
                     kind = getattr(event, "type", "")
                     if kind == "message_start":
                         message = getattr(event, "message", None)
@@ -234,6 +349,29 @@ class AnthropicProvider:
                                 text_budget.account(index, initial_thinking)
                                 buffers[index].append(initial_thinking)
                                 yield StreamEvent(type="thinking_delta", content_index=index, delta=initial_thinking)
+                            initial_signature = getattr(event.content_block, "signature", None)
+                            if initial_signature:
+                                if not isinstance(initial_signature, str):
+                                    raise ValueError("思考初始签名无效")
+                                size = len(initial_signature.encode("utf-8"))
+                                if (size > MAX_ANTHROPIC_SIGNATURE_BYTES
+                                        or signature_bytes + size > MAX_ANTHROPIC_SIGNATURE_TOTAL_BYTES):
+                                    raise ValueError("思考签名超过私有续接预算")
+                                signature_bytes += size
+                                signatures[index] = initial_signature
+                                signature_sizes[index] = size
+                        elif block_type == "redacted_thinking":
+                            data = getattr(event.content_block, "data", None)
+                            if not isinstance(data, str) or not data:
+                                raise ValueError("加密思考块无效")
+                            size = len(data.encode("utf-8"))
+                            if (size > MAX_ANTHROPIC_SIGNATURE_BYTES
+                                    or signature_bytes + size > MAX_ANTHROPIC_SIGNATURE_TOTAL_BYTES):
+                                raise ValueError("加密思考块超过私有续接预算")
+                            signature_bytes += size
+                            redacted_data[index] = data
+                        elif block_type == "fallback":
+                            raise ValueError("当前内核不支持服务端 fallback 续接块")
                         elif block_type == "tool_use":
                             block = event.content_block
                             tool_names[index] = str(getattr(block, "name", "") or "")
@@ -262,6 +400,20 @@ class AnthropicProvider:
                             text_budget.account(index, text)
                             buffers.setdefault(index, []).append(text)
                             yield StreamEvent(type="thinking_delta", content_index=index, delta=text)
+                        elif delta_type == "signature_delta":
+                            if block_types.get(index) != "thinking" or index in closed_blocks:
+                                raise ValueError("思考签名增量没有唯一的活动 thinking block")
+                            signature = getattr(delta, "signature", None)
+                            if not isinstance(signature, str) or not signature:
+                                raise ValueError("思考签名增量无效")
+                            size = len(signature.encode("utf-8"))
+                            additional = max(0, size - signature_sizes.get(index, 0))
+                            if (size > MAX_ANTHROPIC_SIGNATURE_BYTES
+                                    or signature_bytes + additional > MAX_ANTHROPIC_SIGNATURE_TOTAL_BYTES):
+                                raise ValueError("思考签名超过私有续接预算")
+                            signature_bytes += additional
+                            signature_sizes[index] = max(size, signature_sizes.get(index, 0))
+                            signatures[index] = signature
                         elif delta_type == "input_json_delta":
                             if index not in started_tools or index in closed_tool_blocks:
                                 raise ValueError("工具参数增量没有对应的活动工具块")
@@ -277,6 +429,9 @@ class AnthropicProvider:
                             )
                     elif kind == "content_block_stop":
                         index = int(getattr(event, "index", 0))
+                        if index in closed_blocks:
+                            raise ValueError("响应重复关闭内容块")
+                        closed_blocks.add(index)
                         joined = "".join(buffers.get(index, []))
                         if joined:
                             end_type = "thinking_end" if block_types.get(index) == "thinking" else "text_end"
@@ -285,25 +440,61 @@ class AnthropicProvider:
                             closed_tool_blocks.add(index)
                 if not saw_message_stop:
                     raise ValueError("模型流未正常结束")
+                if started_tools and any(
+                        index not in signatures or index not in closed_blocks
+                        for index, value in block_types.items() if value == "thinking"):
+                    raise ValueError("工具响应缺少完整的 thinking 签名")
+        except StreamDeadlineExceeded:
+            if self._abort_requested:
+                yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+            else:
+                retryable = pump.worker_done
+                error_info = private_error_info(
+                    anthropic_error_info(None, source="transport_error", retryable=retryable))
+                detail = "" if retryable else "；后台清理未确认，已保留传输额度"
+                yield StreamEvent(type="error", reason="error",
+                                  error=f"模型请求超过 {self._request_timeout_seconds} 秒总时限{detail}",
+                                  error_info=error_info)
+            return
+        except StreamAborted:
+            yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+            return
+        except StreamPumpCapacityExceeded:
+            yield StreamEvent(type="error", reason="error",
+                              error="模型流并发容量已满，当前请求未发出；请稍后重试")
+            return
         except anthropic.APIConnectionError as exc:
-            error_info = anthropic_error_info(None, source="transport_error")
-            yield StreamEvent(type="error", reason="error", error=self._redact(f"连接失败：{exc}"),
+            error_info = private_error_info(anthropic_error_info(
+                None, source="transport_error", transport_error=exc))
+            message = "模型连接失败" if has_private() else f"连接失败：{exc}"
+            yield StreamEvent(type="error", reason="error", error=self._redact(message),
+                              error_info=error_info)
+            return
+        except SDK_TRANSPORT_ERRORS as exc:
+            # SSE body reads can bypass the SDK's APIConnectionError wrapper.
+            error_info = private_error_info(anthropic_error_info(
+                None, source="transport_error", transport_error=exc))
+            yield StreamEvent(type="error", reason="error", error="模型流传输失败",
                               error_info=error_info)
             return
         except anthropic.RateLimitError as exc:
             status_code = getattr(exc, "status_code", 429)
-            error_info = anthropic_error_info(exc.body, source="http_error", status_code=status_code)
-            yield StreamEvent(type="error", reason="error", error=self._redact(f"被限流：{exc}"),
+            error_info = private_error_info(
+                anthropic_error_info(exc.body, source="http_error", status_code=status_code))
+            message = "模型请求被限流" if has_private() else f"被限流：{exc}"
+            yield StreamEvent(type="error", reason="error", error=self._redact(message),
                               error_info=error_info)
             return
         except anthropic.APIStatusError as exc:
-            error_info = anthropic_error_info(exc.body,
+            error_info = private_error_info(anthropic_error_info(exc.body,
                 source="stream_error" if exc.status_code == 200 else "http_error",
-                status_code=exc.status_code)
+                status_code=exc.status_code))
+            message = (f"接口错误 {exc.status_code}" if has_private()
+                       else f"接口错误 {exc.status_code}：{exc.message}")
             yield StreamEvent(
                 type="error",
                 reason="error",
-                error=self._redact(f"接口错误 {exc.status_code}：{exc.message}"),
+                error=self._redact(message),
                 error_info=error_info,
             )
             return
@@ -349,7 +540,10 @@ class AnthropicProvider:
             if block_type == "text":
                 blocks.append(TextBlock(text="".join(buffers[index])))
             elif block_type == "thinking":
-                blocks.append(ThinkingBlock(thinking="".join(buffers[index])))
+                blocks.append(ThinkingBlock(thinking="".join(buffers[index]),
+                                            signature=signatures.get(index), prefix_digest=prefix_digest))
+            elif block_type == "redacted_thinking":
+                blocks.append(ThinkingBlock(redacted_data=redacted_data[index], prefix_digest=prefix_digest))
             elif block_type == "tool_use":
                 call = ToolCallBlock(
                     id=tool_ids[index],

@@ -19,11 +19,12 @@ import os
 import sys
 import threading
 from collections.abc import Iterator, Sequence
+from dataclasses import replace
 from typing import Any
 
 import openai
 
-from boss_harness.models.errors import openai_error_info
+from boss_harness.models.errors import SDK_TRANSPORT_ERRORS, openai_error_info
 from boss_harness.models.output_budget import (
     MAX_RESPONSE_TEXT_BYTES,
     OutputBudgetExceeded,
@@ -33,6 +34,12 @@ from boss_harness.models.output_budget import (
 )
 from boss_harness.models.provider import ModelConfig
 from boss_harness.models.secret import redact_secrets
+from boss_harness.models.stream_pump import (
+    AsyncStreamPump,
+    StreamAborted,
+    StreamDeadlineExceeded,
+    StreamPumpCapacityExceeded,
+)
 from boss_harness.models.types import (
     AssistantMessage,
     ChatMessage,
@@ -182,8 +189,7 @@ class OpenAIResponsesProvider:
         self.effort = config.effort
         self.base_url = config.base_url
         self._secret = config.api_key.get()
-        self._client = openai.OpenAI(api_key=self._secret, base_url=config.base_url,
-                                     timeout=30.0, max_retries=0)
+        self._request_timeout_seconds = config.request_timeout_seconds
         self._max_attempts, self._retry_base_delay = _retry_settings()
         #: 当前正在读的流；`request_abort()` 从别的线程关掉它，用来打断卡住的连接。
         self._active_stream: object | None = None
@@ -236,15 +242,33 @@ class OpenAIResponsesProvider:
         self._abort_requested = True
         self._abort_event.set()
         stream = self._active_stream
-        if stream is not None:
+        cancel = getattr(stream, "cancel", None)
+        close = getattr(stream, "close", None)
+        stop = cancel if callable(cancel) else close
+        if callable(stop):
             try:
-                stream.close()
+                stop()
             except Exception:  # noqa: BLE001 - 关不上也不该把中断本身搞成异常
                 pass
 
     # ---------- 事件流 ----------
 
     def stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
+        events = self._stream(request)
+        try:
+            for event in events:
+                # The producer may already have queued EOF/an exception before
+                # abort reaches its pump. Cancellation still wins until this
+                # provider delivers a failure; valid completed output is kept.
+                if event.type == "error" and self._abort_requested:
+                    self._last_error_retryable = False
+                    self._last_error_retry_after = None
+                    event = StreamEvent(type="error", reason="aborted", error="请求已取消")
+                yield event
+        finally:
+            events.close()
+
+    def _stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
         """带重试的事件流。
 
         重试必须同时满足两条：
@@ -268,22 +292,36 @@ class OpenAIResponsesProvider:
                 emitted = False
                 retry_message: str | None = None
                 retry_after: float | None = None
-
-                for event in self._stream_once(request):
-                    if event.type == "start":
-                        continue  # 外层已经发过
-                    if event.type == "error":
-                        retryable = self._last_error_retryable and not self._abort_requested
-                        retry_after = self._last_error_retry_after
-                        if retryable and not emitted and attempt < attempts:
-                            retry_message = event.error
-                            break
+                retry_event: StreamEvent | None = None
+                attempt_stream = self._stream_once(request)
+                try:
+                    for event in attempt_stream:
+                        if event.type == "start":
+                            continue  # 外层已经发过
+                        if event.type == "error":
+                            retryable = self._last_error_retryable and not self._abort_requested
+                            retry_after = self._last_error_retry_after
+                            if retryable and not emitted and attempt < attempts:
+                                retry_message = event.error
+                                retry_event = event
+                                break
+                            yield event
+                            return
+                        emitted = True
                         yield event
-                        return
-                    emitted = True
-                    yield event
+                finally:
+                    attempt_stream.close()
 
                 if retry_message is None:
+                    return
+                active = self._active_stream
+                if isinstance(active, AsyncStreamPump) and not active.worker_done:
+                    self._last_error_retryable = False
+                    assert retry_event is not None
+                    info = (replace(retry_event.error_info, retryable=False)
+                            if retry_event.error_info is not None else None)
+                    yield replace(retry_event, error=self._redact(
+                        retry_message + "；后台清理未确认，已停止自动重试"), error_info=info)
                     return
                 delay = self._retry_delay(attempt, retry_after)
                 print(
@@ -322,9 +360,10 @@ class OpenAIResponsesProvider:
         json_buffers: dict[int, str] = {}
         #: output_index -> arguments.done 中的权威原始 JSON
         arguments_done: dict[int, str | None] = {}
-        #: output_index -> function_call 的 call_id（回填工具结果要靠它）
-        call_ids: dict[int, str] = {}
+        #: output_index -> function_call 的稳定身份；Responses 的 item id 可选
+        function_call_identities: dict[int, tuple[str | None, str, str]] = {}
         item_ids: dict[str, int] = {}
+        call_id_indexes: dict[str, int] = {}
         started_function_calls: set[int] = set()
         final_argument_sources: dict[int, str] = {}
         final_items_seen: set[int] = set()
@@ -342,22 +381,72 @@ class OpenAIResponsesProvider:
         #: 否则调用方会把已撤回的工具调用交给执行器。
         terminal_indexes: set[int] | None = None
 
+        def function_call_identity(item: object) -> tuple[str | None, str, str]:
+            raw_item_id = getattr(item, "id", None)
+            identity = (
+                str(raw_item_id) if raw_item_id else None,
+                str(getattr(item, "call_id", "") or ""),
+                str(getattr(item, "name", "") or ""),
+            )
+            if not all(identity[1:]):
+                raise ValueError("工具调用缺少 call_id 或工具名")
+            return identity
+
+        def require_function_call_identity(index: int, item: object) -> tuple[str | None, str, str]:
+            actual = function_call_identity(item)
+            expected = function_call_identities.get(index)
+            if expected is None or expected[1:] != actual[1:]:
+                raise ValueError("工具调用身份与初始输出项不一致")
+            if expected[0] and actual[0] and expected[0] != actual[0]:
+                raise ValueError("工具调用输出项标识不一致")
+            item_id = expected[0] or actual[0]
+            if item_id:
+                existing_index = item_ids.get(item_id)
+                if existing_index is not None and existing_index != index:
+                    raise ValueError("响应重复使用输出项标识")
+                item_ids[item_id] = index
+            identity = (item_id, actual[1], actual[2])
+            function_call_identities[index] = identity
+            return identity
+
+        def require_event_item_id(index: int, event: object) -> None:
+            event_item_id = getattr(event, "item_id", None)
+            if not isinstance(event_item_id, str) or not event_item_id:
+                raise ValueError("工具参数事件缺少输出项标识")
+            identity = function_call_identities.get(index)
+            if identity is None or (identity[0] and event_item_id != identity[0]):
+                raise ValueError("工具参数事件的输出项标识不一致")
+            existing_index = item_ids.get(event_item_id)
+            if existing_index is not None and existing_index != index:
+                raise ValueError("工具参数事件重复使用输出项标识")
+            item_ids[event_item_id] = index
+            function_call_identities[index] = (event_item_id, identity[1], identity[2])
+
         yield StreamEvent(type="start")
 
         try:
-            # 用 create(stream=True) 取**原始事件流**，而不是 SDK 的 responses.stream()：
-            # 后者自带状态机，网关过载回 response.failed 时会抛裸 RuntimeError
-            # （"Expected to have received `response.created` before ..."），把端点原话吞掉；
-            # 而本项目本来就在自己维护状态（累积块、算停止原因），不需要它的状态机。
-            with self._client.responses.create(**kwargs, stream=True) as stream:
-                self._active_stream = stream
-                # `request_abort()` 可能发生在 SDK context manager 建立响应的窗口；
-                # 此前没有可关闭的句柄，因此必须在登记后重新检查。否则即使取消标志
-                # 已经置上，仍会进入 body iterator，把一个已取消的回合卡在传输读取上。
+            async def produce(send) -> None:
+                async with openai.AsyncOpenAI(api_key=self._secret, base_url=self.base_url,
+                                              timeout=30.0, max_retries=0) as client:
+                    stream = await client.responses.create(**kwargs, stream=True)
+                    async with stream:
+                        async for event in stream:
+                            await send(event)
+
+            pump = AsyncStreamPump(produce, timeout=self._request_timeout_seconds,
+                                   name="openai-response-stream")
+            self._active_stream = pump
+            # Keep raw Responses events so gateway errors inside HTTP 200 streams
+            # retain their provider diagnostics.
+            with pump as stream:
+                # The pump is registered before connecting, so abort also covers
+                # response-header waits as well as an active response body.
                 if self._abort_requested:
                     yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                     return
                 for event in stream:
+                    if terminal is not None:
+                        raise ValueError("响应终态之后仍收到流事件")
                     kind = str(getattr(event, "type", ""))
                     index = int(getattr(event, "output_index", 0) or 0)
 
@@ -388,12 +477,22 @@ class OpenAIResponsesProvider:
                         elif item_type == "function_call":
                             if index in started_function_calls:
                                 raise ValueError("响应重复使用工具调用索引")
+                            identity = (
+                                item_id or None,
+                                str(getattr(item, "call_id", "") or ""),
+                                str(getattr(item, "name", "") or ""),
+                            )
+                            if not all(identity[1:]):
+                                raise ValueError("工具调用初始项缺少 call_id 或工具名")
+                            if identity[1] in call_id_indexes:
+                                raise ValueError("响应重复使用工具调用 call_id")
+                            call_id_indexes[identity[1]] = index
                             initial = getattr(item, "arguments", "")
                             if not isinstance(initial, str):
                                 raise ValueError("工具调用初始参数不是文本")
                             budget.account(index, initial)
                             json_buffers[index] = initial
-                            call_ids[index] = str(getattr(item, "call_id", "") or "")
+                            function_call_identities[index] = identity
                             started_function_calls.add(index)
                             yield StreamEvent(type="toolcall_start", content_index=index)
 
@@ -428,6 +527,7 @@ class OpenAIResponsesProvider:
                     elif kind == "response.function_call_arguments.delta":
                         if index not in started_function_calls or index in final_items_seen:
                             raise ValueError("工具参数增量没有活动的工具调用")
+                        require_event_item_id(index, event)
                         if index in arguments_done:
                             raise ValueError("工具调用参数终态之后仍收到增量")
                         fragment = getattr(event, "delta", "")
@@ -442,6 +542,7 @@ class OpenAIResponsesProvider:
                         # 权威参数以 done 为准；只把新增后缀当作增量补发，避免重复。
                         if index not in started_function_calls or index in arguments_done or index in final_items_seen:
                             raise ValueError("工具参数终态没有对应的活动工具调用")
+                        require_event_item_id(index, event)
                         authoritative = getattr(event, "arguments", None)
                         if not isinstance(authoritative, str):
                             authoritative = None
@@ -476,7 +577,7 @@ class OpenAIResponsesProvider:
                         elif item_type == "function_call":
                             if index not in started_function_calls or index in final_items_seen:
                                 raise ValueError("工具调用终态没有对应的唯一初始项")
-                            name = str(getattr(item, "name", "") or "")
+                            _, call_id, name = require_function_call_identity(index, item)
                             buffered = json_buffers.pop(index, None)
                             has_done_arguments = index in arguments_done
                             done_raw = arguments_done.pop(index, None)
@@ -514,7 +615,7 @@ class OpenAIResponsesProvider:
                                 broken.append(name or str(getattr(item, "call_id", "") or ""))
                                 arguments = {}
                             call = ToolCallBlock(
-                                id=call_ids.get(index) or str(getattr(item, "call_id", "") or ""),
+                                id=call_id,
                                 name=name,
                                 arguments=arguments,
                             )
@@ -539,6 +640,18 @@ class OpenAIResponsesProvider:
                                     raise ValueError("响应终态重复使用输出项标识")
                                 terminal_ids.add(item_id)
                             item_index = item_ids.get(item_id, output_index) if item_id else output_index
+                            if item_type == "function_call":
+                                terminal_identity = function_call_identity(item)
+                                mapped_index = (
+                                    item_ids.get(
+                                        terminal_identity[0],
+                                        call_id_indexes.get(terminal_identity[1], output_index),
+                                    )
+                                    if terminal_identity[0]
+                                    else call_id_indexes.get(terminal_identity[1], output_index)
+                                )
+                                require_function_call_identity(mapped_index, item)
+                                item_index = mapped_index
                             if item_index in terminal_indexes:
                                 raise ValueError("响应终态重复使用输出项索引")
                             terminal_indexes.add(item_index)
@@ -611,6 +724,27 @@ class OpenAIResponsesProvider:
                 if started_function_calls != final_items_seen:
                     raise ValueError("工具调用缺少完整的 output_item.done 事件")
 
+        except StreamDeadlineExceeded:
+            retryable = not self._abort_requested and pump.worker_done
+            self._last_error_retryable = retryable
+            error_info = openai_error_info(None, source="transport_error", retryable=retryable)
+            if self._abort_requested:
+                yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+            else:
+                detail = "" if retryable else "；后台清理未确认，已停止自动重试"
+                yield StreamEvent(type="error", reason="error",
+                                  error=f"模型请求超过 {self._request_timeout_seconds} 秒总时限{detail}",
+                                  error_info=error_info)
+            return
+        except StreamAborted:
+            self._last_error_retryable = False
+            yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+            return
+        except StreamPumpCapacityExceeded:
+            self._last_error_retryable = False
+            yield StreamEvent(type="error", reason="error",
+                              error="模型流并发容量已满，当前请求未发出；请稍后重试")
+            return
         except OutputBudgetExceeded as exc:
             self._last_error_retryable = False
             yield StreamEvent(type="error", reason="error", error=self._redact(exc))
@@ -631,8 +765,16 @@ class OpenAIResponsesProvider:
         except openai.APIConnectionError as exc:
             # 连接被掐断通常是瞬时的（网关抖动、代理换路），值得重试。
             self._last_error_retryable = True
-            error_info = openai_error_info(None, source="transport_error", retryable=True)
+            error_info = openai_error_info(None, source="transport_error", retryable=True,
+                                           transport_error=exc)
             yield StreamEvent(type="error", reason="error", error=self._redact(f"连接失败：{exc}"),
+                              error_info=error_info)
+            return
+        except SDK_TRANSPORT_ERRORS as exc:
+            # Preserve the existing no-retry policy for unwrapped body failures.
+            self._last_error_retryable = False
+            error_info = openai_error_info(None, source="transport_error", transport_error=exc)
+            yield StreamEvent(type="error", reason="error", error="模型流传输失败",
                               error_info=error_info)
             return
         except openai.APIError as exc:

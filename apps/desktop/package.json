@@ -1,7 +1,7 @@
 {
   "name": "boss-cli-desktop",
   "productName": "BOSS-CLI",
-  "version": "0.2.0-rc.13",
+  "version": "0.2.0-rc.14",
   "private": true,
   "description": "BOSS-CLI 桌面端外壳（Electron + React）",
   "main": "./out/main/index.js",
@@ -23,6 +23,6 @@
     "electron-vite": "4.0.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "vite": "6.4.4"
+    "vite": "6.4.5"
   }
 }

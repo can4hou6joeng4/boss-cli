@@ -40,6 +40,9 @@ class TextBlock:
 @dataclass(frozen=True)
 class ThinkingBlock:
     thinking: str = ""
+    signature: str | None = field(default=None, repr=False)
+    redacted_data: str | None = field(default=None, repr=False)
+    prefix_digest: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -122,6 +125,29 @@ class ToolSpec:
 # ---------- 请求与事件 ----------
 
 
+RequestPurpose = Literal["turn", "compaction", "connection_check"]
+TransportCause = Literal[
+    "connect_timeout", "read_timeout", "write_timeout", "pool_timeout", "timeout",
+    "dns_error", "tls_error", "connect_error", "read_error", "write_error",
+    "protocol_error", "connection_error", "os_error", "unknown",
+]
+
+
+@dataclass(frozen=True)
+class ModelTaskContext:
+    """本地请求归属；不属于模型输入或供应商 HTTP metadata。
+
+    身份来自发起请求的回合或摘要任务，缺失值表示未知，不能推断用户归属。
+    ``request_index`` 从零开始；供应商内部传输重试沿用同一上下文。
+    """
+
+    purpose: RequestPurpose
+    request_index: int
+    thread_id: str | None = None
+    turn_id: str | None = None
+    job_id: str | None = None
+
+
 @dataclass(frozen=True)
 class ModelRequest:
     model: str
@@ -131,6 +157,7 @@ class ModelRequest:
     max_tokens: int = 64000
     effort: str | None = None
     thinking: Mapping[str, Any] | None = None
+    task_context: ModelTaskContext | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +174,8 @@ class ModelErrorInfo:
     provider_code: str | None = None
     status_code: int | None = None
     retryable: bool | None = None
+    transport_cause: TransportCause | None = None
+    transport_code: str | None = None
 
     def event_payload(self) -> dict[str, Any]:
         """Return the camelCase public notification shape, omitting unknown facts."""
@@ -159,6 +188,10 @@ class ModelErrorInfo:
             payload["statusCode"] = self.status_code
         if self.retryable is not None:
             payload["retryable"] = self.retryable
+        if self.transport_cause is not None:
+            payload["transportCause"] = self.transport_cause
+        if self.transport_code is not None:
+            payload["transportCode"] = self.transport_code
         return payload
 
 

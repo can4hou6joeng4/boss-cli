@@ -21,6 +21,8 @@ from boss_harness.models.types import ModelRequest, StreamEvent
 #: 技能规定的默认模型。用户可用 BOSS_HARNESS_MODEL 覆盖。
 DEFAULT_MODEL = "claude-opus-5-5"
 DEFAULT_MAX_TOKENS = 64000
+DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS = 600
+MAX_MODEL_REQUEST_TIMEOUT_SECONDS = 3600
 
 _FIRST_PARTY_HOST = "api.anthropic.com"
 
@@ -42,6 +44,7 @@ class ModelConfig:
     server_side_fallback: bool = False
     #: openai 线路的 bearer 凭据，用 Secret 包装：repr 脱敏，且不可 JSON 序列化。
     api_key: Secret | None = None
+    request_timeout_seconds: int = DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS
 
 
 class Provider(Protocol):
@@ -107,6 +110,7 @@ def resolve_config(
                or env.get("BOSS_HARNESS_ANTHROPIC_MODEL")
                or DEFAULT_MODEL).strip() or DEFAULT_MODEL,
         max_tokens=int(env.get("BOSS_HARNESS_MAX_TOKENS") or DEFAULT_MAX_TOKENS),
+        request_timeout_seconds=_request_timeout_seconds(env),
         effort=(env.get("BOSS_HARNESS_EFFORT") or "").strip() or None,
         thinking=thinking,
         base_url=base_url,
@@ -148,10 +152,24 @@ def _openai_config(env: Mapping[str, str]) -> ModelConfig:
         provider="openai",
         model=model,
         max_tokens=int(env.get("BOSS_HARNESS_MAX_TOKENS") or DEFAULT_MAX_TOKENS),
+        request_timeout_seconds=_request_timeout_seconds(env),
         effort=effort,
         base_url=base_url,
         api_key=Secret(raw_key),
     )
+
+
+def _request_timeout_seconds(env: Mapping[str, str]) -> int:
+    raw = (env.get("BOSS_HARNESS_MODEL_REQUEST_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS
+    try:
+        seconds = int(raw)
+    except ValueError as exc:
+        raise ValueError("模型请求总时限必须是 1 到 3600 的整数秒") from exc
+    if not 1 <= seconds <= MAX_MODEL_REQUEST_TIMEOUT_SECONDS:
+        raise ValueError("模型请求总时限必须是 1 到 3600 的整数秒")
+    return seconds
 
 
 def build_provider(config: ModelConfig) -> Provider | None:
