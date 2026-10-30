@@ -153,12 +153,64 @@ def _iter_bounded_raw_lines(path: Path, *, maximum: int, label: str = "JSONL",
             handle, maximum=maximum, label=label, universal_newlines=universal_newlines)
 
 
+def _reject_json_constant(_: str) -> None:
+    raise ValueError
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError
+        result[key] = value
+    return result
+
+
+def _finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError
+    return parsed
+
+
+def _decode_jsonl_object(line: str | bytes, *, label: str, line_number: int) -> dict:
+    try:
+        text = line.decode("utf-8") if isinstance(line, bytes) else line
+        record = json.loads(text, object_pairs_hook=_unique_json_object,
+                            parse_constant=_reject_json_constant, parse_float=_finite_json_float)
+    except (ValueError, RecursionError):
+        raise ValueError(f"{label}第 {line_number} 行损坏，读取已停止") from None
+    if not isinstance(record, dict):
+        raise ValueError(f"{label}第 {line_number} 行格式无效，读取已停止")
+    return record
+
+
+def _decode_session_record(line: str | bytes, *, line_number: int) -> dict | None:
+    record = _decode_jsonl_object(line, label="会话日志", line_number=line_number)
+    if record.get("type") == "session":
+        if line_number == 1:
+            return None
+        raise ValueError(f"会话日志第 {line_number} 行出现重复会话头，读取已停止")
+    parent_id = record.get("parentId")
+    if (not isinstance(record.get("type"), str) or not isinstance(record.get("id"), str)
+            or not isinstance(record.get("timestamp"), str)
+            or (parent_id is not None and not isinstance(parent_id, str))):
+        raise ValueError(f"会话日志第 {line_number} 行格式无效，读取已停止")
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        raise ValueError(f"会话日志第 {line_number} 行格式无效，读取已停止")
+    return record
+
+
 def _iter_bounded_lines(path: Path, *, maximum: int, label: str = "JSONL",
                         universal_newlines: bool = False):
     """Yield decoded JSONL lines without materialising the complete file."""
-    for line in _iter_bounded_raw_lines(path, maximum=maximum, label=label,
-                                        universal_newlines=universal_newlines):
-        yield line.decode("utf-8", errors="replace")
+    for line_number, raw_line in enumerate(_iter_bounded_raw_lines(
+            path, maximum=maximum, label=label, universal_newlines=universal_newlines), start=1):
+        try:
+            yield raw_line.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError(f"{label}第 {line_number} 行不是有效 UTF-8，读取已停止") from None
 
 
 def _read_bounded_file(path: Path, *, maximum: int, label: str) -> bytes:
@@ -192,18 +244,13 @@ class SessionEntriesSnapshot:
         if self._source.closed:
             raise ValueError("会话快照已关闭")
         self._source.seek(0)
-        for raw_line in _iter_bounded_raw_lines_from_handle(
+        for line_number, raw_line in enumerate(_iter_bounded_raw_lines_from_handle(
                 self._source, maximum=MAX_SESSION_LINE_BYTES, label="会话日志",
-                universal_newlines=True, byte_limit=self._size):
-            line = raw_line.decode("utf-8", errors="replace")
-            if not line.strip():
+                universal_newlines=True, byte_limit=self._size), start=1):
+            if not raw_line.strip():
                 continue
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if (isinstance(data, dict) and data.get("type") != "session"
-                    and isinstance(data.get("id"), str) and isinstance(data.get("payload"), dict)):
+            data = _decode_session_record(raw_line, line_number=line_number)
+            if data is not None:
                 yield data
 
 
@@ -425,13 +472,17 @@ class SessionStore:
             try:
                 with closing(_iter_bounded_lines(path, maximum=MAX_SESSION_HEADER_BYTES,
                              label="会话头", universal_newlines=True)) as lines:
-                    header = json.loads(next(lines))
+                    header = _decode_jsonl_object(next(lines), label="会话头", line_number=1)
             except FileNotFoundError:
                 raise ValueError("会话不存在") from None
-            except (ValueError, IndexError, StopIteration):
+            except ValueError as exc:
+                if "第 1 行" in str(exc):
+                    raise
                 raise ValueError("会话头损坏，请保留原文件后恢复") from None
-            if not isinstance(header, dict) or header.get("type") != "session" or header.get("id") != thread_id:
-                raise ValueError("会话头无效")
+            except (IndexError, StopIteration):
+                raise ValueError("会话头损坏，请保留原文件后恢复") from None
+            if header.get("type") != "session" or header.get("id") != thread_id:
+                raise ValueError("会话头第 1 行格式无效")
             return header
 
     @staticmethod
@@ -562,13 +613,15 @@ class SessionStore:
             nonlocal outcome
             found = False
             try:
-                for line in _iter_bounded_lines(path, maximum=MAX_SESSION_LINE_BYTES,
-                                                label="会话日志", universal_newlines=True):
-                    try:
-                        current = json.loads(line)
-                    except (json.JSONDecodeError, UnicodeDecodeError):
+                for line_number, line in enumerate(_iter_bounded_lines(
+                        path, maximum=MAX_SESSION_LINE_BYTES, label="会话日志",
+                        universal_newlines=True), start=1):
+                    if not line.strip():
                         continue
-                    if isinstance(current, dict) and current.get("id") == entry.id:
+                    current = _decode_session_record(line, line_number=line_number)
+                    if current is None:
+                        continue
+                    if current.get("id") == entry.id:
                         if current != expected:
                             return "conflict"
                         found = True
@@ -751,16 +804,13 @@ class SessionStore:
         with self._lock:
             self.require_thread(thread_id)
             out: list[dict] = []
-            for line in _iter_bounded_lines(self.path_for(thread_id), maximum=MAX_SESSION_LINE_BYTES,
-                                            label="会话日志", universal_newlines=True):
+            for line_number, line in enumerate(_iter_bounded_lines(
+                    self.path_for(thread_id), maximum=MAX_SESSION_LINE_BYTES,
+                    label="会话日志", universal_newlines=True), start=1):
                 if not line.strip():
                     continue
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if (isinstance(data, dict) and data.get("type") != "session"
-                        and isinstance(data.get("id"), str) and isinstance(data.get("payload"), dict)):
+                data = _decode_session_record(line, line_number=line_number)
+                if data is not None:
                     out.append(data)
             return out
 
@@ -1302,11 +1352,16 @@ class SessionStore:
         with self._lock, self._index.transaction() as connection:
             known: set[str] = set()
             for path in sorted(self.root.glob("*.jsonl")):
-                try:
-                    self._index_thread(path.stem, connection)
-                except (OSError, ValueError):
+                if not _THREAD_ID.fullmatch(path.stem):
                     continue
                 known.add(path.stem)
+                indexed = connection.execute("SELECT 1 FROM threads WHERE id=?", (path.stem,)).fetchone()
+                try:
+                    self._index_thread(path.stem, connection)
+                except (OSError, ValueError) as exc:
+                    if indexed is None:
+                        raise ValueError(f"会话日志 {path.name} 无法读取，索引恢复已停止") from exc
+                    # Preserve the last listing projection; session reads report the damaged line.
             for row in connection.execute("SELECT id,rollout_path FROM threads").fetchall():
                 if Path(row["rollout_path"]).parent == self.root and row["id"] not in known:
                     connection.execute("DELETE FROM threads WHERE id=?", (row["id"],))
@@ -1624,13 +1679,13 @@ class SessionStore:
             restrict_private_file(session_path)
             try:
                 self.require_thread(session_path.stem)
-                for line in _iter_bounded_lines(session_path, maximum=MAX_SESSION_LINE_BYTES,
-                                                label="会话日志", universal_newlines=True):
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        raise ValueError("会话记录损坏，无法确认共享附件引用") from None
-                    if (isinstance(entry, dict) and entry.get("type") == "attachment"
+                for line_number, line in enumerate(_iter_bounded_lines(
+                        session_path, maximum=MAX_SESSION_LINE_BYTES,
+                        label="会话日志", universal_newlines=True), start=1):
+                    if not line.strip():
+                        continue
+                    entry = _decode_session_record(line, line_number=line_number)
+                    if (entry is not None and entry.get("type") == "attachment"
                             and isinstance(entry.get("payload"), dict)):
                         digest = entry["payload"].get("digest")
                         if isinstance(digest, str) and _ATTACHMENT_DIGEST.fullmatch(digest):
@@ -2031,31 +2086,39 @@ class SessionStore:
         checkpoint = connection.execute("SELECT value FROM checkpoints WHERE name='events'").fetchone()
         if checkpoint and checkpoint["value"] == fingerprint:
             return
-        for line in _iter_bounded_lines(self.events_path, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"):
-            try:
-                record = json.loads(line)
-                if not isinstance(record, dict) or not isinstance(record.get("params"), dict):
-                    continue
-                params = record["params"]
-                event_id = params.get("eventId")
-                cursor = _event_cursor(params.get("eventCursor"))
-                method = record.get("method")
-                thread_id = params.get("threadId")
-                if (not isinstance(event_id, str) or not _EVENT_ID.fullmatch(event_id) or cursor < 1
-                        or not isinstance(method, str) or not method):
-                    continue
-                if thread_id is not None:
-                    self.path_for(thread_id)
-                    if thread_id in pending:
-                        continue
-                previous = connection.execute("SELECT event_id FROM events WHERE cursor=?", (cursor,)).fetchone()
-                if previous and previous["event_id"] != event_id:
-                    raise ValueError("事件日志存在重复游标，请保留原文件后恢复")
-                connection.execute("""INSERT INTO events(cursor,event_id,method,thread_id,params_json)
-                    VALUES(?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING""",
-                    (cursor, event_id, method, thread_id, _json(params)))
-            except (json.JSONDecodeError, TypeError):
+        for line_number, line in enumerate(_iter_bounded_lines(
+                self.events_path, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"), start=1):
+            if not line.strip():
                 continue
+            record = _decode_jsonl_object(line, label="事件日志", line_number=line_number)
+            params = record.get("params")
+            method = record.get("method")
+            if (record.get("type") != "event" or not isinstance(record.get("timestamp"), str)
+                    or not isinstance(params, dict) or not isinstance(method, str) or not method
+                    or len(method) > 256 or any(ord(char) < 32 for char in method)):
+                raise ValueError(f"事件日志第 {line_number} 行格式无效，读取已停止")
+            event_id = params.get("eventId")
+            try:
+                cursor = _event_cursor(params.get("eventCursor"))
+            except ValueError:
+                raise ValueError(f"事件日志第 {line_number} 行游标无效，读取已停止") from None
+            thread_id = params.get("threadId")
+            if (not isinstance(event_id, str) or not _EVENT_ID.fullmatch(event_id) or cursor < 1
+                    or (thread_id is not None and not isinstance(thread_id, str))):
+                raise ValueError(f"事件日志第 {line_number} 行格式无效，读取已停止")
+            if thread_id is not None:
+                try:
+                    self.path_for(thread_id)
+                except ValueError:
+                    raise ValueError(f"事件日志第 {line_number} 行 threadId 无效，读取已停止") from None
+                if thread_id in pending:
+                    continue
+            previous = connection.execute("SELECT event_id FROM events WHERE cursor=?", (cursor,)).fetchone()
+            if previous and previous["event_id"] != event_id:
+                raise ValueError("事件日志存在重复游标，请保留原文件后恢复")
+            connection.execute("""INSERT INTO events(cursor,event_id,method,thread_id,params_json)
+                VALUES(?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING""",
+                (cursor, event_id, method, thread_id, _json(params)))
         connection.execute("INSERT INTO checkpoints(name,value) VALUES('events',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", (fingerprint,))
 
     def append_event(self, method: str, params: dict[str, Any] | None = None) -> dict:
