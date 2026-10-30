@@ -72,7 +72,7 @@ export interface InitializeResponse {
   approval: { requiredTools: string[]; timeoutSeconds: number };
   capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean;
     parallelThreads: boolean; durableApprovals?: boolean; explicitTurnContinuation?: boolean;
-    sessionLeaf?: boolean; sessionBranchViews?: boolean };
+    sessionLeaf?: boolean; sessionBranchViews?: boolean; sessionBranchTree?: boolean };
   eventCursor?: string;
 }
 
@@ -88,6 +88,7 @@ export const ClientMethods = {
   threadFork: "thread/fork",
   threadLeafRead: "thread/leaf/read",
   threadLeafSet: "thread/leaf/set",
+  threadBranchesList: "thread/branches/list",
   threadArchive: "thread/archive",
   threadDelete: "thread/delete",
   threadUnarchive: "thread/unarchive",
@@ -897,6 +898,35 @@ export interface PlatformLoginContext {
 export interface SkillDescriptor { id: string; name: string; description: string; digest: string; bytes: number }
 export interface SkillListResponse { skills: SkillDescriptor[] }
 export interface AttachmentDescriptor { id: string; name: string; digest: string; bytes: number; mediaType: string }
+
+/** `thread/branches/list` 参数与结果；仅在 `capabilities.sessionBranchTree` 为真时可用。 */
+export interface ThreadBranchesListParams { threadId: string; cursor?: string; limit?: number }
+export interface ThreadBranchEndpoint {
+  turnId: string;
+  status: TurnStatus | null;
+  startedAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+  /** 自根到该端点的回合数。 */
+  depth: number;
+  /** 最近的分叉回合（有多个子回合）；无则为 null。 */
+  forkTurnId: string | null;
+  /** 分叉后该分支的第一个回合。 */
+  branchTurnId: string;
+  branchInputPreview: string | null;
+  inputPreview: string | null;
+  containsLeaf: boolean;
+  isLeaf: boolean;
+  selectable: boolean;
+}
+export interface ThreadBranchesListResponse {
+  threadId: string;
+  branched: boolean;
+  leafTurnId: string | null;
+  turnCount: number;
+  endpoints: ThreadBranchEndpoint[];
+  nextCursor: string | null;
+}
 
 /** `thread/leaf/read` / `thread/leaf/set` 结果；仅在 `capabilities.sessionLeaf` 为真时可用。 */
 export interface ThreadLeafState {

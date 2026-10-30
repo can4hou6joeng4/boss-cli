@@ -1,5 +1,11 @@
 # 上游吸收记录
 
+## 第一百零八轮：会话内分支端点枚举（第二步收尾子集）
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-manager.ts`：`getTree()` / `getChildren()` 由条目 `parentId` 构建会话树供分支选择器使用。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：不信任写入方 `parentId`，而是沿用第一步 `_active_entries()` 的规则，以每条记录追加时的投影尾部推导各回合的父回合（遗留无 `turnId` 条目按 `_item_owners()` 归属）；树只到回合粒度，不暴露条目级节点。`thread/branches/list` 只返回端点（无子回合的回合）并按首次出现顺序分页，游标绑定会话与端点视图；`capabilities.sessionBranchTree` 声明。`thread/fork` 指定当前分支外的已结束回合时，以内存中的临时 leaf 投影该分支后复制，不写入指针。`task/read`、线程列表元数据、分支视图快照分页与 branchWithSummary 留待后续步骤。
+
 ## 第一百零七轮：会话内分支展示投影（第二步子集）
 
 参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-manager.ts`：`getBranch()` / `buildSessionContext()` 自 `leafId` 投影当前分支，界面与模型共用同一路径。本轮独立实现，不复制 Pi 源码或新增依赖。

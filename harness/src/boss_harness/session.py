@@ -41,6 +41,7 @@ _TERMINAL = frozenset({"completed", "interrupted", "blocked", "error"})
 # record one keep the historical linear projection byte-for-byte.
 LEAF_ENTRY_TYPE = "leaf"
 MAX_LEAF_ACTIVE_TURN_IDS = 200
+MAX_BRANCH_PREVIEW_CHARS = 120
 _TASK_PHASES = frozenset({"admission", "prepare", "model_request", "tool_execution", "finish"})
 _EVENT_READ_CHUNK_BYTES = 64 * 1024
 # Event records are persisted from the same bounded JSON-RPC payloads as the
@@ -2194,6 +2195,109 @@ class SessionStore:
 
         return [entry for entry in entries if keep(entry)]
 
+    @classmethod
+    def _turn_tree(cls, entries: list[dict]) -> tuple[dict[str, str | None], list[str]]:
+        """Parent turn of every turn, following the same append-time tail rule as _active_entries.
+
+        Returns (parent by turnId, turnIds in first-appearance order).  Forged
+        leaf targets raise exactly like the projection does.
+        """
+        cls._active_entries(entries)
+        owners = cls._item_owners([entry for entry in entries if entry.get("type") != LEAF_ENTRY_TYPE])
+        known = {entry["payload"].get("turnId") for entry in entries if entry.get("type") == "turn"
+                 and isinstance(entry.get("payload"), dict)
+                 and isinstance(entry["payload"].get("turnId"), str)
+                 and _IDENTIFIER.fullmatch(entry["payload"]["turnId"])}
+        parent: dict[str, str | None] = {}
+        order: list[str] = []
+        record_turn: dict[str, str | None] = {}
+        tail: str | None = None
+        for entry in entries:
+            kind = entry.get("type")
+            payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            if kind == LEAF_ENTRY_TYPE:
+                target = payload.get("targetId")
+                tail = record_turn.get(target) if isinstance(target, str) else None
+                continue
+            if kind == "turn":
+                owner = payload.get("turnId")
+            elif kind == "item":
+                owner = owners.get(entry["id"])
+            elif kind in {"task_phase", "tool_batch"}:
+                owner = payload.get("turnId", payload.get("taskId"))
+            else:
+                owner = None
+            if isinstance(owner, str) and owner in known:
+                if owner not in parent:
+                    parent[owner] = tail if tail != owner else None
+                    order.append(owner)
+                tail = owner
+            record_turn[entry["id"]] = tail
+        return parent, order
+
+    def list_branches(self, thread_id: str, *, cursor: str | None = None, limit: int = 50) -> dict:
+        """Enumerate branch endpoints (turns without children) of the in-session turn tree."""
+        _limit(limit)
+        self.path_for(thread_id)
+        scope = {"threadId": thread_id, "view": "endpoints"}
+        key = _read_page_cursor(cursor, "branches", scope)
+        if key is not None:
+            if len(key) != 2 or type(key[0]) is not int or key[0] < 0:
+                raise ValueError("分支分页游标无效")
+            _identifier(key[1], "turnId")
+        with self._lock:
+            entries = self.read_entries(thread_id)
+            parent, order = self._turn_tree(entries)
+            leaf = self._leaf_state(thread_id, entries)
+            turns = {turn["turnId"]: turn for turn in self._turns(entries, thread_id)}
+            owners = self._item_owners([entry for entry in entries if entry.get("type") != LEAF_ENTRY_TYPE])
+        previews: dict[str, str] = {}
+        for entry in entries:
+            payload = entry.get("payload")
+            if (entry.get("type") == "item" and isinstance(payload, dict)
+                    and payload.get("kind") == "userMessage" and isinstance(payload.get("text"), str)):
+                owner = owners.get(entry["id"])
+                if isinstance(owner, str) and owner not in previews:
+                    text = " ".join(payload["text"].split())
+                    previews[owner] = text[:MAX_BRANCH_PREVIEW_CHARS] + ("…" if len(text) > MAX_BRANCH_PREVIEW_CHARS else "")
+        children: dict[str | None, list[str]] = {}
+        for turn_id in order:
+            children.setdefault(parent[turn_id], []).append(turn_id)
+        position = {turn_id: index for index, turn_id in enumerate(order)}
+        leaf_path: set[str] = set()
+        cursor_turn = leaf["leafTurnId"]
+        while cursor_turn is not None:
+            leaf_path.add(cursor_turn)
+            cursor_turn = parent.get(cursor_turn)
+        endpoints = [turn_id for turn_id in order if turn_id not in children]
+        if key is not None:
+            endpoints = [turn_id for turn_id in endpoints if (position[turn_id], turn_id) > (key[0], key[1])]
+        page = endpoints[:limit]
+        result = []
+        for turn_id in page:
+            path = [turn_id]
+            while parent[path[-1]] is not None:
+                path.append(parent[path[-1]])
+            path.reverse()
+            fork_point = next((ancestor for ancestor in reversed(path[:-1])
+                               if len(children.get(ancestor, [])) > 1), None)
+            branch_turn = path[0] if fork_point is None else path[path.index(fork_point) + 1]
+            turn = turns.get(turn_id, {})
+            result.append({
+                "turnId": turn_id, "status": turn.get("status"),
+                "startedAt": turn.get("startedAt"), "updatedAt": turn.get("updatedAt"),
+                "completedAt": turn.get("completedAt"),
+                "depth": len(path), "forkTurnId": fork_point, "branchTurnId": branch_turn,
+                "branchInputPreview": previews.get(branch_turn),
+                "inputPreview": previews.get(turn_id),
+                "containsLeaf": leaf["leafTurnId"] in path,
+                "isLeaf": leaf["leafTurnId"] == turn_id,
+                "selectable": turn.get("status") in _TERMINAL})
+        next_cursor = (_page_cursor("branches", scope, [position[page[-1]], page[-1]])
+                       if len(endpoints) > limit else None)
+        return {"threadId": thread_id, "branched": leaf["branched"], "leafTurnId": leaf["leafTurnId"],
+                "turnCount": len(order), "endpoints": result, "nextCursor": next_cursor}
+
     def read_active_entries(self, thread_id: str) -> list[dict]:
         return self._active_entries(self.read_entries(thread_id))
 
@@ -2252,8 +2356,20 @@ class SessionStore:
     def fork_thread(self, thread_id: str, *, turn_id: str | None = None, title: str | None = None) -> dict:
         with self._lock:
             source = self.get_thread(thread_id)
-            # A fork copies only the active branch; leaf records never travel.
-            entries = self._active_entries(self.read_entries(thread_id))
+            # A fork copies only one branch; leaf records never travel.  Without
+            # turnId it is the active branch; a settled turn on another branch
+            # selects that branch as if the leaf pointed at it (no record written).
+            raw_entries = self.read_entries(thread_id)
+            entries = self._active_entries(raw_entries)
+            if turn_id is not None and isinstance(turn_id, str) and _IDENTIFIER.fullmatch(turn_id) and not any(
+                    turn["turnId"] == turn_id for turn in self._turns(entries, thread_id)):
+                records = [entry for entry in raw_entries if entry.get("type") == "turn"
+                           and isinstance(entry.get("payload"), dict)
+                           and entry["payload"].get("turnId") == turn_id]
+                if records and records[-1]["payload"].get("status") in _TERMINAL:
+                    synthetic = Entry(type=LEAF_ENTRY_TYPE, parent_id=records[-1]["id"],
+                                      payload={"targetId": records[-1]["id"], "turnId": turn_id})
+                    entries = self._active_entries(raw_entries + [synthetic.to_dict()])
             turns = self._turns(entries, thread_id)
             if turn_id is None:
                 selected = turns[-1] if turns else None

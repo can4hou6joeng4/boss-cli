@@ -463,7 +463,8 @@ class ApplicationService:
             "thread/unarchive": self.on_thread_unarchive, "thread/name/set": self.on_thread_name,
             "thread/reasoning/read": self.on_thread_reasoning_read,
             "thread/reasoning/set": self.on_thread_reasoning_set,
-            "thread/leaf/read": self.on_thread_leaf_read, "thread/leaf/set": self.on_thread_leaf_set,
+            "thread/leaf/read": self.on_thread_leaf_read,
+            "thread/branches/list": self.on_thread_branches_list, "thread/leaf/set": self.on_thread_leaf_set,
             "thread/turns/list": self.on_turn_list, "thread/items/list": self.on_items_list,
             "thread/item/result/read": self.on_tool_result_read,
             "thread/item/content/read": self.on_item_content_read,
@@ -543,7 +544,8 @@ class ApplicationService:
             "capabilities": {"bidirectionalRequests": True, "eventReplay": True,
                              "pagination": True, "parallelThreads": True,
                              "durableApprovals": True, "explicitTurnContinuation": True,
-                             "sessionLeaf": True, "sessionBranchViews": True},
+                             "sessionLeaf": True, "sessionBranchViews": True,
+                             "sessionBranchTree": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -1305,6 +1307,15 @@ class ApplicationService:
         if set(params) != {"threadId"}:
             raise ValueError("thread/leaf/read 只接受 threadId")
         return self.sessions.read_leaf(_text(params, "threadId"))
+
+    def on_thread_branches_list(self, params: dict | None) -> dict:
+        params = params or {}
+        if not set(params) <= {"threadId", "cursor", "limit"}:
+            raise ValueError("thread/branches/list 只接受 threadId、cursor 与 limit")
+        result = self.sessions.list_branches(_text(params, "threadId"), cursor=params.get("cursor"),
+                                             limit=params.get("limit", 50))
+        self._check_response_budget(result)
+        return result
 
     def on_thread_leaf_set(self, params: dict | None) -> dict:
         params = params or {}
