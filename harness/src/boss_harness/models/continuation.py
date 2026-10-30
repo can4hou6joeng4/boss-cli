@@ -90,10 +90,25 @@ def assistant_from_tool_batch(items: list[dict], pending: list[dict]) -> Assista
         )
         for item in pending
     )
+    assistant_ids = {item.get("toolBatchAssistantItemId") for item in pending
+                     if item.get("toolBatchAssistantItemId") is not None}
+    if len(assistant_ids) > 1:
+        raise ValueError("Tool batch assistant reference is duplicated")
+    linked_assistant_id = next(iter(assistant_ids), None)
+    linked_assistant = None
+    if linked_assistant_id is not None:
+        linked_assistant = next((item for item in items if item.get("id") == linked_assistant_id), None)
+        if (linked_assistant is None or linked_assistant.get("kind") != "agentMessage"
+                or linked_assistant.get("turnId") != pending[0].get("turnId")
+                or linked_assistant.get("toolBatchId") != pending[0].get("toolBatchId")
+                or linked_assistant.get("status") != "completed"):
+            raise ValueError("Tool batch assistant item is missing or inconsistent")
     continuations = [item[ANTHROPIC_CONTINUATION_FIELD] for item in pending
                      if ANTHROPIC_CONTINUATION_FIELD in item]
     if not continuations:
-        return AssistantMessage(blocks=tool_calls)
+        text = linked_assistant.get("text") if linked_assistant is not None else None
+        blocks = ((TextBlock(text=text),) if isinstance(text, str) and text else ()) + tool_calls
+        return AssistantMessage(blocks=blocks)
     calls = {call.id: call for call in tool_calls}
     if len(continuations) != 1 or ANTHROPIC_CONTINUATION_FIELD not in pending[0]:
         raise ValueError("Anthropic continuation metadata is duplicated")
@@ -120,6 +135,8 @@ def assistant_from_tool_batch(items: list[dict], pending: list[dict]) -> Assista
             or intended_call_ids[:len(call_ids)] != call_ids):
         raise ValueError("Anthropic continuation no longer matches its tool batch")
     assistant_item_id = payload.get("assistantItemId")
+    if linked_assistant_id is not None and assistant_item_id != linked_assistant_id:
+        raise ValueError("Anthropic continuation assistant reference does not match its batch")
     assistant_item = None
     if assistant_item_id is not None:
         if not isinstance(assistant_item_id, str):

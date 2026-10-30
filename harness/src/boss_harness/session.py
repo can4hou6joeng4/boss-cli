@@ -46,6 +46,7 @@ MAX_EVENT_LINE_BYTES = 8 * 1024 * 1024
 MAX_ITEM_REVISION_ALIASES = 4_096
 MAX_ITEM_REVISION_RECORDS = 4_096
 MAX_ITEM_REVISION_ALIAS_BYTES = 64 * 1024
+MAX_TOOL_BATCH_CALLS = 256
 # Canonical results have a separate budget from their bounded transport
 # projection.  Validate the final JSON spelling before publishing a record;
 # raw CLI bytes and decoded/re-encoded JSON need not have the same size.
@@ -1981,6 +1982,34 @@ class SessionStore:
             payload["resumePolicy"] = resume_policy
         self.append(thread_id, Entry(type="task_phase", parent_id=self.last_entry_id(thread_id),
                                      payload=payload))
+
+    def record_tool_batch(self, thread_id: str, turn_id: str, batch_id: str,
+                          call_ids: list[str], status: str, *,
+                          assistant_item_id: str | None = None,
+                          request_fingerprint: str | None = None) -> Entry:
+        """Persist the complete expected call set before any handler can run."""
+        _identifier(turn_id, "turnId")
+        _identifier(batch_id, "toolBatchId")
+        if (not isinstance(call_ids, list) or not 1 <= len(call_ids) <= MAX_TOOL_BATCH_CALLS
+                or any(not isinstance(value, str) or not value or len(value) > 256 for value in call_ids)
+                or len(set(call_ids)) != len(call_ids)):
+            raise ValueError("工具批次调用清单无效")
+        if status not in {"started", "completed"}:
+            raise ValueError("工具批次状态无效")
+        if assistant_item_id is not None and (not isinstance(assistant_item_id, str)
+                or not _IDENTIFIER.fullmatch(assistant_item_id)):
+            raise ValueError("工具批次 assistant 条目标识无效")
+        if request_fingerprint is not None and (not isinstance(request_fingerprint, str)
+                or not re.fullmatch(r"[a-f0-9]{64}", request_fingerprint)):
+            raise ValueError("工具批次请求摘要无效")
+        payload: dict[str, Any] = {"turnId": turn_id, "toolBatchId": batch_id,
+                                   "callIds": list(call_ids), "status": status}
+        if assistant_item_id is not None:
+            payload["assistantItemId"] = assistant_item_id
+        if request_fingerprint is not None:
+            payload["requestFingerprint"] = request_fingerprint
+        entry = Entry(type="tool_batch", parent_id=self.last_entry_id(thread_id), payload=payload)
+        return self.append(thread_id, entry)
 
     def last_turn(self, thread_id: str) -> dict | None:
         return self.get_thread(thread_id).get("lastTurn")

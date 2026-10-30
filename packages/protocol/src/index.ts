@@ -71,7 +71,7 @@ export interface InitializeResponse {
   modelBridge: { provider: string; model: string; driven: boolean };
   approval: { requiredTools: string[]; timeoutSeconds: number };
   capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean;
-    parallelThreads: boolean; durableApprovals?: boolean };
+    parallelThreads: boolean; durableApprovals?: boolean; explicitTurnContinuation?: boolean };
   eventCursor?: string;
 }
 
@@ -100,6 +100,8 @@ export const ClientMethods = {
   turnInterrupt: "turn/interrupt",
   turnSteer: "turn/steer",
   turnRead: "turn/read",
+  turnContinuationRead: "turn/continuation/read",
+  turnContinue: "turn/continue",
   taskRead: "task/read",
   approvalList: "approval/list",
   approvalRespond: "approval/respond",
@@ -455,6 +457,31 @@ export interface TurnStartParams {
 export interface TurnStartResponse {
   turnId: string;
   clientUserMessageId?: string;
+  deduplicated?: boolean;
+}
+
+export type TurnContinuationBoundary = "user_input" | "completed_tool_batch";
+export interface TurnContinuationReadParams {
+  threadId: string;
+  sourceTurnId: string;
+}
+export interface TurnContinuationReadResponse {
+  threadId: string;
+  sourceTurnId: string;
+  eligible: boolean;
+  boundary?: TurnContinuationBoundary;
+  completedToolCalls?: number;
+  reasonCode?: string;
+  reason?: string;
+  warning: string;
+}
+export interface TurnContinueParams extends TurnContinuationReadParams {
+  continuationId: string;
+}
+export interface TurnContinueResponse {
+  turnId: string;
+  continuedFromTurnId: string;
+  continuationId: string;
   deduplicated?: boolean;
 }
 

@@ -46,7 +46,7 @@ from boss_harness.model_tools import (
     MODEL_RESULT_READ_SPEC, MODEL_RESULT_READ_TOOL, model_tool_specs,
     read_model_tool_result, validate_model_result_read,
 )
-from boss_harness.session import (Entry, SessionStore, ToolRevisionPersistenceError,
+from boss_harness.session import (MAX_TOOL_BATCH_CALLS, Entry, SessionStore, ToolRevisionPersistenceError,
                                   approval_parameters_digest)
 from boss_harness.toolkit import ToolResult, snapshot_result
 from boss_harness.tool_results import (
@@ -157,6 +157,7 @@ class TurnRunner:
         self.last_stream_output_observed = False
         self.preparing_request_index: int | None = None
         self.max_model_requests = model_request_limit(max_model_requests)
+        self.request_offset = 0
 
     @property
     def tool_names(self) -> list[str]:
@@ -266,6 +267,7 @@ class TurnRunner:
         approval: dict[str, Any] | None = None,
         batch_id: str | None = None,
         provider_continuation: dict[str, Any] | None = None,
+        tool_batch_assistant_item_id: str | None = None,
     ) -> Entry:
         """记一条工具调用（running）。
 
@@ -288,6 +290,8 @@ class TurnRunner:
             payload["toolCallId"] = call_id
         if batch_id:
             payload["toolBatchId"] = batch_id
+        if tool_batch_assistant_item_id is not None:
+            payload["toolBatchAssistantItemId"] = tool_batch_assistant_item_id
         if provider_continuation is not None:
             payload[ANTHROPIC_CONTINUATION_FIELD] = provider_continuation
         if approval is not None:
@@ -392,6 +396,7 @@ class TurnRunner:
     def execute_tool(
         self, thread_id: str, name: str, arguments: dict[str, Any], call_id: str | None = None,
         batch_id: str | None = None, provider_continuation: dict[str, Any] | None = None,
+        tool_batch_assistant_item_id: str | None = None,
     ) -> ToolResultItem:
         """执行一个工具：审批闸门 -> 落库 + 发事件 -> 返回给模型的结果块。
 
@@ -445,7 +450,7 @@ class TurnRunner:
                     deadline=time.monotonic() + self.approval_timeout)
 
         entry = self.start_tool_call(thread_id, name, arguments, call_id, approval, batch_id,
-                                     provider_continuation)
+                                     provider_continuation, tool_batch_assistant_item_id)
 
         if approval is not None:
             self.notify(
@@ -631,9 +636,11 @@ class TurnRunner:
         try:
             messages = list(self.history(thread_id))
             specs = self.tool_specs()
+            if type(self.request_offset) is not int or not 0 <= self.request_offset <= max_model_requests:
+                raise ValueError("模型续接请求偏移超出配置上限")
             pending_steering: tuple[list[UserMessage], Callable[[], None]] | None = None
             overflow_retried = False
-            for _round in range(max_model_requests):
+            for _round in range(self.request_offset, max_model_requests):
                 if self.cancelled():
                     return "interrupted"
 
@@ -702,7 +709,9 @@ class TurnRunner:
                 elif staged is not None:
                     staged[1]()
                 self._record_phase("model_request", _round + 1)
-                assistant, error, interrupted, assistant_item_id = self._stream_round(thread_id, request)
+                tool_batch_id = uuid.uuid4().hex[:12]
+                assistant, error, interrupted, assistant_item_id = self._stream_round(
+                    thread_id, request, tool_batch_id)
 
                 if interrupted:
                     return "interrupted"
@@ -753,11 +762,11 @@ class TurnRunner:
                 if assistant.stop_reason == "length":
                     code = "MODEL_OUTPUT_TRUNCATED"
                     recovery = "请检查请求并调整输出上限后，明确发起新回合；不会自动重试。"
-                    self._skip_calls(thread_id, calls, uuid.uuid4().hex[:12], error={
+                    self._skip_calls(thread_id, calls, tool_batch_id, error={
                         "code": code,
                         "message": "模型输出达到长度上限，工具参数可能不完整，该工具未执行",
                         "recovery_action": recovery,
-                    }, provider_continuation=continuation)
+                    }, provider_continuation=continuation, assistant_item_id=assistant_item_id)
                     message = "模型输出达到长度上限，本回合未正常完成；本次响应中的工具均未执行。\n\n恢复提示：" + recovery
                     self.append_agent(thread_id, message)
                     self.notify(N_SESSION_ERROR, {"threadId": thread_id, "code": code, "message": message})
@@ -777,29 +786,55 @@ class TurnRunner:
                         continue
                     return "completed"
 
+                if len(calls) > MAX_TOOL_BATCH_CALLS:
+                    self.append_agent(thread_id, "模型工具调用数量超过单批次持久化上限；本批操作均未执行。")
+                    self.notify(N_SESSION_ERROR, {"threadId": thread_id,
+                        "code": "TOOL_BATCH_LIMIT", "message": "模型工具调用数量超过单批次上限，本批操作均未执行。"})
+                    return "error"
+
+                request_fingerprint = (self.last_preparation[1].get("requestFingerprint")
+                                       if self.last_preparation is not None else None)
+                self.sessions.record_tool_batch(
+                    thread_id, self.turn_id, tool_batch_id, [call.id for call in calls], "started",
+                    assistant_item_id=assistant_item_id,
+                    request_fingerprint=request_fingerprint if isinstance(request_fingerprint, str) else None)
+
                 messages.append(assistant)
                 results: list[ToolResultItem] = []
-                batch_id = uuid.uuid4().hex[:12]
+                batch_id = tool_batch_id
                 self._record_phase("tool_execution", _round + 1)
                 for index, call in enumerate(calls):
                     if self.cancelled():
                         self._skip_calls(thread_id, calls[index:], batch_id,
-                                         provider_continuation=continuation if index == 0 else None)
+                                         provider_continuation=continuation if index == 0 else None,
+                                         assistant_item_id=assistant_item_id)
                         return "interrupted"
                     results.append(
                         self.execute_tool(thread_id, call.name, dict(call.arguments), call.id, batch_id,
-                                          continuation if index == 0 else None)
+                                          continuation if index == 0 else None, assistant_item_id)
                     )
                     if self._blocked is not None:
-                        self._skip_calls(thread_id, calls[index + 1:], batch_id)
+                        self._skip_calls(thread_id, calls[index + 1:], batch_id,
+                                         assistant_item_id=assistant_item_id)
                         result = self._blocked
                         code = (result.error or {}).get("code", "UNKNOWN")
                         recovery = (result.error or {}).get("recovery_action") or "请核对操作结果，处理后再明确发起下一步；不要自动重试。"
                         self.append_agent(thread_id, f"操作已暂停（{code}）：{summarize_result(result)}\n\n恢复提示：{recovery}")
                         return "blocked"
                     if self.cancelled():
-                        self._skip_calls(thread_id, calls[index + 1:], batch_id)
+                        if index + 1 < len(calls):
+                            self._skip_calls(thread_id, calls[index + 1:], batch_id,
+                                             assistant_item_id=assistant_item_id)
+                            return "interrupted"
+                        self.sessions.record_tool_batch(
+                            thread_id, self.turn_id, batch_id, [call.id for call in calls], "completed",
+                            assistant_item_id=assistant_item_id,
+                            request_fingerprint=request_fingerprint if isinstance(request_fingerprint, str) else None)
                         return "interrupted"
+                self.sessions.record_tool_batch(
+                    thread_id, self.turn_id, batch_id, [call.id for call in calls], "completed",
+                    assistant_item_id=assistant_item_id,
+                    request_fingerprint=request_fingerprint if isinstance(request_fingerprint, str) else None)
                 messages.append(ToolResultsMessage(results=tuple(results)))
 
             message = (f"已达到模型调用上限（{max_model_requests} 次请求），本回合已暂停。"
@@ -849,16 +884,18 @@ class TurnRunner:
 
     def _skip_calls(self, thread_id: str, calls: tuple[ToolCallBlock, ...], batch_id: str,
                     *, error: dict[str, Any] | None = None,
-                    provider_continuation: dict[str, Any] | None = None) -> None:
+                    provider_continuation: dict[str, Any] | None = None,
+                    assistant_item_id: str | None = None) -> None:
         for index, call in enumerate(calls):
             entry = self.start_tool_call(thread_id, call.name, dict(call.arguments), call.id,
-                batch_id=batch_id, provider_continuation=provider_continuation if index == 0 else None)
+                batch_id=batch_id, provider_continuation=provider_continuation if index == 0 else None,
+                tool_batch_assistant_item_id=assistant_item_id)
             result = ToolResult(ok=False, command=call.name, error=error or {
                 "code": "NOT_EXECUTED", "message": "回合中断或平台暂停，该工具未执行"})
             self.finish_tool_call(thread_id, entry, call.name, result, call.id, execution_state="not_executed")
 
     def _stream_round(
-        self, thread_id: str, request: ModelRequest
+        self, thread_id: str, request: ModelRequest, tool_batch_id: str
     ) -> tuple[AssistantMessage | None, str | None, bool, str | None]:
         """消费一轮事件流：文本增量实时发事件，返回 (最终消息, 错误说明, 是否被中断)。
 
@@ -1054,6 +1091,8 @@ class TurnRunner:
             payload = {"kind": "agentMessage", "text": text, "thinking": "".join(thinking),
                        "revises": entry.id, "status": "failed" if interrupted or error or truncated else "completed",
                        "turnId": self.turn_id}
+            if assistant is not None and assistant.tool_calls():
+                payload["toolBatchId"] = tool_batch_id
             self.sessions.append(thread_id, Entry(type="item",
                 parent_id=self.sessions.last_entry_id(thread_id), payload=payload))
             self.notify(N_ITEM_COMPLETED, {"threadId": thread_id, "itemId": entry.id, **payload})

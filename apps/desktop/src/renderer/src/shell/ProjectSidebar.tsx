@@ -47,7 +47,7 @@ export function ProjectSidebar(props: Props) {
     const key = scope + session.id, selected = session.id === props.activeSessionId && !props.isHomeView;
     const projectId = props.folders.find(folder => folder.sessions.some(item => item.id === session.id))?.id;
     return <div className={"sidebar-session popover-anchor" + (selected ? " selected" : "")} key={session.id} onContextMenu={event => rightClick(key, event)}>
-      <button className="session-select" onClick={() => props.onSelectSession(session)} title={session.title} aria-current={selected ? "page" : undefined}><span className={"session-state" + (session.status === "running" ? " running" : "")} /><span>{session.title}</span></button>
+      <button className="session-select" onClick={() => props.onSelectSession(session)} title={session.status === "interrupted" ? `${session.title} · 上回合中断，等待预检` : session.title} aria-current={selected ? "page" : undefined}><span className={"session-state" + (session.status === "running" ? " running" : session.status === "interrupted" ? " interrupted" : "")} /><span>{session.title}</span></button>
       <button className="session-overflow titlebar-btn" aria-label={"会话选项：" + session.title} aria-haspopup="menu" aria-expanded={context?.key === key} onClick={() => toggle(key)}><IconMore size={15} /></button>
       <Popover open={context?.key === key} onClose={close} align="right" anchorPoint={context?.key === key ? context.point : undefined} label="聊天选项" className="sidebar-context-menu">
         {view === "main" ? <>

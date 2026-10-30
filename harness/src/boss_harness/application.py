@@ -42,7 +42,8 @@ from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
 from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUncertain, Entry,
                                   ApprovalDecisionError, ItemLookupError, SessionEntriesSnapshot,
-                                  SessionStore, ThreadNotFound, ToolRevisionPersistenceError)
+                                  SessionStore, ThreadNotFound, ToolRevisionPersistenceError,
+                                  MAX_TOOL_BATCH_CALLS)
 from boss_harness.snapshot_store import SnapshotStore
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
 from boss_harness.tool_bundle import ToolBundle
@@ -64,6 +65,9 @@ MAX_RUNTIME_RESOURCE_WAITERS = 32
 MAX_RUNTIME_RESOURCE_OWNERS = 32
 MAX_COMPACTION_ERROR_CHARACTERS = 2_048
 MAX_TASK_RELATIONS = 256
+MAX_CONTINUATION_HISTORY_BYTES = 64 * 1024 * 1024
+CONTINUATION_WARNING = ("续接会发起新的模型请求，可能重复调用并产生额外费用；已完成工具结果会沿用，"
+                        "不会再次执行旧工具，新写操作仍需逐次审批。")
 
 
 def _record_checkpoint_turn(turns_by_job: dict[str, set[str]], job_id: str,
@@ -424,7 +428,9 @@ class ApplicationService:
             "thread/turns/list": self.on_turn_list, "thread/items/list": self.on_items_list,
             "thread/item/result/read": self.on_tool_result_read,
             "thread/item/content/read": self.on_item_content_read,
-            "turn/start": self.on_turn_start, "turn/interrupt": self.on_turn_interrupt,
+            "turn/start": self.on_turn_start, "turn/continue": self.on_turn_continue,
+            "turn/continuation/read": self.on_turn_continuation_read,
+            "turn/interrupt": self.on_turn_interrupt,
             "turn/steer": self.on_turn_steer, "turn/read": self.on_turn_read,
             "task/read": self.on_task_read,
             "runtime/resources/read": self.on_runtime_resources_read,
@@ -497,7 +503,7 @@ class ApplicationService:
         return {"serverName": "boss-harness", "serverVersion": __version__, "protocolVersion": protocol,
             "capabilities": {"bidirectionalRequests": True, "eventReplay": True,
                              "pagination": True, "parallelThreads": True,
-                             "durableApprovals": True},
+                             "durableApprovals": True, "explicitTurnContinuation": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -2117,6 +2123,477 @@ class ApplicationService:
             self.bridge_lifecycle.close(bridge)
             raise
 
+    @staticmethod
+    def _continuation_context_fingerprint(config: ModelConfig, system_prompt: str,
+                                         tools: tuple, skills: list[dict], attachments: list[dict],
+                                         tool_policy: str, max_model_requests: int,
+                                         compaction_policy: CompactionPolicy,
+                                         tool_bundle_id: str) -> str:
+        value = {
+            "provider": config.provider,
+            "model": config.model,
+            "maxTokens": config.max_tokens,
+            "effort": config.effort,
+            "thinking": dict(config.thinking) if config.thinking is not None else None,
+            "baseUrlDigest": hashlib.sha256((config.base_url or "").encode("utf-8")).hexdigest(),
+            "serverSideFallback": config.server_side_fallback,
+            "systemPrompt": system_prompt,
+            "tools": [{"name": tool.name, "description": tool.description,
+                       "inputSchema": dict(tool.input_schema)} for tool in tools],
+            "skills": [{"id": item["id"], "digest": item["digest"]} for item in skills],
+            "attachments": [{"id": item["id"], "digest": item["digest"], "bytes": item["bytes"],
+                             "name": item["name"]} for item in attachments],
+            "toolPolicy": tool_policy,
+            "maxModelRequests": max_model_requests,
+            "compactionPolicy": compaction_policy.describe(),
+            "toolBundleId": tool_bundle_id,
+        }
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"), allow_nan=False).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _continuation_entries_digest(entries: list[dict]) -> str:
+        encoded = json.dumps(entries, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"), allow_nan=False).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _continuation_policy(value: Any) -> CompactionPolicy | None:
+        if not isinstance(value, dict) or set(value) != {
+                "enabled", "triggerPercent", "keepRecentTokens", "provider", "model", "effort"}:
+            return None
+        try:
+            return CompactionPolicy(value["enabled"], value["triggerPercent"], value["keepRecentTokens"],
+                                    value["provider"], value["model"], value["effort"])
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _continuation_failure(code: str, reason: str) -> dict[str, Any]:
+        return {"eligible": False, "reasonCode": code, "reason": reason}
+
+    @staticmethod
+    def _continuation_ok(plan: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in plan.items()
+                if key not in {"entries", "source", "config", "runner", "history"}}
+
+    def _turn_continuation_plan(self, thread_id: str, source_turn_id: str) -> dict[str, Any]:
+        def fail(code: str, reason: str) -> dict[str, Any]:
+            return self._continuation_failure(code, reason)
+
+        try:
+            thread = self.sessions.get_thread(thread_id)
+            if thread.get("archived"):
+                return fail("THREAD_ARCHIVED", "请先恢复会话，再检查中断回合。")
+            if self.runtimes.closed:
+                return fail("KERNEL_SHUTTING_DOWN", "内核正在关闭，当前不能续接。")
+            if thread_id in self.runtimes.active or thread_id in self._compaction_by_thread:
+                return fail("THREAD_BUSY", "会话仍有运行或收尾任务。")
+            if thread_id in self._tool_persistence_fences:
+                return fail("THREAD_REQUIRES_REVIEW", "工具结果持久化状态需要人工核对。")
+            if thread_id in self._follow_up_dispatches or any(
+                    owner_thread == thread_id for owner_thread in self._follow_up_worker_threads.values()):
+                return fail("THREAD_BUSY", "会话仍有后续任务正在收尾。")
+            if any(notice.get("threadId") == thread_id for notice in self._receipt_notices.values()):
+                return fail("THREAD_BUSY", "会话请求回执仍在收尾。")
+            if any(item.get("status") == "delivering" for item in self.queue.list(thread_id)):
+                return fail("QUEUE_REQUIRES_REVIEW", "队列中仍有投递状态未核对的请求。")
+            if self._capacity_waiters and self.runtimes.has_capacity():
+                return fail("TURN_ADMISSION_WAITING", "已有更早排队的任务等待并发槽位。")
+        except Exception:
+            return fail("CONTINUATION_STATE_UNAVAILABLE", "会话运行状态无法安全核对。")
+
+        try:
+            session_path = self.sessions.path_for(thread_id)
+            if session_path.stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
+                return fail("CONTINUATION_HISTORY_LIMIT", "会话历史超过续接读取上限。")
+            entries = self.sessions.read_entries(thread_id)
+            turns = self.sessions._turns(entries, thread_id)
+            if not turns or turns[-1].get("turnId") != source_turn_id:
+                return fail("CONTINUATION_NOT_LATEST", "只有最新回合可以续接。")
+            source = next((turn for turn in turns if turn.get("turnId") == source_turn_id), None)
+            if source is None or source.get("status") != "interrupted":
+                return fail("CONTINUATION_NOT_INTERRUPTED", "来源回合不是可检查的中断状态。")
+            if any(turn.get("continuedFromTurnId") == source_turn_id for turn in turns):
+                return fail("CONTINUATION_ALREADY_EXISTS", "该中断回合已经创建过续接回合。")
+
+            owner_by_entry = self.sessions._item_owners(entries)
+            items = self.sessions._project_items(thread_id, entries)
+            source_items = [item for item in items if (item.get("turnId") or owner_by_entry.get(item["id"]))
+                            == source_turn_id]
+            source_user_items = [item for item in source_items if item.get("kind") == "userMessage"
+                                 and item.get("source") != "steering"]
+            source_tool_items = [item for item in source_items if item.get("kind") == "toolCall"]
+
+            if any((isinstance(item.get("approval"), dict)
+                    and item["approval"].get("decision") is None)
+                   or item.get("executionState") == "pending_approval" for item in source_tool_items):
+                return fail("CONTINUATION_APPROVAL_PENDING", "来源回合仍有未决审批。")
+            if any(item.get("executionState") == "outcome_unknown" for item in source_tool_items):
+                return fail("CONTINUATION_TOOL_OUTCOME_UNKNOWN", "来源回合含有结果未知的工具操作。")
+            if any(item.get("status") == "running" or item.get("executionState") in {
+                    "approved", "executing", "pending_approval", "not_executed", "not_approved",
+                    "outcome_unknown"} for item in source_tool_items):
+                return fail("CONTINUATION_TOOL_STATE_UNRESOLVED", "来源回合存在未完成或未执行的工具调用。")
+
+            manifests: dict[str, list[tuple[int, dict, str]]] = {}
+            for ordinal, entry in enumerate(entries):
+                payload = entry.get("payload")
+                if entry.get("type") != "tool_batch" or not isinstance(payload, dict):
+                    continue
+                if payload.get("turnId") != source_turn_id:
+                    continue
+                batch_id = payload.get("toolBatchId")
+                if not isinstance(batch_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", batch_id) is None:
+                    return fail("CONTINUATION_TOOL_BATCH_INVALID", "工具批次清单格式无效。")
+                manifests.setdefault(batch_id, []).append((ordinal, payload, str(entry.get("id", ""))))
+
+            calls_by_batch: dict[str, list[dict]] = {}
+            for item in source_tool_items:
+                batch_id = item.get("toolBatchId")
+                if not isinstance(batch_id, str):
+                    return fail("CONTINUATION_TOOL_BATCH_MISSING", "旧工具调用缺少可核验的完整批次清单。")
+                calls_by_batch.setdefault(batch_id, []).append(item)
+            if set(calls_by_batch) != set(manifests):
+                return fail("CONTINUATION_TOOL_BATCH_MISSING", "工具调用与持久批次清单不一致。")
+
+            batch_boundaries: list[tuple[int, str]] = []
+            completed_call_count = 0
+            assistant_items = {item["id"]: item for item in items if item.get("kind") == "agentMessage"}
+            for batch_id, records in manifests.items():
+                if len(records) != 2 or [record[1].get("status") for record in records] != ["started", "completed"]:
+                    return fail("CONTINUATION_TOOL_BATCH_INCOMPLETE", "工具批次尚未被证明完整持久化。")
+                first, completed = records
+                start_payload, done_payload = first[1], completed[1]
+                call_ids = start_payload.get("callIds")
+                if (not isinstance(call_ids, list) or not 1 <= len(call_ids) <= MAX_TOOL_BATCH_CALLS
+                        or any(not isinstance(call_id, str) or not call_id or len(call_id) > 256 for call_id in call_ids)
+                        or len(set(call_ids)) != len(call_ids)
+                        or done_payload.get("callIds") != call_ids
+                        or start_payload.get("assistantItemId") != done_payload.get("assistantItemId")
+                        or start_payload.get("requestFingerprint") != done_payload.get("requestFingerprint")):
+                    return fail("CONTINUATION_TOOL_BATCH_INVALID", "工具批次清单前后记录不一致。")
+                calls = calls_by_batch.get(batch_id, [])
+                observed_ids = [item.get("toolCallId") for item in calls]
+                if (observed_ids != call_ids or any(item.get("status") not in {"completed", "failed"}
+                        or item.get("executionState") not in {"completed", "failed"}
+                        for item in calls)):
+                    return fail("CONTINUATION_TOOL_BATCH_INCOMPLETE", "工具批次缺少已确认的结果。")
+                if any(item.get("toolBatchAssistantItemId") != start_payload.get("assistantItemId")
+                       for item in calls):
+                    return fail("CONTINUATION_TOOL_BATCH_INVALID", "工具批次 assistant 来源不一致。")
+                assistant_id = start_payload.get("assistantItemId")
+                if assistant_id is not None:
+                    assistant = assistant_items.get(assistant_id)
+                    if (assistant is None or assistant.get("turnId") != source_turn_id
+                            or assistant.get("toolBatchId") != batch_id
+                            or assistant.get("status") != "completed"):
+                        return fail("CONTINUATION_TOOL_BATCH_INVALID", "工具批次模型响应条目缺失或不一致。")
+                for item in calls:
+                    if isinstance(item.get("approval"), dict) and not self.sessions._valid_approval_item(
+                            item, pending_only=False):
+                        return fail("CONTINUATION_APPROVAL_INVALID", "来源回合的审批记录无法核验。")
+                completed_call_count += len(call_ids)
+                batch_boundaries.append((completed[0], completed[2]))
+
+            if len(source_tool_items) != sum(len(calls) for calls in calls_by_batch.values()):
+                return fail("CONTINUATION_TOOL_BATCH_INVALID", "来源回合存在重复或归属冲突的工具条目。")
+
+            candidates: list[tuple[int, str, str]] = [
+                (ordinal, entry_id, "completed_tool_batch")
+                for ordinal, entry_id in batch_boundaries
+            ]
+            for ordinal, entry in enumerate(entries):
+                payload = entry.get("payload")
+                if (entry.get("type") == "context_budget" and isinstance(payload, dict)
+                        and payload.get("turnId") == source_turn_id):
+                    fingerprint = payload.get("requestFingerprint")
+                    if not isinstance(fingerprint, str) or re.fullmatch(r"[a-f0-9]{64}", fingerprint) is None:
+                        return fail("CONTINUATION_BOUNDARY_INVALID", "模型请求边界缺少有效摘要。")
+                    candidates.append((ordinal, str(entry.get("id", "")),
+                                       "completed_tool_batch" if completed_call_count else "user_input"))
+
+            inherited_boundary_id = source.get("continuationBoundaryEntryId")
+            inherited_boundary_digest = source.get("continuationBoundaryDigest")
+            inherited_boundary_kind = source.get("continuationBoundaryKind")
+            inherited_call_count = source.get("continuationCompletedToolCalls", 0)
+            if source.get("continuedFromTurnId") is not None:
+                if (not isinstance(inherited_boundary_id, str)
+                        or not isinstance(inherited_boundary_digest, str)
+                        or re.fullmatch(r"[a-f0-9]{64}", inherited_boundary_digest) is None
+                        or inherited_boundary_kind not in {"user_input", "completed_tool_batch"}
+                        or type(inherited_call_count) is not int or inherited_call_count < 0):
+                    return fail("CONTINUATION_BOUNDARY_INVALID", "续接来源缺少继承的持久边界。")
+                inherited_index = next((i for i, entry in enumerate(entries)
+                                        if entry.get("id") == inherited_boundary_id), None)
+                if inherited_index is None or self._continuation_entries_digest(
+                        entries[:inherited_index + 1]) != inherited_boundary_digest:
+                    return fail("CONTINUATION_HISTORY_CHANGED", "续接来源的已确认历史前缀已变化。")
+
+            if not candidates:
+                if inherited_boundary_id is not None:
+                    inherited_index = next((i for i, entry in enumerate(entries)
+                                            if entry.get("id") == inherited_boundary_id), None)
+                    if inherited_index is None:
+                        return fail("CONTINUATION_BOUNDARY_INVALID", "续接来源的持久边界不存在。")
+                    candidates.append((inherited_index, inherited_boundary_id, inherited_boundary_kind))
+                elif len(source_user_items) == 1:
+                    user_id = source_user_items[0]["id"]
+                    user_index = next((i for i, entry in enumerate(entries)
+                                       if entry.get("id") == user_id), None)
+                    if user_index is not None:
+                        original_input = source_user_items[0].get("originalInput", source_user_items[0].get("text"))
+                        input_digest = hashlib.sha256(str(original_input).encode("utf-8")).hexdigest()
+                        if source.get("requestInputDigest") != input_digest:
+                            return fail("CONTINUATION_HISTORY_CHANGED", "来源用户输入与持久请求摘要不一致。")
+                        candidates.append((user_index, user_id, "user_input"))
+            if not candidates:
+                return fail("CONTINUATION_BOUNDARY_INVALID", "没有可验证的模型请求或工具结果边界。")
+
+            boundary_ordinal, boundary_entry_id, boundary_kind = max(candidates, key=lambda candidate: candidate[0])
+            prefix = entries[:boundary_ordinal + 1]
+            boundary_digest = self._continuation_entries_digest(prefix)
+            if inherited_boundary_id == boundary_entry_id and inherited_boundary_digest != boundary_digest:
+                return fail("CONTINUATION_HISTORY_CHANGED", "续接来源的已确认历史前缀已变化。")
+            included_items = self.sessions._project_items(thread_id, prefix)
+            included_item_ids = {item["id"] for item in included_items}
+            for entry in entries[boundary_ordinal + 1:]:
+                payload = entry.get("payload") or {}
+                if entry.get("type") == "context_checkpoint":
+                    return fail("CONTINUATION_HISTORY_CHANGED", "来源模型请求之后的上下文摘要发生变化。")
+                if entry.get("type") == "context_edit" and payload.get("targetItemId") in included_item_ids:
+                    return fail("CONTINUATION_HISTORY_CHANGED", "来源模型请求之后的上下文条目发生变化。")
+                if entry.get("type") == "item" and payload.get("revises") in included_item_ids:
+                    return fail("CONTINUATION_HISTORY_CHANGED", "来源模型请求之后的历史条目发生变化。")
+                if (entry.get("type") == "item" and payload.get("kind") == "agentMessage"
+                        and payload.get("status") == "completed"
+                        and (payload.get("turnId") == source_turn_id)):
+                    return fail("CONTINUATION_ALREADY_COMPLETED", "来源回合已持久化完整 assistant 回复。")
+
+            source_fingerprint = source.get("continuationContextFingerprint")
+            source_policy = self._continuation_policy(source.get("compactionPolicy"))
+            if (not isinstance(source_fingerprint, str)
+                    or re.fullmatch(r"[a-f0-9]{64}", source_fingerprint) is None
+                    or source_policy is None):
+                return fail("CONTINUATION_SOURCE_UNVERIFIABLE", "来源回合缺少续接配置摘要。")
+            source_model = source.get("model")
+            source_provider = source.get("provider")
+            source_max_requests = source.get("maxModelRequests")
+            if (not isinstance(source_model, str) or not source_model
+                    or not isinstance(source_provider, str) or source_provider == "none"
+                    or type(source_max_requests) is not int or not 1 <= source_max_requests <= self.max_model_requests):
+                return fail("CONTINUATION_SOURCE_UNVERIFIABLE", "来源模型配置不可用或已超过当前请求上限。")
+            if self.provider_factory is None and self.provider is None:
+                return fail("CONTINUATION_PROVIDER_UNAVAILABLE", "当前内核没有可复用的模型供应商实例。")
+            if source_provider != self.config.provider:
+                return fail("CONTINUATION_CONTEXT_CHANGED", "当前供应商与来源回合不一致。")
+            skill_ids = source.get("skillIds", [])
+            attachment_ids = source.get("attachmentIds", [])
+            if (not isinstance(skill_ids, list) or any(not isinstance(value, str) for value in skill_ids)
+                    or not isinstance(attachment_ids, list)
+                    or any(not isinstance(value, str) for value in attachment_ids)):
+                return fail("CONTINUATION_SOURCE_UNVERIFIABLE", "来源技能或附件身份无法核验。")
+            try:
+                config = self._model_config(thread, {"model": source_model})
+                skill_text, skills = self.skills.load(skill_ids)
+                _, attachments = self.attachments.context(thread_id, attachment_ids)
+                tool_policy = thread.get("toolPolicy", "approval")
+                if tool_policy != source.get("toolPolicy", "approval"):
+                    return fail("CONTINUATION_CONTEXT_CHANGED", "会话工具策略与来源回合不一致。")
+                if (config.provider != source_provider or config.model != source_model
+                        or config.effort != source.get("reasoningEffort")
+                        or config.max_tokens != source.get("maxTokens")
+                        or (dict(config.thinking) if config.thinking is not None else None)
+                        != source.get("thinking")):
+                    return fail("CONTINUATION_CONTEXT_CHANGED", "当前模型配置与来源回合不一致。")
+                prompt = self._system_prompt(tool_policy == "readOnly", skill_text)
+                tools = model_tool_specs(self.registry.specs(read_only=tool_policy == "readOnly"))
+                fingerprint = self._continuation_context_fingerprint(
+                    config, prompt, tools, skills, attachments, tool_policy, source_max_requests,
+                    source_policy, self.tool_bundle.id)
+            except Exception:
+                return fail("CONTINUATION_CONTEXT_UNAVAILABLE", "来源技能、附件或模型配置无法安全复核。")
+            if fingerprint != source_fingerprint:
+                return fail("CONTINUATION_CONTEXT_CHANGED", "模型、工具、技能、附件或请求上下文已变化。")
+
+            request_offset = source.get("continuationRequestOffset", 0)
+            if type(request_offset) is not int or not 0 <= request_offset <= source_max_requests:
+                return fail("CONTINUATION_SOURCE_UNVERIFIABLE", "来源模型请求计数无法核验。")
+            for entry in entries:
+                payload = entry.get("payload") or {}
+                if (entry.get("type") == "task_phase" and payload.get("taskId") == source_turn_id
+                        and payload.get("ownerKind") == "turn" and payload.get("phase") == "model_request"
+                        and type(payload.get("attempt")) is int):
+                    request_offset = max(request_offset, payload["attempt"])
+            if request_offset >= source_max_requests:
+                return fail("CONTINUATION_REQUEST_LIMIT", "来源回合已用完持久化的模型请求上限。")
+            try:
+                history = self.context.history(thread_id, entries=prefix)
+            except Exception:
+                return fail("CONTINUATION_HISTORY_INVALID", "已确认历史无法按当前协议重建。")
+            return {"eligible": True, "threadId": thread_id, "sourceTurnId": source_turn_id,
+                    "boundary": boundary_kind, "completedToolCalls": completed_call_count,
+                    "warning": CONTINUATION_WARNING, "entries": prefix, "source": source,
+                    "boundaryEntryId": boundary_entry_id, "boundaryDigest": boundary_digest,
+                    "requestOffset": request_offset, "maxModelRequests": source_max_requests,
+                    "config": config, "systemPrompt": prompt, "tools": tools, "skills": skills,
+                    "attachmentIds": attachment_ids, "skillIds": skill_ids,
+                    "compactionPolicy": source_policy, "toolPolicy": tool_policy, "history": history}
+        except Exception:
+            return fail("CONTINUATION_STATE_UNAVAILABLE", "中断回合历史无法安全核对。")
+
+    def on_turn_continuation_read(self, params: dict | None) -> dict:
+        params = params or {}
+        if set(params) != {"threadId", "sourceTurnId"}:
+            raise ValueError("turn/continuation/read 参数无效")
+        thread_id = _text(params, "threadId")
+        source_turn_id = _text(params, "sourceTurnId", maximum=128)
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", source_turn_id) is None:
+            raise ValueError("sourceTurnId 格式无效")
+        plan = self._turn_continuation_plan(thread_id, source_turn_id)
+        result = {"threadId": thread_id, "sourceTurnId": source_turn_id,
+                  "eligible": plan["eligible"], "warning": CONTINUATION_WARNING}
+        for key in ("boundary", "completedToolCalls", "reasonCode", "reason"):
+            if key in plan:
+                result[key] = plan[key]
+        return result
+
+    def on_turn_continue(self, params: dict | None) -> dict:
+        params = params or {}
+        if set(params) != {"threadId", "sourceTurnId", "continuationId"}:
+            raise ValueError("turn/continue 参数无效")
+        thread_id = _text(params, "threadId")
+        source_turn_id = _text(params, "sourceTurnId", maximum=128)
+        continuation_id = _text(params, "continuationId", maximum=128)
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", source_turn_id) is None:
+            raise ValueError("sourceTurnId 格式无效")
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", continuation_id) is None:
+            raise ValueError("continuationId 格式无效")
+
+        runner = None
+        job = None
+        with self._follow_up_admission_lock, self.runtimes.lock:
+            self.queue.settle_pauses(thread_id)
+            entries = self.sessions.read_entries(thread_id)
+            turns = self.sessions._turns(entries, thread_id)
+            matches = [turn for turn in turns if turn.get("continuationId") == continuation_id]
+            if matches:
+                if (len(matches) != 1 or matches[0].get("continuedFromTurnId") != source_turn_id):
+                    raise RpcError(-32004, "续接编号与来源回合不一致。",
+                                   {"code": "CONTINUATION_ID_CONFLICT"})
+                return {"turnId": matches[0]["turnId"], "continuedFromTurnId": source_turn_id,
+                        "continuationId": continuation_id, "deduplicated": True}
+
+            plan = self._turn_continuation_plan(thread_id, source_turn_id)
+            if not plan["eligible"]:
+                raise RpcError(-32004, plan.get("reason", "中断回合当前不能续接。"),
+                               {"code": plan.get("reasonCode", "CONTINUATION_REJECTED"),
+                                "threadId": thread_id, "sourceTurnId": source_turn_id})
+            self.runtimes.check_admission(thread_id)
+            source = plan["source"]
+            config = plan["config"]
+            policy = plan["compactionPolicy"]
+            request_digest = source.get("requestInputDigest")
+            if not isinstance(request_digest, str) or re.fullmatch(r"[a-f0-9]{64}", request_digest) is None:
+                raise RpcError(-32004, "来源输入摘要无法核验。",
+                               {"code": "CONTINUATION_SOURCE_UNVERIFIABLE"})
+            try:
+                runner = self._runner_for(config)
+                runner.max_model_requests = plan["maxModelRequests"]
+                runner.request_offset = plan["requestOffset"]
+                runner.last_preparation = None
+                read_only = plan["toolPolicy"] == "readOnly"
+                allowed = self.registry.allowed_names(read_only=read_only)
+                runner._tools = self.registry.specs(read_only=read_only)
+
+                def validate(name: str, arguments: dict) -> dict | None:
+                    if name == MODEL_RESULT_READ_TOOL:
+                        return None
+                    if read_only and name not in allowed:
+                        raise ValueError("只读会话禁止此工具；请新建需要逐次审批的会话")
+                    return self.registry.validate(name, arguments)
+
+                runner.validate_arguments = validate
+                job = self.runtimes.reserve(thread_id, "continue:" + source_turn_id, runner)
+                job["compactionPolicy"] = policy
+                job["continuedFromTurnId"] = source_turn_id
+                job["continuationId"] = continuation_id
+                job["requestInputDigest"] = request_digest
+                job["_input_persisted"] = True
+                runner.phase_recorder = lambda phase, attempt: self._record_turn_phase(
+                    job, phase, "running", attempt)
+                runner.request_preparer = lambda request: self._prepare_turn_request(job, request)
+                runner.recover_context = (lambda request: self._compact_during_turn(
+                    job, request, "overflow", required=True)) if policy.enabled else None
+                runner.turn_id = job["turnId"]
+                runner._cancel = job["cancel"]
+                runner.system_prompt = plan["systemPrompt"]
+                boundary_entries = plan["entries"]
+                runner.history_provider = lambda _thread_id: self.context.history(
+                    thread_id, entries=boundary_entries)
+                runner.notify = lambda method, payload=None: self._notify_runner(job, method, payload)
+                runner.stage_steering = lambda: self._stage_steering(job)
+                job["requestInputDigest"] = request_digest
+                job["queueId"] = None
+                try:
+                    self.sessions.record_turn(thread_id, job["turnId"], "running",
+                        model=source["model"], provider=source["provider"],
+                        reasoningEffort=source.get("reasoningEffort"),
+                        maxModelRequests=plan["maxModelRequests"],
+                        maxTokens=source["maxTokens"], thinking=source.get("thinking"),
+                        compactionPolicy=policy.describe(), attachmentIds=plan["attachmentIds"],
+                        continuationContextFingerprint=source["continuationContextFingerprint"],
+                        skillIds=plan["skillIds"], toolPolicy=plan["toolPolicy"],
+                        requestInputDigest=request_digest,
+                        continuedFromTurnId=source_turn_id, continuationId=continuation_id,
+                        continuationBoundaryEntryId=plan["boundaryEntryId"],
+                        continuationBoundaryDigest=plan["boundaryDigest"],
+                        continuationBoundaryKind=plan["boundary"],
+                        continuationCompletedToolCalls=plan["completedToolCalls"],
+                        continuationRequestOffset=plan["requestOffset"])
+                    self._record_turn_phase(job, "admission", "running", 1)
+                    self.events.emit("turn/started", {"threadId": thread_id, "turnId": job["turnId"],
+                        "continuedFromTurnId": source_turn_id, "continuationId": continuation_id})
+                    worker = threading.Thread(target=self._run_turn, args=(job,),
+                                              name=f"turn-{job['turnId'][:8]}", daemon=True)
+                    job["worker"] = worker
+                    try:
+                        worker.start()
+                    except Exception:
+                        if worker.ident is None:
+                            raise
+                except Exception:
+                    self._settle_unstarted_turn_locked(job)
+                    raise
+            except Exception:
+                try:
+                    if job is not None and job.get("_start_failed"):
+                        self._notify_start_failure(job)
+                finally:
+                    try:
+                        if runner is not None and runner is not self.runner:
+                            self.bridge_lifecycle.close(runner.tool_bridge)
+                    except Exception:
+                        pass
+                    finally:
+                        if job is not None and job.get("_start_failed"):
+                            try:
+                                self.runtimes.finish(job)
+                            except Exception:
+                                pass
+                            try:
+                                self._drain_capacity_waiters()
+                            except Exception:
+                                pass
+                        try:
+                            self._close_application_resources_if_idle()
+                        except Exception:
+                            pass
+                raise
+        return {"turnId": job["turnId"], "continuedFromTurnId": source_turn_id,
+                "continuationId": continuation_id}
+
     def on_turn_start(self, params: dict | None, *, queue_item: dict | None = None) -> dict:
         params = params or {}
         if queue_item is None:
@@ -2206,6 +2683,7 @@ class ApplicationService:
                        for compaction in self._compaction_jobs.values()):
                     raise RpcError(-32005, "模型供应商实例正在执行摘要任务，请稍后重试")
                 runner.last_preparation = None
+                runner.request_offset = 0
                 read_only = thread.get("toolPolicy") == "readOnly"
                 allowed = self.registry.allowed_names(read_only=read_only)
                 runner._tools = self.registry.specs(read_only=read_only)
@@ -2230,6 +2708,9 @@ class ApplicationService:
                 runner.turn_id = job["turnId"]
                 runner._cancel = job["cancel"]
                 runner.system_prompt = self._system_prompt(read_only, skill_text)
+                continuation_fingerprint = self._continuation_context_fingerprint(
+                    config, runner.system_prompt, runner.tool_specs(), skills, attachments,
+                    thread.get("toolPolicy", "approval"), max_model_requests, policy, self.tool_bundle.id)
                 runner.notify = lambda method, payload=None: self._notify_runner(job, method, payload)
                 runner.stage_steering = lambda: self._stage_steering(job)
                 job["clientUserMessageId"] = client_id
@@ -2239,6 +2720,11 @@ class ApplicationService:
                     self.sessions.record_turn(thread_id, job["turnId"], "running", model=model, provider=config.provider,
                         reasoningEffort=config.effort,
                         maxModelRequests=max_model_requests,
+                        maxTokens=config.max_tokens,
+                        thinking=dict(config.thinking) if config.thinking is not None else None,
+                        compactionPolicy=policy.describe(),
+                        attachmentIds=[item["id"] for item in attachments],
+                        continuationContextFingerprint=continuation_fingerprint,
                         skillIds=[s["id"] for s in skills], toolPolicy=thread.get("toolPolicy", "approval"),
                         clientUserMessageId=client_id, requestInputDigest=request_digest, queueId=job["queueId"])
                     self._record_turn_phase(job, "admission", "running", 1)
@@ -2313,6 +2799,9 @@ class ApplicationService:
         fields = {"failureCode": "TURN_START_FAILED", "executionStarted": False,
                   "clientUserMessageId": job.get("clientUserMessageId"),
                   "requestInputDigest": job["requestInputDigest"], "queueId": job.get("queueId")}
+        if isinstance(job.get("continuedFromTurnId"), str):
+            fields.update(continuedFromTurnId=job["continuedFromTurnId"],
+                          continuationId=job.get("continuationId"))
         if persisted is not None:
             fields["inputPersisted"] = persisted
         try:

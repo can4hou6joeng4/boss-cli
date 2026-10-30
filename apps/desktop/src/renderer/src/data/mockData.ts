@@ -2,7 +2,7 @@
  * BOSS Agent (招聘垂直领域 Agent Harness) 仿真数据
  */
 
-import type { ToolResultReference } from "@boss-cli/protocol";
+import type { ToolResultReference, TurnStatus, TurnTaskResumePolicy } from "@boss-cli/protocol";
 
 export type ConversationMode = "plan" | "ask" | "agent";
 export type EffortLevel = "Auto" | "Max" | "High" | "Medium" | "Low" | "Off";
@@ -71,11 +71,13 @@ export interface SessionItem {
   reasoningEffort?: string | null;
   /** 内核回报的当前/最近回合，用于界面重载后恢复停止控制。 */
   turnId?: string;
+  lastTurnStatus?: TurnStatus;
+  taskResumePolicy?: TurnTaskResumePolicy;
   id: string;
   title: string;
   timeAgo: string;
   updatedAt?: string;
-  status: "idle" | "running" | "completed";
+  status: "idle" | "running" | "completed" | "interrupted";
   projectId: string;
 }
 
