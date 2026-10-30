@@ -11,6 +11,8 @@ from __future__ import annotations
 import inspect
 import json
 import os
+import sys
+import threading
 import weakref
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
@@ -31,6 +33,7 @@ from boss_harness.models.output_budget import (
     bounded_error,
 )
 from boss_harness.models.provider import ModelConfig
+from boss_harness.models.retry import retry_after_seconds, retry_delay, retry_settings
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.stream_pump import (
     AsyncStreamPump,
@@ -60,6 +63,8 @@ _STOP_REASONS = {
     "pause_turn": "stop",
     "refusal": "error",
 }
+#: 可重试的 HTTP 状态：请求超时/冲突/限流/服务端错误，以及 Anthropic 的 529 overloaded。
+_RETRYABLE_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504, 529})
 
 
 def _reject_json_constant(value: str) -> None:
@@ -179,11 +184,19 @@ class AnthropicProvider:
             if close_snapshot:
                 snapshot.close()
         self._request_timeout_seconds = config.request_timeout_seconds
+        self._max_attempts, self._retry_base_delay = retry_settings()
         self._active_stream: object | None = None
+        #: 最近一次尝试的流泵；重试前确认它的后台线程已经收尾。
+        self._last_pump: AsyncStreamPump | None = None
         self._abort_requested = False
+        self._abort_event = threading.Event()
+        #: 上一次失败是否可重试、以及建议的等待秒数；由 `_stream_once` 写、`_stream()` 读。
+        self._last_error_retryable = False
+        self._last_error_retry_after: float | None = None
 
     def request_abort(self) -> None:
         self._abort_requested = True
+        self._abort_event.set()
         stream = self._active_stream
         cancel = getattr(stream, "cancel", None)
         close = getattr(stream, "close", None)
@@ -229,13 +242,101 @@ class AnthropicProvider:
                 # Normalize only failures before delivery, without rewriting
                 # a valid completed message or exposing private diagnostics.
                 if event.type == "error" and self._abort_requested:
+                    self._last_error_retryable = False
+                    self._last_error_retry_after = None
                     event = StreamEvent(type="error", reason="aborted", error="请求已取消")
                 yield event
         finally:
             events.close()
 
     def _stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
+        """带重试的事件流，规则与 OpenAI 线路一致。
+
+        只在**尚未向调用方产出任何内容**、失败可重试（连接失败、HTTP 408/409/429/5xx/529、
+        流内 overloaded 等瞬时错误）且未取消时重试；硬用量上限、上下文溢出、参数/鉴权错误照实上报。
+        每次重试先向回合共享的模型恢复预算预留一次，预算耗尽即停止；等待尊重 Retry-After。
+        `start` 只发一次；重试期间对调用方静默，只往 stderr 记一行。
+        """
         self._abort_requested = False
+        self._abort_event.clear()
+        yield StreamEvent(type="start")
+
+        attempts = self._max_attempts
+        reservation = None
+        retry_message: str | None = None
+        for attempt in range(1, attempts + 1):
+            if self._abort_requested or self._abort_event.is_set():
+                if reservation is not None:
+                    reservation.release()
+                yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+                return
+            if reservation is not None:
+                reservation.commit()
+                reservation = None
+            emitted = False
+            retry_message = None
+            retry_after: float | None = None
+            retry_event: StreamEvent | None = None
+            self._last_pump = None
+            attempt_stream = self._stream_once(request)
+            try:
+                for event in attempt_stream:
+                    if event.type == "start":
+                        continue  # 外层已经发过
+                    if event.type == "error":
+                        retryable = self._last_error_retryable and not self._abort_requested
+                        retry_after = self._last_error_retry_after
+                        if retryable and not emitted and attempt < attempts:
+                            retry_message = event.error
+                            retry_event = event
+                            break
+                        yield event
+                        return
+                    emitted = True
+                    yield event
+            finally:
+                attempt_stream.close()
+
+            if retry_message is None:
+                return
+            assert retry_event is not None
+            pump = self._last_pump
+            if pump is not None and not pump.worker_done:
+                self._last_error_retryable = False
+                yield self._final_retry_error(retry_event, "；后台清理未确认，已停止自动重试")
+                return
+            budget = request.recovery_budget
+            reservation = budget.reserve_retry(self._abort_event) if budget is not None else None
+            if budget is not None and reservation is None:
+                if self._abort_requested:
+                    yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+                    return
+                self._last_error_retryable = False
+                self._last_error_retry_after = None
+                yield self._final_retry_error(retry_event, "；共享模型恢复次数已用尽，已停止自动重试")
+                return
+            delay = retry_delay(self._retry_base_delay, attempt, retry_after)
+            print(
+                f"[harness] 模型请求第 {attempt}/{attempts} 次尝试失败，{delay:.1f}s 后重试：{retry_message}",
+                file=sys.stderr,
+            )
+            if self._abort_event.wait(delay):
+                if reservation is not None:
+                    reservation.release()
+                yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+                return
+
+        # 走到这里说明最后一次尝试也是可重试失败（上面每次都会 return），保险起见报出去。
+        yield StreamEvent(type="error", reason="error", error=retry_message or "模型请求失败")
+
+    def _final_retry_error(self, event: StreamEvent, suffix: str) -> StreamEvent:
+        info = replace(event.error_info, retryable=False) if event.error_info is not None else None
+        return replace(event, error=self._redact((event.error or "模型请求失败") + suffix), error_info=info)
+
+    def _stream_once(self, request: ModelRequest) -> Iterator[StreamEvent]:
+        """单次尝试：把一段官方事件流映射成本项目的 StreamEvent（含开头那条 `start`）。"""
+        self._last_error_retryable = False
+        self._last_error_retry_after = None
         kwargs = self._request_kwargs(request)
         prefix_digest = anthropic_prefix_digest(request.system, kwargs.get("tools"), kwargs["messages"])
         buffers: dict[int, list[str]] = {}
@@ -300,6 +401,7 @@ class AnthropicProvider:
             pump = AsyncStreamPump(produce, timeout=self._request_timeout_seconds,
                                    name="anthropic-message-stream")
             self._active_stream = pump
+            self._last_pump = pump
             with pump as stream:
                 if self._abort_requested:
                     yield StreamEvent(type="error", reason="aborted", error="请求已取消")
@@ -449,6 +551,7 @@ class AnthropicProvider:
                 yield StreamEvent(type="error", reason="aborted", error="请求已取消")
             else:
                 retryable = pump.worker_done
+                self._last_error_retryable = retryable
                 error_info = private_error_info(
                     anthropic_error_info(None, source="transport_error", retryable=retryable))
                 detail = "" if retryable else "；后台清理未确认，已保留传输额度"
@@ -464,6 +567,8 @@ class AnthropicProvider:
                               error="模型流并发容量已满，当前请求未发出；请稍后重试")
             return
         except anthropic.APIConnectionError as exc:
+            # 连接被掐断通常是瞬时的（网关抖动、代理换路），值得重试。
+            self._last_error_retryable = True
             error_info = private_error_info(anthropic_error_info(
                 None, source="transport_error", transport_error=exc))
             message = "模型连接失败" if has_private() else f"连接失败：{exc}"
@@ -481,6 +586,8 @@ class AnthropicProvider:
             status_code = getattr(exc, "status_code", 429)
             error_info = private_error_info(
                 anthropic_error_info(exc.body, source="http_error", status_code=status_code))
+            self._last_error_retryable = _status_retryable(error_info, status_code)
+            self._last_error_retry_after = retry_after_seconds(exc)
             message = "模型请求被限流" if has_private() else f"被限流：{exc}"
             yield StreamEvent(type="error", reason="error", error=self._redact(message),
                               error_info=error_info)
@@ -489,6 +596,8 @@ class AnthropicProvider:
             error_info = private_error_info(anthropic_error_info(exc.body,
                 source="stream_error" if exc.status_code == 200 else "http_error",
                 status_code=exc.status_code))
+            self._last_error_retryable = _status_retryable(error_info, exc.status_code)
+            self._last_error_retry_after = retry_after_seconds(exc)
             message = (f"接口错误 {exc.status_code}" if has_private()
                        else f"接口错误 {exc.status_code}：{exc.message}")
             yield StreamEvent(
@@ -565,6 +674,18 @@ class AnthropicProvider:
             yield StreamEvent(type="error", reason="error", error="模型以安全原因拒绝")
             return
         yield StreamEvent(type="done", reason=mapped_stop_reason, message=message)
+
+
+def _status_retryable(error_info, status_code: object) -> bool:
+    """状态错误是否值得自动重试：硬用量上限与上下文溢出一律不重试。
+
+    HTTP 失败看状态码；流内错误（SSE 200）只认 errors.py 明确标成瞬时的 provider code。
+    """
+    if error_info is None or error_info.code == "CONTEXT_OVERFLOW" or error_info.retryable is False:
+        return False
+    if status_code == 200:
+        return error_info.retryable is True
+    return status_code in _RETRYABLE_STATUS
 
 
 def tool_result_payload(result: object) -> str:
