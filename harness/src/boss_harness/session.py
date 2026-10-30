@@ -2086,6 +2086,8 @@ class SessionStore:
                        if len(rows) > limit else None)
         return {"turns": [json.loads(row["metadata_json"]) for row in page], "nextCursor": next_cursor}
 
+    _BRANCH_INDEPENDENT_TYPES = frozenset({"attachment", "thread_info", "queue"})
+
     @classmethod
     def _active_entries(cls, entries: list[dict]) -> list[dict]:
         """Project the branch selected by the latest leaf record.
@@ -2134,6 +2136,10 @@ class SessionStore:
                 # Late revisions follow their owning turn, not the physical tail.
                 return owner in included_turns if owner is not None else entry["id"] in path
             if entry["id"] in path:
+                return True
+            if kind in cls._BRANCH_INDEPENDENT_TYPES:
+                # Session-level state (uploaded files, title, queue) is shared by
+                # every branch; only content owned by abandoned turns is dropped.
                 return True
             if kind in {"turn", "task_phase", "tool_batch"}:
                 return payload.get("turnId", payload.get("taskId")) in included_turns
