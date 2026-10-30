@@ -1,12 +1,28 @@
 # 上游吸收记录
 
-## 第九十五轮：删除清理复用严格事件 JSONL 解码
+## 第九十六轮：删除清理复用严格事件 JSONL 解码
 
 参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的持久化恢复边界，并延续本项目 [Issue #221](https://github.com/can4hou6joeng4/boss-cli/issues/221) 的损坏日志约束：事件事实源在冷重建、读取和删除清理之间必须使用同一套可验证解析规则。本轮不复制 Pi 源码或引入依赖。
 
 本项目 [Issue #227](https://github.com/can4hou6joeng4/boss-cli/issues/227) 发现 `_rewrite_events_for_deletion()` 仍直接调用 `json.loads`，因此删除会话可能接受重复对象键、非有限浮点、坏 UTF-8 或过深 JSON，而事件索引重建会拒绝同一输入。严格解码还会拒绝 JSON 转义表示的孤立 UTF-16 代理项，避免 Python 字符串无法重新编码为持久 UTF-8 的记录。现在删除重写按 64 KiB 块流式读取，复用带行号的严格事件对象解码器；空白行与索引重建一样跳过但保留，写回的每条记录恢复 LF 分隔，避免删除后事件行粘连。任何损坏在临时文件发布前都停止清理，不截断、修补、重放或发布部分日志，原有删除意图可继续用于恢复。
 
 验证覆盖重复键、非有限浮点、孤立代理项、坏 UTF-8、过深结构、合法删除事件和损坏发生在目标事件前后的边界；网络、真实模型、招聘 CLI 和提交测试材料均为零。Python 编译、wheel/sdist、TypeScript、Electron 源码构建、`git diff --check` 与远程必需检查按最新 PR head 核对。
+
+## 第九十五轮：上游 CLI JSON 信封的严格边界
+
+本项目 [Issue #225](https://github.com/can4hou6joeng4/boss-cli/issues/225) 复现 `BossCliTool` 对 `boss-agent-cli --json` 输出使用宽松 `json.loads` 的缺口：重复键采用最后值，`NaN`/`Infinity` 和孤立代理项会进入 `ToolResult`，深层结构可能在后续投影才失败。该边界属于业务 CLI 进程契约，不把 Python 对象的合法性推断为上游信封合法。
+
+现在适配器在七键集合与退出码校验前拒绝重复对象键、非有限浮点、超过 64 层的 JSON 和孤立 Unicode 代理项。JSON 语法错误继续返回 `CLI_ERROR`；语法可解析但违反严格信封完整性的内容返回固定 `CLI_CONTRACT_ERROR`，不持久化其数据、不回交模型，且暂停当前回合、后续工具与队列，不自动重试。若该错误来自已派发写工具，工具结果仍以 `outcome_unknown` 持久化并要求核对外部状态。保留 `raw`/分页投影及其他写操作未知结果语义；不修改 `boss-agent-cli` 或平台行为，不复制 Pi 源码或引入依赖。
+
+离线假的子进程探针覆盖正常信封、重复键、`NaN`/`Infinity`、坏 Unicode、深度边界、失败退出码和下游错误投影；探针只使用合成 stdout，无真实进程、网络、模型或招聘平台调用。
+
+## 第九十四轮：JSON-RPC 帧的严格解析与坏帧后继续服务
+
+参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 RPC 输入循环，并结合本项目 [Issue #223](https://github.com/can4hou6joeng4/boss-cli/issues/223) 的本地边界复现。Python `json.loads` 默认会接受重复对象键的最后值、把 `1e999` 转为 `Infinity`，过深输入可能抛出未捕获 `RecursionError`；孤立代理项会在 handler 已执行后让响应 UTF-8 编码失败。审批响应中的重复 `approved` 键同样会被最后值覆盖。
+
+本轮独立增加对象键唯一性、有限浮点、64 层深度及 Unicode 代理项校验。解析失败在派发前返回 `-32700` 并继续读取后续帧；handler 已执行但结果含非有限数值、过深结构、孤立代理项或不可 JSON 序列化对象时返回 `RESPONSE_INVALID`，不重放 handler，也不把编码失败误报为业务成功。帧大小和 LF framing 规则保持不变；不复制 Pi 源码或引入依赖。
+
+内存 JSON-RPC 探针覆盖重复顶层/嵌套键、`1e999`、1500 层嵌套、孤立代理项、不可编码响应及每种坏帧后的正常请求；Python 编译、wheel/sdist、TypeScript 检查与 Electron 源码构建须以最新 PR head 为准。测试材料仅保留本地，未调用模型、招聘 CLI、网络或平台。
 
 ## 第九十三轮：共享附件容量与损坏日志的发布门禁
 
