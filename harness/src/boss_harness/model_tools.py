@@ -5,7 +5,7 @@ from typing import Any
 
 from boss_harness.models.types import ToolSpec
 from boss_harness.rpc import RpcError
-from boss_harness.session import SessionStore
+from boss_harness.session import ItemLookupError, SessionStore
 from boss_harness.tool_results import (
     MODEL_RESULT_READ_CHARS, read_result_text_chunk, result_text,
 )
@@ -59,8 +59,7 @@ def read_model_tool_result(sessions: SessionStore, thread_id: str, arguments: di
     arguments = validate_model_result_read(arguments)
     item_id = arguments["itemId"]
     try:
-        item = next((value for value in sessions.read_items(thread_id)
-                     if value.get("id") == item_id), None)
+        item = sessions.read_item(thread_id, item_id)
         if item is None:
             return ToolResult(ok=False, command=MODEL_RESULT_READ_TOOL,
                               error={"code": "INVALID_RESULT_REFERENCE", "message": "结果不存在或不属于当前会话"})
@@ -70,6 +69,9 @@ def read_model_tool_result(sessions: SessionStore, thread_id: str, arguments: di
         chunk = read_result_text_chunk(thread_id, item_id, text, sha256=arguments["sha256"],
                                        cursor=arguments.get("cursor"),
                                        limit=arguments.get("limit", MODEL_RESULT_READ_CHARS))
+    except ItemLookupError as exc:
+        return ToolResult(ok=False, command=MODEL_RESULT_READ_TOOL,
+                          error={"code": exc.code, "message": str(exc)})
     except RpcError as exc:
         code = exc.data.get("code") if isinstance(exc.data, dict) else None
         return ToolResult(ok=False, command=MODEL_RESULT_READ_TOOL,

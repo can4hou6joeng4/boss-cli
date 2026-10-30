@@ -41,8 +41,8 @@ from boss_harness.request_policy import ModelRequestRejected, check_model_reques
 from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
 from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUncertain, Entry,
-                                  ApprovalDecisionError, SessionStore, ThreadNotFound,
-                                  ToolRevisionPersistenceError)
+                                  ApprovalDecisionError, ItemLookupError, SessionEntriesSnapshot,
+                                  SessionStore, ThreadNotFound, ToolRevisionPersistenceError)
 from boss_harness.snapshot_store import SnapshotStore
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
 from boss_harness.tool_bundle import ToolBundle
@@ -52,6 +52,9 @@ from boss_harness.context import NoCompactionSource
 from boss_harness.shutdown import TrackedAbort, join_until
 from boss_harness.hooks import HookFailure, LifecycleHooks
 from boss_harness.item_content import read_item_content
+from boss_harness.task_ownership import (queue_snapshot, recovery_policy,
+                                         resolve_compaction_relation, resolve_queue_relation,
+                                         turn_snapshot, user_message_refs)
 from boss_harness.turn_limits import model_request_limit, model_request_limit_from_environment
 
 PROTOCOL_VERSION = "0.2.0"
@@ -60,6 +63,16 @@ MAX_RETAINED_COMPACTION_JOBS = 64
 MAX_RUNTIME_RESOURCE_WAITERS = 32
 MAX_RUNTIME_RESOURCE_OWNERS = 32
 MAX_COMPACTION_ERROR_CHARACTERS = 2_048
+MAX_TASK_RELATIONS = 256
+
+
+def _record_checkpoint_turn(turns_by_job: dict[str, set[str]], job_id: str,
+                           turn_id: Any) -> None:
+    candidate = (turn_id if isinstance(turn_id, str)
+                 and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", turn_id) else "")
+    values = turns_by_job.setdefault(job_id, set())
+    if candidate in values or len(values) < 2:
+        values.add(candidate)
 
 
 class _CompactionFailure(Exception):
@@ -410,6 +423,7 @@ class ApplicationService:
             "thread/item/content/read": self.on_item_content_read,
             "turn/start": self.on_turn_start, "turn/interrupt": self.on_turn_interrupt,
             "turn/steer": self.on_turn_steer, "turn/read": self.on_turn_read,
+            "task/read": self.on_task_read,
             "runtime/resources/read": self.on_runtime_resources_read,
             "approval/list": self.on_approval_list, "approval/respond": self.on_approval_respond,
             "event/list": self.on_event_list,
@@ -629,6 +643,300 @@ class ApplicationService:
         params = params or {}
         return self.sessions.list_turns(_text(params, "threadId"), cursor=params.get("cursor"), limit=params.get("limit", 50))
 
+    @contextmanager
+    def _task_read_snapshot(self, thread_id: str) -> Iterator[
+            tuple[SessionEntriesSnapshot, str | None, list[dict], str | None, str | None]]:
+        with self._thread_admission.hold(thread_id):
+            with self.runtimes.lock, self.queue.lock:
+                active = self.runtimes.active.get(thread_id)
+                active_turn_id = active.get("turnId") if active is not None else None
+                jobs = [{key: job.get(key) for key in
+                         ("jobId", "threadId", "turnId", "reason", "status", "throughTurnId")}
+                        for job in self._compaction_jobs.values() if job.get("threadId") == thread_id]
+                dispatch = self._follow_up_dispatches.get(thread_id)
+                dispatch_queue_id = dispatch.get("queueId") if dispatch is not None else None
+                compaction_owner_id = self._compaction_by_thread.get(thread_id)
+                entries = self.sessions.open_entries_snapshot(thread_id)
+            with entries:
+                yield entries, active_turn_id, jobs, dispatch_queue_id, compaction_owner_id
+
+    def on_task_read(self, params: dict | None) -> dict:
+        params = params or {}
+        if set(params) != {"threadId", "kind", "id"}:
+            raise ValueError("task/read 参数无效")
+        thread_id = _text(params, "threadId")
+        kind, task_id = params.get("kind"), _text(params, "id", maximum=128)
+        if kind not in {"turn", "queue", "compaction"}:
+            raise ValueError("kind 必须是 turn、queue 或 compaction")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", task_id):
+            raise ValueError("id 格式无效")
+
+        with self._task_read_snapshot(thread_id) as snapshot:
+            entries, active_turn_id, jobs, dispatch_queue_id, compaction_owner_id = snapshot
+            turns: list[dict] = []
+            duplicate_turns: set[str] = set()
+            turn_overflow = False
+            checkpoint_turns: dict[str, set[str]] = {}
+            checkpoint_ids: set[str] = set()
+            checkpoint_jobs_by_turn: dict[str, dict] = {}
+            relevant_job_ids = {job.get("jobId") for job in jobs
+                                if kind == "turn" and job.get("turnId") == task_id
+                                and isinstance(job.get("jobId"), str)}
+            checkpoint_entries: list[dict] = []
+            checkpoint_overflow = False
+            for entry in entries:
+                if entry.get("type") != "context_checkpoint":
+                    continue
+                payload = entry.get("payload", {})
+                if not isinstance(payload, dict):
+                    continue
+                job_id = payload.get("summaryJobId")
+                turn_id = payload.get("turnId")
+                if (kind == "turn" and isinstance(job_id, str)
+                        and (turn_id == task_id or job_id in relevant_job_ids)):
+                    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", job_id):
+                        checkpoint_overflow = True
+                        continue
+                    if job_id in checkpoint_jobs_by_turn or len(checkpoint_jobs_by_turn) < MAX_TASK_RELATIONS + 1:
+                        checkpoint_ids.add(job_id)
+                        _record_checkpoint_turn(checkpoint_turns, job_id, turn_id)
+                        checkpoint_jobs_by_turn[job_id] = {"jobId": job_id, "threadId": thread_id,
+                            "turnId": turn_id if isinstance(turn_id, str) and re.fullmatch(
+                                r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", turn_id) else None,
+                            "reason": payload.get("reason") if isinstance(payload.get("reason"), str)
+                            and payload["reason"] in {"threshold", "budget", "overflow"} else None,
+                            "status": "completed"}
+                    else:
+                        checkpoint_overflow = True
+                elif kind == "compaction" and (job_id == task_id or entry.get("id") == task_id):
+                    entry_id = (entry.get("id") if isinstance(entry.get("id"), str)
+                                and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", entry["id"])
+                                else None)
+                    valid_job_id = (job_id if isinstance(job_id, str) and re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", job_id) else None)
+                    checkpoint_turn_id = (turn_id if isinstance(turn_id, str) and re.fullmatch(
+                        r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", turn_id) else None)
+                    matches_job = valid_job_id == task_id
+                    matches_independent_entry = entry_id == task_id and job_id is None
+                    if matches_job or matches_independent_entry:
+                        if len(checkpoint_entries) < 3:
+                            checkpoint_entries.append({"entryId": entry_id,
+                                "jobId": valid_job_id if matches_job else None,
+                                "turnId": checkpoint_turn_id,
+                                "reason": payload.get("reason") if isinstance(payload.get("reason"), str)
+                                and payload["reason"] in {"threshold", "budget", "overflow"} else None,
+                                "origin": payload.get("origin") if isinstance(payload.get("origin"), str)
+                                and payload["origin"] in {"user", "model"} else None})
+                        else:
+                            checkpoint_overflow = True
+                    elif entry_id == task_id:
+                        checkpoint_overflow = True
+                    if matches_job:
+                        checkpoint_ids.add(task_id)
+                        _record_checkpoint_turn(checkpoint_turns, task_id, checkpoint_turn_id)
+                    elif matches_independent_entry:
+                        checkpoint_ids.add(task_id)
+
+            if kind == "turn":
+                turns, duplicate_turns, turn_overflow = turn_snapshot(
+                    entries, turn_ids={task_id}, limit=2)
+                turns_by_id = {turn["turnId"]: turn for turn in turns}
+                turn = turns_by_id.get(task_id)
+                if turn is None:
+                    raise self._missing_task()
+                queue_ids = {turn.get("queueId")} - {None}
+                queues, queue_conflicts, queue_overflow = queue_snapshot(
+                    entries, queue_ids=queue_ids, target_turn_id=task_id,
+                    receipt_turn_id=task_id,
+                    limit=MAX_TASK_RELATIONS + 1)
+                user_items, duplicate_queues, revision_conflicts = user_message_refs(entries, set(queues))
+                candidate_turn_ids = {task_id}
+                for queue_item in queues.values():
+                    for candidate in (queue_item.get("turnId"), queue_item.get("expectedTurnId")):
+                        if isinstance(candidate, str) and re.fullmatch(
+                                r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", candidate):
+                            candidate_turn_ids.add(candidate)
+                for item in user_items:
+                    for candidate in (item.get("turnId"), item.get("inferredTurnId")):
+                        if isinstance(candidate, str) and re.fullmatch(
+                                r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", candidate):
+                            candidate_turn_ids.add(candidate)
+                candidate_turns, candidate_duplicates, candidate_overflow = turn_snapshot(
+                    entries, turn_ids=candidate_turn_ids, limit=MAX_TASK_RELATIONS * 4)
+                turns = candidate_turns
+                duplicate_turns.update(candidate_duplicates)
+                runtime_owned = active_turn_id == task_id
+                phase = None
+                if isinstance(turn.get("taskPhase"), str):
+                    phase = {"name": turn["taskPhase"],
+                             "status": turn.get("taskPhaseStatus"),
+                             "attempt": turn.get("taskAttempt"),
+                             "restartLimit": turn.get("taskRestartLimit")}
+                    if isinstance(turn.get("taskRecoveryReason"), str):
+                        phase["recoveryReason"] = turn["taskRecoveryReason"]
+                related: list[dict] = []
+                for queue_id, queue_item in queues.items():
+                    relation = resolve_queue_relation(queue_item, turns, user_items,
+                                                      duplicate_turns=duplicate_turns,
+                                                      identity_conflict=queue_id in queue_conflicts,
+                                                      duplicate_user_message=queue_id in duplicate_queues,
+                                                      revision_conflict=queue_id in revision_conflicts)
+                    if relation["ownership"] == "resolved" and relation["turnId"] == task_id:
+                        link_kind = "input_queue" if relation["relation"] == "delivered_as" else "steering_input"
+                    elif relation["ownership"] in {"conflict", "unresolved"}:
+                        link_kind = "queue_candidate"
+                    else:
+                        continue
+                    related.append({"relation": link_kind, "ownership": relation["ownership"],
+                                    "task": {"kind": "queue", "id": queue_id}})
+                child_jobs = {job.get("jobId"): job for job in jobs}
+                child_jobs.update({job_id: job for job_id, job in checkpoint_jobs_by_turn.items()
+                                   if job_id not in child_jobs})
+                for job_id, job in child_jobs.items():
+                    if not isinstance(job_id, str):
+                        continue
+                    linked_checkpoint = checkpoint_jobs_by_turn.get(job_id)
+                    if linked_checkpoint is not None and job.get("turnId") != task_id:
+                        related.append({"relation": "summary_candidate", "ownership": "conflict",
+                                        "task": {"kind": "compaction", "id": job_id}})
+                        continue
+                    if job.get("turnId") != task_id:
+                        continue
+                    linked_checkpoints = checkpoint_turns.get(job_id, set())
+                    checkpoint_turn_id = next(iter(linked_checkpoints)) if len(linked_checkpoints) == 1 else None
+                    relation = resolve_compaction_relation(job, thread_id, turns,
+                        checkpoint_turn_id=checkpoint_turn_id, duplicate_turns=duplicate_turns)
+                    if linked_checkpoints and linked_checkpoints != {task_id}:
+                        relation = {"ownership": "conflict", "turnId": None}
+                    if relation["ownership"] == "resolved" and relation["turnId"] == task_id:
+                        related.append({"relation": "summary_child",
+                                        "ownership": relation["ownership"],
+                                        "task": {"kind": "compaction", "id": job_id}})
+                    elif relation["ownership"] in {"conflict", "unresolved"}:
+                        related.append({"relation": "summary_candidate",
+                                        "ownership": relation["ownership"],
+                                        "task": {"kind": "compaction", "id": job_id}})
+                duplicate_task = task_id in duplicate_turns
+                base = {"locator": {"kind": "turn", "id": task_id}, "threadId": thread_id,
+                        "status": "conflict" if duplicate_task else turn.get("status", "unknown"),
+                        "ownership": "conflict" if duplicate_task else "root",
+                        "runtimeOwned": runtime_owned,
+                        "recoveryPolicy": recovery_policy("turn", turn.get("status", "unknown"),
+                            runtime_owned=runtime_owned,
+                            persisted_policy=turn.get("taskResumePolicy") if not duplicate_task else None),
+                        "relations": self._bounded_task_relations(related) if not duplicate_task else []}
+                if phase is not None and not duplicate_task:
+                    base["phase"] = phase
+                if (len(related) > MAX_TASK_RELATIONS or queue_overflow or turn_overflow
+                        or candidate_overflow or checkpoint_overflow):
+                    base["relationsTruncated"] = True
+                base["historyWindow"] = {"terminalCompactions": MAX_RETAINED_COMPACTION_JOBS,
+                                          "checkpointRelations": "durable"}
+                result = {"task": base}
+            elif kind == "queue":
+                queues, queue_conflicts, _ = queue_snapshot(entries, queue_ids={task_id}, limit=2)
+                user_items, duplicate_queues, revision_conflicts = user_message_refs(entries, {task_id})
+                queue_item = queues.get(task_id)
+                if queue_item is None:
+                    raise self._missing_task()
+                candidate_turn_ids = {value for value in
+                                      (queue_item.get("turnId"), queue_item.get("expectedTurnId"))
+                                      if isinstance(value, str) and re.fullmatch(
+                                          r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", value)}
+                for item in user_items:
+                    for value in (item.get("turnId"), item.get("inferredTurnId")):
+                        if isinstance(value, str) and re.fullmatch(
+                                r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", value):
+                            candidate_turn_ids.add(value)
+                turns, duplicate_turns, turn_overflow = turn_snapshot(
+                    entries, turn_ids=candidate_turn_ids, limit=MAX_TASK_RELATIONS * 4)
+                relation = resolve_queue_relation(queue_item, turns, user_items,
+                                                  duplicate_turns=duplicate_turns,
+                                                  identity_conflict=task_id in queue_conflicts,
+                                                  duplicate_user_message=task_id in duplicate_queues,
+                                                  revision_conflict=task_id in revision_conflicts)
+                runtime_owned = dispatch_queue_id == task_id
+                if (queue_item.get("kind") == "steering" and active_turn_id is not None
+                        and active_turn_id == queue_item.get("expectedTurnId")
+                        and queue_item.get("status") in {"queued", "delivering"}):
+                    runtime_owned = True
+                related = []
+                if relation["ownership"] == "resolved":
+                    relation_kind = "delivered_as" if relation["relation"] == "delivered_as" else "targets"
+                    related.append({"relation": relation_kind,
+                                    "ownership": relation["ownership"],
+                                    "task": {"kind": "turn", "id": relation["turnId"]}})
+                elif relation["ownership"] in {"conflict", "unresolved"}:
+                    related.append({"relation": "turn_candidate", "ownership": relation["ownership"]})
+                status = queue_item.get("status", "unknown")
+                result = {"task": {
+                    "locator": {"kind": "queue", "id": task_id}, "threadId": thread_id,
+                    "status": status, "ownership": relation["ownership"],
+                    "runtimeOwned": runtime_owned,
+                    "recoveryPolicy": recovery_policy("queue", status, runtime_owned=runtime_owned),
+                    "relations": related,
+                }}
+            else:
+                job = next((candidate for candidate in jobs if candidate.get("jobId") == task_id), None)
+                checkpoint = checkpoint_entries[0] if checkpoint_entries else None
+                if job is None and checkpoint is not None:
+                    if checkpoint.get("jobId") == task_id:
+                        job = {"jobId": task_id, "threadId": thread_id,
+                               "turnId": checkpoint.get("turnId"),
+                               "reason": checkpoint.get("reason"), "status": "completed",
+                               "throughTurnId": None}
+                    elif checkpoint.get("entryId") == task_id and checkpoint.get("jobId") is None:
+                        job = {"jobId": task_id, "threadId": thread_id, "status": "completed",
+                               "throughTurnId": None, "reason": None, "turnId": None}
+                if job is None or job.get("jobId") != task_id:
+                    raise self._missing_task()
+                checkpoint_turns_for_job = checkpoint_turns.get(task_id, set())
+                checkpoint_conflict = len(checkpoint_turns_for_job) > 1
+                checkpoint_turn_id = (next(iter(checkpoint_turns_for_job))
+                                      if len(checkpoint_turns_for_job) == 1 else None)
+                owner_turn_ids = {checkpoint_turn_id} if isinstance(checkpoint_turn_id, str) else set()
+                if isinstance(job.get("turnId"), str):
+                    owner_turn_ids.add(job["turnId"])
+                task_turns, task_duplicate_turns, task_turn_overflow = turn_snapshot(
+                    entries, turn_ids=owner_turn_ids, limit=2)
+                relation = resolve_compaction_relation(job, thread_id, task_turns,
+                    checkpoint_turn_id=checkpoint_turn_id, duplicate_turns=task_duplicate_turns)
+                if checkpoint_conflict or task_turn_overflow:
+                    relation = {"ownership": "conflict", "turnId": None}
+                runtime_owned = compaction_owner_id == task_id
+                status = job.get("status", "unknown")
+                if task_id in checkpoint_ids and status == "running":
+                    status = "completed"
+                elif task_id in checkpoint_ids and status in {"failed", "cancelled"}:
+                    status = "unknown"
+                    relation = {"ownership": "conflict", "turnId": None}
+                related = []
+                if relation["ownership"] == "resolved":
+                    related.append({"relation": "owner_turn",
+                                    "ownership": relation["ownership"],
+                                    "task": {"kind": "turn", "id": relation["turnId"]}})
+                status = "conflict" if checkpoint_conflict or checkpoint_overflow or task_turn_overflow else status
+                result = {"task": {
+                    "locator": {"kind": "compaction", "id": task_id}, "threadId": thread_id,
+                    "status": status,
+                    "ownership": relation["ownership"],
+                    "runtimeOwned": runtime_owned,
+                    "recoveryPolicy": recovery_policy("compaction", status, runtime_owned=runtime_owned),
+                    "relations": related,
+                }}
+        self._check_response_budget(result)
+        return result
+
+    @staticmethod
+    def _bounded_task_relations(relations: list[dict]) -> list[dict]:
+        unique = {(item["relation"], item["task"]["kind"], item["task"]["id"]): item
+                  for item in relations}
+        return [unique[key] for key in sorted(unique)[:MAX_TASK_RELATIONS]]
+
+    @staticmethod
+    def _missing_task() -> RpcError:
+        return RpcError(-32012, "任务不存在或不属于此会话", {"code": "TASK_NOT_FOUND"})
+
     def on_items_list(self, params: dict | None) -> dict:
         params = params or {}
         thread_id = _text(params, "threadId")
@@ -685,11 +993,17 @@ class ApplicationService:
         if set(params) - {"threadId", "itemId", "sha256", "cursor", "limit"}:
             raise ValueError("工具结果读取包含未知参数；不接受文件路径或自由偏移")
         thread_id, item_id = _text(params, "threadId"), _text(params, "itemId", maximum=128)
-        self.sessions.require_thread(thread_id)
-        item = next((item for item in self.sessions.read_items(thread_id) if item["id"] == item_id), None)
+        try:
+            item = self.sessions.read_item(thread_id, item_id)
+        except ItemLookupError as exc:
+            raise RpcError(-32010 if exc.code == "RESULT_HISTORY_LIMIT" else -32011,
+                           str(exc), {"code": exc.code, "itemId": item_id}) from None
         if item is None:
             raise ValueError("条目不属于该会话或不存在")
-        return read_result_chunk(thread_id, item, sha256=_text(params, "sha256", maximum=64),
+        if item.get("kind") != "toolCall" or not isinstance(item.get("result"), dict):
+            raise ValueError("该条目没有可读取的完整工具结果")
+        return read_result_chunk(thread_id, item,
+                                 sha256=_text(params, "sha256", maximum=64),
                                  cursor=params.get("cursor"), limit=params.get("limit", 16_384))
 
     def on_item_content_read(self, params: dict | None) -> dict:

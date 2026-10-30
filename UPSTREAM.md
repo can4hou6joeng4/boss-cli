@@ -86,6 +86,22 @@ Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的开放 [Issue #10697](
 本项目 [Issue #189](https://github.com/can4hou6joeng4/boss-cli/issues/189) 在 main `e9a6973991aee68628402322fd4a2d80e5bcf6a4` 的真实 `ApplicationService` 离线复现：容量 1、首回合活动时排入 follow-up，finish checkpoint 在写入前失败或写入后抛错均令首回合标为 `error / phasePersistenceFailure`，但已登记的容量 waiter 仍把 follow-up 执行为 delivered。此前队列结算基于 completed 只暂停 steering，新增阶段写入失败后未补全 follow-up 暂停责任。
 
 现在阶段失败分支在释放执行槽位前调用全队列 pause；暂停写入同时失败时，既有 pending-pause 责任阻止后续 claim 与新准入，恢复存储后旧输入仍变为 paused。保持原回合错误原因、已落盘事实和跨会话 FIFO 容量唤醒，不重放模型或工具。六场景隔离探针覆盖 finish 写前/写后失败、暂停持续失败及恢复、既有 steering settlement 失败、正常 completed 与 B/self/C 等待顺序；修复后错误回合只执行 first，其他会话依次执行 B/C，正常回合仍继续 follow-up。网络与外部进程尝试为零，探针与合成状态只保留在忽略目录；未调用真实模型、招聘 CLI、招聘平台或桌面 UI。
+## 第八十三轮：定点读取大型工具结果
+
+本项目此前新增 `read_session_tool_result` 与 `thread/item/result/read`，但二者通过 `SessionStore.read_items()` 先解码并物化整份会话 JSONL，再按逻辑 item ID 搜索。即使结果只返回一个小分页，长会话仍令工具读取的峰值内存随历史大小增长；这是在采用 Pi `SessionManager` 增量读取原则后仍遗漏的查询投影边界，不等同于 Pi 提供了同样的结果 API。
+
+现在 `SessionStore.read_item()` 从已固定长度的会话快照逐行投影，只保留目标 root item 的 `kind`、`result` 及当前仍映射到它的 revision aliases。保留原始 root ID、payload 合并和隐式 toolCall parent revision 语义；别名被另一个条目 ID 覆盖后不再将后续 revision 合入旧结果。重复 root/identity 冲突 fail closed；活动别名和匹配修订各最多 4,096 条，别名最长 128 字符且累计 UTF-8 不超过 64 KiB，超限返回稳定 `RESULT_HISTORY_LIMIT`。内核工具与桌面/RPC 分段读取共用此定点投影；SHA-256、游标、Unicode 码点分页和 `STALE_RESULT` 契约保持不变。
+
+忽略目录离线探针覆盖直接结果、revision alias 链、隐式 parent revision、alias 被其他 root 覆盖、重复 root 冲突、重复别名修订数上限、过长 ID、累计别名字节上限、Unicode/control-character 分页、过期摘要，以及模型与 RPC 两种读取入口。60,001 条、49,200,362 字节合成会话的定点读取峰值为 301,045 字节；原 `read_items()` 列表路径为 87,735,649 字节。查询前后 session/event SHA-256 不变；未调用 provider、招聘 CLI、真实平台或桌面 UI。该 Python 分配测量不代表完整进程 RSS 或墙钟延迟。
+
+## 第八十二轮：任务读取使用有界会话快照
+
+本项目 [Issue #187](https://github.com/can4hou6joeng4/boss-cli/issues/187) 的只读任务归属视图参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 关于持久任务事实与进程执行责任分离的讨论。独立代码审查发现，PR #188 的 `task/read` 虽限制关系投影数量，却调用 `read_entries()` 将整个会话 JSONL 解码并保存在列表中，再多次扫描；超长会话仍会令查询峰值内存随历史总量增长。
+
+现在 `SessionStore.open_entries_snapshot()` 在 writer lock 内验证会话并固定打开文件的 inode 与长度，之后由同一可回绕句柄按 64 KiB 块、32 MiB 会话正文单行上限逐次扫描固定前缀；会话头和事件日志仍各自保持 8 MiB 上限。`task/read` 将目标身份和冲突验证器直接应用于流式迭代器，不保留完整历史列表；会话追加不会改变当前查询切面。每会话准入锁覆盖扫描并阻止并发删除；全局 runtime/queue 锁只用于捕获运行时归属并打开快照，文件扫描期间已释放。坏 JSON 跳过、坏 UTF-8 替换、通用换行与条目筛选语义和关系数量上限保持不变。
+
+忽略目录的离线探针以 60,002 条记录、49,200,327 字节的合成会话对比：`task/read` 峰值 Python 分配为 308,017 字节，原 `read_entries()` 列表路径为 87,747,515 字节；打开快照后追加记录，两次回绕仍得到相同记录数且不包含新记录。另一探针暂停文件扫描时确认 runtime/queue 全局锁可被其他工作获取。查询前后 session 与 event 文件 SHA-256 相同；未调用 provider、招聘 CLI、真实平台或桌面 UI。数据只验证合成冷读路径，不代表完整应用进程 RSS 或墙钟延迟。
+
 ## 第八十一轮：回合阶段 checkpoint 与重启复核边界
 
 本项目 [Issue #185](https://github.com/can4hou6joeng4/boss-cli/issues/185) 基于 main `08dcccd28158548ff2fd0f0ac4f55c2198fe7746` 核对。参考 Pi Durable MIT main `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a` 的 `generation.ts` 分阶段执行、`live.ts` 持久运行态和 `harness-ownership.test.ts` / `harness-view-run.test.ts` 的崩溃重开覆盖；开放 Issue [#11332](https://github.com/earendil-works/pi/issues/11332) 仍讨论 task 所有权、abort 与 idle 边界。Pi 的实验性 Durable API 与本项目招聘回合、审批及外部工具副作用并不等价，本轮吸收的是“阶段状态须持久化并定义重启结果”的设计要求，不移植代码、不引入 Pi 依赖。
@@ -1008,6 +1024,15 @@ Pi Durable 开放 [Issue #11026](https://github.com/earendil-works/pi/issues/110
 
 fork 是完整历史前缀的独立副本，父会话删除不级联删除 fork；被 fork 或其他会话引用的附件继续保留。仅保证清除应用管理的当前逻辑副本与索引修复副本，不覆盖 APFS/SSD 旧文件块、Time Machine/文件系统快照、模型或宿主此前取得的副本，也不回滚招聘 CLI 已执行的外部操作。桌面 renderer 暂未开放此 RPC，直到有明确的用户确认界面与桌面验收。
 
+## 第七十六轮：跨回合、队列与摘要的只读任务归属
+
+Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 继续讨论持久任务与输入准入、取消和 idle 的边界。采用显式区分任务身份、持久父子关系和进程执行 owner 的原则；不移植 Durable 源码、未合入的 `blocksInput` 方案，也不新增任务账本、调度器、自动重试或副作用恢复策略。
+
+本项目 [Issue #187](https://github.com/can4hou6joeng4/boss-cli/issues/187) 增加只读 `task/read({threadId, kind, id})`，把已存在的 turn checkpoint、queue JSONL 与 compaction job/checkpoint 投影为单任务视图。每个读取按目标身份筛选有限数量的 turn、queue、revision alias 与关系，并通过既有 JSON-RPC 响应预算拒绝超限结果；不输出输入、模型正文或凭据。Follow-up 的 `turn.queueId` 与同回合 user message `queueId` 必须相互印证；queue 的 `turnId` 回执不能单独证明因果。Steering 只指向已有 turn；自动摘要仅通过自己的 `turnId` 归属，手动摘要独立于 turn，`throughTurnId` 仅为来源边界。重复身份、孤儿与互相矛盾的记录标记 conflict/unresolved，不推断 owner。
+
+任务状态与运行时责任分别呈现。重启后 interrupted turn 保持人工复核；恢复读取不启动 provider、工具或 abort，不转换队列状态，也不写 session/event JSONL。摘要成功状态可从 durable checkpoint 读取，最近 64 个终态摘要 job 的缓存窗口仍用于没有 checkpoint 的失败/取消记录；较旧失败任务不保证可按 task ID 查询。Renderer 仅通过精确的只读 IPC allowlist 调用该方法，参数严格限定为 `threadId`、`kind`、`id`。
+
+验证使用本地忽略目录内的合成 session 与探针，覆盖 follow-up、dedup receipt、steering、自动/手动摘要、冲突身份、恢复状态及读取零副作用；探针不进入 Git 或 Python 产物。桌面 GUI 验收仍待执行，不把协议、类型检查或源码构建当作 Electron UI 验收。
 ## 模型流不可重置总时限
 
 参考 Pi 开放 [Issue #9474](https://github.com/earendil-works/pi/issues/9474)（2026-10-30 复核仍 OPEN，MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3`）：空闲读取超时会被周期 SSE 事件重置，无法限制一个始终不发终态的模型请求。Pi 讨论的是 Codex Responses transport；本项目使用同步 Python SDK，不能直接移植其实现。本轮独立实现、不复制 Pi 源码或增加依赖。

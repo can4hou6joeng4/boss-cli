@@ -4,6 +4,7 @@
 
 ### 新增
 
+- [Issue #187](https://github.com/can4hou6joeng4/boss-cli/issues/187)：新增只读 `task/read`，按会话与任务类型读取 turn、队列或摘要任务的状态、阶段、运行时 owner、恢复策略及已验证关系；查询使用固定长度会话快照流式投影，不将完整历史载入内存；仅将相互印证的 follow-up/steering 与自动摘要关联到回合，手动摘要保持独立，冲突和孤儿不推断为所有权。
 - [Issue #213](https://github.com/can4hou6joeng4/boss-cli/issues/213)：新增 `runtime/resources/read` 进程内只读快照，展示 turn/摘要执行与清理 owner、FIFO follow-up 等待位置和耗时；列表最多各 32 项并返回截断标志，不读取历史、改变调度或暴露任务正文。
 - [Issue #193](https://github.com/can4hou6joeng4/boss-cli/issues/193)：活动及收尾业务回合合计最多保留 `2 * parallelThreads` 个 owner，配置读取公开 `maxRetainedTurns`；超限返回 `TURN_OWNER_LIMIT`，不创建 provider 或写入新输入。follow-up 保持 queued/FIFO，迟到 abort 退休后也唤醒等待者，保留正常执行与收尾重叠。
 - [Issue #185](https://github.com/can4hou6joeng4/boss-cli/issues/185)：回合 admission、准备、模型请求、工具执行和 finish 阶段写入 append-only `task_phase` checkpoint，并从 `turn/read`、`turn/list` 与线程 `lastTurn` 查询；重启只收敛未完成阶段并标记人工复核，不自动重放模型或工具副作用，分支不会继承进程级阶段状态。
@@ -23,6 +24,7 @@
 - [Issue #189](https://github.com/can4hou6joeng4/boss-cli/issues/189)：回合 finish 阶段 checkpoint 持久化失败后，在释放容量前暂停全部待处理队列；暂停写入失败仍保留门禁，防止已标为 error 的回合继续自动派发 follow-up，同时保留其他会话的 FIFO 唤醒。
 - 收紧会话删除恢复、工具结果修订、附件引用扫描和索引修复备份的读取边界：删除标记与修复清单限制整体大小，JSONL 按块流式读取并限制单行，数据库哈希按块计算；损坏或超限输入 fail closed，避免恢复路径无界分配。
 - 参考 Pi Durable 的资源准入原则：每个会话的 `queued`/`delivering` 队列项最多 128 个，UTF-8 输入合计最多 4 MiB；已暂停、取消或完成的历史不占预算，超限返回 `QUEUE_LIMIT` 且不写入部分状态。
+- 结果分段读取按固定长度会话快照定点投影目标 toolCall，不物化整份历史；模型内核工具与桌面/RPC 入口只保留结果所需字段，并限制修订记录、别名数量、ID 长度与累计字节，冲突或超限时 fail closed。
 - [Issue #174](https://github.com/can4hou6joeng4/boss-cli/issues/174)：删除意图落盘前失败时保留原摘要任务终态、查询引用与缓存顺序；删除事务已提交或持久删除意图已存在时才退休目标任务，即使最终目录 `fsync` 失败也不会留下已删除会话的任务引用。
 
 - 参考 Pi 的增量 JSONL 解码：会话头、条目读取与事件索引冷重建均按 64 KiB 块流式解析；会话头与事件单行限制为 8 MiB，正文上限见 Issue #195。会话头在 JSON 解码前拒绝超限首行，读取保留 LF/CRLF/CR、坏 UTF-8 和坏行处理语义，避免长期 JSONL 的原始文件副本进入内存。

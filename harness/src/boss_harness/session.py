@@ -42,6 +42,9 @@ _EVENT_READ_CHUNK_BYTES = 64 * 1024
 # transport.  Keep one explicit line limit so a damaged append-only log cannot
 # make a cold index rebuild allocate without bound.
 MAX_EVENT_LINE_BYTES = 8 * 1024 * 1024
+MAX_ITEM_REVISION_ALIASES = 4_096
+MAX_ITEM_REVISION_RECORDS = 4_096
+MAX_ITEM_REVISION_ALIAS_BYTES = 64 * 1024
 # Canonical results have a separate budget from their bounded transport
 # projection.  Validate the final JSON spelling before publishing a record;
 # raw CLI bytes and decoded/re-encoded JSON need not have the same size.
@@ -92,12 +95,26 @@ def _encode_session_line(value: dict, *, maximum: int = MAX_SESSION_LINE_BYTES,
 
 
 def _iter_bounded_raw_lines_from_handle(handle, *, maximum: int, label: str = "JSONL",
-                                        universal_newlines: bool = False):
+                                        universal_newlines: bool = False,
+                                        byte_limit: int | None = None):
     """Yield raw JSONL records from an already pinned handle with a line bound."""
+    if byte_limit is not None and (type(byte_limit) is not int or byte_limit < 0):
+        raise ValueError("JSONL 快照长度无效")
     pending = bytearray()
+    remaining = byte_limit
     while True:
-        chunk = handle.read(_EVENT_READ_CHUNK_BYTES)
-        eof = not chunk
+        if remaining is None:
+            chunk = handle.read(_EVENT_READ_CHUNK_BYTES)
+            eof = not chunk
+        elif remaining == 0:
+            chunk = b""
+            eof = True
+        else:
+            chunk = handle.read(min(_EVENT_READ_CHUNK_BYTES, remaining))
+            if not chunk:
+                raise ValueError(f"{label}快照读取不完整")
+            remaining -= len(chunk)
+            eof = remaining == 0
         if chunk:
             pending.extend(chunk)
         while True:
@@ -150,6 +167,43 @@ def _read_bounded_file(path: Path, *, maximum: int, label: str) -> bytes:
     if len(data) > maximum:
         raise ValueError(f"{label}超过大小限制")
     return data
+
+
+class SessionEntriesSnapshot:
+    """A rewindable, size-pinned view of one append-only session prefix."""
+
+    def __init__(self, source: io.BufferedReader, size: int) -> None:
+        self._source = source
+        self._size = size
+
+    def __enter__(self) -> SessionEntriesSnapshot:
+        if self._source.closed:
+            raise ValueError("会话快照已关闭")
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        self._source.close()
+
+    def __iter__(self):
+        if self._source.closed:
+            raise ValueError("会话快照已关闭")
+        self._source.seek(0)
+        for raw_line in _iter_bounded_raw_lines_from_handle(
+                self._source, maximum=MAX_SESSION_LINE_BYTES, label="会话日志",
+                universal_newlines=True, byte_limit=self._size):
+            line = raw_line.decode("utf-8", errors="replace")
+            if not line.strip():
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (isinstance(data, dict) and data.get("type") != "session"
+                    and isinstance(data.get("id"), str) and isinstance(data.get("payload"), dict)):
+                yield data
 
 
 def _sha256_file(path: Path) -> str:
@@ -259,6 +313,12 @@ class ToolRevisionPersistenceError(OSError):
 
 class ThreadNotFound(ValueError):
     pass
+
+
+class ItemLookupError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        self.code = code
+        super().__init__(message)
 
 
 class SessionStore:
@@ -650,6 +710,18 @@ class SessionStore:
                     out.append(data)
             return out
 
+    def open_entries_snapshot(self, thread_id: str) -> SessionEntriesSnapshot:
+        """Pin a readable session prefix without holding the writer lock while scanning."""
+        with self._lock:
+            self.require_thread(thread_id)
+            source = self.path_for(thread_id).open("rb")
+            try:
+                size = os.fstat(source.fileno()).st_size
+                return SessionEntriesSnapshot(source, size)
+            except BaseException:
+                source.close()
+                raise
+
     def open_snapshot_source(self, thread_id: str) -> tuple[io.BufferedReader, int, str]:
         """Pin one rollout inode and cursor while session writers are excluded."""
         with self._lock:
@@ -735,12 +807,74 @@ class SessionStore:
     def read_items(self, thread_id: str) -> list[dict]:
         return self._project_items(thread_id, self.read_entries(thread_id))
 
+    def read_item(self, thread_id: str, item_id: str) -> dict | None:
+        """Project one logical item while retaining only its live revision aliases."""
+        if not isinstance(item_id, str) or not item_id or len(item_id) > 128:
+            raise ValueError("itemId 格式无效")
+        aliases: set[str] = set()
+        alias_bytes = 0
+        revision_records = 0
+        selected: dict | None = None
+        with self.open_entries_snapshot(thread_id) as entries:
+            for entry in entries:
+                if entry.get("type") != "item":
+                    continue
+                payload = dict(entry.get("payload") or {})
+                entry_id = str(entry.get("id") or "")
+                target_id = str(payload.get("revises") or "")
+                if (not target_id and payload.get("kind") == "toolCall"
+                        and payload.get("status") != "running"):
+                    parent_id = str(entry.get("parentId") or "")
+                    if (selected is not None and parent_id in aliases
+                            and selected.get("kind") == "toolCall"):
+                        target_id = parent_id
+
+                if target_id in aliases:
+                    if entry_id == item_id:
+                        raise ItemLookupError("INVALID_RESULT_REFERENCE", "结果条目身份存在冲突")
+                    revision_records += 1
+                    if revision_records > MAX_ITEM_REVISION_RECORDS:
+                        raise ItemLookupError("RESULT_HISTORY_LIMIT", "工具结果修订历史超过读取上限")
+                    if len(entry_id) > 128:
+                        raise ItemLookupError("RESULT_HISTORY_LIMIT", "工具结果修订别名超过长度上限")
+                    if entry_id not in aliases and len(aliases) >= MAX_ITEM_REVISION_ALIASES:
+                        raise ItemLookupError("RESULT_HISTORY_LIMIT", "工具结果修订历史超过读取上限")
+                    if entry_id not in aliases:
+                        alias_bytes += len(entry_id.encode("utf-8"))
+                        if alias_bytes > MAX_ITEM_REVISION_ALIAS_BYTES:
+                            raise ItemLookupError("RESULT_HISTORY_LIMIT", "工具结果修订别名超过大小上限")
+                    aliases.add(entry_id)
+                    if "kind" in payload:
+                        selected["kind"] = payload["kind"]
+                    if "result" in payload:
+                        selected["result"] = payload["result"]
+                    continue
+
+                if entry_id == item_id:
+                    if selected is not None or target_id or (
+                            payload.get("kind") == "toolCall" and payload.get("status") != "running"
+                            and entry.get("parentId")):
+                        raise ItemLookupError("INVALID_RESULT_REFERENCE", "结果条目身份存在冲突")
+                    selected = {"id": item_id, "threadId": thread_id}
+                    for key in ("kind", "result"):
+                        if key in payload:
+                            selected[key] = payload[key]
+                    aliases.add(entry_id)
+                    alias_bytes = len(entry_id.encode("utf-8"))
+                else:
+                    if entry_id in aliases:
+                        aliases.remove(entry_id)
+                        alias_bytes -= len(entry_id.encode("utf-8"))
+        return selected
+
     @staticmethod
     def _valid_approval_item(item: dict, *, pending_only: bool) -> bool:
         approval = item.get("approval")
         arguments = item.get("toolArguments")
+        decision = approval.get("decision") if isinstance(approval, dict) else None
         if (item.get("kind") != "toolCall" or not isinstance(approval, dict)
-                or approval.get("decision") not in {None, "approve", "deny", "expired"}
+                or (decision is not None and (not isinstance(decision, str)
+                    or decision not in {"approve", "deny", "expired"}))
                 or not isinstance(approval.get("approvalId"), str)
                 or not _EVENT_ID.fullmatch(approval["approvalId"])
                 or not isinstance(approval.get("toolName"), str)
@@ -749,13 +883,15 @@ class SessionStore:
                 or not _IDENTIFIER.fullmatch(item["turnId"])
                 or type(arguments) is not dict or approval.get("params") != arguments):
             return False
-        decision = approval.get("decision")
         status, execution_state = item.get("status"), item.get("executionState")
+        if not isinstance(status, str) or not isinstance(execution_state, str):
+            return False
         if pending_only or decision is None:
             if status != "running" or execution_state != "pending_approval":
                 return False
         elif decision == "approve":
-            if (status not in {"running", "failed", "completed"}
+            if (not isinstance(status, str) or status not in {"running", "failed", "completed"}
+                    or not isinstance(execution_state, str)
                     or execution_state not in {
                         "approved", "executing", "completed", "not_executed", "outcome_unknown"
                     }):
@@ -918,23 +1054,40 @@ class SessionStore:
         _limit(limit, maximum=128)
         now = time.time()
         with self._lock, self._index.connection() as connection:
+            pending_deletions = sorted(self._pending_deletion_ids())
+            if len(pending_deletions) > 800:
+                return []
+            exclusion = ""
+            parameters: list[Any] = [now]
+            if pending_deletions:
+                exclusion = " AND a.thread_id NOT IN (" + ",".join("?" for _ in pending_deletions) + ")"
+                parameters.extend(pending_deletions)
+            parameters.append(limit)
             rows = connection.execute("""SELECT a.approval_id FROM approvals a
                 JOIN threads t ON t.id=a.thread_id
                 JOIN turns r ON r.thread_id=a.thread_id AND r.turn_id=a.turn_id
                 WHERE a.decision IS NULL AND a.status='running'
                   AND a.execution_state='pending_approval' AND a.deadline<=?
-                  AND t.archived=0 AND r.status='interrupted'
-                ORDER BY a.deadline,a.thread_id,a.item_id LIMIT ?""", (now, limit)).fetchall()
+                  AND t.archived=0 AND r.status='interrupted'""" + exclusion +
+                " ORDER BY a.deadline,a.thread_id,a.item_id LIMIT ?", parameters).fetchall()
         return [row["approval_id"] for row in rows]
 
     def next_recoverable_approval_deadline(self) -> float | None:
         with self._lock, self._index.connection() as connection:
+            pending_deletions = sorted(self._pending_deletion_ids())
+            if len(pending_deletions) > 800:
+                return None
+            exclusion = ""
+            parameters: list[Any] = []
+            if pending_deletions:
+                exclusion = " AND a.thread_id NOT IN (" + ",".join("?" for _ in pending_deletions) + ")"
+                parameters.extend(pending_deletions)
             row = connection.execute("""SELECT MIN(a.deadline) FROM approvals a
                 JOIN threads t ON t.id=a.thread_id
                 JOIN turns r ON r.thread_id=a.thread_id AND r.turn_id=a.turn_id
                 WHERE a.decision IS NULL AND a.status='running'
                   AND a.execution_state='pending_approval' AND t.archived=0
-                  AND r.status='interrupted'""").fetchone()
+                  AND r.status='interrupted'""" + exclusion, parameters).fetchone()
         return row[0] if row and row[0] is not None else None
 
     def expire_approval(self, approval_id: str) -> dict | None:
