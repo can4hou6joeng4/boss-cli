@@ -41,7 +41,8 @@ from boss_harness.request_policy import ModelRequestRejected, check_model_reques
 from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
 from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUncertain, Entry,
-                                  SessionStore, ThreadNotFound, ToolRevisionPersistenceError)
+                                  ApprovalDecisionError, SessionStore, ThreadNotFound,
+                                  ToolRevisionPersistenceError)
 from boss_harness.snapshot_store import SnapshotStore
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
 from boss_harness.tool_bundle import ToolBundle
@@ -293,6 +294,10 @@ class ApplicationService:
             self._register()
             server.before_dispatch = self._check_ready
             self.runtimes.start_capacity_notifications(self._drain_capacity_waiters)
+            self._approval_expiry_stop = threading.Event()
+            self._approval_expiry_thread = threading.Thread(
+                target=self._approval_expiry_loop, name="approval-expiry", daemon=True)
+            self._approval_expiry_thread.start()
         except Exception:
             if hasattr(self, "runtimes"):
                 self.runtimes.stop()
@@ -406,7 +411,8 @@ class ApplicationService:
             "turn/start": self.on_turn_start, "turn/interrupt": self.on_turn_interrupt,
             "turn/steer": self.on_turn_steer, "turn/read": self.on_turn_read,
             "runtime/resources/read": self.on_runtime_resources_read,
-            "approval/respond": self.on_approval_respond, "event/list": self.on_event_list,
+            "approval/list": self.on_approval_list, "approval/respond": self.on_approval_respond,
+            "event/list": self.on_event_list,
             "queue/add": self.on_queue_add, "queue/list": self.on_queue_list,
             "queue/remove": self.on_queue_remove, "tool/list": self.on_tool_list,
             "model/list": self.on_model_list, "config/read": self.on_config_read,
@@ -473,7 +479,8 @@ class ApplicationService:
         self._state = "initializing" if protocol == PROTOCOL_VERSION else "ready"
         return {"serverName": "boss-harness", "serverVersion": __version__, "protocolVersion": protocol,
             "capabilities": {"bidirectionalRequests": True, "eventReplay": True,
-                             "pagination": True, "parallelThreads": True},
+                             "pagination": True, "parallelThreads": True,
+                             "durableApprovals": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -2063,10 +2070,27 @@ class ApplicationService:
                 result = future.result()
                 if not isinstance(result, dict) or type(result.get("approved")) is not bool:
                     raise ValueError("审批响应无效")
-                job["runner"].resolve_approval(approval_id, result["approved"])
+                job["runner"].resolve_approval(approval_id, result["approved"], persist=lambda:
+                    self.sessions.decide_approval(approval_id, result["approved"], live_owner=True))
             except Exception:
                 job["runner"].expire_approval(approval_id)
         request.future.add_done_callback(completed)
+
+    def _approval_expiry_loop(self) -> None:
+        try:
+            while not self._approval_expiry_stop.is_set():
+                try:
+                    for approval_id in self.sessions.expired_pending_approvals():
+                        result = self.sessions.expire_approval(approval_id)
+                        if result is not None:
+                            self._publish_recovered_approval_decision(result)
+                    deadline = self.sessions.next_recoverable_approval_deadline()
+                    delay = (5.0 if deadline is None else min(5.0, max(0.05, deadline - time.time())))
+                except Exception:
+                    delay = 5.0
+                self._approval_expiry_stop.wait(delay)
+        finally:
+            self._close_application_resources_if_idle()
 
     def _run_turn(self, job: dict) -> None:
         status = None
@@ -2113,6 +2137,8 @@ class ApplicationService:
         with self.runtimes.lock:
             if (not self.runtimes.closed or self._shutdown_preparing
                     or self.runtimes.jobs or not self.runtimes.capacity_notifications_stopped
+                    or (self._approval_expiry_thread.is_alive()
+                        and self._approval_expiry_thread is not threading.current_thread())
                     or self._compaction_by_thread
                     or self._follow_up_workers or self._follow_up_dispatches or self._receipt_notices
                     or not self.lifecycle_hooks.closed):
@@ -2258,20 +2284,80 @@ class ApplicationService:
             abort.start()
         return {"interrupted": True}
 
+    def _publish_recovered_approval_decision(self, result: dict) -> None:
+        if not result.get("changed"):
+            return
+        payload = {"threadId": result["threadId"], "turnId": result.get("turnId"),
+                   "itemId": result["itemId"], "approval": result["approval"]}
+        self.events.emit("approval/decided", payload)
+        self.events.emit("toolCall/completed", {
+            **payload, "toolName": result["toolName"], "status": result["status"], "ok": False,
+            "executionState": result["executionState"],
+            "error": {"code": result.get("errorCode"), "message": result.get("resultSummary")},
+            "resultSummary": result.get("resultSummary"),
+        })
+
+    def on_approval_list(self, params: dict | None) -> dict:
+        if params is not None and not isinstance(params, dict):
+            raise ValueError("审批查询参数必须是对象")
+        params = params or {}
+        if set(params) - {"threadId", "limit"}:
+            raise ValueError("审批查询只接受 threadId 和 limit")
+        thread_id = params.get("threadId")
+        if thread_id is not None:
+            thread_id = _text(params, "threadId", maximum=64)
+        limit = params.get("limit", 100)
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ValueError("limit 必须是 1 到 200 之间的整数")
+        return {"approvals": self.sessions.pending_approvals(thread_id, limit=limit)}
+
     def on_approval_respond(self, params: dict | None) -> dict:
-        approval_id = _text(params, "approvalId")
-        approved = (params or {}).get("approved")
+        if not isinstance(params, dict) or set(params) != {"approvalId", "approved"}:
+            raise ValueError("审批响应只能包含 approvalId 和 approved")
+        approval_id = _text(params, "approvalId", maximum=64)
+        approved = params["approved"]
         if type(approved) is not bool:
             raise ValueError("approved 必须是布尔值")
         runners = [job["runner"] for job in tuple(self.runtimes.active.values())]
         if self.runner not in runners:
             runners.append(self.runner)
-        if not any(runner.resolve_approval(approval_id, approved) for runner in runners):
-            raise ValueError("审批不存在、已处理或已过期")
+        resolved_live = False
+        live_result: dict | None = None
+        for runner in runners:
+            persisted: dict[str, Any] = {}
+
+            def persist_decision() -> dict[str, Any]:
+                result = self.sessions.decide_approval(approval_id, approved, live_owner=True)
+                persisted.update(result)
+                return result
+
+            try:
+                resolved_live = runner.resolve_approval(approval_id, approved, persist=persist_decision)
+            except ApprovalDecisionError as exc:
+                raise RpcError(-32004, str(exc), {"code": exc.code, "approvalId": approval_id}) from None
+            if resolved_live:
+                live_result = persisted
+                break
         request_id = self._server_approvals.pop(approval_id, None)
         if request_id:
             self.server.cancel_request(request_id)
-        return {"approvalId": approval_id, "approved": approved}
+        if resolved_live:
+            if live_result and live_result.get("decision") == "expired":
+                return {"approvalId": approval_id, "approved": False, "accepted": False,
+                        "expired": True, "executed": False, "executionState": "not_executed"}
+            return {"approvalId": approval_id, "approved": approved, "accepted": True,
+                    "durable": True, "executionPending": True}
+        try:
+            result = self.sessions.decide_approval(approval_id, approved, live_owner=False)
+        except ApprovalDecisionError as exc:
+            raise RpcError(-32004, str(exc), {"code": exc.code, "approvalId": approval_id}) from None
+        self._publish_recovered_approval_decision(result)
+        if result["decision"] == "expired":
+            return {"approvalId": approval_id, "approved": False, "accepted": False,
+                    "expired": True, "executed": False, "executionState": "not_executed"}
+        return {"approvalId": approval_id, "approved": approved, "accepted": True,
+                "executed": result["executed"], "recovered": True,
+                "executionState": result["executionState"], "status": result["status"]}
 
     def _stage_steering(self, job: dict) -> tuple[list[UserMessage], Callable[[], None]]:
         items = []
@@ -2573,6 +2659,7 @@ class ApplicationService:
 
     def close(self) -> None:
         deadline = time.monotonic() + 2
+        self._approval_expiry_stop.set()
         with self.runtimes.lock:
             self._state = "stopped"
             self._shutdown_deadline = (deadline if self._shutdown_deadline is None
@@ -2597,6 +2684,7 @@ class ApplicationService:
         self.connections.wait_for_stop(deadline)
         self._wait_compaction_jobs(deadline)
         self.runtimes.wait_for_stop(deadline)
+        join_until([self._approval_expiry_thread], deadline)
         with self.runtimes.lock:
             follow_up_workers = list(self._follow_up_workers.values())
             dispatches = list(self._follow_up_dispatches.values())
