@@ -6,6 +6,9 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+
+from boss_harness.models.types import StreamEvent
 
 #: 单次退避的上限（秒）。
 MAX_RETRY_DELAY_SECONDS = 8.0
@@ -48,3 +51,39 @@ def retry_after_seconds(exc: object) -> float | None:
         except ValueError:
             continue
     return None
+
+
+def retry_start_event(next_attempt: int, attempts: int, delay: float, message: str) -> StreamEvent:
+    """退避等待开始前发给调用方的观测事件；不携带任何内容，也不改变重试判定。"""
+    return StreamEvent(type="retry_start", attempt=next_attempt, max_attempts=attempts,
+                       delay_ms=max(0, int(round(delay * 1000))), error=message or "模型请求失败")
+
+
+def with_retry_outcome(events: Iterator[StreamEvent]) -> Iterator[StreamEvent]:
+    """在一段已发过 retry_start 的流里补一条 retry_end。
+
+    首个非错误事件即视为重试成功；错误事件（含取消）先补失败的 retry_end 再原样转出。
+    没有发生重试的流不会多出任何事件。
+    """
+    try:
+        yield from _retry_outcome(events)
+    finally:
+        close = getattr(events, "close", None)
+        if callable(close):
+            close()
+
+
+def _retry_outcome(events: Iterator[StreamEvent]) -> Iterator[StreamEvent]:
+    pending = 0
+    for event in events:
+        if event.type == "retry_start":
+            pending = event.attempt
+        elif event.type == "retry_end":
+            pending = 0
+        elif pending:
+            failed = event.type == "error"
+            yield StreamEvent(type="retry_end", attempt=pending,
+                              reason=(event.reason or "error") if failed else "success",
+                              error=event.error if failed else "")
+            pending = 0
+        yield event

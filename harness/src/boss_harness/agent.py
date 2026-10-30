@@ -66,6 +66,8 @@ DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
 N_TURN_STARTED = "turn/started"
 N_AGENT_MESSAGE_DELTA = "agentMessage/delta"
 N_AGENT_THINKING_DELTA = "agentThinking/delta"
+N_MODEL_RETRY_STARTED = "model/retryStarted"
+N_MODEL_RETRY_ENDED = "model/retryEnded"
 N_ITEM_STARTED = "item/started"
 N_ITEM_COMPLETED = "item/completed"
 N_TOOL_CALL_STARTED = "toolCall/started"
@@ -1184,6 +1186,22 @@ class TurnRunner:
                 if self.cancelled():
                     interrupted = True
                     break
+
+                if event.type == "retry_start":
+                    # 仅观测：不改变重试判定，也不写入会话条目；旧客户端可忽略或 opt-out。
+                    self.notify(N_MODEL_RETRY_STARTED, {
+                        "threadId": thread_id, "turnId": self.turn_id, "attempt": event.attempt,
+                        "maxAttempts": event.max_attempts, "delayMs": event.delay_ms,
+                        "errorMessage": event.error})
+                    continue
+                if event.type == "retry_end":
+                    payload = {"threadId": thread_id, "turnId": self.turn_id, "attempt": event.attempt,
+                               "success": event.reason == "success"}
+                    if event.reason != "success":
+                        payload["reason"] = "aborted" if event.reason == "aborted" else "error"
+                        payload["finalError"] = event.error or "模型请求失败"
+                    self.notify(N_MODEL_RETRY_ENDED, payload)
+                    continue
 
                 if event.type.startswith(("text_", "thinking_", "toolcall_")):
                     output_observed = True

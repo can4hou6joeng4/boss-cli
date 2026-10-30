@@ -1169,3 +1169,13 @@ Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/113
 每个来源仅能创建一个带 `continuedFromTurnId` 和 `continuationId` 的子回合；同一编号的并发重复请求返回同一个回合，其他续接会因已有子回合被拒绝。新回合沿用来源累计的模型请求上限，普通新回合重新从请求编号零开始。续接仍经过现有会话 owner、取消、队列暂停、审批、收尾和资源限制。Electron 在握手 capability 为真且只读预检通过后展示显式操作；内核拒绝时展示原因并重新预检，传输结果未知时不会自动重发。提示用户模型端可能已完成无持久终态的请求，因此续接可能重复调用并增加费用。
 
 本轮使用真实 `ApplicationService`、临时 `SessionStore`、合成 provider/bridge 与虚构 handler 验证完整工具批次后中断、显式续接、相同续接编号的并发幂等，以及 handler 调用次数不增加；额外回归探针确认续接后的普通新回合从 request index 0 开始。Python 编译、TypeScript 检查、Electron 构建、wheel/sdist、npm audit 和 `git diff --check` 均通过。真实模型、招聘 CLI、招聘平台和默认 Electron profile 均未调用；桌面交互仍需单独人工验收。
+
+## 模型自动重试的可观测通知
+
+参考 Pi 固定 commit `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/agent-session.ts`：`_prepareRetry` 在退避前发出 `auto_retry_start`（attempt、maxAttempts、delayMs、errorMessage），重试成功、最终失败或在等待中被取消时发出 `auto_retry_end`；交互模式据此显示重试提示。本项目 #242 后两条内置 provider 已共用首个输出前的自动重试，但重试过程只写 stderr，桌面与其他客户端只能看到长时间无输出。本轮独立实现、不复制 Pi 源码或新增依赖。
+
+同时复核其他候选：工具调用前后钩子已由 `LifecycleHooks.before_tool_call` / `after_tool_call` 覆盖，且不能绕过逐次审批；会话分支与上下文变换涉及持久格式和前端交互，风险与改动面更大，留待后续。
+
+Pi 在 Agent 层重放整轮请求；本项目重试仍留在 provider 内，只发生在尚未产出内容事件前，并受回合共享恢复额度约束。provider 在每次退避前产出不含内容的 `retry_start` 流事件；外层 `with_retry_outcome` 在首个非错误事件前补 `retry_end(success)`，在错误或取消终态前补失败的 `retry_end`，`reason` 取取消归一化之后的值。未发生重试的流不增加任何事件。`TurnRunner` 将二者映射为 `model/retryStarted` / `model/retryEnded` 通知，携带 threadId、turnId、尝试序号与脱敏错误说明，不写入会话条目，也不计入输出观测；摘要任务与连接检查的消费者忽略这两类事件。协议保持 `0.2.0`：新增的是可选通知，旧客户端按未知通知忽略，或经 `optOutNotificationMethods` 屏蔽；Electron 渲染层暂不展示。
+
+本地临时探针（`/tmp`，不入库）在 Anthropic provider 的单次尝试边界注入内存替身，覆盖无重试、重试后成功、重试耗尽、重试后遇不可重试错误、退避期间取消与中途关闭生成器；并用真实 `TurnRunner` 与临时 `SessionStore` 确认成功与失败两种回合的通知顺序及 `session/error` 不变。OpenAI 线路共用同一辅助函数，仅经编译与类型检查覆盖。未调用真实模型、招聘 CLI、招聘平台或桌面 UI。

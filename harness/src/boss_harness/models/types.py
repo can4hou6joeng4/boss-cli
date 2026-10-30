@@ -27,6 +27,8 @@ EventType = Literal[
     "toolcall_end",
     "done",
     "error",
+    "retry_start",
+    "retry_end",
 ]
 
 
@@ -271,3 +273,7 @@ class StreamEvent:
     message: AssistantMessage | None = None
     error: str = ""
     error_info: ModelErrorInfo | None = None
+    #: retry_start：即将发起的第几次尝试、总尝试上限与退避毫秒；retry_end：最后一次重试序号。
+    attempt: int = 0
+    max_attempts: int = 0
+    delay_ms: int = 0
