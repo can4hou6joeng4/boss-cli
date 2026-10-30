@@ -8,6 +8,7 @@ from __future__ import annotations
 from concurrent.futures import Future
 from dataclasses import dataclass
 import json
+import math
 import sys
 import threading
 import uuid
@@ -17,6 +18,55 @@ from boss_harness.models.secret import redact_secrets
 
 Handler = Callable[[dict[str, Any] | None], Any]
 MAX_FRAME_BYTES = 8 * 1024 * 1024
+MAX_JSON_DEPTH = 64
+
+
+def _reject_json_constant(_: str) -> None:
+    raise ValueError("JSON 数值必须有限")
+
+
+def _finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("JSON 数值必须有限")
+    return parsed
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("JSON 对象包含重复键")
+        result[key] = value
+    return result
+
+
+def _validate_json_value(value: Any, *, depth: int = 0) -> None:
+    if depth > MAX_JSON_DEPTH:
+        raise ValueError("JSON 嵌套层级超过限制")
+    if isinstance(value, str):
+        if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+            raise ValueError("JSON 字符串包含无效 Unicode 代理项")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _validate_json_value(key, depth=depth + 1)
+            _validate_json_value(item, depth=depth + 1)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_json_value(item, depth=depth + 1)
+
+
+def _decode_json_frame(raw: str) -> Any:
+    try:
+        value = json.loads(raw, object_pairs_hook=_unique_json_object,
+                           parse_constant=_reject_json_constant,
+                           parse_float=_finite_json_float)
+        _validate_json_value(value)
+        return value
+    except (json.JSONDecodeError, ValueError, RecursionError):
+        raise ValueError("无效的 JSON 帧") from None
 
 
 class RpcError(Exception):
@@ -120,6 +170,17 @@ class JsonRpcServer:
             # been sent, so the bounded protocol error must omit that invalid ID.
             self.respond_error(None, -32010, message, data)
 
+    def _respond_invalid(self, request_id: Any) -> None:
+        message = "处理结果无法编码为有效的 JSON-RPC 响应"
+        data = {"code": "RESPONSE_INVALID"}
+        try:
+            self.respond_error(request_id, -32603, message, data)
+        except (FrameTooLargeError, UnicodeEncodeError):
+            try:
+                self.respond_error(None, -32603, message, data)
+            except (FrameTooLargeError, UnicodeEncodeError):
+                pass
+
     def _write(self, frame: dict[str, Any]) -> None:
         encoded = json.dumps(frame, ensure_ascii=False, allow_nan=False) + "\n"
         if len(encoded.encode("utf-8")) > MAX_FRAME_BYTES:
@@ -131,21 +192,29 @@ class JsonRpcServer:
             self._out.flush()
 
     def serve_forever(self) -> None:
-        def reject_constant(value: str) -> None:
-            raise ValueError("非有限JSON数值")
         try:
             while True:
                 raw = sys.stdin.readline(MAX_FRAME_BYTES + 1)
                 if not raw:
                     break
-                if len(raw.encode("utf-8")) > MAX_FRAME_BYTES or not raw.endswith("\n"):
+                try:
+                    encoded = raw.encode("utf-8", errors="surrogateescape")
+                except UnicodeEncodeError:
+                    self.respond_error(None, -32700, "无效的 JSON 帧")
+                    break
+                if len(encoded) > MAX_FRAME_BYTES or not raw.endswith("\n"):
                     self.respond_error(None, -32600, "协议帧过大或缺少 LF 终止符")
                     break
+                try:
+                    raw = encoded.decode("utf-8")
+                except UnicodeDecodeError:
+                    self.respond_error(None, -32700, "无效的 JSON 帧")
+                    continue
                 if not raw.strip():
                     continue
                 try:
-                    message = json.loads(raw, parse_constant=reject_constant)
-                except (json.JSONDecodeError, ValueError):
+                    message = _decode_json_frame(raw)
+                except ValueError:
                     self.respond_error(None, -32700, "无效的 JSON 帧")
                     continue
                 self._dispatch(message)
@@ -210,3 +279,7 @@ class JsonRpcServer:
                 # Encoding failed before stdout was touched. Never rerun the
                 # handler: it may already have performed a consequential action.
                 self._respond_too_large(request_id)
+            except (RecursionError, TypeError, UnicodeEncodeError, ValueError):
+                # The handler has already run; return a bounded error without
+                # retrying it when its result cannot be encoded as JSON.
+                self._respond_invalid(request_id)
