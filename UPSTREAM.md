@@ -1,5 +1,11 @@
 # 上游吸收记录
 
+## 第一百零七轮：会话内分支展示投影（第二步子集）
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-manager.ts`：`getBranch()` / `buildSessionContext()` 自 `leafId` 投影当前分支，界面与模型共用同一路径。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：为兼容未感知分支的旧客户端，读取类 RPC 默认仍返回完整日志；客户端在 `capabilities.sessionBranchViews` 声明后可对 `thread/read`、`thread/turns/list`、`thread/items/list` 传 `view: "branch"`，复用第一步的 `_active_entries()` 投影条目与编辑状态，回合元数据取自索引并按当前分支回合过滤，`lastTurn` 改为当前分支末回合，并附 `thread/leaf/read` 同形的 `branch` 元信息。分支视图游标带视图作用域，与完整日志游标互不接受。冻结快照分页（`snapshot=true` / `snapshotId`）暂拒绝分支视图；`task/read`、线程列表元数据与分支端点列表留待后续步骤。
+
 ## 第一百零六轮：会话内分支 leaf 指针（第一步）
 
 参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-manager.ts`：会话为 append-only 条目树，`leafId` 指向当前位置，`branch()` / `resetLeaf()` 只移动指针，`buildSessionContext()` 自叶节点沿 parent 链投影上下文，`branchWithSummary()` 另写被弃分支摘要。本轮独立实现，不复制 Pi 源码或新增依赖。
