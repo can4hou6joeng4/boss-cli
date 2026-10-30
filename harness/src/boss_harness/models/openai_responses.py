@@ -698,7 +698,9 @@ class OpenAIResponsesProvider:
                         message = str(getattr(error, "message", "") or "") or "响应失败"
                         error_info = openai_error_info(error, source="stream_error", status_code=200)
                         self._last_error_retryable = not (
-                            error_info is not None and error_info.code == "CONTEXT_OVERFLOW"
+                            error_info is not None and (
+                                error_info.code == "CONTEXT_OVERFLOW" or error_info.retryable is False
+                            )
                         ) and _looks_transient(code, f"{error_type} {message}")
                         yield StreamEvent(
                             type="error", reason="error", error=self._redact(f"接口错误 {code}：{message}"),
@@ -711,7 +713,9 @@ class OpenAIResponsesProvider:
                         message = str(getattr(event, "message", "") or "")
                         error_info = openai_error_info(event, source="stream_error", status_code=200)
                         self._last_error_retryable = not (
-                            error_info is not None and error_info.code == "CONTEXT_OVERFLOW"
+                            error_info is not None and (
+                                error_info.code == "CONTEXT_OVERFLOW" or error_info.retryable is False
+                            )
                         ) and _looks_transient(code, message)
                         yield StreamEvent(
                             type="error", reason="error", error=self._redact(f"接口错误 {code}：{message}"),
@@ -752,7 +756,9 @@ class OpenAIResponsesProvider:
         except openai.APIStatusError as exc:
             error_info = openai_error_info(exc.body, source="http_error", status_code=exc.status_code)
             self._last_error_retryable = not (
-                error_info is not None and error_info.code == "CONTEXT_OVERFLOW"
+                error_info is not None and (
+                    error_info.code == "CONTEXT_OVERFLOW" or error_info.retryable is False
+                )
             ) and exc.status_code in _RETRYABLE_STATUS
             self._last_error_retry_after = _retry_after_seconds(exc)
             yield StreamEvent(

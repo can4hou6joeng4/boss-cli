@@ -1,5 +1,11 @@
 # 上游吸收记录
 
+## 第九十四轮：停止重试智谱五小时硬用量上限
+
+Pi MIT [Issue #11537](https://github.com/earendil-works/pi/issues/11537) 报告智谱/Z.ai 在五小时硬用量上限时返回 HTTP 429 与结构化 `code=1308`；消息含数小时后的重置时间，重复请求无法在当前窗口成功。Pi 已合并 [PR #11572](https://github.com/earendil-works/pi/pull/11572)，固定 merge commit `c719d5b08e5d9fb9bbcb1f1792281eea8b442812`，在 agent-level classifier 中精确识别 code 字段；该 PR 明确未调整 Pi provider-level 的 429 重试策略。上游实现仅作行为参考，本轮不复制源码或引入依赖。
+
+本项目 OpenAI Responses 适配器会对 HTTP 429 及带瞬时标记的流内错误自动重试。共享错误分类器现在只把结构化 `code` 精确等于整数或字符串 `1308` 视为硬用量上限，并将 provider code 安全规范为字符串；HTTP 与流内重试决策遵从该明确的不可重试结果。未命中既有终态分类的其他 429、非结构化消息和相似数字仍保持原行为。适配器面向 OpenAI 兼容端点，因此匹配范围刻意收窄到该 code 字段，不按自由文本推断供应商或配额语义。
+
 ## 第九十三轮：共享附件容量与损坏日志的发布门禁
 
 参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 `packages/coding-agent/src/extensions/mcp/tools.ts` 及开放 [Issue #11386](https://github.com/earendil-works/pi/issues/11386)：Pi 对发给模型的 MCP 文本输出设有 20 KiB 默认上限，该提案希望支持分层配置。BOSS-CLI 的附件属于跨会话持久对象，与单次工具输出不同；本轮只采用显式资源预算原则，独立实现，不复制代码或新增依赖。

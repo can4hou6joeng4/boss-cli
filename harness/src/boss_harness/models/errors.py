@@ -188,14 +188,21 @@ def _safe_provider_code(error: object) -> str | None:
         value = _field(payload, field)
         if type(value) is str and _PROVIDER_CODE.fullmatch(value):
             return value
+        if field == "code" and type(value) is int and value == 1308:
+            return str(value)
     return None
+
+
+def _is_zhipu_usage_limit(error: object) -> bool:
+    code = _field(_error_payload(error), "code")
+    return (type(code) is str and code == "1308") or (type(code) is int and code == 1308)
 
 
 def _retryable_hint(error: object, status_code: int | None) -> bool | None:
     payload = _error_payload(error)
     codes = {value for field in ("code", "type")
              if type(value := _field(payload, field)) is str and _PROVIDER_CODE.fullmatch(value)}
-    if codes & _QUOTA_CODES:
+    if _is_zhipu_usage_limit(error) or codes & _QUOTA_CODES:
         return False
     if codes & _TRANSIENT_CODES or status_code in _TRANSIENT_STATUSES:
         return True
