@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第九十二轮：损坏的持久 JSONL 必须显式失败
+
+参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 `packages/coding-agent/src/core/session-manager.ts`：`loadEntriesFromFile()` 与 `parseSessionEntryLine()` 会跳过 JSON 解析失败的行。这种 salvage 行为适合 Pi 的会话加载契约；BOSS-CLI 的冻结恢复会报告 `itemCount` 并提供完整历史页，静默丢弃记录会把部分历史伪装成完整快照，因此不沿用该容错语义，也不复制 Pi 代码。
+
+本项目 [Issue #221](https://github.com/can4hou6joeng4/boss-cli/issues/221) 在两条有效记录之间插入损坏行后，复现 `read_entries()` 与 `SnapshotBuilder` 都曾成功并忽略该行；删除 SQLite 索引后，重启还会静默隐藏无法重建的会话。
+
+现在会话普通冷读、固定文件快照、冻结快照、工具结果幂等核对、附件引用扫描和事件索引重建共用严格 JSONL 校验。无效 UTF-8、JSON、重复对象键、非有限浮点数、重复 session header 或无效记录结构均报告日志类型与行号并停止；冻结快照不发布部分结果。已有 SQLite 条目时保留旧列表投影以便定位受损会话，读取会给出损坏行；没有可保留条目时，索引恢复明确失败。损坏的源日志不会被截断、自动修补或重放。
+
+离线临时目录探针覆盖中间 JSON 损坏、坏 UTF-8、重复键、溢出浮点数、缺失 payload、重复 header、损坏事件日志、已有索引保留、无索引恢复失败和冻结快照不发布。Python 3.11 compileall、wheel/sdist 构建、npm audit、TypeScript 检查、Electron 源码构建以及 PR Source build / GitGuardian 均通过；没有新增依赖或提交测试材料。
+
 ## 第九十一轮：暴露有界运行资源 owner 快照
 
 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的开放 [Issue #11350](https://github.com/earendil-works/pi/issues/11350) 报告进程级 codemode worker 持有者不可见，使用户无法判断等待、转向或取消哪个长任务；其示例中的长脚本 worker 池与本项目的模型/摘要 owner 不同，且 BOSS-CLI 已有 FIFO follow-up 等待及新 turn 防插队逻辑。本轮只吸收 holder 可见性的诊断需求，不声称本项目缺乏公平调度、不改变准入算法，也不复制 Pi 源码。
@@ -98,7 +108,7 @@ Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的开放 [Issue #10697](
 
 本项目 [Issue #187](https://github.com/can4hou6joeng4/boss-cli/issues/187) 的只读任务归属视图参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 关于持久任务事实与进程执行责任分离的讨论。独立代码审查发现，PR #188 的 `task/read` 虽限制关系投影数量，却调用 `read_entries()` 将整个会话 JSONL 解码并保存在列表中，再多次扫描；超长会话仍会令查询峰值内存随历史总量增长。
 
-现在 `SessionStore.open_entries_snapshot()` 在 writer lock 内验证会话并固定打开文件的 inode 与长度，之后由同一可回绕句柄按 64 KiB 块、32 MiB 会话正文单行上限逐次扫描固定前缀；会话头和事件日志仍各自保持 8 MiB 上限。`task/read` 将目标身份和冲突验证器直接应用于流式迭代器，不保留完整历史列表；会话追加不会改变当前查询切面。每会话准入锁覆盖扫描并阻止并发删除；全局 runtime/queue 锁只用于捕获运行时归属并打开快照，文件扫描期间已释放。坏 JSON 跳过、坏 UTF-8 替换、通用换行与条目筛选语义和关系数量上限保持不变。
+现在 `SessionStore.open_entries_snapshot()` 在 writer lock 内验证会话并固定打开文件的 inode 与长度，之后由同一可回绕句柄按 64 KiB 块、32 MiB 会话正文单行上限逐次扫描固定前缀；会话头和事件日志仍各自保持 8 MiB 上限。`task/read` 将目标身份和冲突验证器直接应用于流式迭代器，不保留完整历史列表；会话追加不会改变当前查询切面。每会话准入锁覆盖扫描并阻止并发删除；全局 runtime/queue 锁只用于捕获运行时归属并打开快照，文件扫描期间已释放。该轮当时保留坏 JSON 跳过、坏 UTF-8 替换、通用换行与条目筛选语义和关系数量上限；第九十二轮改为损坏记录严格失败。
 
 忽略目录的离线探针以 60,002 条记录、49,200,327 字节的合成会话对比：`task/read` 峰值 Python 分配为 308,017 字节，原 `read_entries()` 列表路径为 87,747,515 字节；打开快照后追加记录，两次回绕仍得到相同记录数且不包含新记录。另一探针暂停文件扫描时确认 runtime/queue 全局锁可被其他工作获取。查询前后 session 与 event 文件 SHA-256 相同；未调用 provider、招聘 CLI、真实平台或桌面 UI。数据只验证合成冷读路径，不代表完整应用进程 RSS 或墙钟延迟。
 
@@ -138,7 +148,7 @@ Pi Durable 开放 [Issue #10845](https://github.com/earendil-works/pi/issues/108
 
 继续参考 Pi MIT 仓库当前 `main` `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a` 的 `loadEntriesFromFile()`：固定 1 MiB 读取缓冲区配合增量解码和逐行解析。本项目此前 [Issue #103](https://github.com/can4hou6joeng4/boss-cli/issues/103) 只把原始 bytes 快照与 JSON 解码拆开，降低了解码额外峰值；`SessionStore.read_entries()` 仍先 `read_bytes()`，长期会话会把完整原始 JSONL 保留在内存。本轮延伸同一存储边界，不复制 Pi 源码或增加依赖。
 
-`read_entries()` 现在在既有 `SessionStore` 锁内按 64 KiB 块解析会话文件，保留坏 JSON 行跳过、坏 UTF-8 替换、LF/CRLF/CR 行边界、尾部无换行和条目筛选语义；单行超过 8 MiB 时拒绝，避免损坏或外部追加的无界长行。事件索引冷重建共用同一有界解析器，事件仍使用原有 LF 语义与游标冲突校验。锁覆盖整个解析过程，维持一次读取对应稳定文件切面；所有写入仍通过 `SessionStore` 串行化。
+`read_entries()` 当时在既有 `SessionStore` 锁内按 64 KiB 块解析会话文件，保留坏 JSON 行跳过、坏 UTF-8 替换、LF/CRLF/CR 行边界、尾部无换行和条目筛选语义；单行超过 8 MiB 时拒绝，避免损坏或外部追加的无界长行。第九十二轮改为损坏记录严格失败。事件索引冷重建共用同一有界解析器，事件仍使用原有 LF 语义与游标冲突校验。锁覆盖整个解析过程，维持一次读取对应稳定文件切面；所有写入仍通过 `SessionStore` 串行化。
 
 独立复核发现，前置 `require_thread()` 原先仍会无界 `readline()` 并 JSON 解码首行，导致正文解析器的上限无法保护超长会话头。合成 16 MiB 有效头在旧实现产生约 32 MiB 的分配峰值。现在首行也复用同一字节上限与通用换行解析器，在 JSON 解码前拒绝超限头；只读取首行并立即关闭迭代器，空文件仍返回原有头损坏错误。对同类输入，修复后测得峰值为 9058344 字节；该测量只说明超限首行的资源边界，不代表完整会话投影的总内存恒定。
 
@@ -152,7 +162,7 @@ Pi Durable 开放 [Issue #10845](https://github.com/earendil-works/pi/issues/108
 
 本项目基线 `f7832c70be77045225fb281b0f8b3dac20e86dc4` 的 `SessionStore._index_events()` 在 SQLite writer 事务内对 `events.jsonl` 调用 `read_text().split("\\n")`。事件日志会持久化文本与思考增量，长期文件可能远大于单次 8 MiB JSON-RPC 帧；索引丢失、修复或恢复时，整文件物化会让内存峰值随历史长度增长，并延长 writer 锁持有时间。既有会话 JSONL 解析优化没有覆盖该共享事件索引。
 
-现在以 64 KiB 固定块增量拆分事件行，单行上限为 8 MiB；超过上限的损坏或外部追加内容立即拒绝，避免任意长行重新制造无界分配。正常坏 JSON 行继续跳过，重复游标、线程校验、SQLite 单事务、checkpoint 指纹和事件顺序语义保持不变。`append_event()` 在写入前也拒绝超过该上限的记录，防止内核生成无法重建的事件。
+该轮以 64 KiB 固定块增量拆分事件行，单行上限为 8 MiB；超过上限的损坏或外部追加内容立即拒绝，避免任意长行重新制造无界分配。正常坏 JSON 行当时继续跳过；第九十二轮改为损坏记录严格失败。重复游标、线程校验、SQLite 单事务、checkpoint 指纹和事件顺序语义保持不变。`append_event()` 在写入前也拒绝超过该上限的记录，防止内核生成无法重建的事件。
 
 本地隔离探针生成 2400 条事件后删除 SQLite 索引冷重建：事件分页、方法筛选、游标、坏尾行恢复和超限行拒绝均通过；`tracemalloc` 观测本轮重建峰值为 196196 字节，未随完整日志内容保留。探针、合成事件和临时状态未进入 Git、wheel 或 sdist；未调用真实模型、招聘平台或桌面 UI。
 
