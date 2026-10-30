@@ -173,11 +173,28 @@ def _finite_json_float(value: str) -> float:
     return parsed
 
 
+def _validate_json_unicode(value: Any) -> None:
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            try:
+                current.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError from None
+        elif isinstance(current, dict):
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+
+
 def _decode_jsonl_object(line: str | bytes, *, label: str, line_number: int) -> dict:
     try:
         text = line.decode("utf-8") if isinstance(line, bytes) else line
         record = json.loads(text, object_pairs_hook=_unique_json_object,
                             parse_constant=_reject_json_constant, parse_float=_finite_json_float)
+        _validate_json_unicode(record)
     except (ValueError, RecursionError):
         raise ValueError(f"{label}第 {line_number} 行损坏，读取已停止") from None
     if not isinstance(record, dict):
@@ -1642,12 +1659,17 @@ class SessionStore:
         try:
             with os.fdopen(descriptor, "wb") as output:
                 if source_handle is not None:
-                    for raw_line in _iter_bounded_raw_lines_from_handle(
-                            source_handle, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"):
+                    for line_number, raw_line in enumerate(_iter_bounded_raw_lines_from_handle(
+                            source_handle, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"), start=1):
+                        if not raw_line.strip():
+                            output.write(raw_line + b"\n")
+                            last_byte = b"\n"
+                            continue
                         try:
-                            record = json.loads(raw_line)
-                        except (json.JSONDecodeError, UnicodeDecodeError):
-                            raise ValueError("事件日志损坏，无法安全删除会话") from None
+                            record = _decode_jsonl_object(
+                                raw_line, label="事件日志", line_number=line_number)
+                        except ValueError as exc:
+                            raise ValueError(f"事件日志损坏，无法安全删除会话：{exc}") from None
                         if (not isinstance(record, dict) or record.get("type") != "event"
                                 or not isinstance(record.get("method"), str)
                                 or not isinstance(record.get("params"), dict)):
@@ -1665,11 +1687,11 @@ class SessionStore:
                                     or "threadId" in params):
                                 raise ValueError("会话删除事件与恢复标记冲突")
                             event = {"method": record["method"], "params": params}
-                            output.write(raw_line)
-                            last_byte = raw_line[-1:] or last_byte
+                            output.write(raw_line + b"\n")
+                            last_byte = b"\n"
                         elif params.get("threadId") != thread_id:
-                            output.write(raw_line)
-                            last_byte = raw_line[-1:] or last_byte
+                            output.write(raw_line + b"\n")
+                            last_byte = b"\n"
                 if event_count > 1:
                     raise ValueError("事件日志含重复的会话删除事件")
                 if event is None:
