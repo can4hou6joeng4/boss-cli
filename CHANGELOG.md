@@ -13,6 +13,7 @@
 
 ### 修复
 
+- [Issue #227](https://github.com/can4hou6joeng4/boss-cli/issues/227)：会话删除重写事件日志时复用严格 JSONL 解码，与索引语义一致跳过空白行并保留每条记录的换行分隔；拒绝重复对象键、非有限浮点、无效 Unicode、坏 UTF-8、过深结构及损坏记录；删除在发现损坏前不发布部分日志，保留可恢复的清理暂停语义。
 - [Issue #225](https://github.com/can4hou6joeng4/boss-cli/issues/225)：严格校验 `boss-agent-cli --json` 七键信封，拒绝重复键、非有限浮点、超过 64 层的 JSON 和孤立 Unicode 代理项；语法错误保持 `CLI_ERROR`，结构或完整性违反返回 `CLI_CONTRACT_ERROR` 并暂停当前回合，不把坏数据交给后续模型或工具。写工具已派发时仍按 `outcome_unknown` 持久化并要求核对。
 - [Issue #223](https://github.com/can4hou6joeng4/boss-cli/issues/223)：JSON-RPC 输入帧拒绝重复键、非有限浮点、超过 64 层的 JSON 和孤立 Unicode 代理项；坏帧返回协议错误后继续服务。handler 已执行但结果无法编码时返回有界 `RESPONSE_INVALID`，不重放副作用。
 - [Issue #208](https://github.com/can4hou6joeng4/boss-cli/issues/208)：模型流传输失败沿 SDK 异常链提取固定原因分类及白名单 errno，并通过 `errorInfo` 与会话错误消息提供诊断；不保存 cause 原文或类型名、URL、请求内容或凭据，也不改变重试与恢复策略。
