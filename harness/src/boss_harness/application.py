@@ -2258,6 +2258,18 @@ class ApplicationService:
             if set(calls_by_batch) != set(manifests):
                 return fail("CONTINUATION_TOOL_BATCH_MISSING", "工具调用与持久批次清单不一致。")
 
+            request_records: dict[str, list[tuple[int, dict]]] = {
+                "context_budget": [], "model_usage": []}
+            for ordinal, entry in enumerate(entries):
+                kind, payload = entry.get("type"), entry.get("payload")
+                if (kind in request_records and isinstance(payload, dict)
+                        and payload.get("turnId") == source_turn_id):
+                    request_records[kind].append((ordinal, payload))
+
+            def preceding_request_record(kind: str, ordinal: int) -> dict | None:
+                return next((payload for index, payload in reversed(request_records[kind])
+                             if index < ordinal), None)
+
             batch_boundaries: list[tuple[int, str]] = []
             completed_call_count = 0
             assistant_items = {item["id"]: item for item in items if item.get("kind") == "agentMessage"}
@@ -2272,8 +2284,19 @@ class ApplicationService:
                         or len(set(call_ids)) != len(call_ids)
                         or done_payload.get("callIds") != call_ids
                         or start_payload.get("assistantItemId") != done_payload.get("assistantItemId")
-                        or start_payload.get("requestFingerprint") != done_payload.get("requestFingerprint")):
+                        or start_payload.get("requestFingerprint") != done_payload.get("requestFingerprint")
+                        or not isinstance(start_payload.get("requestFingerprint"), str)
+                        or re.fullmatch(r"[a-f0-9]{64}", start_payload["requestFingerprint"]) is None):
                     return fail("CONTINUATION_TOOL_BATCH_INVALID", "工具批次清单前后记录不一致。")
+                context_request = preceding_request_record("context_budget", first[0])
+                model_usage = preceding_request_record("model_usage", first[0])
+                request_fingerprint = start_payload["requestFingerprint"]
+                if (context_request is None or model_usage is None
+                        or context_request.get("requestFingerprint") != request_fingerprint
+                        or model_usage.get("requestFingerprint") != request_fingerprint
+                        or context_request.get("provider") != model_usage.get("provider")
+                        or context_request.get("model") != model_usage.get("model")):
+                    return fail("CONTINUATION_TOOL_BATCH_INVALID", "工具批次与对应模型请求指纹不一致。")
                 calls = calls_by_batch.get(batch_id, [])
                 observed_ids = [item.get("toolCallId") for item in calls]
                 if (observed_ids != call_ids or any(item.get("status") not in {"completed", "failed"}

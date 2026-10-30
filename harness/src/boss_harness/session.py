@@ -2093,12 +2093,29 @@ class SessionStore:
                 if not isinstance(title, str):
                     raise ValueError("title 必须是字符串")
                 header["title"] = title
+            request_offset = selected.get("continuationRequestOffset", 0)
+            if type(request_offset) is not int or request_offset < 0:
+                raise ValueError("来源回合模型请求计数无法核验，不能创建分支")
+            for entry in entries:
+                payload = entry.get("payload")
+                if (entry.get("type") != "task_phase" or not isinstance(payload, dict)
+                        or payload.get("taskId") != selected["turnId"]
+                        or payload.get("phase") != "model_request"):
+                    continue
+                attempt = payload.get("attempt")
+                if (payload.get("ownerKind") != "turn" or type(attempt) is not int
+                        or not 1 <= attempt <= 1_000):
+                    raise ValueError("来源回合模型请求阶段无法核验，不能创建分支")
+                request_offset = max(request_offset, attempt)
             copied: list[dict] = []
             copied_ids: set[str] = set()
             for entry in json.loads(_json(prefix)):
                 # Queue state belongs to one thread, not its transcript forks.
                 if entry["type"] in {"thread_info", "queue", "task_phase"}:
                     continue
+                if (entry["type"] == "turn"
+                        and entry["payload"].get("turnId") == selected["turnId"]):
+                    entry["payload"]["continuationRequestOffset"] = request_offset
                 if (entry["type"] == "context_edit"
                         and owners.get(entry["payload"].get("targetItemId")) not in included_turns):
                     continue

@@ -98,10 +98,18 @@ def assistant_from_tool_batch(items: list[dict], pending: list[dict]) -> Assista
     linked_assistant = None
     if linked_assistant_id is not None:
         linked_assistant = next((item for item in items if item.get("id") == linked_assistant_id), None)
+        failed_batch_is_settled = all(
+            item.get("status") in {"completed", "failed"}
+            and item.get("executionState") in {
+                "completed", "failed", "not_executed", "not_approved"
+            }
+            for item in pending
+        )
         if (linked_assistant is None or linked_assistant.get("kind") != "agentMessage"
                 or linked_assistant.get("turnId") != pending[0].get("turnId")
                 or linked_assistant.get("toolBatchId") != pending[0].get("toolBatchId")
-                or linked_assistant.get("status") != "completed"):
+                or (linked_assistant.get("status") != "completed"
+                    and not (linked_assistant.get("status") == "failed" and failed_batch_is_settled))):
             raise ValueError("Tool batch assistant item is missing or inconsistent")
     continuations = [item[ANTHROPIC_CONTINUATION_FIELD] for item in pending
                      if ANTHROPIC_CONTINUATION_FIELD in item]
