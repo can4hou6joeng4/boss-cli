@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第一百轮：共享 provider 与 agent 的有限恢复预算
+
+参考 Pi MIT 开放 [Issue #9474](https://github.com/earendil-works/pi/issues/9474)，截至 2026-10-30 仍为 OPEN；核对 Pi `main@50d9f823e414eafb5f4459d16728a2464cd7939f`。该议题的单次传输总期限已由本项目 [Issue #205](https://github.com/can4hou6joeng4/boss-cli/issues/205) 覆盖，剩余缺口是 provider 重试与 agent 恢复各自计数、彼此叠加。本轮不复制 Pi 源码或新增依赖。
+
+本项目 [Issue #237](https://github.com/can4hou6joeng4/boss-cli/issues/237) 固定基线 `main@382dbc2b43e9c1b836ce7d7893605379168baeb0`，为每个逻辑业务回合建立默认 8 次的运行时恢复预算。OpenAI Responses 仅在瞬时失败、尚未输出且后台传输清理确认后，为每次额外 transport attempt 预留一次额度；正常首次调用不计入。退避期间取消会释放预留额度，预算耗尽时不再等待或启动 transport，并将流终态标为不可重试。上下文溢出进入自动恢复前也消耗同一额度；恢复被预算阻止时回合错误明确带有 `recoveryBlocked=true`。因此 provider 多请求重试与一次 agent overflow recovery 不再分别拥有完整上限。
+
+`ModelRequest.recovery_budget` 是运行时对象，不进入 session JSONL、RPC、模型请求、请求指纹或任务上下文身份。自动 compaction 的分片请求沿用触发它的业务回合预算，使摘要 provider 重试也扣同一额度；独立手动 compaction 使用自己的预算。Anthropic SDK 已禁用内置重试。每回合原有普通模型请求上限、摘要正常分片上限及每次传输时限继续独立生效；本轮不声称新增逻辑回合总墙钟期限，也不把正常请求/分片误记为 recovery。
+
+Python 临时会话与合成 provider 探针验证跨 `stream()` 调用的 provider 预算共享、无预算直接调用保留原重试次数、退避取消归还额度、overflow 与 provider retry 共享额度、耗尽后不调用自动恢复、摘要片段继承运行时预算及 request copy 保留对象身份。`compileall`、TypeScript typecheck、Electron 源码 build、wheel/sdist build 与 `git diff --check` 通过。探针未提交；未调用真实模型、网络或招聘平台。真实 provider 长会话、Electron 桌面交互与用户验收仍未完成。
+
 ## 第九十九轮：等待 Harness 子进程完成优雅关闭
 
 参考 Pi MIT [PR #11544](https://github.com/earendil-works/pi/pull/11544)，已合入 Pi main，合并提交 `a87b742ff4ce262c07b7830a25c73c1442dab41b`。该问题报告指出，客户端结束 daemon stdin 后立即发 `SIGTERM` 会跳过 EOF 收尾；PR 的 Unix daemon signal handling 不适用于本项目的 Python Harness，因此这里只采用“EOF 后给后端留出清理窗口”的生命周期原则，不复制 Pi 源码或增加依赖。本项目复现与修复基于 main `05ce291fb2670b78a107927b334836d3ef50e15f`。

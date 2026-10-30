@@ -284,11 +284,18 @@ class OpenAIResponsesProvider:
         yield StreamEvent(type="start")
 
         attempts = self._max_attempts
+        reservation = None
         try:
             for attempt in range(1, attempts + 1):
-                if self._abort_requested:
+                if self._abort_requested or self._abort_event.is_set():
+                    if reservation is not None:
+                        reservation.release()
+                        reservation = None
                     yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                     return
+                if reservation is not None:
+                    reservation.commit()
+                    reservation = None
                 emitted = False
                 retry_message: str | None = None
                 retry_after: float | None = None
@@ -323,12 +330,29 @@ class OpenAIResponsesProvider:
                     yield replace(retry_event, error=self._redact(
                         retry_message + "；后台清理未确认，已停止自动重试"), error_info=info)
                     return
+                reservation = (request.recovery_budget.reserve_retry(self._abort_event)
+                               if request.recovery_budget is not None else None)
+                if request.recovery_budget is not None and reservation is None:
+                    if self._abort_requested:
+                        yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+                        return
+                    self._last_error_retryable = False
+                    self._last_error_retry_after = None
+                    assert retry_event is not None
+                    info = (replace(retry_event.error_info, retryable=False)
+                            if retry_event.error_info is not None else None)
+                    yield replace(retry_event, error=self._redact(
+                        retry_message + "；共享模型恢复次数已用尽，已停止自动重试"), error_info=info)
+                    return
                 delay = self._retry_delay(attempt, retry_after)
                 print(
                     f"[harness] 模型请求第 {attempt}/{attempts} 次尝试失败，{delay:.1f}s 后重试：{retry_message}",
                     file=sys.stderr,
                 )
                 if self._abort_event.wait(delay):
+                    if reservation is not None:
+                        reservation.release()
+                        reservation = None
                     yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                     return
 

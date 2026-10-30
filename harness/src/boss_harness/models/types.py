@@ -7,6 +7,7 @@ Python 没有联合类型，这里用带 `type` 判别字段的数据类表达�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import threading
 from typing import Any, Literal, Mapping
 
 #: 与 Pi 的 StopReason 对齐（Pi 用 camelCase 的 toolUse，Python 侧用 snake_case）。
@@ -148,6 +149,67 @@ class ModelTaskContext:
     job_id: str | None = None
 
 
+DEFAULT_MODEL_RECOVERY_RETRIES = 8
+
+
+class _RecoveryReservation:
+    def __init__(self, budget: "ModelRecoveryBudget") -> None:
+        self._budget = budget
+        self._active = True
+
+    def commit(self) -> bool:
+        with self._budget._lock:
+            if not self._active:
+                return False
+            self._active = False
+            self._budget._reserved -= 1
+            return True
+
+    def release(self) -> bool:
+        with self._budget._lock:
+            if not self._active:
+                return False
+            self._active = False
+            self._budget._reserved -= 1
+            self._budget._remaining += 1
+            return True
+
+
+class ModelRecoveryBudget:
+    """Share a finite number of provider and agent recovery attempts.
+
+    The object is runtime-only: it must never be written to session data or a
+    provider request body. Reservations let cancellation during backoff return
+    its slot without racing another request that shares the budget.
+    """
+
+    def __init__(self, retries: int = DEFAULT_MODEL_RECOVERY_RETRIES) -> None:
+        if type(retries) is not int or not 0 <= retries <= 64:
+            raise ValueError("模型恢复次数必须是 0 到 64 的整数")
+        self._remaining = retries
+        self._reserved = 0
+        self._lock = threading.Lock()
+
+    @property
+    def remaining(self) -> int:
+        with self._lock:
+            return self._remaining
+
+    def reserve_retry(self, cancel_event: threading.Event | None = None) -> _RecoveryReservation | None:
+        if cancel_event is not None and cancel_event.is_set():
+            return None
+        with self._lock:
+            if ((cancel_event is not None and cancel_event.is_set()) or self._remaining <= 0):
+                return None
+            self._remaining -= 1
+            self._reserved += 1
+            return _RecoveryReservation(self)
+
+    def consume_retry(self, cancel_event: threading.Event | None = None) -> bool:
+        reservation = self.reserve_retry(cancel_event)
+        return reservation.commit() if reservation is not None else False
+
+
 @dataclass(frozen=True)
 class ModelRequest:
     model: str
@@ -158,6 +220,7 @@ class ModelRequest:
     effort: str | None = None
     thinking: Mapping[str, Any] | None = None
     task_context: ModelTaskContext | None = None
+    recovery_budget: ModelRecoveryBudget | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
