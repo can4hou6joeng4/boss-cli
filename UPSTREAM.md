@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第九十七轮：JSONL 追加失败后的有界回滚
+
+参考 Pi 已合并 [PR #11486](https://github.com/earendil-works/pi/pull/11486) 对会话写入失败状态分叉的修复，并核对其 [Issue #11460](https://github.com/earendil-works/pi/issues/11460)。Pi 的故障点是内存 leaf 已更新而文件 append 失败；BOSS-CLI 不保留同类内存 transcript，但直接追加 JSONL 后若出现短写或 `ENOSPC`，SQLite 事务回滚无法撤销已写入的文件后缀，严格读取会因此失败。本轮针对本项目的持久化边界独立实现，不复制 Pi 源码。
+
+本项目 [Issue #229](https://github.com/can4hou6joeng4/boss-cli/issues/229) 通过临时 `SessionStore` 和半行 `ENOSPC` 故障注入复现：原日志增加残缺后缀，下一次 `read_entries()` 报 JSONL 损坏。现在共享 `_append_line()` 使用无缓冲文件描述符逐段写入，并记录起始 inode/长度和每次成功写入的字节数；追加或 `fsync` 失败时，只有目标身份、文件长度和已写后缀都与本次操作匹配才会尝试 `ftruncate` 回起点并再次 `fsync`。被替换、外部追加、回滚写入或回滚同步结果不确定时返回 `SessionAppendRollbackError`，不覆盖或假称未写入。普通会话追加和工具结果修订在写前校验当前索引切面，避免继续追加到已损坏日志；事件追加沿用事件日志 fingerprint 冷读校验。
+
+故障探针覆盖短写、`fsync` 失败、回滚失败与目标文件替换/追加，以及会话条目、事件与工具修订的共享调用边界；成功回滚须恢复原字节且可继续读取，无法确认时必须明确失败。Python compileall、wheel/sdist、TypeScript、Electron 源码构建、产物扫描及 `git diff --check` 按最新 PR head 验证；探针和测试材料仅保留本地。
+
 ## 第九十六轮：删除清理复用严格事件 JSONL 解码
 
 参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的持久化恢复边界，并延续本项目 [Issue #221](https://github.com/can4hou6joeng4/boss-cli/issues/221) 的损坏日志约束：事件事实源在冷重建、读取和删除清理之间必须使用同一套可验证解析规则。本轮不复制 Pi 源码或引入依赖。
