@@ -1,5 +1,15 @@
 # 上游吸收记录
 
+## 第一百零五轮：业务请求的受限 transformContext
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/agent/src/agent-loop.ts`（`streamAssistantResponse` 在 `convertToLlm` 前调用 `transformContext(messages, signal)`）与 `types.ts` 的说明：宿主可在每次模型调用前裁剪或改写发送给模型的消息，持久消息不变。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+现状核对：工具结果截断与 content/details 分离（`tool_results.py` 的模型结果字节上限与分页读取）、回合/条目生命周期事件、`before_request` / `before_tool_call` / `after_tool_call` 均已具备；会话树内分支需改持久格式与前端，风险较高。缺口是宿主无法按自身策略缩减单次请求的历史投影，只能整体拒绝请求。
+
+适配差异：Pi 可任意改写 `AgentMessage[]`；本项目 hook 只能读、不能改写事实，因此 `transform_context` 仅允许按内核划分的历史单元整体省略，最后一个单元（当前输入及其后的工具往返）不可省略，单元边界保证工具调用/结果配对与角色顺序；输入为有界脱敏元数据而非完整消息。仅作用于业务回合（摘要与连接检查不调用），在完整预算准备后、`before_request` 前执行，`before_request` 看到变换后的 `messageCount`；省略只会减小请求，故沿用已准备预算。失败按策略 hook 体例 fail closed，取消时不变换。
+
+Python 3.14 临时探针覆盖整单元省略只影响请求、持久历史不变、`before_request` 观察到新消息数、返回 None 与无 hook 不变、异常/非法返回/省略当前单元拒绝请求且不调用 provider、取消、工具往返单元划分、摘要用途跳过、旧 hook 与 `config/read`；另以 `/tmp` 脚本化 provider 经真实 stdio JSON-RPC 跑三轮回合，第三轮模型只收到当前输入。`compileall`、TypeScript typecheck、Electron 源码 build 与 `git diff --check` 通过；探针未提交，未调用真实模型或招聘平台。
+
 ## 第一百零四轮：steering 投递模式 all / one-at-a-time
 
 参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/agent/src/agent.ts`（`PendingMessageQueue`、`steeringMode`）与 `agent-loop.ts` 的投递点：`all` 一次注入全部排队消息，`one-at-a-time` 只注入最早一条，其余留待后续投递点。本轮独立实现，不复制 Pi 源码或新增依赖。

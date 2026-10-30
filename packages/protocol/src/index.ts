@@ -707,6 +707,29 @@ export interface RuntimeResourcesReadResponse {
   waitersTruncated: boolean;
 }
 
+export type SteeringMode = "all" | "one-at-a-time";
+
+/** `config/read` result; fields are optional so older kernels remain readable. */
+export interface ConfigReadResponse {
+  protocolVersion?: string;
+  workspace?: string;
+  provider?: string;
+  model?: string;
+  maxOutputTokens?: number;
+  parallelThreads?: number;
+  maxRetainedTurns?: number;
+  maxModelRequests?: number;
+  /** Steering delivery per injection point; absent on kernels before 0.2.0 steering modes. */
+  steeringMode?: SteeringMode;
+  maxAttachmentStorageBytes?: number;
+  maxAttachmentStorageObjects?: number;
+  modelCapabilities?: ModelCapabilities;
+  toolBundleId?: string;
+  autoCompaction?: unknown;
+  approvalPolicy?: string;
+  approvalTimeoutSeconds?: number;
+}
+
 export interface ModelCapabilities {
   contextWindow: number;
   maxOutputTokens: number;

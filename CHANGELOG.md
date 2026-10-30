@@ -4,6 +4,7 @@
 
 ### 新增
 
+- 参考 Pi `agent-loop.ts` 的 `transformContext`：生命周期 hook 新增可选 `transform_context(context) -> ContextTransform | None`，在业务回合每次模型请求的 `before_request` 之前运行。内核把请求历史按“以用户输入开头的单元”给出有界元数据（脱敏输入预览、消息数、工具名与字符数），宿主只能省略除当前输入外的整单元，不能新增或改写消息，工具调用与结果保持成对；持久历史、摘要与连接检查请求不受影响。hook 异常、超时、非法返回或省略当前单元时拒绝该次请求（fail closed）。协议仍为 `0.2.0`；`@boss-cli/protocol` 补齐 `ConfigReadResponse` 与可选 `steeringMode` 类型声明。
 - 参考 Pi `agent.ts` 的 `steeringMode`：新增 `BOSS_HARNESS_STEERING_MODE`（`all` / `one-at-a-time`，默认 `all` 保持原行为）。`one-at-a-time` 时每个投递点只注入最早一条 steering，其余留在持久队列等待后续模型请求，压缩后的追补也不会在同一请求叠加第二条；非法值启动即报错，`config/read` 公开 `steeringMode`。协议仍为 `0.2.0`，持久格式不变。
 - 参考 Pi `agent-session.ts` 的 `auto_retry_start` / `auto_retry_end`：业务回合中 provider 在首个输出前进入自动重试时，新增可选通知 `model/retryStarted`（即将发起的尝试序号、尝试上限、退避毫秒与脱敏失败说明）与 `model/retryEnded`（成功，或以 `error` / `aborted` 结束并附最终错误）。通知仅供观测，不改变重试判定、恢复额度或会话条目；协议仍为 `0.2.0`，旧客户端忽略未知通知即可，也可经 `optOutNotificationMethods` 屏蔽。摘要与连接检查请求不发送该通知。
 - [Issue #239](https://github.com/can4hou6joeng4/boss-cli/issues/239)：新增显式 `turn/continuation/read` 预检与 `turn/continue` 操作，从最新且可验证的中断回合边界创建关联续接回合；续接编号幂等，同一会话仍只允许一个运行 owner。续接会核对持久工具批次、历史前缀及模型/工具/提示/技能/附件指纹，复用已完成的工具结果并沿用原请求上限；存在未知副作用、未决审批、未完成批次或上下文变化时拒绝续接。Electron 仅在内核声明能力后显示入口，并明确提示 provider 请求可能重复及产生额外费用。
