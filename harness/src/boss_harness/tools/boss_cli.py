@@ -629,4 +629,5 @@ def approval_required_tools() -> frozenset[str]:
 
 
 def should_pause(result: ToolResult) -> bool:
-    return not result.ok and (result.error or {}).get("code") in (PAUSE_CODES | {"CLI_OUTPUT_LIMIT"})
+    terminal_codes = PAUSE_CODES | {"CLI_OUTPUT_LIMIT", "CLI_CONTRACT_ERROR"}
+    return not result.ok and (result.error or {}).get("code") in terminal_codes
