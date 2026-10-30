@@ -1149,3 +1149,13 @@ Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/113
 本项目在两种内置 provider 的失败事件交付边界复查 `_abort_requested`。已经观察到取消时统一发送 `error(reason=aborted, error=请求已取消)`，不保留 SDK/EOF 错误及结构化诊断；OpenAI 同时清除可重试标志与退避信息。内层生成器由交付层 finally 关闭，保留 SDK/pump 的清理和额度责任；未取消失败与正常完成消息不改写。pump 的完成、取消和自动清理语义保持不变，JSON-RPC、持久格式与工具执行边界不变。
 
 本地探针直接加载生产 provider/pump，只在 SDK 流边界使用内存替身；覆盖两家 provider 的 producer 已完成 EOF、排队 SDK/通用异常、活动及重复取消、未取消 EOF/异常、正常完成和完成交付后的取消，并覆盖 Anthropic thinking 签名及 redacted 数据。修复后连续三轮 90/90 通过，取消错误不含 `errorInfo` 或私密 opaque 数据，正常完成仍保留合法私密续接数据；每例仅一次传输创建，流与客户端清理结束，每进程 8 个额度全部归还，网络/DNS 尝试为零。探针和报告仅在本地 `/tmp` 保留，不进入提交；未验收真实 SDK 网络传输、真实模型、招聘平台或桌面 UI。
+
+## 显式续接中断回合
+
+本项目 [Issue #239](https://github.com/can4hou6joeng4/boss-cli/issues/239) 延续已关闭的 [Issue #216](https://github.com/can4hou6joeng4/boss-cli/issues/216)：重启恢复继续只把未完成阶段标记为人工复核；不会自动启动 provider、工具或招聘 CLI。借鉴 Pi Durable [Issue #11557](https://github.com/earendil-works/pi/issues/11557) 对 handoff 后延续任务身份的讨论，本实现独立建立 JSON-RPC 预检与显式续接流程，不复制 Pi 源码、不保存凭据或供应商远端会话状态，也不承诺供应商 exactly-once。
+
+续接只接受最新、已中断且边界可验证的来源回合。请求边界、历史前缀摘要、模型/provider、系统提示、工具 schema、技能、附件来源、推理参数与工具策略必须仍匹配。完整工具批次会以持久开始/完成清单及调用 ID、模型响应条目和 request fingerprint 交叉核对；续接把原有工具结果重建为模型上下文，不再次调用 handler、审批、队列或招聘 CLI。未知副作用、未决审批、未完成批次、损坏/变化的来源、过期来源或冲突续接编号均拒绝，返回稳定错误码供 UI 显示。
+
+每个来源仅能创建一个带 `continuedFromTurnId` 和 `continuationId` 的子回合；同一编号的并发重复请求返回同一个回合，其他续接会因已有子回合被拒绝。新回合沿用来源累计的模型请求上限，普通新回合重新从请求编号零开始。续接仍经过现有会话 owner、取消、队列暂停、审批、收尾和资源限制。Electron 在握手 capability 为真且只读预检通过后展示显式操作；内核拒绝时展示原因并重新预检，传输结果未知时不会自动重发。提示用户模型端可能已完成无持久终态的请求，因此续接可能重复调用并增加费用。
+
+本轮使用真实 `ApplicationService`、临时 `SessionStore`、合成 provider/bridge 与虚构 handler 验证完整工具批次后中断、显式续接、相同续接编号的并发幂等，以及 handler 调用次数不增加；额外回归探针确认续接后的普通新回合从 request index 0 开始。Python 编译、TypeScript 检查、Electron 构建、wheel/sdist、npm audit 和 `git diff --check` 均通过。真实模型、招聘 CLI、招聘平台和默认 Electron profile 均未调用；桌面交互仍需单独人工验收。

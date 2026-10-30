@@ -6,7 +6,7 @@ import { RichMarkdown } from "../components/RichMarkdown";
 import { ToolResultDetails } from "../components/ToolResultDetails";
 import { QueuePanel } from "./QueuePanel";
 import { ContextEditDialog } from "../components/ContextEditDialog";
-import type { QueueItem } from "@boss-cli/protocol";
+import type { QueueItem, TurnContinuationReadResponse } from "@boss-cli/protocol";
 import type { ContextEditReadResponse, SkillDescriptor } from "@boss-cli/protocol";
 import { type MessageItem, type ConversationMode } from "../data/mockData";
 import type { SkillCatalogState } from "../data/harnessBridge";
@@ -17,22 +17,25 @@ export interface ConversationAreaProps {
   messages: MessageItem[]; currentMode: ConversationMode; onModeChange: (mode: ConversationMode) => void;
   onSendMessage: ComposerSend;
   onQueueMessage?: ComposerQueue; onCheckQueueSubmission?: CheckQueueSubmission; queueItems?: QueueItem[]; onRemoveQueueItem?: (id: string) => Promise<boolean>;
-  draft?: ComposerDraft; onDraftChange?: UpdateComposerDraft; simulateLocal?: boolean; running?: boolean; taskBlocked?: boolean;
+  draft?: ComposerDraft; onDraftChange?: UpdateComposerDraft; simulateLocal?: boolean; harnessUp?: boolean; running?: boolean; taskBlocked?: boolean;
   activeModelId?: string; onSelectModel?: (id: string) => void; onOpenSettings?: () => void; onInterrupt?: () => void;
   skills?: SkillDescriptor[]; skillCatalogState?: SkillCatalogState; onRefreshSkills?: () => void;
   threadId?: string;
   configuredModelLabel?: string; readOnly?: boolean;
+  continuationCheck?: { threadId: string; sourceTurnId: string; loading: boolean; submitting?: boolean;
+    uncertain?: boolean; response?: TurnContinuationReadResponse; error?: string } | null;
+  onContinueInterruptedTurn?: () => void;
   sessionReasoning?: SessionReasoningControl;
   loginGuide?: React.ReactNode; onLogin?: () => void;
   onApprovalDecision?: (approvalId: string, approved: boolean, toolName: string, remember: boolean) => void | boolean | Promise<boolean>;
   onReviewDiff?: () => void; onRevertDiff?: () => void; onOpenRewind?: () => void; onOpenCockpit?: () => void;
 }
 export const ConversationArea: React.FC<ConversationAreaProps> = ({
-  messages: initialMessages, readOnly = false, currentMode, onModeChange, onSendMessage, onQueueMessage, onCheckQueueSubmission, queueItems = [], onRemoveQueueItem, simulateLocal = true,
+  messages: initialMessages, readOnly = false, currentMode, onModeChange, onSendMessage, onQueueMessage, onCheckQueueSubmission, queueItems = [], onRemoveQueueItem, simulateLocal = true, harnessUp = false,
   running = false, taskBlocked = false, draft, onDraftChange, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, sessionReasoning,
   onInterrupt, onApprovalDecision, onReviewDiff, onRevertDiff, onOpenRewind, loginGuide, onLogin,
   skills = [], skillCatalogState = "unavailable", onRefreshSkills,
-  threadId,
+  threadId, continuationCheck, onContinueInterruptedTurn,
 }) => {
   const [messages, setMessages] = useState<MessageItem[]>(initialMessages);
   const [localDraft, setLocalDraft] = useState(createComposerDraft);
@@ -40,6 +43,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const updateDraft = onDraftChange ?? setLocalDraft;
   const inputText = composerDraft.text;
   const setInputText = (text: string) => updateDraft(previous => withDraftText(previous, text));
+  const currentContinuationCheck = continuationCheck?.threadId === threadId ? continuationCheck : null;
   const [approvalDrafts, setApprovalDrafts] = useState<Record<string, string>>({});
   const [approvalEditing, setApprovalEditing] = useState<Record<string, boolean>>({});
   const [rememberChoices, setRememberChoices] = useState<Record<string, boolean>>({});
@@ -172,6 +176,27 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
           </button>
         </div>
       </div>
+
+      {currentContinuationCheck && <section className="turn-continuation-notice" aria-label="中断回合续接状态">
+        <div className="turn-continuation-heading"><strong>此回合已中断</strong><span>来源回合 {currentContinuationCheck.sourceTurnId}</span></div>
+        <p className="turn-continuation-warning">续接会再次发起模型请求；若上次请求结果未能确认，可能重复调用并产生额外费用。</p>
+        {currentContinuationCheck.response?.warning && <p>{currentContinuationCheck.response.warning}</p>}
+        {currentContinuationCheck.response?.boundary && <p className="turn-continuation-boundary">
+          检查点：{currentContinuationCheck.response.boundary === "user_input" ? "用户输入" : "已完成的工具批次"}
+          {currentContinuationCheck.response.completedToolCalls !== undefined ? ` · 已完成 ${currentContinuationCheck.response.completedToolCalls} 次工具调用` : ""}
+        </p>}
+        {currentContinuationCheck.loading && <p role="status">正在核对持久检查点…</p>}
+        {currentContinuationCheck.error && <p className="turn-continuation-error" role="alert">{currentContinuationCheck.error}</p>}
+        {!currentContinuationCheck.loading && currentContinuationCheck.response && !currentContinuationCheck.response.eligible && <p className="turn-continuation-error" role="status">
+          {currentContinuationCheck.response.reason ?? "当前检查点不满足续接条件。"}
+          {currentContinuationCheck.response.reasonCode ? `（${currentContinuationCheck.response.reasonCode}）` : ""}
+        </p>}
+        {currentContinuationCheck.response?.eligible && <button type="button" className="secondary-button turn-continuation-action"
+          disabled={Boolean(!harnessUp || currentContinuationCheck.submitting || currentContinuationCheck.uncertain || running || taskBlocked)}
+          onClick={onContinueInterruptedTurn}>
+          {currentContinuationCheck.submitting ? "正在提交续接…" : currentContinuationCheck.uncertain ? "等待核对续接结果" : "继续中断回合"}
+        </button>}
+      </section>}
 
       {/* 消息滚动流 */}
       <div className="messages-container" ref={scrollerRef} onScroll={handleScroll}>

@@ -6,6 +6,7 @@
  */
 import {
   ClientMethods,
+  type InitializeResponse,
   type ApprovalState,
   type ThreadItem,
   type ThreadListResponse,
@@ -14,6 +15,10 @@ import {
   type ThreadReasoningReadResponse,
   type ThreadReasoningSetResponse,
   type TurnInterruptResponse,
+  type TurnContinuationReadParams,
+  type TurnContinuationReadResponse,
+  type TurnContinueParams,
+  type TurnContinueResponse,
   type TurnStartResponse,
   type TurnSteerParams,
   type QueueAddParams,
@@ -50,6 +55,7 @@ export interface HarnessStatus {
   running: boolean;
   repoRoot: string;
   modelBridge?: { provider: string; model: string; driven: boolean };
+  capabilities?: InitializeResponse["capabilities"];
   error?: string;
   state?: string;
   generation?: number;
@@ -124,8 +130,11 @@ export async function listThreads(): Promise<SessionItem[]> {
       title: thread.title,
       timeAgo: formatRelativeTime(thread.updatedAt),
       updatedAt: thread.updatedAt,
-      status: thread.lastTurn?.status === "running" ? "running" as const : "idle" as const,
+      status: thread.lastTurn?.status === "running" ? "running" as const
+        : thread.lastTurn?.status === "interrupted" ? "interrupted" as const : "idle" as const,
       turnId: thread.lastTurn?.turnId,
+      lastTurnStatus: thread.lastTurn?.status,
+      taskResumePolicy: thread.lastTurn?.taskResumePolicy,
       toolPolicy: thread.toolPolicy ?? "approval",
       model: thread.model,
       reasoningEffort: thread.reasoningEffort,
@@ -170,6 +179,14 @@ export async function sendTurn(threadId: string, input: string, clientUserMessag
   }
 }
 
+export function readTurnContinuation(params: TurnContinuationReadParams): Promise<TurnContinuationReadResponse> {
+  return contextRequest(ClientMethods.turnContinuationRead, params);
+}
+
+export function continueTurn(params: TurnContinueParams): Promise<TurnContinueResponse> {
+  return contextRequest(ClientMethods.turnContinue, params);
+}
+
 export async function readThreadReasoning(threadId: string): Promise<ThreadReasoningReadResponse> {
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");
@@ -182,8 +199,11 @@ export async function setThreadReasoning(threadId: string, effort: string | null
   const response = await api.request<ThreadReasoningSetResponse>(ClientMethods.threadReasoningSet, { threadId, effort });
   const thread = response.thread;
   return { id: thread.id, title: thread.title, timeAgo: formatRelativeTime(thread.updatedAt),
-    updatedAt: thread.updatedAt, status: thread.lastTurn?.status === "running" ? "running" : "idle",
-    turnId: thread.lastTurn?.turnId, toolPolicy: thread.toolPolicy ?? "approval", model: thread.model,
+    updatedAt: thread.updatedAt, status: thread.lastTurn?.status === "running" ? "running"
+      : thread.lastTurn?.status === "interrupted" ? "interrupted" : "idle",
+    turnId: thread.lastTurn?.turnId, lastTurnStatus: thread.lastTurn?.status,
+    taskResumePolicy: thread.lastTurn?.taskResumePolicy,
+    toolPolicy: thread.toolPolicy ?? "approval", model: thread.model,
     reasoningEffort: thread.reasoningEffort, projectId: HARNESS_PROJECT_ID };
 }
 

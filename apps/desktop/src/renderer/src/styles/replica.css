@@ -71,6 +71,7 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .sidebar-session.selected .session-select { color: var(--text-main); }
 .session-state { flex: 0 0 4px; width: 4px; height: 4px; border-radius: 50%; background: var(--text-faint); opacity: .5; }
 .session-state.running { background: var(--accent-cyan); opacity: 1; box-shadow: 0 0 5px #66a9ff40; }
+.session-state.interrupted { background: var(--accent-warning); opacity: 1; }
 .session-overflow { width: 24px; height: 24px; opacity: 0; margin-right: 3px; }
 .sidebar-session:hover .session-overflow, .session-overflow:focus-visible, .session-overflow[aria-expanded="true"] { opacity: 1; }
 .sidebar-recents { margin: 4px 8px; display: flex; gap: 6px; align-items: center; background: transparent; border: 0; color: var(--text-faint); font-size: 12px; cursor: pointer; }
@@ -132,6 +133,14 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .attachment-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-chip button { border: 0; background: transparent; display: flex; color: var(--text-muted); cursor: pointer; }
 .composer-notice { margin: 7px 5px 0; color: var(--accent-warning); font-size: 11px; }
+.turn-continuation-notice { flex: none; display: grid; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--border-color); background: color-mix(in srgb, var(--accent-warning) 6%, transparent); color: var(--text-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.turn-continuation-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; color: var(--text-main); }
+.turn-continuation-heading strong { font-size: 12px; font-weight: 600; }
+.turn-continuation-heading span, .turn-continuation-boundary { color: var(--text-faint); }
+.turn-continuation-warning, .turn-continuation-error { color: var(--accent-warning); }
+.turn-continuation-error { color: var(--accent-error); }
+.turn-continuation-action { justify-self: start; min-height: 32px; }
+.turn-continuation-action:disabled { opacity: .55; cursor: default; }
 .starter-prompts { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 12px; margin-top: 28px; }
 .starter-prompts>button { text-align: left; border: 1px solid var(--border-color); border-radius: 14px; min-height: 126px; padding: 16px 14px 14px; display: flex; flex-direction: column; align-items: flex-start; background: transparent; cursor: pointer; transition: background var(--transition-fast); }
 .starter-prompts>button:hover { background: var(--btn-ghost-hover); }

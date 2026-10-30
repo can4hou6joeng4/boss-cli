@@ -332,7 +332,7 @@ class TurnQueue:
             self._pending_pauses.setdefault(thread_id, set()).add(kind)
             self.settle_pauses(thread_id)
 
-    def settle_pauses(self, thread_id: str) -> None:
+    def settle_pauses(self, thread_id: str, *, maximum_session_bytes: int | None = None) -> None:
         """Finish earlier pauses before accepting or claiming more work.
 
         Reads remain read-only. New work can only be added after these scopes
@@ -342,9 +342,11 @@ class TurnQueue:
             scopes = self._pending_pauses.get(thread_id)
             if not scopes:
                 return
-            for item in self.list(thread_id):
-                if item["status"] in {"queued", "delivering"} and (None in scopes or item["kind"] in scopes):
-                    self._save(thread_id, {**item, "status": "paused"})
+            updates = [Entry(type="queue", payload={**item, "status": "paused"})
+                       for item in self.list(thread_id)
+                       if item["status"] in {"queued", "delivering"}
+                       and (None in scopes or item["kind"] in scopes)]
+            self.sessions.append_many(thread_id, updates, maximum_bytes=maximum_session_bytes)
             self._pending_pauses.pop(thread_id, None)
 
     def recover(self) -> None:

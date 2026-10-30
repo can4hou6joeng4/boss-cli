@@ -46,6 +46,7 @@ MAX_EVENT_LINE_BYTES = 8 * 1024 * 1024
 MAX_ITEM_REVISION_ALIASES = 4_096
 MAX_ITEM_REVISION_RECORDS = 4_096
 MAX_ITEM_REVISION_ALIAS_BYTES = 64 * 1024
+MAX_TOOL_BATCH_CALLS = 256
 # Canonical results have a separate budget from their bounded transport
 # projection.  Validate the final JSON spelling before publishing a record;
 # raw CLI bytes and decoded/re-encoded JSON need not have the same size.
@@ -388,6 +389,10 @@ class ThreadNotFound(ValueError):
     pass
 
 
+class SessionSizeLimitExceeded(ValueError):
+    """An append batch would cross a caller-supplied session file bound."""
+
+
 class ItemLookupError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         self.code = code
@@ -619,6 +624,33 @@ class SessionStore:
             self._append_line(self.path_for(thread_id), entry.to_dict())
             self._index_thread(thread_id, connection)
         return entry
+
+    def append_many(self, thread_id: str, entries: list[Entry], *, maximum_bytes: int | None = None) -> list[Entry]:
+        """Durably append entries and refresh their SQLite projection once."""
+        if not isinstance(entries, list) or any(not isinstance(entry, Entry) for entry in entries):
+            raise ValueError("会话追加批次必须是 Entry 列表")
+        if maximum_bytes is not None and (type(maximum_bytes) is not int or maximum_bytes < 1):
+            raise ValueError("会话追加上限必须是正整数")
+        if not entries:
+            return []
+        encoded = [_encode_session_line(entry.to_dict()) for entry in entries]
+        path = self.path_for(thread_id)
+        with self._lock, self._index.transaction() as connection:
+            self.require_thread(thread_id)
+            current_size = path.stat().st_size
+            if maximum_bytes is not None:
+                prefix_size = 0
+                if current_size:
+                    with path.open("rb") as handle:
+                        handle.seek(-1, os.SEEK_END)
+                        prefix_size = int(handle.read(1) != bytes([10]))
+                if current_size + prefix_size + sum(map(len, encoded)) > maximum_bytes:
+                    raise SessionSizeLimitExceeded("会话历史超过续接读取上限。")
+            self._index_thread(thread_id, connection)
+            for entry in entries:
+                self._append_line(path, entry.to_dict())
+            self._index_thread(thread_id, connection)
+        return entries
 
     def append_attachment(self, thread_id: str, entry: Entry, publish: Callable[[], None]) -> Entry:
         """Publish an attachment and its durable reference under the shared writer lock."""
@@ -1984,6 +2016,34 @@ class SessionStore:
         self.append(thread_id, Entry(type="task_phase", parent_id=self.last_entry_id(thread_id),
                                      payload=payload))
 
+    def record_tool_batch(self, thread_id: str, turn_id: str, batch_id: str,
+                          call_ids: list[str], status: str, *,
+                          assistant_item_id: str | None = None,
+                          request_fingerprint: str | None = None) -> Entry:
+        """Persist the complete expected call set before any handler can run."""
+        _identifier(turn_id, "turnId")
+        _identifier(batch_id, "toolBatchId")
+        if (not isinstance(call_ids, list) or not 1 <= len(call_ids) <= MAX_TOOL_BATCH_CALLS
+                or any(not isinstance(value, str) or not value or len(value) > 256 for value in call_ids)
+                or len(set(call_ids)) != len(call_ids)):
+            raise ValueError("工具批次调用清单无效")
+        if status not in {"started", "completed"}:
+            raise ValueError("工具批次状态无效")
+        if assistant_item_id is not None and (not isinstance(assistant_item_id, str)
+                or not _IDENTIFIER.fullmatch(assistant_item_id)):
+            raise ValueError("工具批次 assistant 条目标识无效")
+        if request_fingerprint is not None and (not isinstance(request_fingerprint, str)
+                or not re.fullmatch(r"[a-f0-9]{64}", request_fingerprint)):
+            raise ValueError("工具批次请求摘要无效")
+        payload: dict[str, Any] = {"turnId": turn_id, "toolBatchId": batch_id,
+                                   "callIds": list(call_ids), "status": status}
+        if assistant_item_id is not None:
+            payload["assistantItemId"] = assistant_item_id
+        if request_fingerprint is not None:
+            payload["requestFingerprint"] = request_fingerprint
+        entry = Entry(type="tool_batch", parent_id=self.last_entry_id(thread_id), payload=payload)
+        return self.append(thread_id, entry)
+
     def last_turn(self, thread_id: str) -> dict | None:
         return self.get_thread(thread_id).get("lastTurn")
 
@@ -2077,12 +2137,29 @@ class SessionStore:
                 if not isinstance(title, str):
                     raise ValueError("title 必须是字符串")
                 header["title"] = title
+            request_offset = selected.get("continuationRequestOffset", 0)
+            if type(request_offset) is not int or request_offset < 0:
+                raise ValueError("来源回合模型请求计数无法核验，不能创建分支")
+            for entry in entries:
+                payload = entry.get("payload")
+                if (entry.get("type") != "task_phase" or not isinstance(payload, dict)
+                        or payload.get("taskId") != selected["turnId"]
+                        or payload.get("phase") != "model_request"):
+                    continue
+                attempt = payload.get("attempt")
+                if (payload.get("ownerKind") != "turn" or type(attempt) is not int
+                        or not 1 <= attempt <= 1_000):
+                    raise ValueError("来源回合模型请求阶段无法核验，不能创建分支")
+                request_offset = max(request_offset, attempt)
             copied: list[dict] = []
             copied_ids: set[str] = set()
             for entry in json.loads(_json(prefix)):
                 # Queue state belongs to one thread, not its transcript forks.
                 if entry["type"] in {"thread_info", "queue", "task_phase"}:
                     continue
+                if (entry["type"] == "turn"
+                        and entry["payload"].get("turnId") == selected["turnId"]):
+                    entry["payload"]["continuationRequestOffset"] = request_offset
                 if (entry["type"] == "context_edit"
                         and owners.get(entry["payload"].get("targetItemId")) not in included_turns):
                     continue

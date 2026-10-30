@@ -36,6 +36,10 @@ def messages_from_items(items: list[dict]) -> tuple[ChatMessage, ...]:
         for item in items
         if isinstance(item.get(ANTHROPIC_CONTINUATION_FIELD), dict)
     }
+    continuation_agent_ids.update(
+        item.get("toolBatchAssistantItemId") for item in items
+        if isinstance(item.get("toolBatchAssistantItemId"), str)
+    )
 
     def flush() -> None:
         if not pending:
@@ -53,7 +57,7 @@ def messages_from_items(items: list[dict]) -> tuple[ChatMessage, ...]:
             flush()
         if kind == "userMessage":
             messages.append(UserMessage(text=str(item.get("text", ""))))
-        elif (kind == "agentMessage" and item.get("status") != "running" and item.get("text")
+        elif (kind == "agentMessage" and item.get("status") not in {"running", "failed"} and item.get("text")
               and item.get("id") not in continuation_agent_ids):
             messages.append(AssistantMessage(blocks=(TextBlock(text=str(item["text"])),)))
         elif kind == "toolCall" and item.get("status") != "running":

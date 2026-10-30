@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import type { JsonRpcNotification, PlatformLoginStatus, PlatformLoginAction, PlatformLoginContext } from "@boss-cli/protocol";
+import type { InitializeResponse, JsonRpcNotification, PlatformLoginStatus, PlatformLoginAction, PlatformLoginContext } from "@boss-cli/protocol";
 
 interface HarnessStatus {
   running: boolean;
@@ -10,6 +10,7 @@ interface HarnessStatus {
   reconnectAttempt: number;
   retryAt?: number;
   modelBridge?: { provider: string; model: string; driven: boolean };
+  capabilities?: InitializeResponse["capabilities"];
   error?: string;
 }
 
