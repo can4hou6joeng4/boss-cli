@@ -548,7 +548,10 @@ class SessionStore:
         if not callable(publish):
             raise ValueError("附件发布器无效")
         with self._lock, self._index.transaction() as connection:
-            self.require_thread(thread_id)
+            # Reject damaged history before publishing content or appending a reference.
+            with self.open_entries_snapshot(thread_id) as entries:
+                for _entry in entries:
+                    pass
             publish()
             _fsync_directory(self.attachments_root)
             self._append_line(self.path_for(thread_id), entry.to_dict())
