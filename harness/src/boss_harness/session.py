@@ -11,11 +11,13 @@ import binascii
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import sqlite3
 import stat
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from contextlib import closing
@@ -62,6 +64,23 @@ def _new_id() -> str:
 
 def _json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+
+def approval_parameters_digest(arguments: dict[str, Any]) -> str:
+    if type(arguments) is not dict:
+        raise ValueError("审批参数必须是对象")
+    try:
+        encoded = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"),
+                             sort_keys=True, allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError, RecursionError):
+        raise ValueError("审批参数无法规范化") from None
+    return hashlib.sha256(encoded).hexdigest()
+
+
+class ApprovalDecisionError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 def _encode_session_line(value: dict, *, maximum: int = MAX_SESSION_LINE_BYTES,
@@ -717,6 +736,216 @@ class SessionStore:
         return self._project_items(thread_id, self.read_entries(thread_id))
 
     @staticmethod
+    def _valid_approval_item(item: dict, *, pending_only: bool) -> bool:
+        approval = item.get("approval")
+        arguments = item.get("toolArguments")
+        if (item.get("kind") != "toolCall" or not isinstance(approval, dict)
+                or approval.get("decision") not in {None, "approve", "deny", "expired"}
+                or not isinstance(approval.get("approvalId"), str)
+                or not _EVENT_ID.fullmatch(approval["approvalId"])
+                or not isinstance(approval.get("toolName"), str)
+                or approval.get("toolName") != item.get("toolName")
+                or not isinstance(item.get("turnId"), str)
+                or not _IDENTIFIER.fullmatch(item["turnId"])
+                or type(arguments) is not dict or approval.get("params") != arguments):
+            return False
+        decision = approval.get("decision")
+        status, execution_state = item.get("status"), item.get("executionState")
+        if pending_only or decision is None:
+            if status != "running" or execution_state != "pending_approval":
+                return False
+        elif decision == "approve":
+            if (status not in {"running", "failed", "completed"}
+                    or execution_state not in {
+                        "approved", "executing", "completed", "not_executed", "outcome_unknown"
+                    }):
+                return False
+        elif decision == "deny":
+            if status not in {"running", "failed"} or execution_state != "not_approved":
+                return False
+        elif status not in {"running", "failed"} or execution_state != "not_executed":
+            return False
+        deadline = approval.get("deadline")
+        try:
+            deadline_valid = (type(deadline) in {int, float} and math.isfinite(float(deadline))
+                              and deadline > 0)
+        except (OverflowError, TypeError, ValueError):
+            deadline_valid = False
+        if not deadline_valid:
+            return False
+        description = approval.get("description")
+        if not isinstance(description, str) or len(description) > 1_000:
+            return False
+        try:
+            digest = approval_parameters_digest(arguments)
+        except ValueError:
+            return False
+        return approval.get("paramsDigest") == digest
+
+    def pending_approvals(self, thread_id: str | None = None, *, limit: int = 100) -> list[dict]:
+        _limit(limit, maximum=200)
+        if thread_id is not None:
+            self.path_for(thread_id)
+        with self._lock:
+            if thread_id is not None:
+                self.require_thread(thread_id)
+            pending_deletions = sorted(self._pending_deletion_ids())
+            if len(pending_deletions) > 800:
+                return []
+            query = """SELECT a.approval_id,a.thread_id,a.turn_id,a.item_id,a.tool_name,
+                       a.deadline,a.params_digest FROM approvals a
+                       JOIN threads t ON t.id=a.thread_id
+                       JOIN turns r ON r.thread_id=a.thread_id AND r.turn_id=a.turn_id
+                       WHERE a.decision IS NULL AND a.status='running'
+                         AND a.execution_state='pending_approval' AND a.deadline>?
+                         AND t.archived=0 AND r.status IN ('running','interrupted')"""
+            parameters: list[Any] = [time.time()]
+            if thread_id is not None:
+                query += " AND a.thread_id=?"
+                parameters.append(thread_id)
+            if pending_deletions:
+                query += " AND a.thread_id NOT IN (" + ",".join("?" for _ in pending_deletions) + ")"
+                parameters.extend(pending_deletions)
+            query += " ORDER BY t.updated_at DESC,a.thread_id DESC,a.item_id DESC LIMIT ?"
+            parameters.append(limit)
+            with self._index.connection() as connection:
+                rows = connection.execute(query, parameters).fetchall()
+            return [{"approvalId": row["approval_id"], "threadId": row["thread_id"],
+                     "turnId": row["turn_id"], "itemId": row["item_id"],
+                     "toolName": row["tool_name"],
+                     "summary": f"需要你批准后才会执行：{row['tool_name']}",
+                     "deadline": row["deadline"], "paramsDigest": row["params_digest"]}
+                    for row in rows]
+
+    def _append_approval_decision(self, thread_id: str, item: dict, decision: str,
+                                  *, live_owner: bool) -> dict:
+        approval = {**item["approval"], "decision": decision, "decidedAt": _now()}
+        payload = {key: value for key, value in item.items() if key not in {"id", "threadId"}}
+        payload.update(revises=item["id"], approval=approval)
+        if live_owner:
+            payload["executionState"] = "approved" if decision == "approve" else "not_approved"
+        else:
+            payload.update(status="failed")
+            if decision == "approve":
+                payload.update(executionState="not_executed", errorCode="SESSION_INTERRUPTED",
+                               resultSummary="审批已记录，但原回合已经中断；工具未执行。若仍需执行，请发起新回合并重新审批。",
+                               recoveryAction="明确发起新回合；旧审批不会触发工具执行。")
+            elif decision == "deny":
+                payload.update(executionState="not_approved", errorCode="NOT_APPROVED",
+                               resultSummary="用户在恢复会话后拒绝了该操作。", recoveryAction=None)
+            else:
+                payload.update(executionState="not_executed", errorCode="APPROVAL_EXPIRED",
+                               resultSummary="审批已过期；工具未执行。", recoveryAction=None)
+        self.append(thread_id, Entry(type="item", parent_id=self.last_entry_id(thread_id), payload=payload))
+        return {"approval": approval, "executionState": payload["executionState"],
+                "status": payload.get("status", item.get("status")),
+                "threadId": thread_id, "turnId": item.get("turnId"), "itemId": item["id"],
+                "toolName": item["toolName"], "decision": decision,
+                "executed": (True if payload["executionState"] == "completed" else
+                             False if payload["executionState"] in {"not_executed", "not_approved"} else None),
+                "changed": True, "errorCode": payload.get("errorCode"),
+                "resultSummary": payload.get("resultSummary"),
+                "recoveryAction": payload.get("recoveryAction")}
+
+    def decide_approval(self, approval_id: str, approved: bool, *, live_owner: bool = False,
+                        expire_only: bool = False) -> dict | None:
+        if not isinstance(approval_id, str) or not _EVENT_ID.fullmatch(approval_id):
+            raise ApprovalDecisionError("APPROVAL_INVALID", "approvalId 格式无效")
+        if (type(approved) is not bool or type(live_owner) is not bool or type(expire_only) is not bool
+                or (expire_only and live_owner)):
+            raise ApprovalDecisionError("APPROVAL_INVALID", "审批裁决参数无效")
+        requested = "approve" if approved else "deny"
+        with self._lock:
+            with self._index.connection() as connection:
+                rows = connection.execute("SELECT thread_id,item_id FROM approvals WHERE approval_id=?",
+                                          (approval_id,)).fetchall()
+            if len(rows) != 1:
+                code = "APPROVAL_NOT_FOUND" if not rows else "APPROVAL_AMBIGUOUS"
+                message = "审批不存在或所属会话已删除" if not rows else "审批记录重复，已拒绝裁决"
+                raise ApprovalDecisionError(code, message)
+            thread_id, item_id = rows[0]["thread_id"], rows[0]["item_id"]
+            if thread_id in self._pending_deletion_ids():
+                raise ApprovalDecisionError("APPROVAL_NOT_FOUND", "审批所属会话已删除")
+            thread = self.get_thread(thread_id)
+            entries = self.read_entries(thread_id)
+            item = next((value for value in self._project_items(thread_id, entries)
+                         if value["id"] == item_id), None)
+            item_approval = item.get("approval") if item is not None else None
+            if item is None or not isinstance(item_approval, dict) or item_approval.get("approvalId") != approval_id:
+                raise ApprovalDecisionError("APPROVAL_INVALID", "审批索引与会话记录不一致")
+            approval = item.get("approval")
+            if not self._valid_approval_item(item, pending_only=False):
+                raise ApprovalDecisionError("APPROVAL_INVALID", "审批记录无效，已拒绝裁决")
+            existing = approval.get("decision")
+            if existing is not None:
+                if expire_only:
+                    return None
+                if existing != requested:
+                    raise ApprovalDecisionError("APPROVAL_CONFLICT", "该审批已经按相反决策处理")
+                return {"approval": approval, "executionState": item.get("executionState"),
+                        "status": item.get("status"), "threadId": thread["id"],
+                        "turnId": item.get("turnId"), "itemId": item["id"],
+                        "toolName": item.get("toolName"), "decision": existing,
+                        "executed": (True if item.get("executionState") == "completed" else
+                                     False if item.get("executionState") in {"not_executed", "not_approved"} else None),
+                        "changed": False, "errorCode": item.get("errorCode"),
+                        "resultSummary": item.get("resultSummary"),
+                        "recoveryAction": item.get("recoveryAction")}
+            if thread.get("archived"):
+                raise ApprovalDecisionError("APPROVAL_CLOSED", "已归档会话中的审批不能裁决")
+            if not self._valid_approval_item(item, pending_only=True):
+                raise ApprovalDecisionError("APPROVAL_INVALID", "审批参数摘要或调用状态无效，已拒绝裁决")
+            now = time.time()
+            if expire_only and approval["deadline"] > now:
+                return None
+            if approval["deadline"] <= now:
+                return self._append_approval_decision(thread["id"], item, "expired", live_owner=False)
+            turn_id = item.get("turnId")
+            turn = next((turn for turn in self._turns(entries, thread["id"])
+                         if turn.get("turnId") == turn_id), None)
+            if turn is None:
+                raise ApprovalDecisionError("APPROVAL_INVALID", "审批所属回合不存在")
+            if live_owner:
+                if turn.get("status") != "running":
+                    raise ApprovalDecisionError("APPROVAL_CLOSED", "审批所属回合已经结束")
+            elif turn.get("status") != "interrupted":
+                code = "APPROVAL_BUSY" if turn.get("status") == "running" else "APPROVAL_CLOSED"
+                message = "审批仍由活动回合持有" if code == "APPROVAL_BUSY" else "审批所属回合状态不支持恢复裁决"
+                raise ApprovalDecisionError(code, message)
+            return self._append_approval_decision(thread["id"], item, requested, live_owner=live_owner)
+
+    def expired_pending_approvals(self, *, limit: int = 32) -> list[str]:
+        _limit(limit, maximum=128)
+        now = time.time()
+        with self._lock, self._index.connection() as connection:
+            rows = connection.execute("""SELECT a.approval_id FROM approvals a
+                JOIN threads t ON t.id=a.thread_id
+                JOIN turns r ON r.thread_id=a.thread_id AND r.turn_id=a.turn_id
+                WHERE a.decision IS NULL AND a.status='running'
+                  AND a.execution_state='pending_approval' AND a.deadline<=?
+                  AND t.archived=0 AND r.status='interrupted'
+                ORDER BY a.deadline,a.thread_id,a.item_id LIMIT ?""", (now, limit)).fetchall()
+        return [row["approval_id"] for row in rows]
+
+    def next_recoverable_approval_deadline(self) -> float | None:
+        with self._lock, self._index.connection() as connection:
+            row = connection.execute("""SELECT MIN(a.deadline) FROM approvals a
+                JOIN threads t ON t.id=a.thread_id
+                JOIN turns r ON r.thread_id=a.thread_id AND r.turn_id=a.turn_id
+                WHERE a.decision IS NULL AND a.status='running'
+                  AND a.execution_state='pending_approval' AND t.archived=0
+                  AND r.status='interrupted'""").fetchone()
+        return row[0] if row and row[0] is not None else None
+
+    def expire_approval(self, approval_id: str) -> dict | None:
+        try:
+            return self.decide_approval(approval_id, False, expire_only=True)
+        except ApprovalDecisionError as exc:
+            if exc.code in {"APPROVAL_NOT_FOUND", "APPROVAL_CLOSED"}:
+                return None
+            raise
+
+    @staticmethod
     def _item_owners(entries: list[dict]) -> dict[str, str | None]:
         """Resolve both explicit turn IDs and legacy user-before-turn/revision ordering."""
         owners: dict[str, str | None] = {}
@@ -846,6 +1075,17 @@ class SessionStore:
                 (thread_id,turn_id,status,first_ordinal,last_ordinal,metadata_json) VALUES(?,?,?,?,?,?)""",
                 (thread_id, turn["turnId"], turn.get("status", "error"), turn["firstOrdinal"],
                  turn["lastOrdinal"], _json(self._public_turn(turn))))
+        connection.execute("DELETE FROM approvals WHERE thread_id=?", (thread_id,))
+        for item in self._project_items(thread_id, entries):
+            if not self._valid_approval_item(item, pending_only=False):
+                continue
+            approval = item["approval"]
+            connection.execute("""INSERT INTO approvals
+                (approval_id,thread_id,item_id,turn_id,tool_name,deadline,params_digest,
+                 decision,status,execution_state) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (approval["approvalId"], thread_id, item["id"], item["turnId"], item["toolName"],
+                 float(approval["deadline"]), approval["paramsDigest"], approval.get("decision"),
+                 item["status"], item["executionState"]))
 
     def _sync_thread(self, thread_id: str) -> None:
         with self._lock, self._index.transaction() as connection:
@@ -902,9 +1142,18 @@ class SessionStore:
         return self.get_thread(thread_id)
 
     def archive_thread(self, thread_id: str) -> dict:
-        if not self.get_thread(thread_id)["archived"]:
-            self.append(thread_id, Entry(type="thread_info", parent_id=self.last_entry_id(thread_id), payload={"archived": True}))
-        return self.get_thread(thread_id)
+        with self._lock:
+            thread = self.get_thread(thread_id)
+            if not thread["archived"]:
+                entries = self.read_entries(thread_id)
+                for item in self._project_items(thread_id, entries):
+                    approval = item.get("approval")
+                    if (item.get("executionState") == "pending_approval"
+                            and isinstance(approval, dict) and not approval.get("decision")):
+                        self._append_approval_decision(thread_id, item, "expired", live_owner=False)
+                self.append(thread_id, Entry(type="thread_info", parent_id=self.last_entry_id(thread_id),
+                                             payload={"archived": True}))
+            return self.get_thread(thread_id)
 
     def unarchive_thread(self, thread_id: str) -> dict:
         if self.get_thread(thread_id)["archived"]:
@@ -1535,16 +1784,21 @@ class SessionStore:
             recovered_turns: set[str] = set()
             for item in items:
                 approval = item.get("approval")
-                if item.get("status") != "running" and not (approval and not approval.get("decision")):
+                pending_approval = isinstance(approval, dict) and not approval.get("decision")
+                if item.get("status") != "running" and not pending_approval:
+                    continue
+                if (pending_approval and self._valid_approval_item(item, pending_only=True)
+                        and approval["deadline"] > time.time()):
                     continue
                 payload = {key: value for key, value in item.items() if key not in {"id", "threadId"}}
                 payload.update(status="failed", revises=item["id"])
-                if approval and not approval.get("decision"):
-                    payload["approval"] = {**approval, "decision": "expired"}
+                if pending_approval:
+                    payload["approval"] = {**approval, "decision": "expired", "decidedAt": _now()}
                 if item.get("kind") == "toolCall":
                     payload.update(errorCode="SESSION_INTERRUPTED", resultSummary="上次进程在操作收尾前退出，结果不确定；先核对平台状态，不要直接重试。")
                     phase = item.get("executionState")
-                    payload["executionState"] = "not_executed" if phase in {"queued", "pending_approval", "approved"} else "outcome_unknown"
+                    payload["executionState"] = "not_executed" if phase in {
+                        "queued", "pending_approval", "approved", "not_approved"} else "outcome_unknown"
                     if payload["executionState"] == "not_executed":
                         payload["resultSummary"] = "上次进程在工具执行前退出，该操作未执行；旧审批已经失效。"
                 self.append(thread_id, Entry(type="item", parent_id=self.last_entry_id(thread_id), payload=payload))

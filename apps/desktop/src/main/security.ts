@@ -81,7 +81,7 @@ const RENDERER_METHODS = new Set([
   "thread/archive", "thread/unarchive", "thread/name/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
   "turn/start", "turn/interrupt", "turn/steer", "turn/read", "queue/list", "queue/add", "queue/remove",
   "event/list", "model/list", "config/read", "skills/list", "tool/list", "attachment/add", "attachment/read",
-  "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "context/edit/read", "context/edit", "approval/respond",
+  "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "context/edit/read", "context/edit", "approval/list", "approval/respond",
   "connection/read", "connection/check",
   "runtime/resources/read",
 ]);
@@ -135,6 +135,11 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
     (typeof params.title !== "string" || params.title.length > 500)) throw new Error("invalid thread title");
   if (payload.method === "approval/respond" && (typeof params?.approvalId !== "string" || !params.approvalId ||
     typeof params.approved !== "boolean")) throw new Error("invalid approval decision");
+  if (payload.method === "approval/list" && params && (
+    Object.keys(params).some(key => key !== "threadId" && key !== "limit") ||
+    (params.threadId !== undefined && (typeof params.threadId !== "string" || !params.threadId || params.threadId.length > 64)) ||
+    (params.limit !== undefined && (typeof params.limit !== "number" || !Number.isSafeInteger(params.limit) || params.limit < 1 || params.limit > 200))
+  )) throw new Error("invalid approval list request");
   if (payload.method === "context/compact/read" || payload.method === "context/compact/abort") {
     if (typeof params?.jobId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(params.jobId)) {
       throw new Error("invalid compaction jobId");

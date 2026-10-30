@@ -70,7 +70,8 @@ export interface InitializeResponse {
   toolBridge: ToolBridgeStatus;
   modelBridge: { provider: string; model: string; driven: boolean };
   approval: { requiredTools: string[]; timeoutSeconds: number };
-  capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean; parallelThreads: boolean };
+  capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean;
+    parallelThreads: boolean; durableApprovals?: boolean };
   eventCursor?: string;
 }
 
@@ -99,6 +100,7 @@ export const ClientMethods = {
   turnInterrupt: "turn/interrupt",
   turnSteer: "turn/steer",
   turnRead: "turn/read",
+  approvalList: "approval/list",
   approvalRespond: "approval/respond",
   eventList: "event/list",
   queueAdd: "queue/add",
@@ -492,6 +494,28 @@ export interface ApprovalRequestedParams {
 export interface ApprovalRespondParams {
   approvalId: string;
   approved: boolean;
+}
+
+export interface ApprovalListParams { threadId?: string; limit?: number }
+export interface PendingApproval {
+  approvalId: string;
+  threadId: string;
+  turnId?: string;
+  itemId: string;
+  toolName: string;
+  summary: string;
+  deadline: number;
+  paramsDigest: string;
+}
+export interface ApprovalListResponse { approvals: PendingApproval[] }
+export interface ApprovalRespondResponse {
+  approvalId: string;
+  approved: boolean;
+  accepted: boolean;
+  executed?: boolean;
+  recovered?: boolean;
+  expired?: boolean;
+  executionState?: string;
 }
 
 export const ServerRequests = { toolRequestApproval: "item/tool/requestApproval" } as const;
