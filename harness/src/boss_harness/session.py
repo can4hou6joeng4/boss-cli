@@ -1597,6 +1597,10 @@ class SessionStore:
                 if source_handle is not None:
                     for line_number, raw_line in enumerate(_iter_bounded_raw_lines_from_handle(
                             source_handle, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"), start=1):
+                        if not raw_line.strip():
+                            output.write(raw_line + b"\n")
+                            last_byte = b"\n"
+                            continue
                         try:
                             record = _decode_jsonl_object(
                                 raw_line, label="事件日志", line_number=line_number)
@@ -1619,11 +1623,11 @@ class SessionStore:
                                     or "threadId" in params):
                                 raise ValueError("会话删除事件与恢复标记冲突")
                             event = {"method": record["method"], "params": params}
-                            output.write(raw_line)
-                            last_byte = raw_line[-1:] or last_byte
+                            output.write(raw_line + b"\n")
+                            last_byte = b"\n"
                         elif params.get("threadId") != thread_id:
-                            output.write(raw_line)
-                            last_byte = raw_line[-1:] or last_byte
+                            output.write(raw_line + b"\n")
+                            last_byte = b"\n"
                 if event_count > 1:
                     raise ValueError("事件日志含重复的会话删除事件")
                 if event is None:
