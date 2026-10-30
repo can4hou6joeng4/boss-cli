@@ -1551,8 +1551,9 @@ class SessionStore:
         thread_id = intent["threadId"]
         with self._lock, self._index.transaction() as connection:
             connection.execute("PRAGMA secure_delete=ON")
-            self._remove_thread_files(thread_id)
+            self._index_events(connection)
             event = self._rewrite_events_for_deletion(connection, intent)
+            self._remove_thread_files(thread_id)
             self._purge_unreferenced_attachments(intent["attachmentDigests"])
             self._purge_repair_backups(thread_id)
             connection.execute("DELETE FROM events")
@@ -1652,6 +1653,7 @@ class SessionStore:
         event: dict | None = None
         event_count = 0
         maximum_cursor = self._event_high_water(connection)
+        seen_cursors: dict[int, str] = {}
         last_byte = b"\n"
         try:
             with os.fdopen(descriptor, "wb") as output:
@@ -1667,8 +1669,14 @@ class SessionStore:
                                 raw_line, label="事件日志", line_number=line_number)
                         except ValueError as exc:
                             raise ValueError(f"事件日志损坏，无法安全删除会话：{exc}") from None
-                        if (not isinstance(record, dict) or record.get("type") != "event"
-                                or not isinstance(record.get("method"), str)
+                        if not isinstance(record, dict):
+                            raise ValueError("事件日志格式无效，无法安全删除会话")
+                        method = record.get("method")
+                        timestamp = record.get("timestamp")
+                        if (record.get("type") != "event"
+                                or not isinstance(timestamp, str)
+                                or not isinstance(method, str) or not method or len(method) > 256
+                                or any(ord(char) < 32 for char in method)
                                 or not isinstance(record.get("params"), dict)):
                             raise ValueError("事件日志格式无效，无法安全删除会话")
                         params = record["params"]
@@ -1676,6 +1684,18 @@ class SessionStore:
                         event_id = params.get("eventId")
                         if cursor < 1 or not isinstance(event_id, str) or not _EVENT_ID.fullmatch(event_id):
                             raise ValueError("事件日志游标无效，无法安全删除会话")
+                        previous_event_id = seen_cursors.get(cursor)
+                        if previous_event_id is not None and previous_event_id != event_id:
+                            raise ValueError("事件日志存在重复游标，无法安全删除会话")
+                        seen_cursors[cursor] = event_id
+                        event_thread_id = params.get("threadId")
+                        if event_thread_id is not None:
+                            if not isinstance(event_thread_id, str):
+                                raise ValueError("事件日志会话 ID 无效，无法安全删除会话")
+                            try:
+                                self.path_for(event_thread_id)
+                            except ValueError:
+                                raise ValueError("事件日志会话 ID 无效，无法安全删除会话") from None
                         maximum_cursor = max(maximum_cursor, cursor)
                         if event_id == intent["eventId"]:
                             event_count += 1
@@ -2145,9 +2165,12 @@ class SessionStore:
 
     def _index_events(self, connection: sqlite3.Connection) -> None:
         pending = self._pending_deletion_ids()
+        if pending:
+            connection.execute("PRAGMA secure_delete=ON")
         for thread_id in pending:
             connection.execute("DELETE FROM events WHERE thread_id=?", (thread_id,))
         if not self.events_path.exists():
+            connection.execute("PRAGMA secure_delete=ON")
             connection.execute("DELETE FROM events")
             connection.execute("DELETE FROM checkpoints WHERE name='events'")
             return
@@ -2156,6 +2179,7 @@ class SessionStore:
         checkpoint = connection.execute("SELECT value FROM checkpoints WHERE name='events'").fetchone()
         if checkpoint and checkpoint["value"] == fingerprint:
             return
+        connection.execute("PRAGMA secure_delete=ON")
         connection.execute("DELETE FROM events")
         for line_number, line in enumerate(_iter_bounded_lines(
                 self.events_path, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"), start=1):
