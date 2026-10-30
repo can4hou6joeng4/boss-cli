@@ -2183,7 +2183,11 @@ class ApplicationService:
             return self._continuation_failure(code, reason)
 
         try:
-            thread = self.sessions.get_thread(thread_id)
+            with self.sessions._lock:
+                session_path = self.sessions.path_for(thread_id)
+                if session_path.stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
+                    return fail("CONTINUATION_HISTORY_LIMIT", "会话历史超过续接读取上限。")
+                thread = self.sessions.get_thread(thread_id)
             if thread.get("archived"):
                 return fail("THREAD_ARCHIVED", "请先恢复会话，再检查中断回合。")
             if self.runtimes.closed:
@@ -2197,7 +2201,11 @@ class ApplicationService:
                 return fail("THREAD_BUSY", "会话仍有后续任务正在收尾。")
             if any(notice.get("threadId") == thread_id for notice in self._receipt_notices.values()):
                 return fail("THREAD_BUSY", "会话请求回执仍在收尾。")
-            if any(item.get("status") == "delivering" for item in self.queue.list(thread_id)):
+            with self.queue.lock, self.sessions._lock:
+                if self.sessions.path_for(thread_id).stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
+                    return fail("CONTINUATION_HISTORY_LIMIT", "会话历史超过续接读取上限。")
+                queue_items = self.queue.list(thread_id)
+            if any(item.get("status") == "delivering" for item in queue_items):
                 return fail("QUEUE_REQUIRES_REVIEW", "队列中仍有投递状态未核对的请求。")
             if self._capacity_waiters and self.runtimes.has_capacity():
                 return fail("TURN_ADMISSION_WAITING", "已有更早排队的任务等待并发槽位。")
@@ -2205,10 +2213,11 @@ class ApplicationService:
             return fail("CONTINUATION_STATE_UNAVAILABLE", "会话运行状态无法安全核对。")
 
         try:
-            session_path = self.sessions.path_for(thread_id)
-            if session_path.stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
-                return fail("CONTINUATION_HISTORY_LIMIT", "会话历史超过续接读取上限。")
-            entries = self.sessions.read_entries(thread_id)
+            with self.sessions._lock:
+                session_path = self.sessions.path_for(thread_id)
+                if session_path.stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
+                    return fail("CONTINUATION_HISTORY_LIMIT", "会话历史超过续接读取上限。")
+                entries = self.sessions.read_entries(thread_id)
             turns = self.sessions._turns(entries, thread_id)
             if not turns or turns[-1].get("turnId") != source_turn_id:
                 return fail("CONTINUATION_NOT_LATEST", "只有最新回合可以续接。")
@@ -2497,8 +2506,17 @@ class ApplicationService:
         runner = None
         job = None
         with self._follow_up_admission_lock, self.runtimes.lock:
-            self.queue.settle_pauses(thread_id)
-            entries = self.sessions.read_entries(thread_id)
+            with self.queue.lock, self.sessions._lock:
+                if self.sessions.path_for(thread_id).stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
+                    raise RpcError(-32004, "会话历史超过续接读取上限。",
+                                   {"code": "CONTINUATION_HISTORY_LIMIT",
+                                    "threadId": thread_id, "sourceTurnId": source_turn_id})
+                self.queue.settle_pauses(thread_id)
+                if self.sessions.path_for(thread_id).stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
+                    raise RpcError(-32004, "会话历史超过续接读取上限。",
+                                   {"code": "CONTINUATION_HISTORY_LIMIT",
+                                    "threadId": thread_id, "sourceTurnId": source_turn_id})
+                entries = self.sessions.read_entries(thread_id)
             turns = self.sessions._turns(entries, thread_id)
             matches = [turn for turn in turns if turn.get("continuationId") == continuation_id]
             if matches:
