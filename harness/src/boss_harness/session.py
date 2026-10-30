@@ -2206,8 +2206,6 @@ class SessionStore:
                     self.path_for(thread_id)
                 except ValueError:
                     raise ValueError(f"事件日志第 {line_number} 行 threadId 无效，读取已停止") from None
-                if thread_id in pending:
-                    continue
             previous = connection.execute("SELECT event_id FROM events WHERE cursor=?", (cursor,)).fetchone()
             if previous and previous["event_id"] != event_id:
                 raise ValueError("事件日志存在重复游标，请保留原文件后恢复")
@@ -2216,6 +2214,8 @@ class SessionStore:
                     VALUES(?,?,?,?,?)""", (cursor, event_id, method, thread_id, _json(params)))
             except sqlite3.IntegrityError:
                 raise ValueError(f"事件日志第 {line_number} 行包含重复 eventId，读取已停止") from None
+        for thread_id in pending:
+            connection.execute("DELETE FROM events WHERE thread_id=?", (thread_id,))
         connection.execute("INSERT INTO checkpoints(name,value) VALUES('events',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", (fingerprint,))
 
     def append_event(self, method: str, params: dict[str, Any] | None = None) -> dict:
