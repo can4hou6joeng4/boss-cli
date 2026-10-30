@@ -42,7 +42,8 @@ from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
 from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUncertain, Entry,
                                   ApprovalDecisionError, ItemLookupError, SessionEntriesSnapshot,
-                                  SessionStore, ThreadNotFound, ToolRevisionPersistenceError,
+                                  SessionSizeLimitExceeded, SessionStore, ThreadNotFound,
+                                  ToolRevisionPersistenceError,
                                   MAX_TOOL_BATCH_CALLS)
 from boss_harness.snapshot_store import SnapshotStore
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
@@ -2429,7 +2430,7 @@ class ApplicationService:
             try:
                 config = self._model_config(thread, {"model": source_model})
                 skill_text, skills = self.skills.load(skill_ids)
-                _, attachments = self.attachments.context(thread_id, attachment_ids)
+                _, attachments = self.attachments.context(thread_id, attachment_ids, entries=entries)
                 tool_policy = thread.get("toolPolicy", "approval")
                 if tool_policy != source.get("toolPolicy", "approval"):
                     return fail("CONTINUATION_CONTEXT_CHANGED", "会话工具策略与来源回合不一致。")
@@ -2511,7 +2512,12 @@ class ApplicationService:
                     raise RpcError(-32004, "会话历史超过续接读取上限。",
                                    {"code": "CONTINUATION_HISTORY_LIMIT",
                                     "threadId": thread_id, "sourceTurnId": source_turn_id})
-                self.queue.settle_pauses(thread_id)
+                try:
+                    self.queue.settle_pauses(thread_id, maximum_session_bytes=MAX_CONTINUATION_HISTORY_BYTES)
+                except SessionSizeLimitExceeded:
+                    raise RpcError(-32004, "会话历史超过续接读取上限。",
+                                   {"code": "CONTINUATION_HISTORY_LIMIT",
+                                    "threadId": thread_id, "sourceTurnId": source_turn_id}) from None
                 if self.sessions.path_for(thread_id).stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
                     raise RpcError(-32004, "会话历史超过续接读取上限。",
                                    {"code": "CONTINUATION_HISTORY_LIMIT",

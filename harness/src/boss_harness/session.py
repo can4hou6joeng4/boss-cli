@@ -389,6 +389,10 @@ class ThreadNotFound(ValueError):
     pass
 
 
+class SessionSizeLimitExceeded(ValueError):
+    """An append batch would cross a caller-supplied session file bound."""
+
+
 class ItemLookupError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         self.code = code
@@ -620,6 +624,33 @@ class SessionStore:
             self._append_line(self.path_for(thread_id), entry.to_dict())
             self._index_thread(thread_id, connection)
         return entry
+
+    def append_many(self, thread_id: str, entries: list[Entry], *, maximum_bytes: int | None = None) -> list[Entry]:
+        """Durably append entries and refresh their SQLite projection once."""
+        if not isinstance(entries, list) or any(not isinstance(entry, Entry) for entry in entries):
+            raise ValueError("会话追加批次必须是 Entry 列表")
+        if maximum_bytes is not None and (type(maximum_bytes) is not int or maximum_bytes < 1):
+            raise ValueError("会话追加上限必须是正整数")
+        if not entries:
+            return []
+        encoded = [_encode_session_line(entry.to_dict()) for entry in entries]
+        path = self.path_for(thread_id)
+        with self._lock, self._index.transaction() as connection:
+            self.require_thread(thread_id)
+            current_size = path.stat().st_size
+            if maximum_bytes is not None:
+                prefix_size = 0
+                if current_size:
+                    with path.open("rb") as handle:
+                        handle.seek(-1, os.SEEK_END)
+                        prefix_size = int(handle.read(1) != bytes([10]))
+                if current_size + prefix_size + sum(map(len, encoded)) > maximum_bytes:
+                    raise SessionSizeLimitExceeded("会话历史超过续接读取上限。")
+            self._index_thread(thread_id, connection)
+            for entry in entries:
+                self._append_line(path, entry.to_dict())
+            self._index_thread(thread_id, connection)
+        return entries
 
     def append_attachment(self, thread_id: str, entry: Entry, publish: Callable[[], None]) -> Entry:
         """Publish an attachment and its durable reference under the shared writer lock."""
