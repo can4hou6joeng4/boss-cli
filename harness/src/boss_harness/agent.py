@@ -172,6 +172,8 @@ class TurnRunner:
         self.context_check = context_check
         self.drain_steering = drain_steering
         self.stage_steering = stage_steering
+        # Set by the host; "one-at-a-time" forbids a second staged batch per request.
+        self.steering_mode = "all"
         self.request_preparer = request_preparer
         self.last_preparation: tuple[ModelRequest, dict[str, Any]] | None = None
         self.recover_context = recover_context
@@ -882,7 +884,9 @@ class TurnRunner:
                         # A summary can take long enough for new steering to arrive.
                         # Catch up once, before consuming either batch or calling a model.
                         commits = [staged[1]] if staged is not None else []
-                        if request.messages != before.messages and self.stage_steering is not None:
+                        if (request.messages != before.messages and self.stage_steering is not None
+                                and not (self.steering_mode == "one-at-a-time"
+                                         and staged is not None and staged[0])):
                             catch_up, commit = self.stage_steering()
                             if catch_up:
                                 messages.extend(catch_up)

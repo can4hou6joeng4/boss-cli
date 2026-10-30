@@ -129,6 +129,25 @@ def _approval_timeout() -> float:
     return value if math.isfinite(value) and value > 0 else DEFAULT_APPROVAL_TIMEOUT_SECONDS
 
 
+STEERING_MODES = ("all", "one-at-a-time")
+
+
+def _steering_mode_value(value: object) -> str:
+    if type(value) is not str or value not in STEERING_MODES:
+        raise ValueError("steering_mode 必须是 all 或 one-at-a-time")
+    return value
+
+
+def steering_mode_from_environment() -> str:
+    raw = os.environ.get("BOSS_HARNESS_STEERING_MODE")
+    if raw is None or raw == "":
+        return "all"
+    # Do not echo arbitrary environment text into errors.
+    if raw not in STEERING_MODES:
+        raise ValueError("BOSS_HARNESS_STEERING_MODE 必须是 all 或 one-at-a-time")
+    return raw
+
+
 def _text(params: dict | None, key: str, *, maximum: int = 100_000) -> str:
     value = (params or {}).get(key)
     if not isinstance(value, str) or not value.strip() or len(value) > maximum:
@@ -215,8 +234,13 @@ class ApplicationService:
                  hook_timeout: float = 0.25,
                  expose_tool_results_to_hooks: bool = False,
                  max_model_requests: int | None = None,
-                 prompt_preamble: str | None = None) -> None:
+                 prompt_preamble: str | None = None,
+                 steering_mode: str | None = None) -> None:
         self.server, self.config, self.provider = server, config, provider
+        # "all" keeps the historical drain-everything behavior; "one-at-a-time"
+        # injects only the oldest queued steering input per drain point.
+        self.steering_mode = (steering_mode_from_environment() if steering_mode is None
+                              else _steering_mode_value(steering_mode))
         self.max_model_requests = (model_request_limit_from_environment() if max_model_requests is None
                                    else model_request_limit(max_model_requests))
         attachment_limits = AttachmentStore.limits_from_environment()
@@ -546,6 +570,7 @@ class ApplicationService:
                 "maxOutputTokens": self.config.max_tokens, "parallelThreads": self.runtimes.capacity,
                 "maxRetainedTurns": self.runtimes.owner_capacity,
                 "maxModelRequests": self.max_model_requests,
+                "steeringMode": self.steering_mode,
                 "maxAttachmentStorageBytes": self.attachment_limits.max_bytes,
                 "maxAttachmentStorageObjects": self.attachment_limits.max_objects,
                 "modelCapabilities": self.model_catalog.resolve(self.config.provider, self.config.model).describe(),
@@ -2587,6 +2612,7 @@ class ApplicationService:
                     thread_id, entries=boundary_entries)
                 runner.notify = lambda method, payload=None: self._notify_runner(job, method, payload)
                 runner.stage_steering = lambda: self._stage_steering(job)
+                runner.steering_mode = self.steering_mode
                 job["requestInputDigest"] = request_digest
                 job["queueId"] = None
                 try:
@@ -2766,6 +2792,7 @@ class ApplicationService:
                     thread.get("toolPolicy", "approval"), max_model_requests, policy, self.tool_bundle.id)
                 runner.notify = lambda method, payload=None: self._notify_runner(job, method, payload)
                 runner.stage_steering = lambda: self._stage_steering(job)
+                runner.steering_mode = self.steering_mode
                 job["clientUserMessageId"] = client_id
                 job["requestInputDigest"] = request_digest
                 job["queueId"] = queue_item["id"] if queue_item else None
@@ -3231,6 +3258,8 @@ class ApplicationService:
             if item is None:
                 break
             items.append(item)
+            if self.steering_mode == "one-at-a-time":
+                break
         def commit() -> None:
             for item in items:
                 user = job["runner"].append_user(job["threadId"], item["input"], queueId=item["id"],

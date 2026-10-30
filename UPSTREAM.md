@@ -1,5 +1,13 @@
 # 上游吸收记录
 
+## 第一百零四轮：steering 投递模式 all / one-at-a-time
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/agent/src/agent.ts`（`PendingMessageQueue`、`steeringMode`）与 `agent-loop.ts` 的投递点：`all` 一次注入全部排队消息，`one-at-a-time` 只注入最早一条，其余留待后续投递点。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：Pi 默认 `one-at-a-time`，本项目默认 `all` 以保持既有行为，经 `BOSS_HARNESS_STEERING_MODE` 或 `ApplicationService(steering_mode=...)` 选择，非法值启动即报错且不回显原文；`config/read` 公开生效值。投递仍走持久队列 claim/commit，压缩后的追补在 `one-at-a-time` 下若本请求已含一条则跳过；回合结束或请求上限耗尽时剩余 steering 与原先一致转为 paused。follow-up 分派本就逐条进行，未改动。协议保持 `0.2.0`，持久格式不变，旧会话读取不受影响。
+
+本地临时探针覆盖两种模式的注入条数与顺序、压缩追补、上限耗尽后剩余项暂停、非法配置与旧会话恢复；探针未提交，未调用真实模型或招聘平台。
+
 ## 第一百零三轮：Anthropic provider 补齐自动重试
 
 参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/agent-session.ts`：`isRetryableAssistantError` 判断瞬时错误，`retryDelayMs` 指数退避，`auto_retry_start` / `auto_retry_end` 通知重试过程。本轮独立实现，不复制 Pi 源码或新增依赖。
