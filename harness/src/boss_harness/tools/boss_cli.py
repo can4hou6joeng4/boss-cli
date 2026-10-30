@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import signal
@@ -23,6 +24,52 @@ from boss_harness.toolkit import ToolResult
 
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_CLI_OUTPUT_BYTES = 16 * 1024 * 1024
+MAX_ENVELOPE_JSON_DEPTH = 64
+
+
+def _reject_json_constant(_: str) -> None:
+    raise ValueError("JSON 数值必须有限")
+
+
+def _finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("JSON 数值必须有限")
+    return parsed
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("JSON 对象包含重复键")
+        result[key] = value
+    return result
+
+
+def _validate_json_value(value: Any, *, depth: int = 0) -> None:
+    if depth > MAX_ENVELOPE_JSON_DEPTH:
+        raise ValueError("JSON 嵌套层级超过限制")
+    if isinstance(value, str):
+        if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+            raise ValueError("JSON 字符串包含无效 Unicode 代理项")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _validate_json_value(key, depth=depth + 1)
+            _validate_json_value(item, depth=depth + 1)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _validate_json_value(item, depth=depth + 1)
+
+
+def _decode_cli_envelope(raw: str) -> Any:
+    value = json.loads(raw, object_pairs_hook=_unique_json_object,
+                       parse_constant=_reject_json_constant,
+                       parse_float=_finite_json_float)
+    _validate_json_value(value)
+    return value
 
 # Public CLI labels, checked against boss-agent-cli@bdc7034df563f1ea458d3af5bb4b40e8ea4603a8
 # src/boss_agent_cli/api/boss.yaml and search_filters.py. This adapter accepts
@@ -203,9 +250,11 @@ class BossCliTool:
                 error={"code": "CLI_ERROR", "message": redact_secrets(stderr.strip()[:400]) or "无输出"},
             )
         try:
-            envelope = json.loads(stdout)
+            envelope = _decode_cli_envelope(stdout)
         except json.JSONDecodeError:
             return failure("CLI_ERROR", "stdout 不是 JSON 信封")
+        except (ValueError, RecursionError):
+            return failure("CLI_CONTRACT_ERROR", "stdout 不是严格 JSON 信封，请核对上游版本")
 
         keys = {"ok", "schema_version", "command", "data", "pagination", "error", "hints"}
         if (not isinstance(envelope, dict) or set(envelope) != keys
