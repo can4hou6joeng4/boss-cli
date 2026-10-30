@@ -24,6 +24,10 @@ type Pending = {
 };
 type Outgoing = { frame: string; bytes: number; id?: JsonRpcId };
 
+// Leave room for the kernel's shared two-second close budget and pipe scheduling.
+const GRACEFUL_CLOSE_TIMEOUT_MS = 2_500;
+const FORCE_KILL_TIMEOUT_MS = 1_000;
+
 export class HarnessRpcError extends Error {
   readonly code: number;
   readonly data: unknown;
@@ -146,9 +150,9 @@ export class HarnessClient {
         child.kill("SIGTERM");
         this.#killTimer = setTimeout(() => {
           if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-        }, 1_000);
+        }, FORCE_KILL_TIMEOUT_MS);
         this.#killTimer.unref();
-      }, 250);
+      }, GRACEFUL_CLOSE_TIMEOUT_MS);
       this.#killTimer.unref();
     }
   }

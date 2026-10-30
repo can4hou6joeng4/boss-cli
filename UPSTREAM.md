@@ -1,5 +1,19 @@
 # 上游吸收记录
 
+## 第九十九轮：等待 Harness 子进程完成优雅关闭
+
+参考 Pi MIT [PR #11544](https://github.com/earendil-works/pi/pull/11544)，已合入 Pi main，合并提交 `a87b742ff4ce262c07b7830a25c73c1442dab41b`。该问题报告指出，客户端结束 daemon stdin 后立即发 `SIGTERM` 会跳过 EOF 收尾；PR 的 Unix daemon signal handling 不适用于本项目的 Python Harness，因此这里只采用“EOF 后给后端留出清理窗口”的生命周期原则，不复制 Pi 源码或增加依赖。本项目复现与修复基于 main `05ce291fb2670b78a107927b334836d3ef50e15f`。
+
+本项目 `HarnessClient.dispose()` 在结束 stdin 后原等待 250ms 即发送 `SIGTERM`，而 `ApplicationService.close()` 对取消、worker、摘要、生命周期 hook、快照与资源收尾使用共享 2 秒期限。真实离线集成探针通过 `HarnessClient` 启动 CLI 与 `ApplicationService`，注入 650ms `kernel/shutdown` hook；旧等待时间只记录 hook `entered`，随后子进程被 `SIGTERM` 中断，50ms 对照正常退出。现在等待 2.5 秒后才发 `SIGTERM`，其后 1 秒仍发 `SIGKILL` 兜底；同一 650ms 场景约 677ms 正常结束，hook 完成且 CLI 返回 0。该结果证明关闭流程不再被 250ms 客户端计时器打断，不代表所有操作系统级故障或超出内核期限的回调都可完成。
+
+本地 Python 应用并发探针另对照 Pi 开放 [Issue #10982](https://github.com/earendil-works/pi/issues/10982)：摘要 provider 被事件门控时，直接 `turn/start` 被拒绝，follow-up 保持 queued；摘要完成事件先于后续 `turn/started`，队列只交付一次。现有 thread admission 和 compaction owner 已覆盖该路径，无对应运行时代码改动。
+
+另核对 Pi MIT 开放 [PR #9126](https://github.com/earendil-works/pi/pull/9126)，截至 2026-10-30 仍为 OPEN，目标为 `main@f1b2e77f5b13b2a199b1052cb79c235451afe7d7`。它报告活动工具尚未结算时 runtime disposal 先断开持久化；提议在 shutdown/dispose 前等待 `session.abort()`，作者注明等待没有超时，忽略取消的工具不在此改动范围内。该问题位于 session 持久化结算边界，与本 PR 延长 Harness 子进程 EOF 后宽限期的客户端生命周期边界不同，Pi 的无超时等待不直接适用于本项目的有界关闭策略。
+
+本项目以真实 `ApplicationService` 和工具 handler 做了关机时序探针：handler 在 close 开始时已派发并阻塞 2.15 秒；`close()` 约 2.006 秒返回时 runtime job 与 state owner 仍存活。handler 约在 2.151 秒返回，随后 JSONL 先追加同一工具调用从 `executing/running` 到 `completed/completed` 的修订，再追加 `turn interrupted`；worker 约在 2.168 秒退出后 runtime job 归零并释放 state owner。重启后工具仍为 completed、回合仍为 interrupted，没有重放或第二次模型请求，handler/provider 各调用一次。超过内核等待期限时若进程在工具结算前退出，隔离对照恢复为 `failed / outcome_unknown / SESSION_INTERRUPTED`，同样不重放；因此本地证据验证的是 owner 在 worker 结束前不释放以及有界关闭内完成的工具结果可持久化，不承诺超出进程存活窗口的工具也能结算。
+
+本轮 `npm run typecheck`、`npm run build`、Python `compileall`、wheel/sdist 构建、Source build、GitGuardian 与 `git diff --check` 通过。所有探针使用合成 provider、生命周期 hook 和临时状态，无真实模型或招聘平台请求；探针只保留于本地，不提交测试材料。真实 Electron 退出与用户界面验收尚未完成。
+
 ## 第九十八轮：停止重试智谱五小时硬用量上限
 
 Pi MIT [Issue #11537](https://github.com/earendil-works/pi/issues/11537) 报告智谱/Z.ai 在五小时硬用量上限时返回 HTTP 429 与结构化 `code=1308`；消息含数小时后的重置时间，重复请求无法在当前窗口成功。Pi 已合并 [PR #11572](https://github.com/earendil-works/pi/pull/11572)，固定 merge commit `c719d5b08e5d9fb9bbcb1f1792281eea8b442812`，在 agent-level classifier 中精确识别 code 字段；该 PR 明确未调整 Pi provider-level 的 429 重试策略。上游实现仅作行为参考，本轮不复制源码或引入依赖。
@@ -37,7 +51,6 @@ Pi MIT [Issue #11537](https://github.com/earendil-works/pi/issues/11537) 报告�
 本轮独立增加对象键唯一性、有限浮点、64 层深度及 Unicode 代理项校验。解析失败在派发前返回 `-32700` 并继续读取后续帧；handler 已执行但结果含非有限数值、过深结构、孤立代理项或不可 JSON 序列化对象时返回 `RESPONSE_INVALID`，不重放 handler，也不把编码失败误报为业务成功。帧大小和 LF framing 规则保持不变；不复制 Pi 源码或引入依赖。
 
 内存 JSON-RPC 探针覆盖重复顶层/嵌套键、`1e999`、1500 层嵌套、孤立代理项、不可编码响应及每种坏帧后的正常请求；Python 编译、wheel/sdist、TypeScript 检查与 Electron 源码构建须以最新 PR head 为准。测试材料仅保留本地，未调用模型、招聘 CLI、网络或平台。
-
 ## 第九十三轮：共享附件容量与损坏日志的发布门禁
 
 参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 `packages/coding-agent/src/extensions/mcp/tools.ts` 及开放 [Issue #11386](https://github.com/earendil-works/pi/issues/11386)：Pi 对发给模型的 MCP 文本输出设有 20 KiB 默认上限，该提案希望支持分层配置。BOSS-CLI 的附件属于跨会话持久对象，与单次工具输出不同；本轮只采用显式资源预算原则，独立实现，不复制代码或新增依赖。
