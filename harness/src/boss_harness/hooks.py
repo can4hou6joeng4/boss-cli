@@ -93,6 +93,29 @@ class HookDecision:
             raise ValueError("HookDecision.message 无效")
 
 
+MAX_CONTEXT_UNITS = 512
+
+
+@dataclass(frozen=True)
+class ContextTransform:
+    """A transform may only omit whole history units from one model request.
+
+    Units are the kernel-defined spans that start at a user input and include the
+    assistant/tool-result messages that followed it, so tool call/result pairing
+    and role order stay valid. Persisted history is never changed.
+    """
+
+    drop_units: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        values = self.drop_units
+        if isinstance(values, (str, bytes)) or not isinstance(values, (tuple, list, frozenset, set)):
+            raise ValueError("ContextTransform.drop_units 必须是整数序列")
+        if len(values) > MAX_CONTEXT_UNITS or any(type(item) is not int or item < 0 for item in values):
+            raise ValueError("ContextTransform.drop_units 只能包含非负整数")
+        object.__setattr__(self, "drop_units", tuple(sorted(set(values))))
+
+
 def _safe_value(value: Any, *, depth: int = 0) -> Any:
     """Copy a bounded, read-only-safe view of hook context data."""
     if depth >= MAX_CONTEXT_DEPTH:
@@ -273,6 +296,13 @@ class LifecycleHooks:
         before the provider is called. ``purpose`` distinguishes business turns,
         summary fragments and connection checks. A denial terminates that work
         without authorizing a retry or a context-recovery request.
+    ``transform_context(context) -> ContextTransform | None``
+        Shape the history projection of one business-turn model request
+        before ``before_request``, like Pi's ``transformContext``. The context
+        lists bounded metadata for each history unit; a transform may only
+        omit whole units other than the current (last) one. It cannot add or
+        rewrite messages and never changes persisted history. Failures,
+        timeouts and invalid results reject the request (fail closed).
     ``after_tool_call(context)``
         Observe a persisted terminal tool outcome before the turn can request
         another model response. A callback may also declare ``signal`` to
@@ -310,7 +340,8 @@ class LifecycleHooks:
             raise ValueError("expose_tool_results 必须是布尔值")
         for hook in values:
             if not any(callable(getattr(hook, name, None)) for name in
-                       ("on_event", "before_tool_call", "before_request", "after_tool_call", "close")):
+                       ("on_event", "before_tool_call", "before_request", "transform_context",
+                        "after_tool_call", "close")):
                 raise ValueError("生命周期 hook 至少提供一种受支持的回调")
         self._hooks = values
         self.timeout = float(timeout)
@@ -370,7 +401,7 @@ class LifecycleHooks:
         callback = getattr(hook, method, None)
         if not callable(callback):
             return None
-        policy = method in {"before_tool_call", "before_request"}
+        policy = method in {"before_tool_call", "before_request", "transform_context"}
         if policy and cancel_event is not None and cancel_event.is_set():
             return _HOOK_CANCELLED
         with self._lock:
@@ -378,7 +409,7 @@ class LifecycleHooks:
                 return _HOOK_CLOSED
         try:
             callback_context = (freeze_policy_context(context or {}) if method in {
-                                   "before_tool_call", "before_request", "after_tool_call"}
+                                   "before_tool_call", "before_request", "transform_context", "after_tool_call"}
                                else freeze_context(context or {}) if method == "on_event" else None)
         except _PolicyContextError as exc:
             if method == "after_tool_call":
@@ -386,7 +417,7 @@ class LifecycleHooks:
                            if exc.code == "HOOK_CONTEXT_TOO_LARGE"
                            else "工具结果不是观察 hook 支持的 JSON；结果已持久化，回调未执行")
             else:
-                subject = "模型请求" if method == "before_request" else "工具"
+                subject = "模型请求" if method in {"before_request", "transform_context"} else "工具"
                 message = (f"策略 hook 输入超过内核上限；{subject}已拒绝"
                            if exc.code == "HOOK_CONTEXT_TOO_LARGE"
                            else f"策略 hook 输入不是受支持的 JSON；{subject}已拒绝")
@@ -404,7 +435,7 @@ class LifecycleHooks:
         error: list[BaseException] = []
         finished = threading.Event()
         signal_mode = (_signal_mode(callback)
-                       if method in {"before_tool_call", "before_request", "after_tool_call"}
+                       if method in {"before_tool_call", "before_request", "transform_context", "after_tool_call"}
                        and signal is not None else None)
 
         def run() -> None:
@@ -430,7 +461,7 @@ class LifecycleHooks:
         thread = threading.Thread(target=run, name=f"boss-hook-{method}", daemon=True)
         start_error: Exception | None = None
         with self._lock:
-            if self._closed or (self._closing and method in {"before_tool_call", "before_request"}):
+            if self._closed or (self._closing and method in {"before_tool_call", "before_request", "transform_context"}):
                 return _HOOK_CLOSED if policy else None
             if self._active >= MAX_ACTIVE_HOOK_CALLBACKS:
                 if method == "on_event":
@@ -624,6 +655,47 @@ class LifecycleHooks:
             if not result.allow:
                 return result
         return None
+
+    @property
+    def transforms_context(self) -> bool:
+        return any(callable(getattr(hook, "transform_context", None)) for hook in self._hooks)
+
+    def transform_context(self, context: Mapping[str, Any], *, unit_count: int,
+                          cancel_event: threading.Event | None = None) -> tuple[int, ...] | HookDecision | None:
+        """Collect unit omissions from every transform hook; fail closed on errors.
+
+        Returns ``None`` when cancelled, a denial ``HookDecision`` on failure, or
+        the sorted union of dropped unit indexes (possibly empty).
+        """
+        event = "modelRequest/transformContext"
+        signal = HookCancellationSignal(cancel_event) if cancel_event is not None else None
+        dropped: set[int] = set()
+        for hook in self._hooks:
+            if not callable(getattr(hook, "transform_context", None)):
+                continue
+            result = self._invoke(hook, "transform_context", {"phase": "transform_context", **dict(context)},
+                                  event=event, cancel_event=cancel_event, signal=signal)
+            if result is _HOOK_CANCELLED:
+                return None
+            if result is _HOOK_CLOSED:
+                return HookDecision(False, "HOOK_CLOSED", "上下文变换 hook 正在关闭或已关闭；模型请求已拒绝")
+            if result is _HOOK_CONTEXT_TOO_LARGE:
+                return HookDecision(False, "HOOK_CONTEXT_TOO_LARGE", "上下文变换输入超过内核上限；模型请求已拒绝")
+            if result is _HOOK_CONTEXT_INVALID:
+                return HookDecision(False, "HOOK_CONTEXT_INVALID", "上下文变换输入不是受支持的 JSON；模型请求已拒绝")
+            if result is _HOOK_BUSY:
+                return HookDecision(False, "HOOK_BUSY", "上下文变换 hook 已达到在途回调上限；模型请求已拒绝")
+            if result is _HOOK_FAILED:
+                return HookDecision(False, "HOOK_ERROR", "上下文变换 hook 未能完成；模型请求已拒绝")
+            if result is None:
+                continue
+            if (not isinstance(result, ContextTransform)
+                    or any(index >= unit_count - 1 for index in result.drop_units)):
+                self._failure(hook, "transform_context", event, "HOOK_RESULT_INVALID",
+                              "transform_context 必须返回 ContextTransform 或 None，且不能省略当前输入单元")
+                return HookDecision(False, "HOOK_RESULT_INVALID", "上下文变换 hook 返回了无效结果；模型请求已拒绝")
+            dropped.update(result.drop_units)
+        return tuple(sorted(dropped))
 
     def after_tool_call(self, context: Mapping[str, Any], result: Mapping[str, Any], *,
                         cancel_event: threading.Event | None = None) -> None:
