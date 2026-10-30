@@ -4,6 +4,7 @@
 
 ### 新增
 
+- 参考 Pi `session-manager.ts` 的会话树（`getTree()` / `getChildren()`）：会话内分支第二步补完。新增只读 `thread/branches/list`（`threadId`、可选 `cursor` / `limit` 1–200，默认 50），按追加时投影尾部还原回合树，列出无子回合的分支端点，附状态、时间、深度、分叉回合、分支首回合与端点回合的用户输入摘要（≤120 字符）、是否含当前 leaf 及是否可切换；伪造指针 fail closed，读取不写入。`thread/fork` 的 `turnId` 现可指向任一分支上已结束的回合（只复制该回合所在分支，不改变当前 leaf）。能力以 `capabilities.sessionBranchTree` 声明，协议仍为 `0.2.0`；旧会话返回单一端点。
 - 参考 Pi `session-manager.ts` 的 `buildSessionContext()`：会话内分支第二步。`thread/read`（非快照）、`thread/turns/list` 与 `thread/items/list`（非快照）新增可选参数 `view`（`log` 默认完整日志 / `branch` 按当前 leaf 分支投影），分支视图下线程 `lastTurn` 改为当前分支末回合并附 `branch` 元信息，分页游标与视图绑定不可混用；未传 `view` 的客户端行为不变。能力以 `capabilities.sessionBranchViews` 声明，协议仍为 `0.2.0`。快照分页、`task/read` 与分支端点列表留待后续。
 - 参考 Pi `session-manager.ts` 的 `leafId` / `branch()`：会话内分支第一步。新增持久 append-only `leaf` 指针与只读 `thread/leaf/read`、写入 `thread/leaf/set`（`turnId` 为已结束回合或 `null`），模型上下文、预算与压缩、续接预检和 `thread/fork` 改为按当前分支投影；无指针的旧会话行为不变，伪造指针 fail closed。能力以 `capabilities.sessionLeaf` 声明，切换后发送可选通知 `thread/leafChanged`；协议仍为 `0.2.0`。会话展示类读取与 Electron 入口留待后续步骤。
 - 参考 Pi `agent-loop.ts` 的 `transformContext`：生命周期 hook 新增可选 `transform_context(context) -> ContextTransform | None`，在业务回合每次模型请求的 `before_request` 之前运行。内核把请求历史按“以用户输入开头的单元”给出有界元数据（脱敏输入预览、消息数、工具名与字符数），宿主只能省略除当前输入外的整单元，不能新增或改写消息，工具调用与结果保持成对；持久历史、摘要与连接检查请求不受影响。hook 异常、超时、非法返回或省略当前单元时拒绝该次请求（fail closed）。协议仍为 `0.2.0`；`@boss-cli/protocol` 补齐 `ConfigReadResponse` 与可选 `steeringMode` 类型声明。
