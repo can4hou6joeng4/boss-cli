@@ -2316,6 +2316,32 @@ class SessionStore:
                 "activeTurnIds": turn_ids[-MAX_LEAF_ACTIVE_TURN_IDS:],
                 "activeTurnIdsTruncated": len(turn_ids) > MAX_LEAF_ACTIVE_TURN_IDS}
 
+    def usage_page(self, thread_id: str, *, branch: bool, cursor: str | None = None, limit: int = 50) -> dict:
+        """Read-only per-turn usage aggregated from persisted usage records."""
+        from boss_harness.usage import SOURCE, summarize_usage
+        _limit(limit)
+        scope = {"threadId": thread_id, "view": "branch" if branch else "log"}
+        key = _read_page_cursor(cursor, "usage", scope)
+        if key is not None and (len(key) != 1 or type(key[0]) is not int or key[0] < 0):
+            raise ValueError("用量分页游标无效")
+        offset = key[0] if key is not None else 0
+        with self._lock:
+            entries = self.read_entries(thread_id)
+            active = ({turn["turnId"] for turn in self._turns(self._active_entries(entries), thread_id)}
+                      if branch else None)
+            leaf = self._leaf_state(thread_id, entries) if branch else None
+        result = summarize_usage(entries, active)
+        turns = result["turns"]
+        page = turns[offset:offset + limit]
+        next_cursor = (_page_cursor("usage", scope, [offset + limit])
+                       if offset + limit < len(turns) else None)
+        out = {"threadId": thread_id, "view": scope["view"], "source": SOURCE, "costAvailable": False,
+               "turnCount": len(turns), "turns": page, "nextCursor": next_cursor,
+               "summaryTasks": result["summaryTasks"], "totals": result["totals"]}
+        if leaf is not None:
+            out["branch"] = leaf
+        return out
+
     def read_leaf(self, thread_id: str) -> dict:
         with self._lock:
             return self._leaf_state(thread_id, self.read_entries(thread_id))

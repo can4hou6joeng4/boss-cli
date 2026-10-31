@@ -73,7 +73,7 @@ export interface InitializeResponse {
   capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean;
     parallelThreads: boolean; durableApprovals?: boolean; explicitTurnContinuation?: boolean;
     sessionLeaf?: boolean; sessionBranchViews?: boolean; sessionBranchTree?: boolean;
-    sessionBranchSummary?: boolean };
+    sessionBranchSummary?: boolean; threadUsage?: boolean };
   eventCursor?: string;
 }
 
@@ -90,6 +90,7 @@ export const ClientMethods = {
   threadLeafRead: "thread/leaf/read",
   threadLeafSet: "thread/leaf/set",
   threadBranchesList: "thread/branches/list",
+  threadUsageRead: "thread/usage/read",
   threadArchive: "thread/archive",
   threadDelete: "thread/delete",
   threadUnarchive: "thread/unarchive",
@@ -915,6 +916,37 @@ export interface SkillDescriptor { id: string; name: string; description: string
 export interface SkillListResponse { skills: SkillDescriptor[] }
 export interface AttachmentDescriptor { id: string; name: string; digest: string; bytes: number; mediaType: string }
 
+/** `thread/usage/read` 参数；仅在 `capabilities.threadUsage` 为真时可用。 */
+export interface ThreadUsageReadParams { threadId: string; view?: "log" | "branch"; cursor?: string; limit?: number }
+/** 仅累计可验证的 provider usage；provider 未上报的字段为 null，费用无价目来源时为 null。 */
+export interface ThreadUsageBucket {
+  requests: number;
+  verifiedRequests: number;
+  unverifiedRequests: number;
+  /** 原因如 missing / invalidType / negative / outOfRange / inconsistent / zero / unknownProvider。 */
+  unverifiedReasons: Record<string, number>;
+  promptTokens: number;
+  uncachedInputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  reasoningTokens: number | null;
+  costUsd: number | null;
+  costSource: "unavailable";
+}
+export interface ThreadUsageTurn extends ThreadUsageBucket { turnId: string; providers: string[]; models: string[] }
+export interface ThreadUsageReadResponse {
+  threadId: string;
+  view: "log" | "branch";
+  source: "provider-usage";
+  costAvailable: boolean;
+  turnCount: number;
+  turns: ThreadUsageTurn[];
+  nextCursor: string | null;
+  summaryTasks: ThreadUsageBucket;
+  totals: ThreadUsageBucket;
+  branch?: ThreadLeafState;
+}
 /** `thread/branches/list` 参数与结果；仅在 `capabilities.sessionBranchTree` 为真时可用。 */
 export interface ThreadBranchesListParams { threadId: string; cursor?: string; limit?: number }
 export interface ThreadBranchEndpoint {

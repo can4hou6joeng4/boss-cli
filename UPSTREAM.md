@@ -1,5 +1,11 @@
 # 上游吸收记录
 
+## 第一百一十轮：每回合 provider 用量只读汇总
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/ai`（`Usage` 的 input/output/cacheRead/cacheWrite 与 cost）及 `packages/coding-agent/src/core/cache-stats.ts`（按 assistant 消息逐条累计，未报告缓存的 provider 不计入缓存统计）。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：Issue #202 的可验证 usage 校准已由 #203 合入，本轮只为后续按回合累计打基础。数据源是既有每次请求追加的 `model_usage` / `context_summary_usage` 条目，不新增持久格式；`thread/usage/read` 查询时逐条校验后按回合聚合，异常记录不计入并给出原因计数，避免中转（含智谱等兼容接口）缺失或伪造的 usage 进入合计。Pi 带模型价目计算费用，本项目没有可信价目来源，费用固定为 `null`；provider 不上报的字段为 `null` 而非 0。缓存未命中分析、Electron 展示与费用目录留待后续。
+
 ## 第一百零九轮：被放弃分支摘要（第三步）
 
 参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-manager.ts`：`branchWithSummary()` 移动 leaf 时为被放弃分支追加摘要条目，进入新分支上下文。本轮独立实现，不复制 Pi 源码或新增依赖。
