@@ -12,7 +12,7 @@ from typing import BinaryIO
 import uuid
 
 from boss_harness.private_files import ensure_private_directory, open_private_file, restrict_private_file
-from boss_harness.session import MAX_SESSION_LINE_BYTES
+from boss_harness.session import MAX_SESSION_LINE_BYTES, _decode_session_record
 
 MAX_SNAPSHOT_RECORD_BYTES = MAX_SESSION_LINE_BYTES
 MAX_SNAPSHOT_SOURCE_BYTES = 1024 * 1024 * 1024
@@ -183,12 +183,8 @@ class SnapshotBuilder:
                     raise ValueError("会话快照已因删除或关闭而取消")
                 if not raw.strip():
                     continue
-                try:
-                    entry = json.loads(raw.decode("utf-8", errors="replace"))
-                except json.JSONDecodeError:
-                    continue
-                if (not isinstance(entry, dict) or entry.get("type") == "session"
-                        or not isinstance(entry.get("id"), str) or not isinstance(entry.get("payload"), dict)):
+                entry = _decode_session_record(raw, line_number=line_count)
+                if entry is None:
                     continue
                 self._entry(entry)
                 pages = self.connection.execute("PRAGMA page_count").fetchone()[0]

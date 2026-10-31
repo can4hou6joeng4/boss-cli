@@ -12,6 +12,7 @@ export interface HarnessConnectionStatus {
   retryAt?: number;
   error?: string;
   modelBridge?: InitializeResponse["modelBridge"];
+  capabilities?: InitializeResponse["capabilities"];
 }
 
 export interface HarnessHostOptions {
@@ -70,6 +71,7 @@ export class HarnessHostConnection {
       ...(this.#retryAt !== undefined ? { retryAt: this.#retryAt } : {}),
       ...(this.#error ? { error: this.#error } : {}),
       ...(this.#initialized ? { modelBridge: this.#initialized.modelBridge } : {}),
+      ...(this.#initialized?.capabilities ? { capabilities: this.#initialized.capabilities } : {}),
     };
   }
 

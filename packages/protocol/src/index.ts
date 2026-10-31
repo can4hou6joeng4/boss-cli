@@ -71,7 +71,9 @@ export interface InitializeResponse {
   modelBridge: { provider: string; model: string; driven: boolean };
   approval: { requiredTools: string[]; timeoutSeconds: number };
   capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean;
-    parallelThreads: boolean; durableApprovals?: boolean };
+    parallelThreads: boolean; durableApprovals?: boolean; explicitTurnContinuation?: boolean;
+    sessionLeaf?: boolean; sessionBranchViews?: boolean; sessionBranchTree?: boolean;
+    sessionBranchSummary?: boolean; threadUsage?: boolean; sessionModelSelection?: boolean };
   eventCursor?: string;
 }
 
@@ -85,6 +87,10 @@ export const ClientMethods = {
   threadRead: "thread/read",
   threadResume: "thread/resume",
   threadFork: "thread/fork",
+  threadLeafRead: "thread/leaf/read",
+  threadLeafSet: "thread/leaf/set",
+  threadBranchesList: "thread/branches/list",
+  threadUsageRead: "thread/usage/read",
   threadArchive: "thread/archive",
   threadDelete: "thread/delete",
   threadUnarchive: "thread/unarchive",
@@ -101,6 +107,8 @@ export const ClientMethods = {
   turnInterrupt: "turn/interrupt",
   turnSteer: "turn/steer",
   turnRead: "turn/read",
+  turnContinuationRead: "turn/continuation/read",
+  turnContinue: "turn/continue",
   taskRead: "task/read",
   approvalList: "approval/list",
   approvalRespond: "approval/respond",
@@ -145,6 +153,7 @@ export const ServerNotifications = {
   harnessDisconnected: "harness/disconnected",
   connectionStatus: "harness/connectionStatus",
   threadCreated: "thread/created",
+  threadLeafChanged: "thread/leafChanged",
   threadArchived: "thread/archived",
   threadDeleted: "thread/deleted",
   threadUnarchived: "thread/unarchived",
@@ -158,6 +167,8 @@ export const ServerNotifications = {
   contextCompactionFailed: "context/compactionFailed",
   contextEdited: "context/edited",
   kernelHookError: "kernel/hookError",
+  modelRetryStarted: "model/retryStarted",
+  modelRetryEnded: "model/retryEnded",
 } as const;
 
 export type ServerNotification =
@@ -180,6 +191,33 @@ export interface ProviderFailureInfo {
   /** Portable allowlisted errno label, when available. */
   transportCode?: "ECONNABORTED" | "ECONNREFUSED" | "ECONNRESET" | "EHOSTUNREACH"
     | "ENETUNREACH" | "ETIMEDOUT" | "EPIPE" | "EAI_AGAIN" | "EAI_NONAME";
+}
+
+/**
+ * 模型请求在首个输出前遇到瞬时失败、即将退避重试（仅观测；不代表授权重放回合）。
+ * 可选通知：旧客户端忽略即可，也可经 optOutNotificationMethods 屏蔽。
+ */
+export interface ModelRetryStartedNotification {
+  threadId: string;
+  turnId?: string | null;
+  /** 即将发起的第几次尝试（从 2 起）。 */
+  attempt: number;
+  /** 本次请求的总尝试上限。 */
+  maxAttempts: number;
+  delayMs: number;
+  /** 已脱敏的上一次失败说明。 */
+  errorMessage: string;
+}
+
+/** 一段自动重试结束：成功产出首个事件，或最终失败 / 被取消。 */
+export interface ModelRetryEndedNotification {
+  threadId: string;
+  turnId?: string | null;
+  /** 最后一次发起的尝试序号。 */
+  attempt: number;
+  success: boolean;
+  reason?: "error" | "aborted";
+  finalError?: string;
 }
 
 export interface SessionErrorNotification {
@@ -384,7 +422,12 @@ export interface ThreadReadParams {
   threadId: string;
   excludeTurns?: boolean;
   snapshot?: boolean;
+  /** 仅在 `capabilities.sessionBranchViews` 为真时可用；`branch` 暂不支持与 `snapshot` 同用。 */
+  view?: ThreadReadView;
 }
+
+/** `log`（默认）展示完整日志；`branch` 按当前 leaf 分支投影。 */
+export type ThreadReadView = "log" | "branch";
 
 export interface ThreadReadResponse {
   thread: ThreadSummary;
@@ -395,6 +438,8 @@ export interface ThreadReadResponse {
   queue?: QueueItem[];
   snapshotId?: string;
   itemCount?: number;
+  view?: "branch";
+  branch?: ThreadLeafState;
 }
 
 export interface ThreadDeleteParams {
@@ -420,6 +465,8 @@ export interface ToolDescriptor {
   requiresApproval: boolean;
   inputSchema: Record<string, unknown>;
   maxModelResultBytes?: number;
+  /** 批次调度模式；任一 sequential 则整批串行。 */
+  executionMode?: "sequential" | "parallel";
 }
 
 export interface ToolListResponse {
@@ -467,6 +514,31 @@ export interface TurnStartParams {
 export interface TurnStartResponse {
   turnId: string;
   clientUserMessageId?: string;
+  deduplicated?: boolean;
+}
+
+export type TurnContinuationBoundary = "user_input" | "completed_tool_batch";
+export interface TurnContinuationReadParams {
+  threadId: string;
+  sourceTurnId: string;
+}
+export interface TurnContinuationReadResponse {
+  threadId: string;
+  sourceTurnId: string;
+  eligible: boolean;
+  boundary?: TurnContinuationBoundary;
+  completedToolCalls?: number;
+  reasonCode?: string;
+  reason?: string;
+  warning: string;
+}
+export interface TurnContinueParams extends TurnContinuationReadParams {
+  continuationId: string;
+}
+export interface TurnContinueResponse {
+  turnId: string;
+  continuedFromTurnId: string;
+  continuationId: string;
   deduplicated?: boolean;
 }
 
@@ -569,7 +641,8 @@ export interface TurnSummary {
   taskRecoveryReason?: "processExit" | "terminalStateRecovered";
   taskResumePolicy?: TurnTaskResumePolicy;
 }
-export interface TurnListResponse { turns: TurnSummary[]; nextCursor: string | null }
+export interface TurnListResponse { turns: TurnSummary[]; nextCursor: string | null;
+  view?: "branch"; branch?: ThreadLeafState }
 export interface ItemListResponse { items: ThreadItem[]; nextCursor: string | null }
 
 export interface DurableEvent {
@@ -661,6 +734,29 @@ export interface RuntimeResourcesReadResponse {
   waitersTruncated: boolean;
 }
 
+export type SteeringMode = "all" | "one-at-a-time";
+
+/** `config/read` result; fields are optional so older kernels remain readable. */
+export interface ConfigReadResponse {
+  protocolVersion?: string;
+  workspace?: string;
+  provider?: string;
+  model?: string;
+  maxOutputTokens?: number;
+  parallelThreads?: number;
+  maxRetainedTurns?: number;
+  maxModelRequests?: number;
+  /** Steering delivery per injection point; absent on kernels before 0.2.0 steering modes. */
+  steeringMode?: SteeringMode;
+  maxAttachmentStorageBytes?: number;
+  maxAttachmentStorageObjects?: number;
+  modelCapabilities?: ModelCapabilities;
+  toolBundleId?: string;
+  autoCompaction?: unknown;
+  approvalPolicy?: string;
+  approvalTimeoutSeconds?: number;
+}
+
 export interface ModelCapabilities {
   contextWindow: number;
   maxOutputTokens: number;
@@ -741,6 +837,11 @@ export interface ContextCompactJob {
   summaryModel?: string;
   summaryEffort?: string | null;
   requestRejected?: boolean;
+  /** `branchSummary`：`thread/leaf/set` 的被放弃分支摘要任务；缺省为上下文压缩。 */
+  kind?: "branchSummary";
+  targetTurnId?: string | null;
+  fromTurnId?: string;
+  abandonedTurnIds?: string[];
 }
 export interface ContextCompactAbortResponse extends ContextCompactJob { aborted: boolean }
 export interface ContextBudget {
@@ -779,6 +880,16 @@ export interface ContextReadResponse extends ContextBudget {
   lastBudget?: ContextBudget & { turnId: string } | null;
   /** Active ownership is process-local; retained terminal jobs are reconstructed from durable events. Missing means an older service; null means no retained job. */
   compactionJob?: { jobId: string; status: ContextCompactionJobStatus; active: boolean } | null;
+  /** 当前分支上已注入模型上下文的被放弃分支摘要；无则缺省。 */
+  branchSummaries?: ContextBranchSummary[];
+}
+export interface ContextBranchSummary {
+  entryId: string;
+  targetTurnId: string | null;
+  fromTurnId: string | null;
+  abandonedTurnIds: string[];
+  summaryJobId: string | null;
+  characters: number;
 }
 export type ConnectionTarget = "local" | "model" | "platform";
 export interface ConnectionCheck {
@@ -816,3 +927,82 @@ export interface PlatformLoginContext {
 export interface SkillDescriptor { id: string; name: string; description: string; digest: string; bytes: number }
 export interface SkillListResponse { skills: SkillDescriptor[] }
 export interface AttachmentDescriptor { id: string; name: string; digest: string; bytes: number; mediaType: string }
+
+/** `thread/usage/read` 参数；仅在 `capabilities.threadUsage` 为真时可用。 */
+export interface ThreadUsageReadParams { threadId: string; view?: "log" | "branch"; cursor?: string; limit?: number }
+/** 仅累计可验证的 provider usage；provider 未上报的字段为 null，费用无价目来源时为 null。 */
+export interface ThreadUsageBucket {
+  requests: number;
+  verifiedRequests: number;
+  unverifiedRequests: number;
+  /** 原因如 missing / invalidType / negative / outOfRange / inconsistent / zero / unknownProvider。 */
+  unverifiedReasons: Record<string, number>;
+  promptTokens: number;
+  uncachedInputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number | null;
+  cacheWriteTokens: number | null;
+  reasoningTokens: number | null;
+  costUsd: number | null;
+  costSource: "unavailable";
+}
+export interface ThreadUsageTurn extends ThreadUsageBucket { turnId: string; providers: string[]; models: string[] }
+export interface ThreadUsageReadResponse {
+  threadId: string;
+  view: "log" | "branch";
+  source: "provider-usage";
+  costAvailable: boolean;
+  turnCount: number;
+  turns: ThreadUsageTurn[];
+  nextCursor: string | null;
+  summaryTasks: ThreadUsageBucket;
+  totals: ThreadUsageBucket;
+  branch?: ThreadLeafState;
+}
+/** `thread/branches/list` 参数与结果；仅在 `capabilities.sessionBranchTree` 为真时可用。 */
+export interface ThreadBranchesListParams { threadId: string; cursor?: string; limit?: number }
+export interface ThreadBranchEndpoint {
+  turnId: string;
+  status: TurnStatus | null;
+  startedAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+  /** 自根到该端点的回合数。 */
+  depth: number;
+  /** 最近的分叉回合（有多个子回合）；无则为 null。 */
+  forkTurnId: string | null;
+  /** 分叉后该分支的第一个回合。 */
+  branchTurnId: string;
+  branchInputPreview: string | null;
+  inputPreview: string | null;
+  containsLeaf: boolean;
+  isLeaf: boolean;
+  selectable: boolean;
+}
+export interface ThreadBranchesListResponse {
+  threadId: string;
+  branched: boolean;
+  leafTurnId: string | null;
+  turnCount: number;
+  endpoints: ThreadBranchEndpoint[];
+  nextCursor: string | null;
+}
+
+/** `thread/leaf/read` / `thread/leaf/set` 结果；仅在 `capabilities.sessionLeaf` 为真时可用。 */
+export interface ThreadLeafState {
+  threadId: string;
+  branched: boolean;
+  leafTurnId: string | null;
+  activeTurnCount: number;
+  activeTurnIds: string[];
+  activeTurnIdsTruncated: boolean;
+  changed?: boolean;
+  /** 仅在请求 `summarize: true` 且指针已移动时返回；任务失败或取消不回滚指针。 */
+  summaryJob?: ContextCompactJob;
+}
+/** `thread/leaf/set` 参数；`summarize` 仅在 `capabilities.sessionBranchSummary` 为真时可用。 */
+export interface ThreadLeafSetParams {
+  threadId: string;
+  turnId: string | null;
+  summarize?: boolean;
+}

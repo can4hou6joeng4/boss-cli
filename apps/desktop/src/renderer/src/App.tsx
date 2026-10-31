@@ -11,11 +11,11 @@ import { RevertConfirmModal } from "./components/RevertConfirmModal";
 import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
-import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn } from "./data/harnessBridge";
+import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn } from "./data/harnessBridge";
 import { reduceHarnessEvent, type HarnessEvent } from "./data/harnessEvents";
 import { HarnessReplica } from "./data/harnessReplica";
 import { toMessage } from "./data/harnessBridge";
-import type { ModelDescriptor, QueueItem } from "@boss-cli/protocol";
+import type { ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-cli/protocol";
 import type { QueueIntent, QueueSubmissionCheck } from "./data/composerDraft";
 export function App(): JSX.Element {
   const [isDark, setIsDark] = useState(() => {
@@ -23,6 +23,7 @@ export function App(): JSX.Element {
     return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? true;
   });
   const [harnessUp, setHarnessUp] = useState(false);
+  const [continuationSupported, setContinuationSupported] = useState(false);
   const [isHomeView, setIsHomeView] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => window.innerWidth >= 700);
   const [folders, setFolders] = useState<ProjectFolder[]>(() => window.boss ? [] : MOCK_PROJECT_FOLDERS.map(folder => ({ ...folder, sessions: folder.sessions.map(session => ({ ...session, status: "completed" })) })));
@@ -35,6 +36,10 @@ export function App(): JSX.Element {
   const [configuredModelLabel, setConfiguredModelLabel] = useState<string>();
   const [messages, setMessages] = useState<MessageItem[]>([]);
   const [runningThreadIds, setRunningThreadIds] = useState(new Set<string>());
+  const [continuationCheck, setContinuationCheck] = useState<{
+    threadId: string; sourceTurnId: string; loading: boolean; submitting?: boolean;
+    uncertain?: boolean; response?: TurnContinuationReadResponse; error?: string;
+  } | null>(null);
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
   const [error, setError] = useState("");
   const activeRef = useRef<SessionItem | null>(null);
@@ -49,6 +54,8 @@ export function App(): JSX.Element {
   const rememberedApprovals = useRef(new Map<string, Set<string>>());
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const selectionVersion = useRef(0);
+  const continuationReadGeneration = useRef(0);
+  const continuationSubmitting = useRef<string | null>(null);
   const lastEsc = useRef(0);
   const [isCockpitOpen, setIsCockpitOpen] = useState(false), [isSideChatOpen, setIsSideChatOpen] = useState(false);
   const [isRewindOpen, setIsRewindOpen] = useState(false), [isDiffModalOpen, setIsDiffModalOpen] = useState(false);
@@ -74,6 +81,36 @@ export function App(): JSX.Element {
       return previous.map(folder => folder.id === session.projectId ? { ...folder, sessions: [session, ...folder.sessions.filter(item => item.id !== session.id)] } : folder);
     });
   }, []);
+  const readContinuationCheck = useCallback(async (session: SessionItem, explicitRejection?: string) => {
+    const sourceTurnId = session.lastTurnStatus === "interrupted" ? session.turnId : undefined;
+    const generation = ++continuationReadGeneration.current;
+    if (!window.boss || !continuationSupported || !sourceTurnId || session.projectId !== HARNESS_PROJECT_ID) {
+      setContinuationCheck(null);
+      return;
+    }
+    setContinuationCheck({ threadId: session.id, sourceTurnId, loading: true });
+    try {
+      const response = await readTurnContinuation({ threadId: session.id, sourceTurnId });
+      if (generation !== continuationReadGeneration.current || activeRef.current?.id !== session.id) return;
+      if (response.threadId !== session.id || response.sourceTurnId !== sourceTurnId) {
+        throw new Error("预检结果与来源回合不一致");
+      }
+      setContinuationCheck({ threadId: session.id, sourceTurnId, loading: false, response,
+        error: response.eligible ? explicitRejection : undefined });
+    } catch (error) {
+      if (generation !== continuationReadGeneration.current || activeRef.current?.id !== session.id) return;
+      const rpc = error && typeof error === "object" ? error as { rpcError?: unknown; message?: unknown; data?: unknown } : null;
+      const rpcData = rpc?.data && typeof rpc.data === "object" ? rpc.data as Record<string, unknown> : null;
+      if (rpc?.rpcError === true && typeof rpc.message === "string") {
+        const reasonCode = typeof rpcData?.code === "string" ? rpcData.code : undefined;
+        setContinuationCheck({ threadId: session.id, sourceTurnId, loading: false,
+          error: `预检被内核拒绝：${rpc.message}${reasonCode ? `（${reasonCode}）` : ""}` });
+        return;
+      }
+      setContinuationCheck({ threadId: session.id, sourceTurnId, loading: false,
+        error: "无法确认该中断回合是否可续接。刷新状态前不会发送续接请求。" });
+    }
+  }, [continuationSupported]);
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
     try { localStorage.setItem("boss-cli.ui.theme", isDark ? "dark" : "light"); } catch {}
@@ -95,6 +132,7 @@ export function App(): JSX.Element {
       if (event.method === "turn/started") {
         lifecycleVersion.current += 1;
         if (params.turnId) turnIds.current.set(id, params.turnId);
+        if (activeRef.current?.id === id) setContinuationCheck(null);
         markRunning(id, true); return;
       }
       if (params.kind !== "userMessage" && params.turnId && turnIds.current.has(id) && turnIds.current.get(id) !== params.turnId) return;
@@ -104,7 +142,7 @@ export function App(): JSX.Element {
       if (event.method === "session/error") { setError(params.message ?? "任务遇到错误，请检查后重试。"); return; }
       if (event.method === "thread/updated") {
         lifecycleVersion.current += 1; markRunning(id, false);
-        void replica.resume(id); return;
+        void replica.resume(id); void refresh(); return;
       }
       updateThread(id, previous => reduceHarnessEvent(previous, event));
     }, snapshot => {
@@ -122,6 +160,7 @@ export function App(): JSX.Element {
       refreshing = (async () => {
         const status = await harnessStatus(); if (cancelled) return;
         setHarnessUp(status?.running ?? false);
+        setContinuationSupported(status?.capabilities?.explicitTurnContinuation === true);
         if (!status?.running) {
           if (status?.state === "disconnected" || status?.state === "stopped") setError(status?.error ?? "本地内核未连接，可重新连接后恢复会话。");
           return;
@@ -147,13 +186,15 @@ export function App(): JSX.Element {
           runningRef.current = next; setRunningThreadIds(next);
           for (const session of sessions) if (session.turnId) turnIds.current.set(session.id, session.turnId);
         }
-        for (const session of sessions) session.status = runningRef.current.has(session.id) ? "running" : "idle";
+        for (const session of sessions) session.status = runningRef.current.has(session.id) ? "running"
+          : session.lastTurnStatus === "interrupted" ? "interrupted" : "idle";
         setFolders([{ id: HARNESS_PROJECT_ID, name: HARNESS_PROJECT_NAME, sessions }]);
         const active = activeRef.current;
         if (active?.projectId === HARNESS_PROJECT_ID) {
           const summary = sessions.find(session => session.id === active.id);
           if (summary) {
             activeRef.current = summary; setActiveSession(summary);
+            void readContinuationCheck(summary);
             const provider = summary.provider ?? processDefault?.provider ?? active.provider;
             const model = summary.model ?? modelCatalog.find(candidate => candidate.provider === provider)?.id ?? processDefault?.model ?? active.model;
             if (provider && model) {
@@ -169,11 +210,11 @@ export function App(): JSX.Element {
       const event = raw as HarnessEvent;
       if (event.method === "harness/connectionStatus") {
         if (event.params?.state === "ready") { setError(""); void refresh(); }
-        else setHarnessUp(false);
+        else { setHarnessUp(false); setContinuationSupported(false); }
         return;
       }
       if (event.method === "harness/disconnected") {
-        replica.invalidate(); setHarnessUp(false); setConfiguredModelLabel(undefined); setModelOptions([]);
+        replica.invalidate(); setHarnessUp(false); setContinuationSupported(false); setConfiguredModelLabel(undefined); setModelOptions([]);
         setError("本地内核已断开，正在恢复连接；结果未确认的对外操作请先核对平台状态。");
         for (const id of runningRef.current) markRunning(id, false);
         return;
@@ -182,7 +223,7 @@ export function App(): JSX.Element {
     });
     void refresh();
     return () => { cancelled = true; replica.invalidate(); unsubscribe(); if (replicaRef.current === replica) replicaRef.current = null; };
-  }, [markRunning, updateThread]);
+  }, [markRunning, readContinuationCheck, updateThread]);
   useEffect(() => () => { for (const timer of timers.current.values()) clearTimeout(timer); }, []);
   const handleSelectSession = useCallback((session: SessionItem) => {
     const requestVersion = ++selectionVersion.current;
@@ -193,6 +234,7 @@ export function App(): JSX.Element {
     setActiveModelProvider(provider); setActiveModelId(model);
     setConfiguredModelLabel(`${provider} · ${model}`);
     setQueueItems([]);
+    void readContinuationCheck(session);
     if (window.innerWidth < 700) setIsSidebarOpen(false);
     if (session.projectId !== HARNESS_PROJECT_ID) {
       const sample = cache.current.get(session.id) ?? (session.id === "s-algo" ? MOCK_CONVERSATION_THREAD : [
@@ -214,9 +256,10 @@ export function App(): JSX.Element {
         setActiveModelProvider(provider); setActiveModelId(model); setConfiguredModelLabel(`${provider} · ${model}`);
       }
     });
-  }, [activeModelId, activeModelProvider, defaultModel, modelOptions]);
+  }, [activeModelId, activeModelProvider, defaultModel, modelOptions, readContinuationCheck]);
   const handleNewTask = useCallback(() => {
-    ++selectionVersion.current; activeRef.current = null; setActiveSession(null); setMessages([]); setIsHomeView(true); setError("");
+    ++selectionVersion.current; ++continuationReadGeneration.current;
+    activeRef.current = null; setActiveSession(null); setMessages([]); setIsHomeView(true); setError(""); setContinuationCheck(null);
     if (defaultModel) { setActiveModelProvider(defaultModel.provider); setActiveModelId(defaultModel.model); setConfiguredModelLabel(`${defaultModel.provider} · ${defaultModel.model}`); }
   }, [defaultModel]);
   const createConnectionSession = async (): Promise<SessionItem | null> => {
@@ -256,11 +299,11 @@ export function App(): JSX.Element {
       })));
       if (selectionVersion.current !== selectionVersionAtStart || activeRef.current?.id !== session.id) return true;
       activeRef.current = updated; setActiveSession(updated);
-      void sessionReasoning.refresh();
+      void sessionReasoning.refresh(); void readContinuationCheck(updated);
     }
     setActiveModelProvider(provider); setActiveModelId(model); setConfiguredModelLabel(`${provider} · ${model}`);
     return true;
-  }, [harnessUp, isHomeView, sessionReasoning]);
+  }, [harnessUp, isHomeView, readContinuationCheck, sessionReasoning]);
   const send = useCallback(async (id: string, text: string, real: boolean, model = activeModelId, skillIds: string[] = []): Promise<boolean> => {
     if (real && !harnessUp) { setError("本地内核未连接，请重启应用后再发起任务。"); return false; }
     if (runningRef.current.has(id)) { setError("该会话仍在运行，请等待结束或停止后再发送。"); return false; }
@@ -312,6 +355,51 @@ export function App(): JSX.Element {
     const session = activeRef.current; if (!session || !text.trim()) return false;
     return send(session.id, text, session.projectId === HARNESS_PROJECT_ID, activeModelId, skillIds);
   }, [send, activeModelId]);
+  const handleContinueInterruptedTurn = useCallback(async () => {
+    const check = continuationCheck;
+    if (!harnessUp || !continuationSupported) {
+      setContinuationCheck(previous => previous ? { ...previous, error: !harnessUp
+        ? "本地内核未连接。重新连接并刷新预检状态后再操作。"
+        : "当前本地内核版本不支持显式续接。" } : previous);
+      return;
+    }
+    if (!check?.response?.eligible || check.loading || check.submitting || check.uncertain ||
+        activeRef.current?.id !== check.threadId) return;
+    const key = `${check.threadId}:${check.sourceTurnId}`;
+    if (continuationSubmitting.current === key) return;
+    continuationSubmitting.current = key;
+    setContinuationCheck(previous => previous && previous.threadId === check.threadId && previous.sourceTurnId === check.sourceTurnId
+      ? { ...previous, submitting: true, error: undefined } : previous);
+    const continuationId = crypto.randomUUID();
+    try {
+      const response = await continueTurn({ threadId: check.threadId, sourceTurnId: check.sourceTurnId, continuationId });
+      if (response.continuedFromTurnId !== check.sourceTurnId || response.continuationId !== continuationId || !response.turnId) {
+        throw new Error("续接回执与请求不一致");
+      }
+      turnIds.current.set(check.threadId, response.turnId);
+      setContinuationCheck(null);
+      markRunning(check.threadId, true);
+      void replicaRef.current?.resume(check.threadId);
+    } catch (error) {
+      const rpc = error && typeof error === "object" ? error as { rpcError?: unknown; message?: unknown; data?: unknown } : null;
+      const rpcData = rpc?.data && typeof rpc.data === "object" ? rpc.data as Record<string, unknown> : null;
+      if (rpc?.rpcError === true && typeof rpc.message === "string") {
+        const reasonCode = typeof rpcData?.code === "string" ? rpcData.code : undefined;
+        const rejection = `续接被内核拒绝：${rpc.message}${reasonCode ? `（${reasonCode}）` : ""}`;
+        const session = activeRef.current;
+        if (session?.id === check.threadId) void readContinuationCheck(session, rejection);
+        else setContinuationCheck(previous => previous && previous.threadId === check.threadId
+          ? { ...previous, submitting: false, error: rejection } : previous);
+        return;
+      }
+      setContinuationCheck(previous => previous && previous.threadId === check.threadId && previous.sourceTurnId === check.sourceTurnId
+        ? { ...previous, submitting: false, uncertain: true,
+            error: "续接请求的回执尚未确认。请先刷新状态；本次不会自动重发。" } : previous);
+      void replicaRef.current?.resume(check.threadId);
+    } finally {
+      if (continuationSubmitting.current === key) continuationSubmitting.current = null;
+    }
+  }, [continuationCheck, continuationSupported, harnessUp, markRunning, readContinuationCheck]);
   const handleQueueMessage = useCallback(async (text: string, intent: QueueIntent, clientUserMessageId: string): Promise<boolean> => {
     const session = activeRef.current;
     if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp || !text.trim()) return false;
@@ -402,6 +490,7 @@ export function App(): JSX.Element {
       onCreateConnectionSession={createConnectionSession}
       sessionReasoning={contextThreadId ? sessionReasoning : undefined}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession}
+      continuationCheck={continuationCheck} onContinueInterruptedTurn={handleContinueInterruptedTurn}
       onInterrupt={handleInterrupt} onApprovalDecision={handleApproval} onStartSessionWithPrompt={handleStartSessionWithPrompt} models={modelOptions} activeModelProvider={activeModelProvider} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel} onSelectModel={handleSelectModel}
       onOpenCockpit={() => setIsCockpitOpen(true)} onOpenSideChat={() => setIsSideChatOpen(previous => !previous)} onOpenRewind={openRewind} onOpenContext={contextThreadId ? contextPanel.open : undefined}
       onOpenShortcuts={() => setIsShortcutsOpen(true)} onReviewDiff={() => setIsDiffModalOpen(true)} onRevertDiff={() => setIsRevertModalOpen(true)} />

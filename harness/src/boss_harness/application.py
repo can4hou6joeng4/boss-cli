@@ -32,21 +32,23 @@ from boss_harness.connections import ConnectionChecks
 from boss_harness.models import ModelConfig, Provider, resolve_config
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.capabilities import ModelCatalog
-from boss_harness.models.types import AssistantMessage, ModelRequest, UserMessage
+from boss_harness.models.types import AssistantMessage, ModelRecoveryBudget, ModelRequest, UserMessage
 from boss_harness.model_tools import MODEL_RESULT_READ_TOOL, model_tool_specs
 from boss_harness.ownership import StateDirectoryOwner
-from boss_harness.resources import AttachmentStore, SkillCatalog, ToolRegistry
+from boss_harness.resources import AttachmentQuotaExceeded, AttachmentStore, SkillCatalog, ToolRegistry
 from boss_harness.request_identity import resolve_request
 from boss_harness.request_policy import ModelRequestRejected, check_model_request, record_model_rejection
 from boss_harness.rpc import JsonRpcServer, RpcError
 from boss_harness.runtime import RuntimeManager, TurnQueue
-from boss_harness.session import (CheckpointCommittedError, CheckpointCommitUncertain, Entry,
+from boss_harness.session import (BRANCH_SUMMARY_ENTRY_TYPE, CheckpointCommittedError, CheckpointCommitUncertain, Entry,
                                   ApprovalDecisionError, ItemLookupError, SessionEntriesSnapshot,
-                                  SessionStore, ThreadNotFound, ToolRevisionPersistenceError)
+                                  SessionSizeLimitExceeded, SessionStore, ThreadNotFound,
+                                  ToolRevisionPersistenceError,
+                                  MAX_TOOL_BATCH_CALLS)
 from boss_harness.snapshot_store import SnapshotStore
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
 from boss_harness.tool_bundle import ToolBundle
-from boss_harness.summary import SUMMARY_MAX_REQUESTS, SummaryPlanner
+from boss_harness.summary import BRANCH_SUMMARY_SYSTEM, SUMMARY_MAX_REQUESTS, SummaryPlanner
 from boss_harness.compaction import CompactionPolicy, ContextCompactionFailed
 from boss_harness.context import NoCompactionSource
 from boss_harness.shutdown import TrackedAbort, join_until
@@ -64,6 +66,17 @@ MAX_RUNTIME_RESOURCE_WAITERS = 32
 MAX_RUNTIME_RESOURCE_OWNERS = 32
 MAX_COMPACTION_ERROR_CHARACTERS = 2_048
 MAX_TASK_RELATIONS = 256
+MAX_CONTINUATION_HISTORY_BYTES = 64 * 1024 * 1024
+CONTINUATION_WARNING = ("续接会发起新的模型请求，可能重复调用并产生额外费用；已完成工具结果会沿用，"
+                        "不会再次执行旧工具，新写操作仍需逐次审批。")
+
+
+def _branch_view(params: dict | None) -> bool:
+    """Optional read view: "log" (default, full rollout) or "branch" (current leaf projection)."""
+    view = (params or {}).get("view", "log")
+    if view not in {"log", "branch"}:
+        raise ValueError("view 必须是 log 或 branch")
+    return view == "branch"
 
 
 def _record_checkpoint_turn(turns_by_job: dict[str, set[str]], job_id: str,
@@ -122,6 +135,25 @@ def _approval_timeout() -> float:
     except ValueError:
         return DEFAULT_APPROVAL_TIMEOUT_SECONDS
     return value if math.isfinite(value) and value > 0 else DEFAULT_APPROVAL_TIMEOUT_SECONDS
+
+
+STEERING_MODES = ("all", "one-at-a-time")
+
+
+def _steering_mode_value(value: object) -> str:
+    if type(value) is not str or value not in STEERING_MODES:
+        raise ValueError("steering_mode 必须是 all 或 one-at-a-time")
+    return value
+
+
+def steering_mode_from_environment() -> str:
+    raw = os.environ.get("BOSS_HARNESS_STEERING_MODE")
+    if raw is None or raw == "":
+        return "all"
+    # Do not echo arbitrary environment text into errors.
+    if raw not in STEERING_MODES:
+        raise ValueError("BOSS_HARNESS_STEERING_MODE 必须是 all 或 one-at-a-time")
+    return raw
 
 
 def _text(params: dict | None, key: str, *, maximum: int = 100_000) -> str:
@@ -194,10 +226,12 @@ class EventHub:
                 pass
             self.lifecycle_hooks.observe_event(method, payload)
 
-    def items(self, thread_id: str) -> list[dict]:
+    def items(self, thread_id: str, *, entries: list[dict] | None = None) -> list[dict]:
         with self.lock:
+            source = (self.sessions.read_items(thread_id) if entries is None
+                      else self.sessions._project_items(thread_id, entries))
             return [{**item, **(self.live.get(thread_id, {}).get(item["id"], {}) if item.get("status") == "running" else {})}
-                    for item in self.sessions.read_items(thread_id)]
+                    for item in source]
 
 
 class ApplicationService:
@@ -210,10 +244,17 @@ class ApplicationService:
                  hook_timeout: float = 0.25,
                  expose_tool_results_to_hooks: bool = False,
                  max_model_requests: int | None = None,
-                 prompt_preamble: str | None = None) -> None:
+                 prompt_preamble: str | None = None,
+                 steering_mode: str | None = None) -> None:
         self.server, self.config, self.provider = server, config, provider
+        # "all" keeps the historical drain-everything behavior; "one-at-a-time"
+        # injects only the oldest queued steering input per drain point.
+        self.steering_mode = (steering_mode_from_environment() if steering_mode is None
+                              else _steering_mode_value(steering_mode))
         self.max_model_requests = (model_request_limit_from_environment() if max_model_requests is None
                                    else model_request_limit(max_model_requests))
+        attachment_limits = AttachmentStore.limits_from_environment()
+        self.attachment_limits = attachment_limits
         if type(config.max_tokens) is not int or config.max_tokens <= 0:
             raise ValueError("max_tokens 必须是正整数")
         self.model_catalog = model_catalog if model_catalog is not None else ModelCatalog.from_environment()
@@ -283,7 +324,8 @@ class ApplicationService:
             self.context = ContextService(self.sessions)
             self._restore_compaction_jobs()
             self.skills = SkillCatalog(self.workspace / ".boss-cli" / "skills")
-            self.attachments = AttachmentStore(self.sessions, state_dir / "attachments", self.workspace)
+            self.attachments = AttachmentStore(self.sessions, state_dir / "attachments", self.workspace,
+                                               limits=attachment_limits)
             self.tools = self._new_bridge()
             self.connections = ConnectionChecks(config, request_preparer=lambda request: self.context.prepare(
                 request, self.model_catalog.resolve(config.provider, request.model), provider=config.provider)[0],
@@ -404,6 +446,9 @@ class ApplicationService:
             lifecycle_hooks=self.lifecycle_hooks,
             persistence_fence=self._fence_tool_persistence,
             dispatch_lock=self.runtimes.lock,
+            execution_modes=self.registry.execution_modes(),
+            parallel_bridge_factory=self._new_bridge,
+            parallel_bridge_close=self.bridge_lifecycle.close,
             max_model_requests=self.max_model_requests,
             history_provider=self.context.history,
             request_preparer=lambda request: self.context.prepare(request,
@@ -420,10 +465,14 @@ class ApplicationService:
             "thread/model/set": self.on_thread_model_set,
             "thread/reasoning/read": self.on_thread_reasoning_read,
             "thread/reasoning/set": self.on_thread_reasoning_set,
+            "thread/leaf/read": self.on_thread_leaf_read, "thread/usage/read": self.on_thread_usage_read,
+            "thread/branches/list": self.on_thread_branches_list, "thread/leaf/set": self.on_thread_leaf_set,
             "thread/turns/list": self.on_turn_list, "thread/items/list": self.on_items_list,
             "thread/item/result/read": self.on_tool_result_read,
             "thread/item/content/read": self.on_item_content_read,
-            "turn/start": self.on_turn_start, "turn/interrupt": self.on_turn_interrupt,
+            "turn/start": self.on_turn_start, "turn/continue": self.on_turn_continue,
+            "turn/continuation/read": self.on_turn_continuation_read,
+            "turn/interrupt": self.on_turn_interrupt,
             "turn/steer": self.on_turn_steer, "turn/read": self.on_turn_read,
             "task/read": self.on_task_read,
             "runtime/resources/read": self.on_runtime_resources_read,
@@ -496,7 +545,10 @@ class ApplicationService:
         return {"serverName": "boss-harness", "serverVersion": __version__, "protocolVersion": protocol,
             "capabilities": {"bidirectionalRequests": True, "eventReplay": True,
                              "pagination": True, "parallelThreads": True,
-                             "durableApprovals": True},
+                             "durableApprovals": True, "explicitTurnContinuation": True,
+                             "sessionLeaf": True, "sessionBranchViews": True,
+                             "sessionBranchTree": True, "sessionBranchSummary": True,
+                             "threadUsage": True, "sessionModelSelection": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -535,6 +587,9 @@ class ApplicationService:
                 "maxOutputTokens": self.config.max_tokens, "parallelThreads": self.runtimes.capacity,
                 "maxRetainedTurns": self.runtimes.owner_capacity,
                 "maxModelRequests": self.max_model_requests,
+                "steeringMode": self.steering_mode,
+                "maxAttachmentStorageBytes": self.attachment_limits.max_bytes,
+                "maxAttachmentStorageObjects": self.attachment_limits.max_objects,
                 "modelCapabilities": self.model_catalog.resolve(self.config.provider, self.config.model).describe(),
                 "toolBundleId": self.tool_bundle.id,
                 "autoCompaction": self.compaction_policy.describe(),
@@ -631,7 +686,10 @@ class ApplicationService:
         return self.sessions.list_threads_page(cursor=params.get("cursor"), limit=params.get("limit", 50),
                                                archived=params.get("archived", False), project_id=params.get("projectId"))
 
-    def _snapshot(self, thread_id: str, *, exclude: bool = False, paged: bool = False) -> dict:
+    def _snapshot(self, thread_id: str, *, exclude: bool = False, paged: bool = False,
+                  branch: bool = False) -> dict:
+        if paged and branch:
+            raise ValueError("view=branch 暂不支持 snapshot=true，请改用非快照读取")
         if paged:
             build = None
             source = None
@@ -674,17 +732,26 @@ class ApplicationService:
         with self.events.lock:
             thread = self.sessions.get_thread(thread_id)
             job = self.runtimes.active.get(thread_id)
-            canonical_items = [] if exclude else self.events.items(thread_id)
-            edit_states = self.context.context_edit_states(self.sessions.read_entries(thread_id))
+            entries = self.sessions.read_entries(thread_id)
+            if branch:
+                entries = self.sessions._active_entries(entries)
+                thread = {**thread, "lastTurn": self.sessions.branch_last_turn(thread_id)}
+            canonical_items = [] if exclude else self.events.items(
+                thread_id, entries=entries if branch else None)
+            edit_states = self.context.context_edit_states(entries)
             items = [project_item(thread_id, item)
                      for item in canonical_items]
             for item in items:
                 if item["id"] in edit_states:
                     item["contextEdit"] = edit_states[item["id"]]
             result = {"thread": thread, "items": [] if exclude else items,
-                    "turns": None if exclude else self.sessions.list_turns(thread_id)["turns"],
+                    "turns": None if exclude else (self.sessions.list_branch_turns(thread_id) if branch
+                                                   else self.sessions.list_turns(thread_id))["turns"],
                     "activeTurnId": job["turnId"] if job else None,
                     "eventCursor": self.sessions.latest_event_cursor(), "queue": self.queue.list(thread_id)}
+            if branch:
+                result["view"] = "branch"
+                result["branch"] = self.sessions.read_leaf(thread_id)
             self._check_response_budget(result)
             return result
 
@@ -696,7 +763,7 @@ class ApplicationService:
 
     def on_thread_read(self, params: dict | None) -> dict:
         return self._snapshot(_text(params, "threadId"), exclude=bool((params or {}).get("excludeTurns", False)),
-                              paged=(params or {}).get("snapshot") is True)
+                              paged=(params or {}).get("snapshot") is True, branch=_branch_view(params))
 
     def on_thread_resume(self, params: dict | None) -> dict:
         return self.on_thread_read(params)
@@ -710,6 +777,11 @@ class ApplicationService:
 
     def on_turn_list(self, params: dict | None) -> dict:
         params = params or {}
+        if _branch_view(params):
+            thread_id = _text(params, "threadId")
+            result = self.sessions.list_branch_turns(thread_id, cursor=params.get("cursor"),
+                                                     limit=params.get("limit", 50))
+            return {**result, "view": "branch", "branch": self.sessions.read_leaf(thread_id)}
         return self.sessions.list_turns(_text(params, "threadId"), cursor=params.get("cursor"), limit=params.get("limit", 50))
 
     @contextmanager
@@ -1015,7 +1087,10 @@ class ApplicationService:
             raise ValueError("limit 必须是 1 到 200 的整数")
         offset = 0
         snapshot_id = params.get("snapshotId")
-        scope_id = thread_id + (":" + snapshot_id if isinstance(snapshot_id, str) else "")
+        branch = _branch_view(params)
+        if branch and snapshot_id is not None:
+            raise ValueError("view=branch 暂不支持 snapshotId 分页")
+        scope_id = thread_id + (":" + snapshot_id if isinstance(snapshot_id, str) else "") + (":branch" if branch else "")
         cursor = params.get("cursor")
         if cursor is not None:
             try:
@@ -1030,8 +1105,11 @@ class ApplicationService:
         if snapshot_id is not None:
             items, item_count = self.snapshots.page(snapshot_id, thread_id, offset, limit)
         else:
-            items = self.events.items(thread_id)
-            edit_states = self.context.context_edit_states(self.sessions.read_entries(thread_id))
+            entries = self.sessions.read_entries(thread_id)
+            if branch:
+                entries = self.sessions._active_entries(entries)
+            items = self.events.items(thread_id, entries=entries if branch else None)
+            edit_states = self.context.context_edit_states(entries)
         if snapshot_id is None and offset > len(items):
             raise ValueError("条目分页游标超出结果范围")
         page = []
@@ -1222,7 +1300,7 @@ class ApplicationService:
         if model != config.model:
             raise RpcError(-32013, "该 provider/model 不在本机配置目录中",
                            {"code": "MODEL_ROUTE_UNAVAILABLE", "provider": provider, "model": model})
-        with self.runtimes.lock:
+        with self._follow_up_admission_lock, self.runtimes.lock:
             if self.runtimes.closed:
                 raise RpcError(-32003, "内核正在关闭")
             thread = self.sessions.get_thread(thread_id)
@@ -1323,6 +1401,203 @@ class ApplicationService:
             updated = self.sessions.update_thread(thread_id, reasoningEffort=effort)
         self.events.emit("thread/reasoning/updated", {"threadId": thread_id, "effort": effort})
         return {"thread": updated}
+
+    def on_thread_leaf_read(self, params: dict | None) -> dict:
+        params = params or {}
+        if set(params) != {"threadId"}:
+            raise ValueError("thread/leaf/read 只接受 threadId")
+        return self.sessions.read_leaf(_text(params, "threadId"))
+
+    def on_thread_usage_read(self, params: dict | None) -> dict:
+        params = params or {}
+        if not set(params) <= {"threadId", "view", "cursor", "limit"}:
+            raise ValueError("thread/usage/read 只接受 threadId、view、cursor 与 limit")
+        result = self.sessions.usage_page(_text(params, "threadId"), branch=_branch_view(params),
+                                          cursor=params.get("cursor"), limit=params.get("limit", 50))
+        self._check_response_budget(result)
+        return result
+
+    def on_thread_branches_list(self, params: dict | None) -> dict:
+        params = params or {}
+        if not set(params) <= {"threadId", "cursor", "limit"}:
+            raise ValueError("thread/branches/list 只接受 threadId、cursor 与 limit")
+        result = self.sessions.list_branches(_text(params, "threadId"), cursor=params.get("cursor"),
+                                             limit=params.get("limit", 50))
+        self._check_response_budget(result)
+        return result
+
+    def on_thread_leaf_set(self, params: dict | None) -> dict:
+        params = params or {}
+        if not {"threadId", "turnId"} <= set(params) <= {"threadId", "turnId", "summarize"}:
+            raise ValueError("thread/leaf/set 只接受 threadId、turnId（可为 null）与可选 summarize")
+        thread_id = _text(params, "threadId")
+        turn_id = params["turnId"]
+        if turn_id is not None and not isinstance(turn_id, str):
+            raise ValueError("turnId 必须是字符串或 null")
+        summarize = params.get("summarize", False)
+        if type(summarize) is not bool:
+            raise ValueError("summarize 必须是布尔值")
+        job: dict[str, Any] | None = None
+        with self._follow_up_admission_lock, self.runtimes.lock:
+            self._idle(thread_id)
+            if thread_id in self._tool_persistence_fences:
+                raise RpcError(-32004, "工具结果持久化状态需要人工核对，暂不能切换分支")
+            if any(owner == thread_id for owner in self._follow_up_worker_threads.values()):
+                raise RpcError(-32004, "该会话仍有后续任务正在收尾")
+            if any(notice.get("threadId") == thread_id for notice in self._receipt_notices.values()):
+                raise RpcError(-32004, "该会话请求回执仍在收尾")
+            with self.queue.lock:
+                if any(item.get("status") == "delivering" for item in self.queue.list(thread_id)):
+                    raise RpcError(-32004, "队列中仍有投递状态未核对的请求")
+                if self.sessions.get_thread(thread_id).get("archived"):
+                    raise RpcError(-32004, "请先恢复会话，再切换分支")
+                # Preflight failures (no model lane, nothing abandoned) leave the
+                # leaf untouched; once the pointer moves, a later summary failure
+                # or cancellation never rolls it back.
+                prepared = self._prepare_branch_summary(thread_id, turn_id) if summarize else None
+                result = self.sessions.set_leaf(thread_id, turn_id, _with_entry_id=summarize)
+                leaf_entry_id = result.pop("_leafEntryId", None)
+                if prepared is not None and leaf_entry_id is not None:
+                    job = self._register_branch_summary(thread_id, leaf_entry_id, *prepared)
+        if result.get("changed"):
+            self.events.emit("thread/leafChanged", {"threadId": thread_id, "leafTurnId": result["leafTurnId"]})
+        if job is not None:
+            result["summaryJob"] = self._launch_branch_summary(job)
+        return result
+
+    def _prepare_branch_summary(self, thread_id: str, turn_id: str | None) -> tuple:
+        """Validate everything a branch summary needs before the leaf moves (runtimes.lock held)."""
+        if self.runtimes.closed:
+            raise RpcError(-32003, "内核正在关闭")
+        try:
+            meta, source = self.context.branch_summary_material(thread_id, turn_id)
+        except NoCompactionSource as exc:
+            raise RpcError(-32013, str(exc) + "；分支未切换",
+                           {"code": "BRANCH_SUMMARY_NO_SOURCE", "threadId": thread_id}) from None
+        base = self._model_config(self.sessions.get_thread(thread_id), {})
+        try:
+            config = self._compaction_model_config(self.compaction_policy, base)
+        except RpcError as exc:
+            data = dict(exc.data or {}) if isinstance(getattr(exc, "data", None), dict) else {}
+            if data.get("code") == "COMPACTION_MODEL_UNAVAILABLE":
+                raise RpcError(-32013, "被放弃分支摘要需要可用模型线路（当前 provider="
+                               + str(data.get("provider")) + "）；分支未切换，可不带 summarize 重试",
+                               {**data, "code": "BRANCH_SUMMARY_MODEL_UNAVAILABLE"}) from None
+            raise
+        if self.provider_factory is None:
+            raise RpcError(-32013, "当前内核未配置独立摘要供应商；分支未切换",
+                           {"code": "BRANCH_SUMMARY_MODEL_UNAVAILABLE", "provider": config.provider})
+        active_manual = sum(1 for job_id in self._compaction_by_thread.values()
+                            if "turnId" not in self._compaction_jobs[job_id])
+        if active_manual >= self.runtimes.capacity:
+            raise RpcError(-32005, "已达到后台摘要并发上限",
+                           {"code": "COMPACTION_CONCURRENCY_LIMIT", "limit": self.runtimes.capacity})
+        try:
+            provider = self._compaction_provider(config)
+        except ValueError as exc:
+            raise RpcError(-32013, str(exc) + "；分支未切换",
+                           {"code": "BRANCH_SUMMARY_MODEL_UNAVAILABLE", "provider": config.provider}) from None
+        if any(job["runner"].provider is provider for job in self.runtimes.jobs.values()) \
+                or any(existing.get("provider") is provider for existing in self._compaction_jobs.values()):
+            raise RpcError(-32005, "模型供应商实例正在被其他任务使用，无法安全隔离摘要请求")
+        return meta, source, config, provider
+
+    def _register_branch_summary(self, thread_id: str, leaf_entry_id: str, meta: dict, source: str,
+                                 config: ModelConfig, provider: Provider) -> dict:
+        job_id = uuid.uuid4().hex
+        job = {"jobId": job_id, "threadId": thread_id, "kind": "branchSummary",
+               # The summarized range ends at the abandoned leaf.
+               "throughTurnId": meta["fromTurnId"], "sourceDigest": meta["sourceDigest"],
+               "targetTurnId": meta["targetTurnId"], "fromTurnId": meta["fromTurnId"],
+               "commonTurnId": meta["commonTurnId"], "abandonedTurnIds": meta["abandonedTurnIds"],
+               "_leafEntryId": leaf_entry_id, "_source": source,
+               "config": config, "provider": provider, "recoveryBudget": ModelRecoveryBudget(),
+               "summaryProvider": config.provider, "summaryModel": config.model, "summaryEffort": config.effort,
+               "cancel": threading.Event(), "status": "running", "modelRequestCount": 0,
+               "processedCharacters": 0, "totalCharacters": len(source),
+               "_launch_done": threading.Event(), "_startedMonotonic": time.monotonic()}
+        job["worker"] = threading.Thread(target=self._run_branch_summary, args=(job,),
+                                         name=f"branch-summary-{job_id[:8]}", daemon=True)
+        self._compaction_jobs[job_id] = job
+        self._compaction_by_thread[thread_id] = job_id
+        return job
+
+    def _launch_branch_summary(self, job: dict) -> dict:
+        worker = job["worker"]
+        try:
+            self.events.emit("context/compactionStarted", self._compaction_public(job))
+            with self.runtimes.lock:
+                cancelled_before_start = self.runtimes.closed or job["cancel"].is_set()
+                if cancelled_before_start:
+                    job.update(status="cancelled", code="COMPACTION_CANCELLED", message="摘要已取消")
+                else:
+                    worker.start()
+            if cancelled_before_start:
+                self._emit_compaction_terminal(job, "context/compactionFailed")
+                self._finish_compaction(job)
+        except Exception as exc:
+            if worker.ident is not None:
+                raise
+            # The leaf already moved; report the summary failure without undoing it.
+            with self.runtimes.lock:
+                job.update(status="failed", code="COMPACTION_START_FAILED",
+                           message=self._compaction_safe_error(job, exc))
+            try:
+                self._emit_compaction_terminal(job, "context/compactionFailed")
+            except Exception:
+                pass
+            finally:
+                self._finish_compaction(job)
+        finally:
+            launch_done = job.pop("_launch_done", None)
+            if launch_done is not None:
+                launch_done.set()
+        with self.runtimes.lock:
+            return self._compaction_public(job)
+
+    def _run_branch_summary(self, job: dict) -> None:
+        thread_id = job["threadId"]
+        try:
+            source = job.pop("_source")
+            config: ModelConfig = job["config"]
+            summary, planner = self._generate_compaction(job, source, system=BRANCH_SUMMARY_SYSTEM)
+            with self.runtimes.lock:
+                if job["cancel"].is_set():
+                    raise _CompactionCancelled
+                self.sessions.append_branch_summary(thread_id, job["_leafEntryId"], {
+                    "summary": summary, "origin": "model", "targetTurnId": job["targetTurnId"],
+                    "fromTurnId": job["fromTurnId"], "commonTurnId": job["commonTurnId"],
+                    "abandonedTurnIds": job["abandonedTurnIds"], "summaryJobId": job["jobId"],
+                    "summaryProvider": config.provider, "summaryModel": config.model,
+                    "summaryEffort": config.effort, "modelRequestCount": job["modelRequestCount"],
+                    "sourceCharacters": len(source), "sourceTextDigest": planner.source_digest},
+                    on_committed=lambda: job.update(status="completed"))
+                job.update(result=self.sessions.read_leaf(thread_id))
+        except _CompactionCancelled:
+            with self.runtimes.lock:
+                job.update(status="cancelled", code="COMPACTION_CANCELLED", message="摘要已取消")
+            self._emit_compaction_terminal(job, "context/compactionFailed")
+        except ContextBudgetExceeded as exc:
+            self._compaction_failed(job, "COMPACTION_INPUT_TOO_LARGE", exc)
+        except _CompactionFailure as exc:
+            self._compaction_failed(job, exc.code, exc)
+        except ModelRequestRejected as exc:
+            self._compaction_failed(job, exc.code, exc)
+        except ValueError as exc:
+            message = str(exc)
+            code = "BRANCH_SUMMARY_LEAF_CHANGED" if "分支指针" in message or "切换后" in message else "COMPACTION_FAILED"
+            self._compaction_failed(job, code, message)
+        except Exception as exc:
+            self._compaction_failed(job, "COMPACTION_FAILED", exc)
+        finally:
+            try:
+                if job["status"] == "completed":
+                    try:
+                        self._emit_compaction_terminal(job, "context/compactionCompleted")
+                    except Exception as exc:
+                        self._compaction_committed_warning(job, exc)
+            finally:
+                self._finish_compaction(job)
 
     def on_thread_reasoning_read(self, params: dict | None) -> dict:
         params = params or {}
@@ -1479,7 +1754,7 @@ class ApplicationService:
                 # Session files may be removed independently of the append-only global event log.
                 continue
             checkpoint_committed = any(
-                entry.get("type") == "context_checkpoint"
+                entry.get("type") in {"context_checkpoint", BRANCH_SUMMARY_ENTRY_TYPE}
                 and entry.get("payload", {}).get("summaryJobId") == job_id
                 for entry in entries
             )
@@ -1522,9 +1797,12 @@ class ApplicationService:
                   "status": job["status"]}
         for key in ("code", "message", "result", "modelRequestCount", "processedCharacters", "totalCharacters",
                     "retainedItemCount", "firstKeptItemId", "estimatedRetainedTokens", "reason", "turnId",
-                    "summaryProvider", "summaryModel", "summaryEffort", "requestRejected"):
+                    "summaryProvider", "summaryModel", "summaryEffort", "requestRejected",
+                    "kind", "targetTurnId", "fromTurnId", "abandonedTurnIds"):
             if key in job and job[key] is not None:
                 result[key] = job[key]
+        if job.get("kind") == "branchSummary":
+            result["targetTurnId"] = job.get("targetTurnId")
         return result
 
     def _remember_compaction_terminal(self, job: dict) -> None:
@@ -1548,6 +1826,27 @@ class ApplicationService:
                 if expired is not None and expired["status"] != "running":
                     self._compaction_jobs.pop(expired_id, None)
 
+    def _emit_compaction_terminal(self, job: dict, method: str, params: dict | None = None) -> None:
+        """Publish a terminal notification only once the job no longer owns its thread."""
+        with self.runtimes.lock:
+            payload = self._compaction_public(job) if params is None else params
+            if not job.get("_retired"):
+                job.setdefault("_terminalEvents", []).append((method, payload))
+                return
+        self.events.emit(method, payload)
+
+    def _flush_compaction_terminal(self, job: dict) -> None:
+        with self.runtimes.lock:
+            if not job.get("_retired"):
+                return
+            pending = job.pop("_terminalEvents", None) or []
+        for method, payload in pending:
+            try:
+                self.events.emit(method, payload)
+            except Exception as exc:
+                if method == "context/compactionCompleted":
+                    self._compaction_committed_warning(job, exc)
+
     def _finish_compaction(self, job: dict) -> None:
         wake_follow_up = False
         with self.runtimes.lock:
@@ -1566,6 +1865,7 @@ class ApplicationService:
             # the queue untouched so no new model or external action starts
             # without an explicit retry.
             wake_follow_up = released and job.get("status") == "completed"
+        self._flush_compaction_terminal(job)
         if wake_follow_up:
             try:
                 self._start_follow_up(job["threadId"])
@@ -1585,6 +1885,7 @@ class ApplicationService:
         released = self._compaction_by_thread.get(job["threadId"]) == job["jobId"]
         if self._compaction_by_thread.get(job["threadId"]) == job["jobId"]:
             self._compaction_by_thread.pop(job["threadId"], None)
+        job["_retired"] = True
         self._remember_compaction_terminal(job)
         return released
 
@@ -1593,6 +1894,7 @@ class ApplicationService:
         with self.runtimes.lock:
             released = self._retire_compaction_locked(job)
             wake_follow_up = released and job.get("status") == "completed"
+        self._flush_compaction_terminal(job)
         if wake_follow_up:
             try:
                 self._start_follow_up(job["threadId"])
@@ -1622,7 +1924,7 @@ class ApplicationService:
                 job.update(status="cancelled", code="COMPACTION_CANCELLED", message="摘要已取消")
             else:
                 job.update(status="failed", code=code, message=self._compaction_safe_error(job, error))
-        self.events.emit("context/compactionFailed", self._compaction_public(job))
+        self._emit_compaction_terminal(job, "context/compactionFailed")
 
     def _compaction_committed_warning(self, job: dict, error: Exception | str) -> None:
         with self.runtimes.lock:
@@ -1742,6 +2044,7 @@ class ApplicationService:
             launch_done = threading.Event()
             job = {"jobId": job_id, "threadId": thread_id, "throughTurnId": through_turn_id,
                    "sourceDigest": plan["sourceDigest"], "config": config, "provider": provider,
+                   "recoveryBudget": ModelRecoveryBudget(),
                    "summaryProvider": config.provider, "summaryModel": config.model,
                    "summaryEffort": config.effort,
                    "cancel": threading.Event(), "status": "running", "modelRequestCount": 0,
@@ -1764,7 +2067,7 @@ class ApplicationService:
                     worker.start()
                     cancelled_before_start = False
             if cancelled_before_start:
-                self.events.emit("context/compactionFailed", self._compaction_public(job))
+                self._emit_compaction_terminal(job, "context/compactionFailed")
                 self._finish_compaction(job)
         except Exception as exc:
             if worker.ident is not None:
@@ -1773,7 +2076,7 @@ class ApplicationService:
                 job.update(status="failed", code="COMPACTION_START_FAILED",
                            message=self._compaction_safe_error(job, exc))
             try:
-                self.events.emit("context/compactionFailed", self._compaction_public(job))
+                self._emit_compaction_terminal(job, "context/compactionFailed")
             finally:
                 self._finish_compaction(job)
             raise RuntimeError(job["message"]) from None
@@ -1807,7 +2110,17 @@ class ApplicationService:
             job = self._compaction_jobs.get(job_id)
             if job is None:
                 raise self._missing_compaction_job()
-            return self._compaction_public(job)
+            public = self._compaction_public(job)
+            if (public["status"] != "running"
+                    and self._compaction_by_thread.get(job["threadId"]) == job["jobId"]):
+                # The worker has decided the outcome but still owns the thread.
+                # Expose the terminal state only after the busy registration is
+                # released so a client acting on it is never rejected as busy.
+                public = {key: public[key] for key in
+                          ("jobId", "threadId", "throughTurnId", "sourceDigest", "kind", "targetTurnId")
+                          if key in public}
+                public["status"] = "running"
+            return public
 
     def _stream_compaction(self, provider: Provider, request: ModelRequest,
                            cancel: threading.Event, *, character_limit: int = 32_000) -> AssistantMessage:
@@ -1882,18 +2195,21 @@ class ApplicationService:
             payload["rejectedCode"] = failure_code
         self.sessions.append(job["threadId"], Entry(type="context_summary_usage", payload=payload))
 
-    def _generate_compaction(self, job: dict, source: str) -> tuple[str, SummaryPlanner]:
+    def _generate_compaction(self, job: dict, source: str, *,
+                             system: str | None = None) -> tuple[str, SummaryPlanner]:
         config: ModelConfig = job["config"]
         thread_id = job["threadId"]
         capabilities = self.model_catalog.resolve(config.provider, config.model)
-        planner = SummaryPlanner(source, config, capabilities)
+        planner = (SummaryPlanner(source, config, capabilities) if system is None
+                   else SummaryPlanner(source, config, capabilities, system=system))
         offset, summary = 0, ""
         for index in range(1, SUMMARY_MAX_REQUESTS + 1):
             if job["cancel"].is_set():
                 raise _CompactionCancelled
             planner.config = config
             fragment = planner.fragment(offset, summary, index)
-            prepared, budget = self.context.prepare(fragment.request, capabilities, provider=config.provider)
+            summary_request = replace(fragment.request, recovery_budget=job["recoveryBudget"])
+            prepared, budget = self.context.prepare(summary_request, capabilities, provider=config.provider)
             try:
                 prepared = check_model_request(self.lifecycle_hooks, config, prepared, budget,
                     purpose="compaction", request_index=index - 1, cancel_event=job["cancel"],
@@ -1967,7 +2283,7 @@ class ApplicationService:
         except _CompactionCancelled:
             with self.runtimes.lock:
                 job.update(status="cancelled", code="COMPACTION_CANCELLED", message="摘要已取消")
-            self.events.emit("context/compactionFailed", self._compaction_public(job))
+            self._emit_compaction_terminal(job, "context/compactionFailed")
         except ContextBudgetExceeded as exc:
             self._compaction_failed(job, "COMPACTION_INPUT_TOO_LARGE", exc)
         except _CompactionFailure as exc:
@@ -1986,8 +2302,8 @@ class ApplicationService:
             try:
                 if job["status"] == "completed":
                     try:
-                        self.events.emit("context/compactionCompleted", self._compaction_public(job))
-                        self.events.emit("context/compacted", {"threadId": thread_id, "jobId": job["jobId"], "origin": "model"})
+                        self._emit_compaction_terminal(job, "context/compactionCompleted")
+                        self._emit_compaction_terminal(job, "context/compacted", {"threadId": thread_id, "jobId": job["jobId"], "origin": "model"})
                     except Exception as exc:
                         self._compaction_committed_warning(job, exc)
             finally:
@@ -2026,7 +2342,11 @@ class ApplicationService:
             return self._compaction_plan(params or {})
 
     def on_attachment_add(self, params: dict | None) -> dict:
-        return {"attachment": self.attachments.add(_text(params, "threadId"), _text(params, "path", maximum=4096))}
+        try:
+            attachment = self.attachments.add(_text(params, "threadId"), _text(params, "path", maximum=4096))
+        except AttachmentQuotaExceeded as exc:
+            raise RpcError(-32005, str(exc), exc.data) from None
+        return {"attachment": attachment}
 
     def on_attachment_read(self, params: dict | None) -> dict:
         return {"attachment": self.attachments.read(_text(params, "threadId"), _text(params, "attachmentId"))}
@@ -2101,6 +2421,7 @@ class ApplicationService:
                 job = {"jobId": job_id, "threadId": thread_id, "turnId": turn["turnId"],
                     "throughTurnId": plan["throughTurnId"], "sourceDigest": plan["sourceDigest"],
                     "config": config, "provider": provider, "cancel": turn["cancel"],
+                    "recoveryBudget": request.recovery_budget or ModelRecoveryBudget(),
                     "summaryProvider": config.provider, "summaryModel": config.model,
                     "summaryEffort": config.effort,
                     "worker": turn["worker"], "status": "running", "reason": reason,
@@ -2135,8 +2456,8 @@ class ApplicationService:
                         "modelRequestCount": job["modelRequestCount"], "sourceCharacters": len(source),
                         "sourceTextDigest": planner.source_digest},
                     _active_turn_id=turn["turnId"], _on_committed=lambda: job.update(status="completed"))
-            self.events.emit("context/compactionCompleted", self._compaction_public(job))
-            self.events.emit("context/compacted", {"threadId": thread_id, "jobId": job_id,
+            self._emit_compaction_terminal(job, "context/compactionCompleted")
+            self._emit_compaction_terminal(job, "context/compacted", {"threadId": thread_id, "jobId": job_id,
                                                    "origin": "model", "reason": reason})
             with self.runtimes.lock:
                 owned()
@@ -2145,8 +2466,8 @@ class ApplicationService:
             if isinstance(exc, CheckpointCommittedError) and job is not None:
                 self._compaction_committed_warning(job, exc)
                 try:
-                    self.events.emit("context/compactionCompleted", self._compaction_public(job))
-                    self.events.emit("context/compacted", {"threadId": thread_id, "jobId": job["jobId"],
+                    self._emit_compaction_terminal(job, "context/compactionCompleted")
+                    self._emit_compaction_terminal(job, "context/compacted", {"threadId": thread_id, "jobId": job["jobId"],
                                                            "origin": "model", "reason": reason})
                 except Exception:
                     pass
@@ -2206,6 +2527,531 @@ class ApplicationService:
         except Exception:
             self.bridge_lifecycle.close(bridge)
             raise
+
+    @staticmethod
+    def _continuation_context_fingerprint(config: ModelConfig, system_prompt: str,
+                                         tools: tuple, skills: list[dict], attachments: list[dict],
+                                         tool_policy: str, max_model_requests: int,
+                                         compaction_policy: CompactionPolicy,
+                                         tool_bundle_id: str) -> str:
+        value = {
+            "provider": config.provider,
+            "model": config.model,
+            "maxTokens": config.max_tokens,
+            "effort": config.effort,
+            "thinking": dict(config.thinking) if config.thinking is not None else None,
+            "baseUrlDigest": hashlib.sha256((config.base_url or "").encode("utf-8")).hexdigest(),
+            "serverSideFallback": config.server_side_fallback,
+            "systemPrompt": system_prompt,
+            "tools": [{"name": tool.name, "description": tool.description,
+                       "inputSchema": dict(tool.input_schema)} for tool in tools],
+            "skills": [{"id": item["id"], "digest": item["digest"]} for item in skills],
+            "attachments": [{"id": item["id"], "digest": item["digest"], "bytes": item["bytes"],
+                             "name": item["name"]} for item in attachments],
+            "toolPolicy": tool_policy,
+            "maxModelRequests": max_model_requests,
+            "compactionPolicy": compaction_policy.describe(),
+            "toolBundleId": tool_bundle_id,
+        }
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"), allow_nan=False).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _continuation_entries_digest(entries: list[dict]) -> str:
+        encoded = json.dumps(entries, ensure_ascii=False, sort_keys=True,
+                             separators=(",", ":"), allow_nan=False).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    @staticmethod
+    def _continuation_policy(value: Any) -> CompactionPolicy | None:
+        if not isinstance(value, dict) or set(value) != {
+                "enabled", "triggerPercent", "keepRecentTokens", "provider", "model", "effort"}:
+            return None
+        try:
+            return CompactionPolicy(value["enabled"], value["triggerPercent"], value["keepRecentTokens"],
+                                    value["provider"], value["model"], value["effort"])
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _continuation_failure(code: str, reason: str) -> dict[str, Any]:
+        return {"eligible": False, "reasonCode": code, "reason": reason}
+
+    @staticmethod
+    def _continuation_ok(plan: dict[str, Any]) -> dict[str, Any]:
+        return {key: value for key, value in plan.items()
+                if key not in {"entries", "source", "config", "runner", "history"}}
+
+    def _turn_continuation_plan(self, thread_id: str, source_turn_id: str) -> dict[str, Any]:
+        def fail(code: str, reason: str) -> dict[str, Any]:
+            return self._continuation_failure(code, reason)
+
+        try:
+            with self.sessions._lock:
+                session_path = self.sessions.path_for(thread_id)
+                if session_path.stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
+                    return fail("CONTINUATION_HISTORY_LIMIT", "会话历史超过续接读取上限。")
+                thread = self.sessions.get_thread(thread_id)
+            if thread.get("archived"):
+                return fail("THREAD_ARCHIVED", "请先恢复会话，再检查中断回合。")
+            if self.runtimes.closed:
+                return fail("KERNEL_SHUTTING_DOWN", "内核正在关闭，当前不能续接。")
+            if thread_id in self.runtimes.active or thread_id in self._compaction_by_thread:
+                return fail("THREAD_BUSY", "会话仍有运行或收尾任务。")
+            if thread_id in self._tool_persistence_fences:
+                return fail("THREAD_REQUIRES_REVIEW", "工具结果持久化状态需要人工核对。")
+            if thread_id in self._follow_up_dispatches or any(
+                    owner_thread == thread_id for owner_thread in self._follow_up_worker_threads.values()):
+                return fail("THREAD_BUSY", "会话仍有后续任务正在收尾。")
+            if any(notice.get("threadId") == thread_id for notice in self._receipt_notices.values()):
+                return fail("THREAD_BUSY", "会话请求回执仍在收尾。")
+            with self.queue.lock, self.sessions._lock:
+                if self.sessions.path_for(thread_id).stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
+                    return fail("CONTINUATION_HISTORY_LIMIT", "会话历史超过续接读取上限。")
+                queue_items = self.queue.list(thread_id)
+            if any(item.get("status") == "delivering" for item in queue_items):
+                return fail("QUEUE_REQUIRES_REVIEW", "队列中仍有投递状态未核对的请求。")
+            if self._capacity_waiters and self.runtimes.has_capacity():
+                return fail("TURN_ADMISSION_WAITING", "已有更早排队的任务等待并发槽位。")
+        except Exception:
+            return fail("CONTINUATION_STATE_UNAVAILABLE", "会话运行状态无法安全核对。")
+
+        try:
+            with self.sessions._lock:
+                session_path = self.sessions.path_for(thread_id)
+                if session_path.stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
+                    return fail("CONTINUATION_HISTORY_LIMIT", "会话历史超过续接读取上限。")
+                # Only the active branch's latest turn may continue after a leaf move.
+                entries = self.sessions._active_entries(self.sessions.read_entries(thread_id))
+            turns = self.sessions._turns(entries, thread_id)
+            if not turns or turns[-1].get("turnId") != source_turn_id:
+                return fail("CONTINUATION_NOT_LATEST", "只有最新回合可以续接。")
+            source = next((turn for turn in turns if turn.get("turnId") == source_turn_id), None)
+            if source is None or source.get("status") != "interrupted":
+                return fail("CONTINUATION_NOT_INTERRUPTED", "来源回合不是可检查的中断状态。")
+            if any(turn.get("continuedFromTurnId") == source_turn_id for turn in turns):
+                return fail("CONTINUATION_ALREADY_EXISTS", "该中断回合已经创建过续接回合。")
+
+            owner_by_entry = self.sessions._item_owners(entries)
+            items = self.sessions._project_items(thread_id, entries)
+            source_items = [item for item in items if (item.get("turnId") or owner_by_entry.get(item["id"]))
+                            == source_turn_id]
+            source_user_items = [item for item in source_items if item.get("kind") == "userMessage"
+                                 and item.get("source") != "steering"]
+            source_tool_items = [item for item in source_items if item.get("kind") == "toolCall"]
+
+            if any((isinstance(item.get("approval"), dict)
+                    and item["approval"].get("decision") is None)
+                   or item.get("executionState") == "pending_approval" for item in source_tool_items):
+                return fail("CONTINUATION_APPROVAL_PENDING", "来源回合仍有未决审批。")
+            if any(item.get("executionState") == "outcome_unknown" for item in source_tool_items):
+                return fail("CONTINUATION_TOOL_OUTCOME_UNKNOWN", "来源回合含有结果未知的工具操作。")
+            if any(item.get("status") == "running" or item.get("executionState") in {
+                    "approved", "executing", "pending_approval", "not_executed", "not_approved",
+                    "outcome_unknown"} for item in source_tool_items):
+                return fail("CONTINUATION_TOOL_STATE_UNRESOLVED", "来源回合存在未完成或未执行的工具调用。")
+
+            manifests: dict[str, list[tuple[int, dict, str]]] = {}
+            for ordinal, entry in enumerate(entries):
+                payload = entry.get("payload")
+                if entry.get("type") != "tool_batch" or not isinstance(payload, dict):
+                    continue
+                if payload.get("turnId") != source_turn_id:
+                    continue
+                batch_id = payload.get("toolBatchId")
+                if not isinstance(batch_id, str) or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", batch_id) is None:
+                    return fail("CONTINUATION_TOOL_BATCH_INVALID", "工具批次清单格式无效。")
+                manifests.setdefault(batch_id, []).append((ordinal, payload, str(entry.get("id", ""))))
+
+            calls_by_batch: dict[str, list[dict]] = {}
+            for item in source_tool_items:
+                batch_id = item.get("toolBatchId")
+                if not isinstance(batch_id, str):
+                    return fail("CONTINUATION_TOOL_BATCH_MISSING", "旧工具调用缺少可核验的完整批次清单。")
+                calls_by_batch.setdefault(batch_id, []).append(item)
+            if set(calls_by_batch) != set(manifests):
+                return fail("CONTINUATION_TOOL_BATCH_MISSING", "工具调用与持久批次清单不一致。")
+
+            request_records: dict[str, list[tuple[int, dict]]] = {
+                "context_budget": [], "model_usage": []}
+            for ordinal, entry in enumerate(entries):
+                kind, payload = entry.get("type"), entry.get("payload")
+                if (kind in request_records and isinstance(payload, dict)
+                        and payload.get("turnId") == source_turn_id):
+                    request_records[kind].append((ordinal, payload))
+
+            def preceding_request_record(kind: str, ordinal: int) -> dict | None:
+                return next((payload for index, payload in reversed(request_records[kind])
+                             if index < ordinal), None)
+
+            batch_boundaries: list[tuple[int, str]] = []
+            completed_call_count = 0
+            assistant_items = {item["id"]: item for item in items if item.get("kind") == "agentMessage"}
+            for batch_id, records in manifests.items():
+                if len(records) != 2 or [record[1].get("status") for record in records] != ["started", "completed"]:
+                    return fail("CONTINUATION_TOOL_BATCH_INCOMPLETE", "工具批次尚未被证明完整持久化。")
+                first, completed = records
+                start_payload, done_payload = first[1], completed[1]
+                call_ids = start_payload.get("callIds")
+                if (not isinstance(call_ids, list) or not 1 <= len(call_ids) <= MAX_TOOL_BATCH_CALLS
+                        or any(not isinstance(call_id, str) or not call_id or len(call_id) > 256 for call_id in call_ids)
+                        or len(set(call_ids)) != len(call_ids)
+                        or done_payload.get("callIds") != call_ids
+                        or start_payload.get("assistantItemId") != done_payload.get("assistantItemId")
+                        or start_payload.get("requestFingerprint") != done_payload.get("requestFingerprint")
+                        or not isinstance(start_payload.get("requestFingerprint"), str)
+                        or re.fullmatch(r"[a-f0-9]{64}", start_payload["requestFingerprint"]) is None):
+                    return fail("CONTINUATION_TOOL_BATCH_INVALID", "工具批次清单前后记录不一致。")
+                context_request = preceding_request_record("context_budget", first[0])
+                model_usage = preceding_request_record("model_usage", first[0])
+                request_fingerprint = start_payload["requestFingerprint"]
+                if (context_request is None or model_usage is None
+                        or context_request.get("requestFingerprint") != request_fingerprint
+                        or model_usage.get("requestFingerprint") != request_fingerprint
+                        or context_request.get("provider") != model_usage.get("provider")
+                        or context_request.get("model") != model_usage.get("model")):
+                    return fail("CONTINUATION_TOOL_BATCH_INVALID", "工具批次与对应模型请求指纹不一致。")
+                calls = calls_by_batch.get(batch_id, [])
+                observed_ids = [item.get("toolCallId") for item in calls]
+                if (observed_ids != call_ids or any(item.get("status") not in {"completed", "failed"}
+                        or item.get("executionState") not in {"completed", "failed"}
+                        for item in calls)):
+                    return fail("CONTINUATION_TOOL_BATCH_INCOMPLETE", "工具批次缺少已确认的结果。")
+                if any(item.get("toolBatchAssistantItemId") != start_payload.get("assistantItemId")
+                       for item in calls):
+                    return fail("CONTINUATION_TOOL_BATCH_INVALID", "工具批次 assistant 来源不一致。")
+                assistant_id = start_payload.get("assistantItemId")
+                if assistant_id is not None:
+                    assistant = assistant_items.get(assistant_id)
+                    if (assistant is None or assistant.get("turnId") != source_turn_id
+                            or assistant.get("toolBatchId") != batch_id
+                            or assistant.get("status") != "completed"):
+                        return fail("CONTINUATION_TOOL_BATCH_INVALID", "工具批次模型响应条目缺失或不一致。")
+                for item in calls:
+                    if isinstance(item.get("approval"), dict) and not self.sessions._valid_approval_item(
+                            item, pending_only=False):
+                        return fail("CONTINUATION_APPROVAL_INVALID", "来源回合的审批记录无法核验。")
+                completed_call_count += len(call_ids)
+                batch_boundaries.append((completed[0], completed[2]))
+
+            if len(source_tool_items) != sum(len(calls) for calls in calls_by_batch.values()):
+                return fail("CONTINUATION_TOOL_BATCH_INVALID", "来源回合存在重复或归属冲突的工具条目。")
+
+            candidates: list[tuple[int, str, str]] = [
+                (ordinal, entry_id, "completed_tool_batch")
+                for ordinal, entry_id in batch_boundaries
+            ]
+            for ordinal, entry in enumerate(entries):
+                payload = entry.get("payload")
+                if (entry.get("type") == "context_budget" and isinstance(payload, dict)
+                        and payload.get("turnId") == source_turn_id):
+                    fingerprint = payload.get("requestFingerprint")
+                    if not isinstance(fingerprint, str) or re.fullmatch(r"[a-f0-9]{64}", fingerprint) is None:
+                        return fail("CONTINUATION_BOUNDARY_INVALID", "模型请求边界缺少有效摘要。")
+                    candidates.append((ordinal, str(entry.get("id", "")),
+                                       "completed_tool_batch" if completed_call_count else "user_input"))
+
+            inherited_boundary_id = source.get("continuationBoundaryEntryId")
+            inherited_boundary_digest = source.get("continuationBoundaryDigest")
+            inherited_boundary_kind = source.get("continuationBoundaryKind")
+            inherited_call_count = source.get("continuationCompletedToolCalls", 0)
+            if source.get("continuedFromTurnId") is not None:
+                if (not isinstance(inherited_boundary_id, str)
+                        or not isinstance(inherited_boundary_digest, str)
+                        or re.fullmatch(r"[a-f0-9]{64}", inherited_boundary_digest) is None
+                        or inherited_boundary_kind not in {"user_input", "completed_tool_batch"}
+                        or type(inherited_call_count) is not int or inherited_call_count < 0):
+                    return fail("CONTINUATION_BOUNDARY_INVALID", "续接来源缺少继承的持久边界。")
+                inherited_index = next((i for i, entry in enumerate(entries)
+                                        if entry.get("id") == inherited_boundary_id), None)
+                if inherited_index is None or self._continuation_entries_digest(
+                        entries[:inherited_index + 1]) != inherited_boundary_digest:
+                    return fail("CONTINUATION_HISTORY_CHANGED", "续接来源的已确认历史前缀已变化。")
+
+            if not candidates:
+                if inherited_boundary_id is not None:
+                    inherited_index = next((i for i, entry in enumerate(entries)
+                                            if entry.get("id") == inherited_boundary_id), None)
+                    if inherited_index is None:
+                        return fail("CONTINUATION_BOUNDARY_INVALID", "续接来源的持久边界不存在。")
+                    candidates.append((inherited_index, inherited_boundary_id, inherited_boundary_kind))
+                elif len(source_user_items) == 1:
+                    user_id = source_user_items[0]["id"]
+                    user_index = next((i for i, entry in enumerate(entries)
+                                       if entry.get("id") == user_id), None)
+                    if user_index is not None:
+                        original_input = source_user_items[0].get("originalInput", source_user_items[0].get("text"))
+                        input_digest = hashlib.sha256(str(original_input).encode("utf-8")).hexdigest()
+                        if source.get("requestInputDigest") != input_digest:
+                            return fail("CONTINUATION_HISTORY_CHANGED", "来源用户输入与持久请求摘要不一致。")
+                        candidates.append((user_index, user_id, "user_input"))
+            if not candidates:
+                return fail("CONTINUATION_BOUNDARY_INVALID", "没有可验证的模型请求或工具结果边界。")
+
+            boundary_ordinal, boundary_entry_id, boundary_kind = max(candidates, key=lambda candidate: candidate[0])
+            prefix = entries[:boundary_ordinal + 1]
+            boundary_digest = self._continuation_entries_digest(prefix)
+            if inherited_boundary_id == boundary_entry_id and inherited_boundary_digest != boundary_digest:
+                return fail("CONTINUATION_HISTORY_CHANGED", "续接来源的已确认历史前缀已变化。")
+            included_items = self.sessions._project_items(thread_id, prefix)
+            included_item_ids = {item["id"] for item in included_items}
+            for entry in entries[boundary_ordinal + 1:]:
+                payload = entry.get("payload") or {}
+                if entry.get("type") == "context_checkpoint":
+                    return fail("CONTINUATION_HISTORY_CHANGED", "来源模型请求之后的上下文摘要发生变化。")
+                if entry.get("type") == "thread_info" and ({"provider", "model"} & set(payload)):
+                    return fail("CONTINUATION_CONTEXT_CHANGED", "来源回合之后会话模型线路已切换。")
+                if entry.get("type") == "context_edit" and payload.get("targetItemId") in included_item_ids:
+                    return fail("CONTINUATION_HISTORY_CHANGED", "来源模型请求之后的上下文条目发生变化。")
+                if entry.get("type") == "item" and payload.get("revises") in included_item_ids:
+                    return fail("CONTINUATION_HISTORY_CHANGED", "来源模型请求之后的历史条目发生变化。")
+                if (entry.get("type") == "item" and payload.get("kind") == "agentMessage"
+                        and payload.get("status") == "completed"
+                        and (payload.get("turnId") == source_turn_id)):
+                    return fail("CONTINUATION_ALREADY_COMPLETED", "来源回合已持久化完整 assistant 回复。")
+
+            source_fingerprint = source.get("continuationContextFingerprint")
+            source_policy = self._continuation_policy(source.get("compactionPolicy"))
+            if (not isinstance(source_fingerprint, str)
+                    or re.fullmatch(r"[a-f0-9]{64}", source_fingerprint) is None
+                    or source_policy is None):
+                return fail("CONTINUATION_SOURCE_UNVERIFIABLE", "来源回合缺少续接配置摘要。")
+            source_model = source.get("model")
+            source_provider = source.get("provider")
+            source_max_requests = source.get("maxModelRequests")
+            if (not isinstance(source_model, str) or not source_model
+                    or not isinstance(source_provider, str) or source_provider == "none"
+                    or type(source_max_requests) is not int or not 1 <= source_max_requests <= self.max_model_requests):
+                return fail("CONTINUATION_SOURCE_UNVERIFIABLE", "来源模型配置不可用或已超过当前请求上限。")
+            if self.provider_factory is None and self.provider is None:
+                return fail("CONTINUATION_PROVIDER_UNAVAILABLE", "当前内核没有可复用的模型供应商实例。")
+            try:
+                session_provider = self._canonical_provider(thread.get("provider", self.config.provider))
+            except ValueError:
+                return fail("CONTINUATION_SOURCE_UNVERIFIABLE", "会话模型线路无法核验。")
+            if source_provider != session_provider:
+                return fail("CONTINUATION_CONTEXT_CHANGED", "当前供应商与来源回合不一致。")
+            skill_ids = source.get("skillIds", [])
+            attachment_ids = source.get("attachmentIds", [])
+            if (not isinstance(skill_ids, list) or any(not isinstance(value, str) for value in skill_ids)
+                    or not isinstance(attachment_ids, list)
+                    or any(not isinstance(value, str) for value in attachment_ids)):
+                return fail("CONTINUATION_SOURCE_UNVERIFIABLE", "来源技能或附件身份无法核验。")
+            try:
+                config = self._model_config(thread, {"model": source_model})
+                skill_text, skills = self.skills.load(skill_ids)
+                _, attachments = self.attachments.context(thread_id, attachment_ids, entries=entries)
+                tool_policy = thread.get("toolPolicy", "approval")
+                if tool_policy != source.get("toolPolicy", "approval"):
+                    return fail("CONTINUATION_CONTEXT_CHANGED", "会话工具策略与来源回合不一致。")
+                if (config.provider != source_provider or config.model != source_model
+                        or config.effort != source.get("reasoningEffort")
+                        or config.max_tokens != source.get("maxTokens")
+                        or (dict(config.thinking) if config.thinking is not None else None)
+                        != source.get("thinking")):
+                    return fail("CONTINUATION_CONTEXT_CHANGED", "当前模型配置与来源回合不一致。")
+                prompt = self._system_prompt(tool_policy == "readOnly", skill_text)
+                tools = model_tool_specs(self.registry.specs(read_only=tool_policy == "readOnly"))
+                fingerprint = self._continuation_context_fingerprint(
+                    config, prompt, tools, skills, attachments, tool_policy, source_max_requests,
+                    source_policy, self.tool_bundle.id)
+            except Exception:
+                return fail("CONTINUATION_CONTEXT_UNAVAILABLE", "来源技能、附件或模型配置无法安全复核。")
+            if fingerprint != source_fingerprint:
+                return fail("CONTINUATION_CONTEXT_CHANGED", "模型、工具、技能、附件或请求上下文已变化。")
+
+            request_offset = source.get("continuationRequestOffset", 0)
+            if type(request_offset) is not int or not 0 <= request_offset <= source_max_requests:
+                return fail("CONTINUATION_SOURCE_UNVERIFIABLE", "来源模型请求计数无法核验。")
+            for entry in entries:
+                payload = entry.get("payload") or {}
+                if (entry.get("type") == "task_phase" and payload.get("taskId") == source_turn_id
+                        and payload.get("ownerKind") == "turn" and payload.get("phase") == "model_request"
+                        and type(payload.get("attempt")) is int):
+                    request_offset = max(request_offset, payload["attempt"])
+            if request_offset >= source_max_requests:
+                return fail("CONTINUATION_REQUEST_LIMIT", "来源回合已用完持久化的模型请求上限。")
+            try:
+                history = self.context.history(thread_id, entries=prefix)
+            except Exception:
+                return fail("CONTINUATION_HISTORY_INVALID", "已确认历史无法按当前协议重建。")
+            return {"eligible": True, "threadId": thread_id, "sourceTurnId": source_turn_id,
+                    "boundary": boundary_kind, "completedToolCalls": completed_call_count,
+                    "warning": CONTINUATION_WARNING, "entries": prefix, "source": source,
+                    "boundaryEntryId": boundary_entry_id, "boundaryDigest": boundary_digest,
+                    "requestOffset": request_offset, "maxModelRequests": source_max_requests,
+                    "config": config, "systemPrompt": prompt, "tools": tools, "skills": skills,
+                    "attachmentIds": attachment_ids, "skillIds": skill_ids,
+                    "compactionPolicy": source_policy, "toolPolicy": tool_policy, "history": history}
+        except Exception:
+            return fail("CONTINUATION_STATE_UNAVAILABLE", "中断回合历史无法安全核对。")
+
+    def on_turn_continuation_read(self, params: dict | None) -> dict:
+        params = params or {}
+        if set(params) != {"threadId", "sourceTurnId"}:
+            raise ValueError("turn/continuation/read 参数无效")
+        thread_id = _text(params, "threadId")
+        source_turn_id = _text(params, "sourceTurnId", maximum=128)
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", source_turn_id) is None:
+            raise ValueError("sourceTurnId 格式无效")
+        plan = self._turn_continuation_plan(thread_id, source_turn_id)
+        result = {"threadId": thread_id, "sourceTurnId": source_turn_id,
+                  "eligible": plan["eligible"], "warning": CONTINUATION_WARNING}
+        for key in ("boundary", "completedToolCalls", "reasonCode", "reason"):
+            if key in plan:
+                result[key] = plan[key]
+        return result
+
+    def on_turn_continue(self, params: dict | None) -> dict:
+        params = params or {}
+        if set(params) != {"threadId", "sourceTurnId", "continuationId"}:
+            raise ValueError("turn/continue 参数无效")
+        thread_id = _text(params, "threadId")
+        source_turn_id = _text(params, "sourceTurnId", maximum=128)
+        continuation_id = _text(params, "continuationId", maximum=128)
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", source_turn_id) is None:
+            raise ValueError("sourceTurnId 格式无效")
+        if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", continuation_id) is None:
+            raise ValueError("continuationId 格式无效")
+
+        runner = None
+        job = None
+        with self._follow_up_admission_lock, self.runtimes.lock:
+            with self.queue.lock, self.sessions._lock:
+                if self.sessions.path_for(thread_id).stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
+                    raise RpcError(-32004, "会话历史超过续接读取上限。",
+                                   {"code": "CONTINUATION_HISTORY_LIMIT",
+                                    "threadId": thread_id, "sourceTurnId": source_turn_id})
+                try:
+                    self.queue.settle_pauses(thread_id, maximum_session_bytes=MAX_CONTINUATION_HISTORY_BYTES)
+                except SessionSizeLimitExceeded:
+                    raise RpcError(-32004, "会话历史超过续接读取上限。",
+                                   {"code": "CONTINUATION_HISTORY_LIMIT",
+                                    "threadId": thread_id, "sourceTurnId": source_turn_id}) from None
+                if self.sessions.path_for(thread_id).stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
+                    raise RpcError(-32004, "会话历史超过续接读取上限。",
+                                   {"code": "CONTINUATION_HISTORY_LIMIT",
+                                    "threadId": thread_id, "sourceTurnId": source_turn_id})
+                entries = self.sessions.read_entries(thread_id)
+            turns = self.sessions._turns(entries, thread_id)
+            matches = [turn for turn in turns if turn.get("continuationId") == continuation_id]
+            if matches:
+                if (len(matches) != 1 or matches[0].get("continuedFromTurnId") != source_turn_id):
+                    raise RpcError(-32004, "续接编号与来源回合不一致。",
+                                   {"code": "CONTINUATION_ID_CONFLICT"})
+                return {"turnId": matches[0]["turnId"], "continuedFromTurnId": source_turn_id,
+                        "continuationId": continuation_id, "deduplicated": True}
+
+            plan = self._turn_continuation_plan(thread_id, source_turn_id)
+            if not plan["eligible"]:
+                raise RpcError(-32004, plan.get("reason", "中断回合当前不能续接。"),
+                               {"code": plan.get("reasonCode", "CONTINUATION_REJECTED"),
+                                "threadId": thread_id, "sourceTurnId": source_turn_id})
+            self.runtimes.check_admission(thread_id)
+            source = plan["source"]
+            config = plan["config"]
+            policy = plan["compactionPolicy"]
+            request_digest = source.get("requestInputDigest")
+            if not isinstance(request_digest, str) or re.fullmatch(r"[a-f0-9]{64}", request_digest) is None:
+                raise RpcError(-32004, "来源输入摘要无法核验。",
+                               {"code": "CONTINUATION_SOURCE_UNVERIFIABLE"})
+            try:
+                runner = self._runner_for(config)
+                runner.max_model_requests = plan["maxModelRequests"]
+                runner.request_offset = plan["requestOffset"]
+                runner.last_preparation = None
+                read_only = plan["toolPolicy"] == "readOnly"
+                allowed = self.registry.allowed_names(read_only=read_only)
+                runner._tools = self.registry.specs(read_only=read_only)
+
+                def validate(name: str, arguments: dict) -> dict | None:
+                    if name == MODEL_RESULT_READ_TOOL:
+                        return None
+                    if read_only and name not in allowed:
+                        raise ValueError("只读会话禁止此工具；请新建需要逐次审批的会话")
+                    return self.registry.validate(name, arguments)
+
+                runner.validate_arguments = validate
+                job = self.runtimes.reserve(thread_id, "continue:" + source_turn_id, runner)
+                job["compactionPolicy"] = policy
+                job["continuedFromTurnId"] = source_turn_id
+                job["continuationId"] = continuation_id
+                job["requestInputDigest"] = request_digest
+                job["_input_persisted"] = True
+                runner.phase_recorder = lambda phase, attempt: self._record_turn_phase(
+                    job, phase, "running", attempt)
+                runner.request_preparer = lambda request: self._prepare_turn_request(job, request)
+                runner.recover_context = (lambda request: self._compact_during_turn(
+                    job, request, "overflow", required=True)) if policy.enabled else None
+                runner.turn_id = job["turnId"]
+                runner._cancel = job["cancel"]
+                runner.system_prompt = plan["systemPrompt"]
+                boundary_entries = plan["entries"]
+                runner.history_provider = lambda _thread_id: self.context.history(
+                    thread_id, entries=boundary_entries)
+                runner.notify = lambda method, payload=None: self._notify_runner(job, method, payload)
+                runner.stage_steering = lambda: self._stage_steering(job)
+                runner.steering_mode = self.steering_mode
+                job["requestInputDigest"] = request_digest
+                job["queueId"] = None
+                try:
+                    self.sessions.record_turn(thread_id, job["turnId"], "running",
+                        model=source["model"], provider=source["provider"],
+                        reasoningEffort=source.get("reasoningEffort"),
+                        maxModelRequests=plan["maxModelRequests"],
+                        maxTokens=source["maxTokens"], thinking=source.get("thinking"),
+                        compactionPolicy=policy.describe(), attachmentIds=plan["attachmentIds"],
+                        continuationContextFingerprint=source["continuationContextFingerprint"],
+                        skillIds=plan["skillIds"], toolPolicy=plan["toolPolicy"],
+                        requestInputDigest=request_digest,
+                        continuedFromTurnId=source_turn_id, continuationId=continuation_id,
+                        continuationBoundaryEntryId=plan["boundaryEntryId"],
+                        continuationBoundaryDigest=plan["boundaryDigest"],
+                        continuationBoundaryKind=plan["boundary"],
+                        continuationCompletedToolCalls=plan["completedToolCalls"],
+                        continuationRequestOffset=plan["requestOffset"])
+                    self._record_turn_phase(job, "admission", "running", 1)
+                    self.events.emit("turn/started", {"threadId": thread_id, "turnId": job["turnId"],
+                        "continuedFromTurnId": source_turn_id, "continuationId": continuation_id})
+                    worker = threading.Thread(target=self._run_turn, args=(job,),
+                                              name=f"turn-{job['turnId'][:8]}", daemon=True)
+                    job["worker"] = worker
+                    try:
+                        worker.start()
+                    except Exception:
+                        if worker.ident is None:
+                            raise
+                except Exception:
+                    self._settle_unstarted_turn_locked(job)
+                    raise
+            except Exception:
+                try:
+                    if job is not None and job.get("_start_failed"):
+                        self._notify_start_failure(job)
+                finally:
+                    try:
+                        if runner is not None and runner is not self.runner:
+                            self.bridge_lifecycle.close(runner.tool_bridge)
+                    except Exception:
+                        pass
+                    finally:
+                        if job is not None and job.get("_start_failed"):
+                            try:
+                                self.runtimes.finish(job)
+                            except Exception:
+                                pass
+                            try:
+                                self._drain_capacity_waiters()
+                            except Exception:
+                                pass
+                        try:
+                            self._close_application_resources_if_idle()
+                        except Exception:
+                            pass
+                raise
+        return {"turnId": job["turnId"], "continuedFromTurnId": source_turn_id,
+                "continuationId": continuation_id}
 
     def on_turn_start(self, params: dict | None, *, queue_item: dict | None = None) -> dict:
         params = params or {}
@@ -2296,6 +3142,7 @@ class ApplicationService:
                        for compaction in self._compaction_jobs.values()):
                     raise RpcError(-32005, "模型供应商实例正在执行摘要任务，请稍后重试")
                 runner.last_preparation = None
+                runner.request_offset = 0
                 read_only = thread.get("toolPolicy") == "readOnly"
                 allowed = self.registry.allowed_names(read_only=read_only)
                 runner._tools = self.registry.specs(read_only=read_only)
@@ -2320,8 +3167,12 @@ class ApplicationService:
                 runner.turn_id = job["turnId"]
                 runner._cancel = job["cancel"]
                 runner.system_prompt = self._system_prompt(read_only, skill_text)
+                continuation_fingerprint = self._continuation_context_fingerprint(
+                    config, runner.system_prompt, runner.tool_specs(), skills, attachments,
+                    thread.get("toolPolicy", "approval"), max_model_requests, policy, self.tool_bundle.id)
                 runner.notify = lambda method, payload=None: self._notify_runner(job, method, payload)
                 runner.stage_steering = lambda: self._stage_steering(job)
+                runner.steering_mode = self.steering_mode
                 job["clientUserMessageId"] = client_id
                 job["requestInputDigest"] = request_digest
                 job["queueId"] = queue_item["id"] if queue_item else None
@@ -2329,6 +3180,11 @@ class ApplicationService:
                     self.sessions.record_turn(thread_id, job["turnId"], "running", model=model, provider=config.provider,
                         reasoningEffort=config.effort,
                         maxModelRequests=max_model_requests,
+                        maxTokens=config.max_tokens,
+                        thinking=dict(config.thinking) if config.thinking is not None else None,
+                        compactionPolicy=policy.describe(),
+                        attachmentIds=[item["id"] for item in attachments],
+                        continuationContextFingerprint=continuation_fingerprint,
                         skillIds=[s["id"] for s in skills], toolPolicy=thread.get("toolPolicy", "approval"),
                         clientUserMessageId=client_id, requestInputDigest=request_digest, queueId=job["queueId"])
                     self._record_turn_phase(job, "admission", "running", 1)
@@ -2403,6 +3259,9 @@ class ApplicationService:
         fields = {"failureCode": "TURN_START_FAILED", "executionStarted": False,
                   "clientUserMessageId": job.get("clientUserMessageId"),
                   "requestInputDigest": job["requestInputDigest"], "queueId": job.get("queueId")}
+        if isinstance(job.get("continuedFromTurnId"), str):
+            fields.update(continuedFromTurnId=job["continuedFromTurnId"],
+                          continuationId=job.get("continuationId"))
         if persisted is not None:
             fields["inputPersisted"] = persisted
         try:
@@ -2779,6 +3638,8 @@ class ApplicationService:
             if item is None:
                 break
             items.append(item)
+            if self.steering_mode == "one-at-a-time":
+                break
         def commit() -> None:
             for item in items:
                 user = job["runner"].append_user(job["threadId"], item["input"], queueId=item["id"],

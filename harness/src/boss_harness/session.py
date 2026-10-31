@@ -34,8 +34,18 @@ _THREAD_ID = re.compile(r"[a-f0-9]{12}\Z")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _EVENT_ID = re.compile(r"[a-f0-9]{32}\Z")
 _ATTACHMENT_DIGEST = re.compile(r"[a-f0-9]{64}\Z")
+_ATTACHMENT_TEMP = re.compile(r"tmp-[a-f0-9]{32}\Z")
 _DELETE_INTENT = re.compile(r"\.delete-([a-f0-9]{12})\.json\Z")
 _TERMINAL = frozenset({"completed", "interrupted", "blocked", "error"})
+# In-session branch pointer (Pi session-manager leafId).  Sessions that never
+# record one keep the historical linear projection byte-for-byte.
+LEAF_ENTRY_TYPE = "leaf"
+# Pi branchWithSummary(): a model summary of the abandoned branch, appended
+# right after the leaf record it belongs to, so it projects only on that branch.
+BRANCH_SUMMARY_ENTRY_TYPE = "branch_summary"
+MAX_BRANCH_SUMMARY_CHARS = 32_000
+MAX_LEAF_ACTIVE_TURN_IDS = 200
+MAX_BRANCH_PREVIEW_CHARS = 120
 _TASK_PHASES = frozenset({"admission", "prepare", "model_request", "tool_execution", "finish"})
 _EVENT_READ_CHUNK_BYTES = 64 * 1024
 # Event records are persisted from the same bounded JSON-RPC payloads as the
@@ -45,6 +55,7 @@ MAX_EVENT_LINE_BYTES = 8 * 1024 * 1024
 MAX_ITEM_REVISION_ALIASES = 4_096
 MAX_ITEM_REVISION_RECORDS = 4_096
 MAX_ITEM_REVISION_ALIAS_BYTES = 64 * 1024
+MAX_TOOL_BATCH_CALLS = 256
 # Canonical results have a separate budget from their bounded transport
 # projection.  Validate the final JSON spelling before publishing a record;
 # raw CLI bytes and decoded/re-encoded JSON need not have the same size.
@@ -152,12 +163,81 @@ def _iter_bounded_raw_lines(path: Path, *, maximum: int, label: str = "JSONL",
             handle, maximum=maximum, label=label, universal_newlines=universal_newlines)
 
 
+def _reject_json_constant(_: str) -> None:
+    raise ValueError
+
+
+def _unique_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError
+        result[key] = value
+    return result
+
+
+def _finite_json_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError
+    return parsed
+
+
+def _validate_json_unicode(value: Any) -> None:
+    pending = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            try:
+                current.encode("utf-8")
+            except UnicodeEncodeError:
+                raise ValueError from None
+        elif isinstance(current, dict):
+            pending.extend(current.keys())
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+
+
+def _decode_jsonl_object(line: str | bytes, *, label: str, line_number: int) -> dict:
+    try:
+        text = line.decode("utf-8") if isinstance(line, bytes) else line
+        record = json.loads(text, object_pairs_hook=_unique_json_object,
+                            parse_constant=_reject_json_constant, parse_float=_finite_json_float)
+        _validate_json_unicode(record)
+    except (ValueError, RecursionError):
+        raise ValueError(f"{label}第 {line_number} 行损坏，读取已停止") from None
+    if not isinstance(record, dict):
+        raise ValueError(f"{label}第 {line_number} 行格式无效，读取已停止")
+    return record
+
+
+def _decode_session_record(line: str | bytes, *, line_number: int) -> dict | None:
+    record = _decode_jsonl_object(line, label="会话日志", line_number=line_number)
+    if record.get("type") == "session":
+        if line_number == 1:
+            return None
+        raise ValueError(f"会话日志第 {line_number} 行出现重复会话头，读取已停止")
+    parent_id = record.get("parentId")
+    if (not isinstance(record.get("type"), str) or not isinstance(record.get("id"), str)
+            or not isinstance(record.get("timestamp"), str)
+            or (parent_id is not None and not isinstance(parent_id, str))):
+        raise ValueError(f"会话日志第 {line_number} 行格式无效，读取已停止")
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        raise ValueError(f"会话日志第 {line_number} 行格式无效，读取已停止")
+    return record
+
+
 def _iter_bounded_lines(path: Path, *, maximum: int, label: str = "JSONL",
                         universal_newlines: bool = False):
     """Yield decoded JSONL lines without materialising the complete file."""
-    for line in _iter_bounded_raw_lines(path, maximum=maximum, label=label,
-                                        universal_newlines=universal_newlines):
-        yield line.decode("utf-8", errors="replace")
+    for line_number, raw_line in enumerate(_iter_bounded_raw_lines(
+            path, maximum=maximum, label=label, universal_newlines=universal_newlines), start=1):
+        try:
+            yield raw_line.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ValueError(f"{label}第 {line_number} 行不是有效 UTF-8，读取已停止") from None
 
 
 def _read_bounded_file(path: Path, *, maximum: int, label: str) -> bytes:
@@ -191,18 +271,13 @@ class SessionEntriesSnapshot:
         if self._source.closed:
             raise ValueError("会话快照已关闭")
         self._source.seek(0)
-        for raw_line in _iter_bounded_raw_lines_from_handle(
+        for line_number, raw_line in enumerate(_iter_bounded_raw_lines_from_handle(
                 self._source, maximum=MAX_SESSION_LINE_BYTES, label="会话日志",
-                universal_newlines=True, byte_limit=self._size):
-            line = raw_line.decode("utf-8", errors="replace")
-            if not line.strip():
+                universal_newlines=True, byte_limit=self._size), start=1):
+            if not raw_line.strip():
                 continue
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if (isinstance(data, dict) and data.get("type") != "session"
-                    and isinstance(data.get("id"), str) and isinstance(data.get("payload"), dict)):
+            data = _decode_session_record(raw_line, line_number=line_number)
+            if data is not None:
                 yield data
 
 
@@ -311,8 +386,20 @@ class ToolRevisionPersistenceError(OSError):
         super().__init__("工具结果无法确认已持久化")
 
 
+class SessionAppendRollbackError(OSError):
+    """An append failed and its partial file state could not be rolled back safely."""
+
+    def __init__(self) -> None:
+        self.outcome = "unknown"
+        super().__init__("会话日志追加失败且无法确认已回滚；状态可能需要人工检查")
+
+
 class ThreadNotFound(ValueError):
     pass
+
+
+class SessionSizeLimitExceeded(ValueError):
+    """An append batch would cross a caller-supplied session file bound."""
 
 
 class ItemLookupError(ValueError):
@@ -424,30 +511,88 @@ class SessionStore:
             try:
                 with closing(_iter_bounded_lines(path, maximum=MAX_SESSION_HEADER_BYTES,
                              label="会话头", universal_newlines=True)) as lines:
-                    header = json.loads(next(lines))
+                    header = _decode_jsonl_object(next(lines), label="会话头", line_number=1)
             except FileNotFoundError:
                 raise ValueError("会话不存在") from None
-            except (ValueError, IndexError, StopIteration):
+            except ValueError as exc:
+                if "第 1 行" in str(exc):
+                    raise
                 raise ValueError("会话头损坏，请保留原文件后恢复") from None
-            if not isinstance(header, dict) or header.get("type") != "session" or header.get("id") != thread_id:
-                raise ValueError("会话头无效")
+            except (IndexError, StopIteration):
+                raise ValueError("会话头损坏，请保留原文件后恢复") from None
+            if header.get("type") != "session" or header.get("id") != thread_id:
+                raise ValueError("会话头第 1 行格式无效")
             return header
 
     @staticmethod
     def _append_line(path: Path, value: dict) -> None:
         encoded = _encode_session_line(value)
         descriptor = open_private_file(path, os.O_RDWR | os.O_APPEND)
-        with os.fdopen(descriptor, "a+b") as handle:
-            handle.seek(0, 2)
-            if handle.tell():
-                handle.seek(-1, 2)
-                if handle.read(1) != b"\n":
-                    handle.seek(0, 2)
-                    handle.write(b"\n")
-            handle.seek(0, 2)
-            handle.write(encoded)
-            handle.flush()
-            os.fsync(handle.fileno())
+        try:
+            original = os.fstat(descriptor)
+            visible = path.lstat()
+            identity = (original.st_dev, original.st_ino, original.st_mode, original.st_uid,
+                        original.st_gid, original.st_nlink)
+            if (not stat.S_ISREG(original.st_mode) or original.st_nlink != 1
+                    or (visible.st_dev, visible.st_ino) != identity[:2]):
+                raise ValueError("会话日志不是稳定的私有单链接文件")
+            start = original.st_size
+            prefix = b""
+            if start:
+                os.lseek(descriptor, start - 1, os.SEEK_SET)
+                last_byte = os.read(descriptor, 1)
+                if len(last_byte) != 1:
+                    raise OSError("会话日志末尾读取不完整")
+                if last_byte != b"\n":
+                    prefix = b"\n"
+            suffix = prefix + encoded
+            written = 0
+            try:
+                os.lseek(descriptor, 0, os.SEEK_END)
+                while written < len(suffix):
+                    count = os.write(descriptor, suffix[written:])
+                    if count <= 0:
+                        raise OSError("会话日志追加未取得进展")
+                    written += count
+                os.fsync(descriptor)
+            except BaseException as append_error:
+                try:
+                    current = os.fstat(descriptor)
+                    visible = path.lstat()
+                    current_identity = (current.st_dev, current.st_ino, current.st_mode,
+                                        current.st_uid, current.st_gid, current.st_nlink)
+                    if (current_identity != identity or (visible.st_dev, visible.st_ino) != identity[:2]
+                            or current.st_size != start + written):
+                        raise OSError("会话日志身份或长度已变化")
+                    os.lseek(descriptor, start, os.SEEK_SET)
+                    remaining = written
+                    appended = bytearray()
+                    while remaining:
+                        chunk = os.read(descriptor, min(remaining, _EVENT_READ_CHUNK_BYTES))
+                        if not chunk:
+                            raise OSError("会话日志追加后缀读取不完整")
+                        appended.extend(chunk)
+                        remaining -= len(chunk)
+                    if appended != suffix[:written]:
+                        raise OSError("会话日志追加后缀与本次写入不一致")
+                    os.ftruncate(descriptor, start)
+                    os.fsync(descriptor)
+                    rolled_back = os.fstat(descriptor)
+                    visible = path.lstat()
+                    rolled_identity = (rolled_back.st_dev, rolled_back.st_ino, rolled_back.st_mode,
+                                       rolled_back.st_uid, rolled_back.st_gid, rolled_back.st_nlink)
+                    if (rolled_identity != identity or rolled_back.st_size != start
+                            or (visible.st_dev, visible.st_ino) != identity[:2]):
+                        raise OSError("会话日志回滚结果无法确认")
+                except BaseException:
+                    raise SessionAppendRollbackError from append_error
+                raise
+        finally:
+            try:
+                os.close(descriptor)
+            except OSError:
+                # Successful fsync is the durability boundary; close errors do not undo it.
+                pass
 
     def _write_new(self, header: dict, entries: list[dict] | None = None) -> dict:
         path = self.path_for(header["id"])
@@ -484,9 +629,93 @@ class SessionStore:
         # SQLite's writer transaction also serializes JSONL appends across store instances.
         with self._lock, self._index.transaction() as connection:
             self.require_thread(thread_id)
+            self._index_thread(thread_id, connection)
             self._append_line(self.path_for(thread_id), entry.to_dict())
             self._index_thread(thread_id, connection)
         return entry
+
+    def append_many(self, thread_id: str, entries: list[Entry], *, maximum_bytes: int | None = None) -> list[Entry]:
+        """Durably append entries and refresh their SQLite projection once."""
+        if not isinstance(entries, list) or any(not isinstance(entry, Entry) for entry in entries):
+            raise ValueError("会话追加批次必须是 Entry 列表")
+        if maximum_bytes is not None and (type(maximum_bytes) is not int or maximum_bytes < 1):
+            raise ValueError("会话追加上限必须是正整数")
+        if not entries:
+            return []
+        encoded = [_encode_session_line(entry.to_dict()) for entry in entries]
+        path = self.path_for(thread_id)
+        with self._lock, self._index.transaction() as connection:
+            self.require_thread(thread_id)
+            current_size = path.stat().st_size
+            if maximum_bytes is not None:
+                prefix_size = 0
+                if current_size:
+                    with path.open("rb") as handle:
+                        handle.seek(-1, os.SEEK_END)
+                        prefix_size = int(handle.read(1) != bytes([10]))
+                if current_size + prefix_size + sum(map(len, encoded)) > maximum_bytes:
+                    raise SessionSizeLimitExceeded("会话历史超过续接读取上限。")
+            self._index_thread(thread_id, connection)
+            for entry in entries:
+                self._append_line(path, entry.to_dict())
+            self._index_thread(thread_id, connection)
+        return entries
+
+    def append_attachment(self, thread_id: str, entry: Entry, publish: Callable[[], None]) -> Entry:
+        """Publish an attachment and its durable reference under the shared writer lock."""
+        payload = entry.payload or {}
+        if entry.type != "attachment" or not _ATTACHMENT_DIGEST.fullmatch(str(payload.get("digest", ""))):
+            raise ValueError("附件记录格式无效")
+        if not callable(publish):
+            raise ValueError("附件发布器无效")
+        with self._lock, self._index.transaction() as connection:
+            # Reject damaged history before publishing content or appending a reference.
+            with self.open_entries_snapshot(thread_id) as entries:
+                for _entry in entries:
+                    pass
+            publish()
+            _fsync_directory(self.attachments_root)
+            self._append_line(self.path_for(thread_id), entry.to_dict())
+            self._index_thread(thread_id, connection)
+        return entry
+
+    def cleanup_unreferenced_attachments(self, digests: list[str]) -> None:
+        """Serialize failed-publication cleanup with attachment adds and deletion."""
+        with self._lock, self._index.transaction():
+            self._purge_unreferenced_attachments(digests)
+
+    def cleanup_attachment_temporaries(self) -> None:
+        """Remove only private temp names left by interrupted attachment publication."""
+        with self._lock, self._index.transaction():
+            try:
+                directory_stat = self.attachments_root.lstat()
+            except FileNotFoundError:
+                return
+            current_uid = getattr(os, "getuid", lambda: -1)()
+            if not stat.S_ISDIR(directory_stat.st_mode) or directory_stat.st_uid != current_uid:
+                raise ValueError("附件目录不可信，临时文件清理已暂停")
+            changed = False
+            try:
+                entries = os.scandir(self.attachments_root)
+            except OSError:
+                raise ValueError("附件目录不可读取，临时文件清理已暂停") from None
+            with entries:
+                for entry in entries:
+                    if _ATTACHMENT_TEMP.fullmatch(entry.name) is None:
+                        continue
+                    path = self.attachments_root / entry.name
+                    try:
+                        original = path.lstat()
+                    except OSError:
+                        raise ValueError("附件临时文件发生变化，清理已暂停") from None
+                    if (not stat.S_ISREG(original.st_mode) or original.st_uid != current_uid
+                            or original.st_nlink != 1):
+                        raise ValueError("附件临时文件不可信，清理已暂停")
+                    restrict_private_file(path)
+                    path.unlink()
+                    changed = True
+            if changed:
+                _fsync_directory(self.attachments_root)
 
     def append_tool_revision(self, thread_id: str, entry: Entry) -> tuple[Entry, bool]:
         """Append a terminal tool revision, reconciling one ambiguous failure.
@@ -508,13 +737,15 @@ class SessionStore:
             nonlocal outcome
             found = False
             try:
-                for line in _iter_bounded_lines(path, maximum=MAX_SESSION_LINE_BYTES,
-                                                label="会话日志", universal_newlines=True):
-                    try:
-                        current = json.loads(line)
-                    except (json.JSONDecodeError, UnicodeDecodeError):
+                for line_number, line in enumerate(_iter_bounded_lines(
+                        path, maximum=MAX_SESSION_LINE_BYTES, label="会话日志",
+                        universal_newlines=True), start=1):
+                    if not line.strip():
                         continue
-                    if isinstance(current, dict) and current.get("id") == entry.id:
+                    current = _decode_session_record(line, line_number=line_number)
+                    if current is None:
+                        continue
+                    if current.get("id") == entry.id:
                         if current != expected:
                             return "conflict"
                         found = True
@@ -532,6 +763,7 @@ class SessionStore:
         try:
             with self._lock, self._index.transaction() as connection:
                 self.require_thread(thread_id)
+                self._index_thread(thread_id, connection)
                 self._append_line(path, expected)
                 self._index_thread(thread_id, connection)
             return entry, False
@@ -697,16 +929,13 @@ class SessionStore:
         with self._lock:
             self.require_thread(thread_id)
             out: list[dict] = []
-            for line in _iter_bounded_lines(self.path_for(thread_id), maximum=MAX_SESSION_LINE_BYTES,
-                                            label="会话日志", universal_newlines=True):
+            for line_number, line in enumerate(_iter_bounded_lines(
+                    self.path_for(thread_id), maximum=MAX_SESSION_LINE_BYTES,
+                    label="会话日志", universal_newlines=True), start=1):
                 if not line.strip():
                     continue
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if (isinstance(data, dict) and data.get("type") != "session"
-                        and isinstance(data.get("id"), str) and isinstance(data.get("payload"), dict)):
+                data = _decode_session_record(line, line_number=line_number)
+                if data is not None:
                     out.append(data)
             return out
 
@@ -1248,11 +1477,16 @@ class SessionStore:
         with self._lock, self._index.transaction() as connection:
             known: set[str] = set()
             for path in sorted(self.root.glob("*.jsonl")):
-                try:
-                    self._index_thread(path.stem, connection)
-                except (OSError, ValueError):
+                if not _THREAD_ID.fullmatch(path.stem):
                     continue
                 known.add(path.stem)
+                indexed = connection.execute("SELECT 1 FROM threads WHERE id=?", (path.stem,)).fetchone()
+                try:
+                    self._index_thread(path.stem, connection)
+                except (OSError, ValueError) as exc:
+                    if indexed is None:
+                        raise ValueError(f"会话日志 {path.name} 无法读取，索引恢复已停止") from exc
+                    # Preserve the last listing projection; session reads report the damaged line.
             for row in connection.execute("SELECT id,rollout_path FROM threads").fetchall():
                 if Path(row["rollout_path"]).parent == self.root and row["id"] not in known:
                     connection.execute("DELETE FROM threads WHERE id=?", (row["id"],))
@@ -1361,17 +1595,15 @@ class SessionStore:
         thread_id = intent["threadId"]
         with self._lock, self._index.transaction() as connection:
             connection.execute("PRAGMA secure_delete=ON")
-            self._remove_thread_files(thread_id)
+            self._index_events(connection)
             event = self._rewrite_events_for_deletion(connection, intent)
+            self._remove_thread_files(thread_id)
             self._purge_unreferenced_attachments(intent["attachmentDigests"])
             self._purge_repair_backups(thread_id)
-            connection.execute("DELETE FROM events WHERE thread_id=?", (thread_id,))
+            connection.execute("DELETE FROM events")
+            connection.execute("DELETE FROM checkpoints WHERE name='events'")
+            self._index_events(connection)
             connection.execute("DELETE FROM threads WHERE id=?", (thread_id,))
-            self._index_deletion_event(connection, event)
-            stat_result = self.events_path.stat()
-            connection.execute("INSERT INTO checkpoints(name,value) VALUES('events',?) "
-                               "ON CONFLICT(name) DO UPDATE SET value=excluded.value",
-                               (f"{stat_result.st_size}:{stat_result.st_mtime_ns}",))
         if _on_committed is not None:
             _on_committed()
         self._checkpoint_and_truncate_wal()
@@ -1465,18 +1697,31 @@ class SessionStore:
         event: dict | None = None
         event_count = 0
         maximum_cursor = self._event_high_water(connection)
+        seen_cursors: set[int] = set()
+        seen_event_ids: set[str] = set()
         last_byte = b"\n"
         try:
             with os.fdopen(descriptor, "wb") as output:
                 if source_handle is not None:
-                    for raw_line in _iter_bounded_raw_lines_from_handle(
-                            source_handle, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"):
+                    for line_number, raw_line in enumerate(_iter_bounded_raw_lines_from_handle(
+                            source_handle, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"), start=1):
+                        if not raw_line.strip():
+                            output.write(raw_line + b"\n")
+                            last_byte = b"\n"
+                            continue
                         try:
-                            record = json.loads(raw_line)
-                        except (json.JSONDecodeError, UnicodeDecodeError):
-                            raise ValueError("事件日志损坏，无法安全删除会话") from None
-                        if (not isinstance(record, dict) or record.get("type") != "event"
-                                or not isinstance(record.get("method"), str)
+                            record = _decode_jsonl_object(
+                                raw_line, label="事件日志", line_number=line_number)
+                        except ValueError as exc:
+                            raise ValueError(f"事件日志损坏，无法安全删除会话：{exc}") from None
+                        if not isinstance(record, dict):
+                            raise ValueError("事件日志格式无效，无法安全删除会话")
+                        method = record.get("method")
+                        timestamp = record.get("timestamp")
+                        if (record.get("type") != "event"
+                                or not isinstance(timestamp, str)
+                                or not isinstance(method, str) or not method or len(method) > 256
+                                or any(ord(char) < 32 for char in method)
                                 or not isinstance(record.get("params"), dict)):
                             raise ValueError("事件日志格式无效，无法安全删除会话")
                         params = record["params"]
@@ -1484,6 +1729,20 @@ class SessionStore:
                         event_id = params.get("eventId")
                         if cursor < 1 or not isinstance(event_id, str) or not _EVENT_ID.fullmatch(event_id):
                             raise ValueError("事件日志游标无效，无法安全删除会话")
+                        if cursor in seen_cursors:
+                            raise ValueError("事件日志存在重复游标，无法安全删除会话")
+                        if event_id in seen_event_ids:
+                            raise ValueError("事件日志存在重复事件 ID，无法安全删除会话")
+                        seen_cursors.add(cursor)
+                        seen_event_ids.add(event_id)
+                        event_thread_id = params.get("threadId")
+                        if event_thread_id is not None:
+                            if not isinstance(event_thread_id, str):
+                                raise ValueError("事件日志会话 ID 无效，无法安全删除会话")
+                            try:
+                                self.path_for(event_thread_id)
+                            except ValueError:
+                                raise ValueError("事件日志会话 ID 无效，无法安全删除会话") from None
                         maximum_cursor = max(maximum_cursor, cursor)
                         if event_id == intent["eventId"]:
                             event_count += 1
@@ -1492,11 +1751,11 @@ class SessionStore:
                                     or "threadId" in params):
                                 raise ValueError("会话删除事件与恢复标记冲突")
                             event = {"method": record["method"], "params": params}
-                            output.write(raw_line)
-                            last_byte = raw_line[-1:] or last_byte
+                            output.write(raw_line + b"\n")
+                            last_byte = b"\n"
                         elif params.get("threadId") != thread_id:
-                            output.write(raw_line)
-                            last_byte = raw_line[-1:] or last_byte
+                            output.write(raw_line + b"\n")
+                            last_byte = b"\n"
                 if event_count > 1:
                     raise ValueError("事件日志含重复的会话删除事件")
                 if event is None:
@@ -1534,24 +1793,6 @@ class SessionStore:
             raise RuntimeError("删除事件未能生成")
         return event
 
-    @staticmethod
-    def _index_deletion_event(connection: sqlite3.Connection, event: dict) -> None:
-        params = event["params"]
-        existing = connection.execute("SELECT cursor,method,thread_id,params_json FROM events WHERE event_id=?",
-                                      (params["eventId"],)).fetchone()
-        if existing is not None:
-            if (existing["cursor"] != int(params["eventCursor"]) or existing["method"] != event["method"]
-                    or existing["thread_id"] is not None or json.loads(existing["params_json"]) != params):
-                raise ValueError("会话删除事件索引与日志冲突")
-            return
-        collision = connection.execute("SELECT event_id FROM events WHERE cursor=?",
-                                       (int(params["eventCursor"]),)).fetchone()
-        if collision is not None:
-            raise ValueError("会话删除事件游标与现有事件冲突")
-        connection.execute("INSERT INTO events(cursor,event_id,method,thread_id,params_json) VALUES(?,?,?,?,?)",
-                           (int(params["eventCursor"]), params["eventId"], event["method"], None,
-                            _json(params)))
-
     def _purge_unreferenced_attachments(self, digests: list[str]) -> None:
         candidates = set(digests)
         if not candidates:
@@ -1573,13 +1814,13 @@ class SessionStore:
             restrict_private_file(session_path)
             try:
                 self.require_thread(session_path.stem)
-                for line in _iter_bounded_lines(session_path, maximum=MAX_SESSION_LINE_BYTES,
-                                                label="会话日志", universal_newlines=True):
-                    try:
-                        entry = json.loads(line)
-                    except json.JSONDecodeError:
-                        raise ValueError("会话记录损坏，无法确认共享附件引用") from None
-                    if (isinstance(entry, dict) and entry.get("type") == "attachment"
+                for line_number, line in enumerate(_iter_bounded_lines(
+                        session_path, maximum=MAX_SESSION_LINE_BYTES,
+                        label="会话日志", universal_newlines=True), start=1):
+                    if not line.strip():
+                        continue
+                    entry = _decode_session_record(line, line_number=line_number)
+                    if (entry is not None and entry.get("type") == "attachment"
                             and isinstance(entry.get("payload"), dict)):
                         digest = entry["payload"].get("digest")
                         if isinstance(digest, str) and _ATTACHMENT_DIGEST.fullmatch(digest):
@@ -1787,6 +2028,34 @@ class SessionStore:
         self.append(thread_id, Entry(type="task_phase", parent_id=self.last_entry_id(thread_id),
                                      payload=payload))
 
+    def record_tool_batch(self, thread_id: str, turn_id: str, batch_id: str,
+                          call_ids: list[str], status: str, *,
+                          assistant_item_id: str | None = None,
+                          request_fingerprint: str | None = None) -> Entry:
+        """Persist the complete expected call set before any handler can run."""
+        _identifier(turn_id, "turnId")
+        _identifier(batch_id, "toolBatchId")
+        if (not isinstance(call_ids, list) or not 1 <= len(call_ids) <= MAX_TOOL_BATCH_CALLS
+                or any(not isinstance(value, str) or not value or len(value) > 256 for value in call_ids)
+                or len(set(call_ids)) != len(call_ids)):
+            raise ValueError("工具批次调用清单无效")
+        if status not in {"started", "completed"}:
+            raise ValueError("工具批次状态无效")
+        if assistant_item_id is not None and (not isinstance(assistant_item_id, str)
+                or not _IDENTIFIER.fullmatch(assistant_item_id)):
+            raise ValueError("工具批次 assistant 条目标识无效")
+        if request_fingerprint is not None and (not isinstance(request_fingerprint, str)
+                or not re.fullmatch(r"[a-f0-9]{64}", request_fingerprint)):
+            raise ValueError("工具批次请求摘要无效")
+        payload: dict[str, Any] = {"turnId": turn_id, "toolBatchId": batch_id,
+                                   "callIds": list(call_ids), "status": status}
+        if assistant_item_id is not None:
+            payload["assistantItemId"] = assistant_item_id
+        if request_fingerprint is not None:
+            payload["requestFingerprint"] = request_fingerprint
+        entry = Entry(type="tool_batch", parent_id=self.last_entry_id(thread_id), payload=payload)
+        return self.append(thread_id, entry)
+
     def last_turn(self, thread_id: str) -> dict | None:
         return self.get_thread(thread_id).get("lastTurn")
 
@@ -1825,10 +2094,362 @@ class SessionStore:
                        if len(rows) > limit else None)
         return {"turns": [json.loads(row["metadata_json"]) for row in page], "nextCursor": next_cursor}
 
+    def list_branch_turns(self, thread_id: str, *, cursor: str | None = None, limit: int = 50) -> dict:
+        """Indexed turn metadata restricted to the current branch (same order/cursor shape as list_turns)."""
+        _limit(limit)
+        self.path_for(thread_id)
+        scope = {"threadId": thread_id, "view": "branch"}
+        key = _read_page_cursor(cursor, "turns", scope)
+        if key is not None:
+            if len(key) != 2 or type(key[0]) is not int or key[0] < 0:
+                raise ValueError("回合分页游标无效")
+            _identifier(key[1], "turnId")
+        self._sync_thread(thread_id)
+        with self._lock:
+            entries = self.read_entries(thread_id)
+            active_ids = {turn["turnId"] for turn in self._turns(self._active_entries(entries), thread_id)}
+            with self._index.connection() as connection:
+                rows = connection.execute("SELECT * FROM turns WHERE thread_id=? ORDER BY first_ordinal,turn_id",
+                                          (thread_id,)).fetchall()
+        selected = []
+        for row in rows:
+            if row["turn_id"] not in active_ids:
+                continue
+            if key is not None and (row["first_ordinal"], row["turn_id"]) <= (key[0], key[1]):
+                continue
+            selected.append(row)
+            if len(selected) > limit:
+                break
+        page = selected[:limit]
+        next_cursor = (_page_cursor("turns", scope, [page[-1]["first_ordinal"], page[-1]["turn_id"]])
+                       if len(selected) > limit else None)
+        return {"turns": [json.loads(row["metadata_json"]) for row in page], "nextCursor": next_cursor}
+
+    def branch_last_turn(self, thread_id: str) -> dict | None:
+        """Indexed metadata of the current branch's last turn (None before the first turn)."""
+        with self._lock:
+            leaf = self._leaf_state(thread_id, self.read_entries(thread_id))
+        if leaf["leafTurnId"] is None:
+            return None
+        self._sync_thread(thread_id)
+        with self._index.connection() as connection:
+            row = connection.execute("SELECT metadata_json FROM turns WHERE thread_id=? AND turn_id=?",
+                                     (thread_id, leaf["leafTurnId"])).fetchone()
+        return json.loads(row["metadata_json"]) if row is not None else None
+
+    _BRANCH_INDEPENDENT_TYPES = frozenset({"attachment", "thread_info", "queue"})
+
+    @classmethod
+    def _active_entries(cls, entries: list[dict]) -> list[dict]:
+        """Project the branch selected by the latest leaf record.
+
+        Entries keep file order.  Each appended entry continues the projection
+        tail at its append time, so the result does not trust writer-provided
+        parentId values.  Without any leaf record the input is returned as is.
+        """
+        if not any(entry.get("type") == LEAF_ENTRY_TYPE for entry in entries):
+            return entries
+        previous: dict[str, str | None] = {}
+        records: dict[str, dict] = {}
+        tail: str | None = None
+        for entry in entries:
+            if entry.get("type") == LEAF_ENTRY_TYPE:
+                payload = entry.get("payload")
+                target = payload.get("targetId") if isinstance(payload, dict) else None
+                if target is not None and (not isinstance(target, str) or target not in records
+                                           or records[target].get("type") != "turn"):
+                    raise ValueError("会话分支指针指向未知或无效的条目")
+                tail = target
+                continue
+            if entry["id"] in records:
+                raise ValueError("会话条目编号重复，无法投影分支")
+            records[entry["id"]] = entry
+            previous[entry["id"]] = tail
+            tail = entry["id"]
+        path: set[str] = set()
+        cursor = tail
+        while cursor is not None:
+            path.add(cursor)
+            cursor = previous[cursor]
+        included_turns = {entry["payload"].get("turnId") for entry in entries
+                          if entry["id"] in path and entry.get("type") == "turn"
+                          and isinstance(entry.get("payload"), dict)}
+        included_turns.discard(None)
+        owners = cls._item_owners([entry for entry in entries if entry.get("type") != LEAF_ENTRY_TYPE])
+
+        def keep(entry: dict) -> bool:
+            kind = entry.get("type")
+            if kind == LEAF_ENTRY_TYPE:
+                return False
+            payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            if kind == "item":
+                owner = owners.get(entry["id"])
+                # Late revisions follow their owning turn, not the physical tail.
+                return owner in included_turns if owner is not None else entry["id"] in path
+            if entry["id"] in path:
+                return True
+            if kind in cls._BRANCH_INDEPENDENT_TYPES:
+                # Session-level state (uploaded files, title, queue) is shared by
+                # every branch; only content owned by abandoned turns is dropped.
+                return True
+            if kind in {"turn", "task_phase", "tool_batch"}:
+                return payload.get("turnId", payload.get("taskId")) in included_turns
+            if kind == "context_edit":
+                return owners.get(payload.get("targetItemId")) in included_turns
+            if kind == "context_checkpoint":
+                return payload.get("throughTurnId") in included_turns
+            return False
+
+        return [entry for entry in entries if keep(entry)]
+
+    @classmethod
+    def _turn_tree(cls, entries: list[dict]) -> tuple[dict[str, str | None], list[str]]:
+        """Parent turn of every turn, following the same append-time tail rule as _active_entries.
+
+        Returns (parent by turnId, turnIds in first-appearance order).  Forged
+        leaf targets raise exactly like the projection does.
+        """
+        cls._active_entries(entries)
+        owners = cls._item_owners([entry for entry in entries if entry.get("type") != LEAF_ENTRY_TYPE])
+        known = {entry["payload"].get("turnId") for entry in entries if entry.get("type") == "turn"
+                 and isinstance(entry.get("payload"), dict)
+                 and isinstance(entry["payload"].get("turnId"), str)
+                 and _IDENTIFIER.fullmatch(entry["payload"]["turnId"])}
+        parent: dict[str, str | None] = {}
+        order: list[str] = []
+        record_turn: dict[str, str | None] = {}
+        tail: str | None = None
+        for entry in entries:
+            kind = entry.get("type")
+            payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+            if kind == LEAF_ENTRY_TYPE:
+                target = payload.get("targetId")
+                tail = record_turn.get(target) if isinstance(target, str) else None
+                continue
+            if kind == "turn":
+                owner = payload.get("turnId")
+            elif kind == "item":
+                owner = owners.get(entry["id"])
+            elif kind in {"task_phase", "tool_batch"}:
+                owner = payload.get("turnId", payload.get("taskId"))
+            else:
+                owner = None
+            if isinstance(owner, str) and owner in known:
+                if owner not in parent:
+                    parent[owner] = tail if tail != owner else None
+                    order.append(owner)
+                tail = owner
+            record_turn[entry["id"]] = tail
+        return parent, order
+
+    def list_branches(self, thread_id: str, *, cursor: str | None = None, limit: int = 50) -> dict:
+        """Enumerate branch endpoints (turns without children) of the in-session turn tree."""
+        _limit(limit)
+        self.path_for(thread_id)
+        scope = {"threadId": thread_id, "view": "endpoints"}
+        key = _read_page_cursor(cursor, "branches", scope)
+        if key is not None:
+            if len(key) != 2 or type(key[0]) is not int or key[0] < 0:
+                raise ValueError("分支分页游标无效")
+            _identifier(key[1], "turnId")
+        with self._lock:
+            entries = self.read_entries(thread_id)
+            parent, order = self._turn_tree(entries)
+            leaf = self._leaf_state(thread_id, entries)
+            turns = {turn["turnId"]: turn for turn in self._turns(entries, thread_id)}
+            owners = self._item_owners([entry for entry in entries if entry.get("type") != LEAF_ENTRY_TYPE])
+        previews: dict[str, str] = {}
+        for entry in entries:
+            payload = entry.get("payload")
+            if (entry.get("type") == "item" and isinstance(payload, dict)
+                    and payload.get("kind") == "userMessage" and isinstance(payload.get("text"), str)):
+                owner = owners.get(entry["id"])
+                if isinstance(owner, str) and owner not in previews:
+                    text = " ".join(payload["text"].split())
+                    previews[owner] = text[:MAX_BRANCH_PREVIEW_CHARS] + ("…" if len(text) > MAX_BRANCH_PREVIEW_CHARS else "")
+        children: dict[str | None, list[str]] = {}
+        for turn_id in order:
+            children.setdefault(parent[turn_id], []).append(turn_id)
+        position = {turn_id: index for index, turn_id in enumerate(order)}
+        leaf_path: set[str] = set()
+        cursor_turn = leaf["leafTurnId"]
+        while cursor_turn is not None:
+            leaf_path.add(cursor_turn)
+            cursor_turn = parent.get(cursor_turn)
+        endpoints = [turn_id for turn_id in order if turn_id not in children]
+        if key is not None:
+            endpoints = [turn_id for turn_id in endpoints if (position[turn_id], turn_id) > (key[0], key[1])]
+        page = endpoints[:limit]
+        result = []
+        for turn_id in page:
+            path = [turn_id]
+            while parent[path[-1]] is not None:
+                path.append(parent[path[-1]])
+            path.reverse()
+            fork_point = next((ancestor for ancestor in reversed(path[:-1])
+                               if len(children.get(ancestor, [])) > 1), None)
+            branch_turn = path[0] if fork_point is None else path[path.index(fork_point) + 1]
+            turn = turns.get(turn_id, {})
+            result.append({
+                "turnId": turn_id, "status": turn.get("status"),
+                "startedAt": turn.get("startedAt"), "updatedAt": turn.get("updatedAt"),
+                "completedAt": turn.get("completedAt"),
+                "depth": len(path), "forkTurnId": fork_point, "branchTurnId": branch_turn,
+                "branchInputPreview": previews.get(branch_turn),
+                "inputPreview": previews.get(turn_id),
+                "containsLeaf": leaf["leafTurnId"] in path,
+                "isLeaf": leaf["leafTurnId"] == turn_id,
+                "selectable": turn.get("status") in _TERMINAL})
+        next_cursor = (_page_cursor("branches", scope, [position[page[-1]], page[-1]])
+                       if len(endpoints) > limit else None)
+        return {"threadId": thread_id, "branched": leaf["branched"], "leafTurnId": leaf["leafTurnId"],
+                "turnCount": len(order), "endpoints": result, "nextCursor": next_cursor}
+
+    def read_active_entries(self, thread_id: str) -> list[dict]:
+        return self._active_entries(self.read_entries(thread_id))
+
+    def _leaf_state(self, thread_id: str, entries: list[dict]) -> dict:
+        active = self._active_entries(entries)
+        turns = self._turns(active, thread_id)
+        turn_ids = [turn["turnId"] for turn in turns]
+        return {"threadId": thread_id,
+                "branched": any(entry.get("type") == LEAF_ENTRY_TYPE for entry in entries),
+                "leafTurnId": turn_ids[-1] if turn_ids else None,
+                "activeTurnCount": len(turn_ids),
+                "activeTurnIds": turn_ids[-MAX_LEAF_ACTIVE_TURN_IDS:],
+                "activeTurnIdsTruncated": len(turn_ids) > MAX_LEAF_ACTIVE_TURN_IDS}
+
+    def usage_page(self, thread_id: str, *, branch: bool, cursor: str | None = None, limit: int = 50) -> dict:
+        """Read-only per-turn usage aggregated from persisted usage records."""
+        from boss_harness.usage import SOURCE, summarize_usage
+        _limit(limit)
+        scope = {"threadId": thread_id, "view": "branch" if branch else "log"}
+        key = _read_page_cursor(cursor, "usage", scope)
+        if key is not None and (len(key) != 1 or type(key[0]) is not int or key[0] < 0):
+            raise ValueError("用量分页游标无效")
+        offset = key[0] if key is not None else 0
+        with self._lock:
+            entries = self.read_entries(thread_id)
+            active = ({turn["turnId"] for turn in self._turns(self._active_entries(entries), thread_id)}
+                      if branch else None)
+            leaf = self._leaf_state(thread_id, entries) if branch else None
+        result = summarize_usage(entries, active)
+        turns = result["turns"]
+        page = turns[offset:offset + limit]
+        next_cursor = (_page_cursor("usage", scope, [offset + limit])
+                       if offset + limit < len(turns) else None)
+        out = {"threadId": thread_id, "view": scope["view"], "source": SOURCE, "costAvailable": False,
+               "turnCount": len(turns), "turns": page, "nextCursor": next_cursor,
+               "summaryTasks": result["summaryTasks"], "totals": result["totals"]}
+        if leaf is not None:
+            out["branch"] = leaf
+        return out
+
+    def read_leaf(self, thread_id: str) -> dict:
+        with self._lock:
+            return self._leaf_state(thread_id, self.read_entries(thread_id))
+
+    def set_leaf(self, thread_id: str, turn_id: str | None, *, _with_entry_id: bool = False) -> dict:
+        """Move the in-session branch pointer to a settled turn (None = before the first turn)."""
+        if turn_id is not None:
+            _identifier(turn_id, "turnId")
+        with self._lock, self._index.transaction() as connection:
+            self.require_thread(thread_id)
+            self._index_thread(thread_id, connection)
+            entries = self.read_entries(thread_id)
+            current = self._leaf_state(thread_id, entries)
+            if current["leafTurnId"] == turn_id and (turn_id is not None or current["activeTurnCount"] == 0):
+                return {**current, "changed": False}
+            target_id: str | None = None
+            if turn_id is not None:
+                records = [entry for entry in entries if entry.get("type") == "turn"
+                           and isinstance(entry.get("payload"), dict)
+                           and entry["payload"].get("turnId") == turn_id]
+                if not records or records[-1]["payload"].get("status") not in _TERMINAL:
+                    raise ValueError("仅可把分支指针移到已经结束的回合")
+                target_id = records[-1]["id"]
+            all_turns = self._turns(entries, thread_id)
+            if any(turn.get("status") not in _TERMINAL for turn in all_turns):
+                raise ValueError("会话仍有未结束的回合，不能切换分支")
+            for item in self._project_items(thread_id, entries):
+                approval = item.get("approval") or {}
+                if item.get("status") == "running" or (approval and not approval.get("decision")):
+                    raise ValueError("会话中仍有未收尾条目或审批，不能切换分支")
+            entry = Entry(type=LEAF_ENTRY_TYPE, parent_id=target_id,
+                          payload={"targetId": target_id, "turnId": turn_id,
+                                   "fromTurnId": current["leafTurnId"]})
+            candidate = entries + [entry.to_dict()]
+            state = self._leaf_state(thread_id, candidate)
+            if state["leafTurnId"] != turn_id:
+                raise ValueError("分支指针目标与回合边界不一致")
+            self._append_line(self.path_for(thread_id), entry.to_dict())
+            self._index_thread(thread_id, connection)
+            result = {**state, "changed": True}
+            if _with_entry_id:
+                result["_leafEntryId"] = entry.id
+            return result
+
+    def abandoned_branch(self, thread_id: str, target_turn_id: str | None,
+                         entries: list[dict] | None = None) -> dict:
+        """Turns given up by moving the leaf to target: old leaf back to the common ancestor (exclusive)."""
+        entries = self.read_entries(thread_id) if entries is None else entries
+        parent, _ = self._turn_tree(entries)
+        leaf = self._leaf_state(thread_id, entries)
+        if target_turn_id is not None and target_turn_id not in parent:
+            raise ValueError("目标回合不存在")
+        ancestors: set[str] = set()
+        cursor = target_turn_id
+        while cursor is not None:
+            ancestors.add(cursor)
+            cursor = parent.get(cursor)
+        abandoned: list[str] = []
+        cursor = leaf["leafTurnId"]
+        while cursor is not None and cursor not in ancestors:
+            abandoned.append(cursor)
+            cursor = parent.get(cursor)
+        abandoned.reverse()
+        return {"fromTurnId": leaf["leafTurnId"], "targetTurnId": target_turn_id,
+                "commonTurnId": cursor, "abandonedTurnIds": abandoned}
+
+    def append_branch_summary(self, thread_id: str, leaf_entry_id: str, payload: dict,
+                              *, on_committed: Callable[[], None] | None = None) -> Entry:
+        """Append a branch summary only while the leaf record that requested it is still current."""
+        summary = payload.get("summary")
+        if not isinstance(summary, str) or not summary.strip() or len(summary) > MAX_BRANCH_SUMMARY_CHARS:
+            raise ValueError("被放弃分支摘要必须是 1 到 32000 字符")
+        with self._lock, self._index.transaction() as connection:
+            self.require_thread(thread_id)
+            entries = self.read_entries(thread_id)
+            index = next((position for position in range(len(entries) - 1, -1, -1)
+                          if entries[position].get("type") == LEAF_ENTRY_TYPE), None)
+            if index is None or entries[index]["id"] != leaf_entry_id:
+                raise ValueError("分支指针已变化，未写入被放弃分支摘要")
+            if any(entry.get("type") in {"turn", BRANCH_SUMMARY_ENTRY_TYPE} for entry in entries[index + 1:]):
+                raise ValueError("切换后已有新回合或摘要，未写入被放弃分支摘要")
+            entry = Entry(type=BRANCH_SUMMARY_ENTRY_TYPE, payload={**payload, "leafEntryId": leaf_entry_id})
+            self._append_line(self.path_for(thread_id), entry.to_dict())
+            if on_committed is not None:
+                on_committed()
+            self._index_thread(thread_id, connection)
+            return entry
+
     def fork_thread(self, thread_id: str, *, turn_id: str | None = None, title: str | None = None) -> dict:
         with self._lock:
             source = self.get_thread(thread_id)
-            entries = self.read_entries(thread_id)
+            # A fork copies only one branch; leaf records never travel.  Without
+            # turnId it is the active branch; a settled turn on another branch
+            # selects that branch as if the leaf pointed at it (no record written).
+            raw_entries = self.read_entries(thread_id)
+            entries = self._active_entries(raw_entries)
+            if turn_id is not None and isinstance(turn_id, str) and _IDENTIFIER.fullmatch(turn_id) and not any(
+                    turn["turnId"] == turn_id for turn in self._turns(entries, thread_id)):
+                records = [entry for entry in raw_entries if entry.get("type") == "turn"
+                           and isinstance(entry.get("payload"), dict)
+                           and entry["payload"].get("turnId") == turn_id]
+                if records and records[-1]["payload"].get("status") in _TERMINAL:
+                    synthetic = Entry(type=LEAF_ENTRY_TYPE, parent_id=records[-1]["id"],
+                                      payload={"targetId": records[-1]["id"], "turnId": turn_id})
+                    entries = self._active_entries(raw_entries + [synthetic.to_dict()])
             turns = self._turns(entries, thread_id)
             if turn_id is None:
                 selected = turns[-1] if turns else None
@@ -1838,7 +2459,17 @@ class SessionStore:
             if selected is None or selected.get("status") not in _TERMINAL:
                 raise ValueError("仅可从已经结束的回合创建分支")
             cutoff = selected.get("boundaryOrdinal", selected["lastOrdinal"])
-            prefix = entries[:cutoff + 1]
+            turn_positions = {turn["turnId"]: position for position, turn in enumerate(turns)}
+            selected_position = turn_positions[selected["turnId"]]
+
+            def checkpoint_in_branch(entry: dict) -> bool:
+                payload = entry.get("payload")
+                through_turn_id = payload.get("throughTurnId") if isinstance(payload, dict) else None
+                position = turn_positions.get(through_turn_id) if isinstance(through_turn_id, str) else None
+                return position is not None and position <= selected_position
+
+            prefix = [entry for entry in entries[:cutoff + 1]
+                      if entry.get("type") != "context_checkpoint" or checkpoint_in_branch(entry)]
             included_turns = {entry["payload"]["turnId"] for entry in prefix
                               if entry.get("type") == "turn" and "turnId" in entry["payload"]}
             owners = self._item_owners(entries)
@@ -1848,7 +2479,8 @@ class SessionStore:
                 if ((entry.get("type") == "item" and owners.get(entry["id"]) in included_turns)
                         or (entry.get("type") == "turn" and entry["payload"].get("turnId") in included_turns)
                         or (entry.get("type") == "context_edit"
-                            and owners.get(entry["payload"].get("targetItemId")) in included_turns)):
+                            and owners.get(entry["payload"].get("targetItemId")) in included_turns)
+                        or (entry.get("type") == "context_checkpoint" and checkpoint_in_branch(entry))):
                     prefix.append(entry)
             projected = self._project_items(thread_id, prefix)
             for item in projected:
@@ -1869,12 +2501,29 @@ class SessionStore:
                 if not isinstance(title, str):
                     raise ValueError("title 必须是字符串")
                 header["title"] = title
+            request_offset = selected.get("continuationRequestOffset", 0)
+            if type(request_offset) is not int or request_offset < 0:
+                raise ValueError("来源回合模型请求计数无法核验，不能创建分支")
+            for entry in entries:
+                payload = entry.get("payload")
+                if (entry.get("type") != "task_phase" or not isinstance(payload, dict)
+                        or payload.get("taskId") != selected["turnId"]
+                        or payload.get("phase") != "model_request"):
+                    continue
+                attempt = payload.get("attempt")
+                if (payload.get("ownerKind") != "turn" or type(attempt) is not int
+                        or not 1 <= attempt <= 1_000):
+                    raise ValueError("来源回合模型请求阶段无法核验，不能创建分支")
+                request_offset = max(request_offset, attempt)
             copied: list[dict] = []
             copied_ids: set[str] = set()
             for entry in json.loads(_json(prefix)):
                 # Queue state belongs to one thread, not its transcript forks.
                 if entry["type"] in {"thread_info", "queue", "task_phase"}:
                     continue
+                if (entry["type"] == "turn"
+                        and entry["payload"].get("turnId") == selected["turnId"]):
+                    entry["payload"]["continuationRequestOffset"] = request_offset
                 if (entry["type"] == "context_edit"
                         and owners.get(entry["payload"].get("targetItemId")) not in included_turns):
                     continue
@@ -1971,40 +2620,57 @@ class SessionStore:
 
     def _index_events(self, connection: sqlite3.Connection) -> None:
         pending = self._pending_deletion_ids()
+        if pending:
+            connection.execute("PRAGMA secure_delete=ON")
         for thread_id in pending:
             connection.execute("DELETE FROM events WHERE thread_id=?", (thread_id,))
         if not self.events_path.exists():
+            connection.execute("PRAGMA secure_delete=ON")
+            connection.execute("DELETE FROM events")
+            connection.execute("DELETE FROM checkpoints WHERE name='events'")
             return
         stat = self.events_path.stat()
         fingerprint = f"{stat.st_size}:{stat.st_mtime_ns}"
         checkpoint = connection.execute("SELECT value FROM checkpoints WHERE name='events'").fetchone()
         if checkpoint and checkpoint["value"] == fingerprint:
             return
-        for line in _iter_bounded_lines(self.events_path, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"):
-            try:
-                record = json.loads(line)
-                if not isinstance(record, dict) or not isinstance(record.get("params"), dict):
-                    continue
-                params = record["params"]
-                event_id = params.get("eventId")
-                cursor = _event_cursor(params.get("eventCursor"))
-                method = record.get("method")
-                thread_id = params.get("threadId")
-                if (not isinstance(event_id, str) or not _EVENT_ID.fullmatch(event_id) or cursor < 1
-                        or not isinstance(method, str) or not method):
-                    continue
-                if thread_id is not None:
-                    self.path_for(thread_id)
-                    if thread_id in pending:
-                        continue
-                previous = connection.execute("SELECT event_id FROM events WHERE cursor=?", (cursor,)).fetchone()
-                if previous and previous["event_id"] != event_id:
-                    raise ValueError("事件日志存在重复游标，请保留原文件后恢复")
-                connection.execute("""INSERT INTO events(cursor,event_id,method,thread_id,params_json)
-                    VALUES(?,?,?,?,?) ON CONFLICT(event_id) DO NOTHING""",
-                    (cursor, event_id, method, thread_id, _json(params)))
-            except (json.JSONDecodeError, TypeError):
+        connection.execute("PRAGMA secure_delete=ON")
+        connection.execute("DELETE FROM events")
+        for line_number, line in enumerate(_iter_bounded_lines(
+                self.events_path, maximum=MAX_EVENT_LINE_BYTES, label="事件日志"), start=1):
+            if not line.strip():
                 continue
+            record = _decode_jsonl_object(line, label="事件日志", line_number=line_number)
+            params = record.get("params")
+            method = record.get("method")
+            if (record.get("type") != "event" or not isinstance(record.get("timestamp"), str)
+                    or not isinstance(params, dict) or not isinstance(method, str) or not method
+                    or len(method) > 256 or any(ord(char) < 32 for char in method)):
+                raise ValueError(f"事件日志第 {line_number} 行格式无效，读取已停止")
+            event_id = params.get("eventId")
+            try:
+                cursor = _event_cursor(params.get("eventCursor"))
+            except ValueError:
+                raise ValueError(f"事件日志第 {line_number} 行游标无效，读取已停止") from None
+            thread_id = params.get("threadId")
+            if (not isinstance(event_id, str) or not _EVENT_ID.fullmatch(event_id) or cursor < 1
+                    or (thread_id is not None and not isinstance(thread_id, str))):
+                raise ValueError(f"事件日志第 {line_number} 行格式无效，读取已停止")
+            if thread_id is not None:
+                try:
+                    self.path_for(thread_id)
+                except ValueError:
+                    raise ValueError(f"事件日志第 {line_number} 行 threadId 无效，读取已停止") from None
+            previous = connection.execute("SELECT event_id FROM events WHERE cursor=?", (cursor,)).fetchone()
+            if previous and previous["event_id"] != event_id:
+                raise ValueError("事件日志存在重复游标，请保留原文件后恢复")
+            try:
+                connection.execute("""INSERT INTO events(cursor,event_id,method,thread_id,params_json)
+                    VALUES(?,?,?,?,?)""", (cursor, event_id, method, thread_id, _json(params)))
+            except sqlite3.IntegrityError:
+                raise ValueError(f"事件日志第 {line_number} 行包含重复 eventId，读取已停止") from None
+        for thread_id in pending:
+            connection.execute("DELETE FROM events WHERE thread_id=?", (thread_id,))
         connection.execute("INSERT INTO checkpoints(name,value) VALUES('events',?) ON CONFLICT(name) DO UPDATE SET value=excluded.value", (fingerprint,))
 
     def append_event(self, method: str, params: dict[str, Any] | None = None) -> dict:

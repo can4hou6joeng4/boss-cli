@@ -1,14 +1,167 @@
 # 上游吸收记录
 
-## 第九十二轮：会话级 provider/model 选择
+## 第一百一十一轮：会话级模型线路切换
 
-本项目 [PR #109](https://github.com/can4hou6joeng4/boss-cli/pull/109) 起于基线 `b39b680d703c33e83d681f7c1b526810fea7db0c`：模型配置原先只绑定进程默认 provider，无法为不同会话保存独立路线。同步并复核当前主线 `bec83e7d0982713134d7bb46d78aa670bfc53aea` 后，保留本地配置目录和会话级持久选择的职责边界。
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/model-registry.ts`（本机已配置模型目录与可用性）、`model-resolver.ts`（provider/model 精确解析）与 `agent-session.ts`（会话级 `setModel` 追加模型变更记录，后续回合按会话选择发起请求）。本轮独立实现，不复制 Pi 源码或新增依赖。
 
-参考 Pi PR [#11368](https://github.com/earendil-works/pi/pull/11368)，已于 2026-10-28 合并，merge commit `2e0f175bd58752ad4123aa12c2f3979839003dc7`（MIT）。本项目只采用 provider/model 目录与会话选择解耦的架构概念，不复制其代码。Pi 开放 [Issue #9884](https://github.com/earendil-works/pi/issues/9884) 仍讨论 provider 可用性刷新与默认模型回退竞态；本项目只检查本机显式配置，不增加远程模型目录或启动时网络探测。
+本项目 [PR #109](https://github.com/can4hou6joeng4/boss-cli/pull/109) 起于主线 `bec83e7`，本轮合并当前主线并对齐其后的续接、工具调度、重试通知、steering、transform_context、会话分支与 usage 查询。适配差异：模型目录只列出本机显式配置且可用的线路，不返回端点或凭据，不做远程目录或启动探测；`thread/model/set` 只接受目录中的精确 provider/model，在活动回合、压缩或分支摘要任务、后续回合启动期间以及归档会话上拒绝，切换时清除不再适用的推理档位，并以 `capabilities.sessionModelSelection` 标示。选择写入会话元数据记录（不随分支切换改变），fork 继承来源会话当前线路；压缩与分支摘要默认使用会话线路（显式摘要模型配置仍优先）；usage 按请求记录实际 provider/model。来源回合之后若切换过线路，续接以 `CONTINUATION_CONTEXT_CHANGED` 拒绝（切回也保守拒绝）；续接的 provider 比对改为会话线路，非默认线路会话亦可续接。旧会话无线路记录时继续使用进程默认线路；`turn/start.model` 仍仅覆盖单回合模型 ID，provider 不可按回合切换。
 
-同步核对 `jackwener/boss-cli` main `9d38ed1a3a5f6c5c2f37b865b0748454234e7c70`：PR [#37](https://github.com/jackwener/boss-cli/pull/37) 与 Issue [#35](https://github.com/jackwener/boss-cli/issues/35) 仍 OPEN，分别涉及招聘沟通分页和只读命令隐式读取 Cookie/Keychain。该项目业务适配器使用独立的 `boss-agent-cli`；这些招聘平台与认证议题没有可移植的通用模型路由契约，本轮不移植相关业务流程。
+## 第一百一十轮：每回合 provider 用量只读汇总
 
-模型目录仅列出本机已配置且当前可用的 provider/model，不返回端点或凭据。新会话可选精确目录项，空闲会话通过 `thread/model/set` 持久切换并清除不再适用的 reasoning 设置；fork 继承选择，旧会话继续使用进程默认线路。`turn/start.model` 仍可按兼容契约覆盖单回合模型 ID，但 provider 固定由会话决定。无效路线在写入会话或启动 worker 前拒绝。
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/ai`（`Usage` 的 input/output/cacheRead/cacheWrite 与 cost）及 `packages/coding-agent/src/core/cache-stats.ts`（按 assistant 消息逐条累计，未报告缓存的 provider 不计入缓存统计）。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：Issue #202 的可验证 usage 校准已由 #203 合入，本轮只为后续按回合累计打基础。数据源是既有每次请求追加的 `model_usage` / `context_summary_usage` 条目，不新增持久格式；`thread/usage/read` 查询时逐条校验后按回合聚合，异常记录不计入并给出原因计数，避免中转（含智谱等兼容接口）缺失或伪造的 usage 进入合计。Pi 带模型价目计算费用，本项目没有可信价目来源，费用固定为 `null`；provider 不上报的字段为 `null` 而非 0。缓存未命中分析、Electron 展示与费用目录留待后续。
+
+## 第一百零九轮：被放弃分支摘要（第三步）
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-manager.ts`：`branchWithSummary()` 移动 leaf 时为被放弃分支追加摘要条目，进入新分支上下文。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：Pi 同步写入调用方提供的摘要；本项目复用压缩的可取消后台任务（`SummaryPlanner` 分片、隔离 provider、`before_request` 检查、用量记录、事件恢复与终态上限），仅换用分支专用系统提示。来源为原 leaf 沿回合树回溯至与目标共同祖先之前的回合条目（尊重上下文编辑排除）。摘要条目紧随本次 `leaf` 记录追加，提交时校验该记录仍是最新且其后无新回合，因此只投影在该分支；投影时置于目标回合之后，与压缩检查点不合并（检查点覆盖锚点时紧随摘要前缀），`compacted_request` 前缀校验同步包含。切换前完成模型线路、来源与并发预检，失败则不切换；指针移动后摘要失败 / 取消不回滚，任务运行期间会话按摘要占用处理。hook 提供摘要与 Electron 入口留待后续。
+
+## 第一百零八轮：会话内分支端点枚举（第二步收尾子集）
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-manager.ts`：`getTree()` / `getChildren()` 由条目 `parentId` 构建会话树供分支选择器使用。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：不信任写入方 `parentId`，而是沿用第一步 `_active_entries()` 的规则，以每条记录追加时的投影尾部推导各回合的父回合（遗留无 `turnId` 条目按 `_item_owners()` 归属）；树只到回合粒度，不暴露条目级节点。`thread/branches/list` 只返回端点（无子回合的回合）并按首次出现顺序分页，游标绑定会话与端点视图；`capabilities.sessionBranchTree` 声明。`thread/fork` 指定当前分支外的已结束回合时，以内存中的临时 leaf 投影该分支后复制，不写入指针。`task/read`、线程列表元数据、分支视图快照分页与 branchWithSummary 留待后续步骤。
+
+## 第一百零七轮：会话内分支展示投影（第二步子集）
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-manager.ts`：`getBranch()` / `buildSessionContext()` 自 `leafId` 投影当前分支，界面与模型共用同一路径。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：为兼容未感知分支的旧客户端，读取类 RPC 默认仍返回完整日志；客户端在 `capabilities.sessionBranchViews` 声明后可对 `thread/read`、`thread/turns/list`、`thread/items/list` 传 `view: "branch"`，复用第一步的 `_active_entries()` 投影条目与编辑状态，回合元数据取自索引并按当前分支回合过滤，`lastTurn` 改为当前分支末回合，并附 `thread/leaf/read` 同形的 `branch` 元信息。分支视图游标带视图作用域，与完整日志游标互不接受。冻结快照分页（`snapshot=true` / `snapshotId`）暂拒绝分支视图；`task/read`、线程列表元数据与分支端点列表留待后续步骤。
+
+## 第一百零六轮：会话内分支 leaf 指针（第一步）
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-manager.ts`：会话为 append-only 条目树，`leafId` 指向当前位置，`branch()` / `resetLeaf()` 只移动指针，`buildSessionContext()` 自叶节点沿 parent 链投影上下文，`branchWithSummary()` 另写被弃分支摘要。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：Pi 的 leaf 只在内存中，重新加载即回到最后条目；本项目把指针持久化为 append-only `leaf` 记录（目标为某回合最后一条终态 `turn` 记录，或 `null` 表示回到首回合之前），重启后保持所选分支。投影不信任写入时的 `parentId`（并行工具与恢复修订可能并发追加），而按文件顺序为每条记录记下追加时的投影尾部再回溯；迟到的条目修订、工具批次、阶段与编辑按所属回合归入或排除，摘要检查点按 `throughTurnId` 是否在当前分支保留（与 #236 分支摘要规则一致）。没有 `leaf` 记录的旧会话原样返回，行为不变；伪造或指向未知条目的 `leaf` 记录 fail closed。投影目前只作用于模型上下文、预算/压缩、续接预检与 `thread/fork`；`thread/read`、条目列表与线程元数据仍展示完整日志，留待后续步骤。新增 `thread/leaf/read` 与 `thread/leaf/set`（仅在 `capabilities.sessionLeaf` 声明后可用）及可选通知 `thread/leafChanged`，协议仍为 `0.2.0`；切换要求会话空闲、无未结束回合、未决审批、投递中队列与持久化围栏，并在 SQLite 写锁内读写。
+
+临时探针验证旧会话投影不变、切换分支后历史投影与新回合续写、切回原分支与重置到根、fork 仅复制当前分支、非法 / 运行中 / 伪造指针拒绝、压缩检查点在分支间的保留与排除、迟到修订归属、多线程并发切换与追加后日志可由另一 store 实例读取，以及一次 stdio JSON-RPC 端到端（能力声明、读写指针、`context/read` 消息数、续接预检在分支后返回 `CONTINUATION_NOT_LATEST`）；compileall、TypeScript typecheck、Electron 源码 build 与 `git diff --check` 通过。探针未提交；未调用真实模型、网络或招聘平台，未改 Electron 前端。
+
+## 第一百零五轮：业务请求的受限 transformContext
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/agent/src/agent-loop.ts`（`streamAssistantResponse` 在 `convertToLlm` 前调用 `transformContext(messages, signal)`）与 `types.ts` 的说明：宿主可在每次模型调用前裁剪或改写发送给模型的消息，持久消息不变。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+现状核对：工具结果截断与 content/details 分离（`tool_results.py` 的模型结果字节上限与分页读取）、回合/条目生命周期事件、`before_request` / `before_tool_call` / `after_tool_call` 均已具备；会话树内分支需改持久格式与前端，风险较高。缺口是宿主无法按自身策略缩减单次请求的历史投影，只能整体拒绝请求。
+
+适配差异：Pi 可任意改写 `AgentMessage[]`；本项目 hook 只能读、不能改写事实，因此 `transform_context` 仅允许按内核划分的历史单元整体省略，最后一个单元（当前输入及其后的工具往返）不可省略，单元边界保证工具调用/结果配对与角色顺序；输入为有界脱敏元数据而非完整消息。仅作用于业务回合（摘要与连接检查不调用），在完整预算准备后、`before_request` 前执行，`before_request` 看到变换后的 `messageCount`；省略只会减小请求，故沿用已准备预算。失败按策略 hook 体例 fail closed，取消时不变换。
+
+Python 3.14 临时探针覆盖整单元省略只影响请求、持久历史不变、`before_request` 观察到新消息数、返回 None 与无 hook 不变、异常/非法返回/省略当前单元拒绝请求且不调用 provider、取消、工具往返单元划分、摘要用途跳过、旧 hook 与 `config/read`；另以 `/tmp` 脚本化 provider 经真实 stdio JSON-RPC 跑三轮回合，第三轮模型只收到当前输入。`compileall`、TypeScript typecheck、Electron 源码 build 与 `git diff --check` 通过；探针未提交，未调用真实模型或招聘平台。
+
+## 第一百零四轮：steering 投递模式 all / one-at-a-time
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/agent/src/agent.ts`（`PendingMessageQueue`、`steeringMode`）与 `agent-loop.ts` 的投递点：`all` 一次注入全部排队消息，`one-at-a-time` 只注入最早一条，其余留待后续投递点。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：Pi 默认 `one-at-a-time`，本项目默认 `all` 以保持既有行为，经 `BOSS_HARNESS_STEERING_MODE` 或 `ApplicationService(steering_mode=...)` 选择，非法值启动即报错且不回显原文；`config/read` 公开生效值。投递仍走持久队列 claim/commit，压缩后的追补在 `one-at-a-time` 下若本请求已含一条则跳过；回合结束或请求上限耗尽时剩余 steering 与原先一致转为 paused。follow-up 分派本就逐条进行，未改动。协议保持 `0.2.0`，持久格式不变，旧会话读取不受影响。
+
+本地临时探针覆盖两种模式的注入条数与顺序、压缩追补、上限耗尽后剩余项暂停、非法配置与旧会话恢复；探针未提交，未调用真实模型或招聘平台。
+
+## 第一百零三轮：Anthropic provider 补齐自动重试
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/agent-session.ts`：`isRetryableAssistantError` 判断瞬时错误，`retryDelayMs` 指数退避，`auto_retry_start` / `auto_retry_end` 通知重试过程。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+现状核对：OpenAI Responses 已具备首个输出前重试、Retry-After、硬用量上限不重试及共享恢复预算（第九十八、一百零一轮），而 Anthropic provider 禁用了 SDK 内置重试却没有自己的重试循环，瞬时 429/529/连接失败直接让回合失败，两条线路行为不一致。本轮把退避参数、Retry-After 解析与延迟计算抽到 `models/retry.py` 由两条线路共用，Anthropic 按 OpenAI 同一规则拆成重试外层与单次尝试：只在尚未产出任何内容事件前重试；HTTP 408/409/429/5xx 与 Anthropic 529 可重试，SSE 内错误只认 errors.py 明确标为瞬时的 provider code；智谱 1308、配额类 code、上下文溢出及 `retryable=False` 不重试；后台流泵未确认收尾时停止重试；每次额外尝试先向回合共享 `ModelRecoveryBudget` 预留，耗尽时终态标为不可重试，退避期间取消释放预留。
+
+适配差异：Pi 在会话层重试整条助手消息并发 `auto_retry_*` 事件；本项目重试位于 provider 内、首个输出前，对调用方静默，仅写 stderr，不新增通知或协议字段，因此已输出内容不会重复。
+
+Python 3.14 临时探针用合成 SDK 客户端验证 429 带 Retry-After-Ms 与 529 后成功、尝试次数用尽、400 与智谱 1308 / billing_error 不重试、已输出文本后不重试、流内 overloaded 首输出前重试、连接失败重试、预算耗尽停止且标不可重试、成功重试只扣一次额度及退避期间取消退还额度；`compileall`、TypeScript typecheck、Electron 源码 build 与 `git diff --check` 通过。探针未提交；未调用真实模型、网络或招聘平台。
+
+## 第一百零二轮：工具批次 sequential / parallel 调度模式
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/agent/src/agent-loop.ts`：工具调用先按模型顺序逐个 prepare，批内任一工具为 sequential 则整批串行，全部为 parallel 时并发执行，结果按源顺序回填。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：`ToolDefinition.execution_mode` 默认 `sequential`，非法值（含不可哈希值）报规范 `ValueError`，`requires_approval=True` 不得声明 parallel；默认 BOSS 工具共享上游 data_dir、浏览器与登录态，全部保持串行，不因只读自动并发。只有整批显式 parallel、无审批、宿主能提供独立工具桥时才并发。参数校验、生命周期策略与 start 持久化在回合主线程按模型顺序惰性进行，仅在有空闲槽位即将派发时才 prepare；有界线程池只并发 handler 调用；finish 持久化、暂停判定与通知在主线程按源顺序写入，历史重建与 live 结果一致。在途 handler 与工具桥数量均受 worker 上限约束，工具桥按需创建、批内复用、每个至多关闭一次，额外工具桥创建失败后本批不再重试；暂停、策略拒绝或取消后尚未 prepare 的调用与串行一致只经 `_skip_calls` 以 `not_executed` 收尾；prepare 或 finish 异常时先等待在途 handler 并按序收尾已 prepare 的调用，再原样传播。回退串行仅在首个独立工具桥不可用、尚无任何调用落库或启动时发生。
+
+临时探针验证默认与混合批次串行、并行重叠且结果/持久化/历史按源顺序、取消与暂停后未启动项不执行、工具桥数量受限且各关闭一次、工具桥不可用时无副作用回退、策略拒绝第 k 项与串行持久化形态一致、prepare 异常不多留孤儿 start、额外工具桥工厂失败只再调用一次及非法模式报错；compileall、TypeScript typecheck、Electron 源码 build 与 `git diff --check` 通过。探针未提交；未调用真实模型、网络或招聘平台，也未启用任何并行业务工具。
+
+## 第一百零一轮：共享 provider 与 agent 的有限恢复预算
+
+参考 Pi MIT 开放 [Issue #9474](https://github.com/earendil-works/pi/issues/9474)，截至 2026-10-30 仍为 OPEN；核对 Pi `main@50d9f823e414eafb5f4459d16728a2464cd7939f`。该议题的单次传输总期限已由本项目 [Issue #205](https://github.com/can4hou6joeng4/boss-cli/issues/205) 覆盖，剩余缺口是 provider 重试与 agent 恢复各自计数、彼此叠加。本轮不复制 Pi 源码或新增依赖。
+
+本项目 [Issue #237](https://github.com/can4hou6joeng4/boss-cli/issues/237) 固定基线 `main@382dbc2b43e9c1b836ce7d7893605379168baeb0`，为每个逻辑业务回合建立默认 8 次的运行时恢复预算。OpenAI Responses 仅在瞬时失败、尚未输出且后台传输清理确认后，为每次额外 transport attempt 预留一次额度；正常首次调用不计入。退避期间取消会释放预留额度，预算耗尽时不再等待或启动 transport，并将流终态标为不可重试。上下文溢出进入自动恢复前也消耗同一额度；恢复被预算阻止时回合错误明确带有 `recoveryBlocked=true`。因此 provider 多请求重试与一次 agent overflow recovery 不再分别拥有完整上限。
+
+`ModelRequest.recovery_budget` 是运行时对象，不进入 session JSONL、RPC、模型请求、请求指纹或任务上下文身份。自动 compaction 的分片请求沿用触发它的业务回合预算，使摘要 provider 重试也扣同一额度；独立手动 compaction 使用自己的预算。Anthropic SDK 已禁用内置重试。每回合原有普通模型请求上限、摘要正常分片上限及每次传输时限继续独立生效；本轮不声称新增逻辑回合总墙钟期限，也不把正常请求/分片误记为 recovery。
+
+Python 临时会话与合成 provider 探针验证跨 `stream()` 调用的 provider 预算共享、无预算直接调用保留原重试次数、退避取消归还额度、overflow 与 provider retry 共享额度、耗尽后不调用自动恢复、摘要片段继承运行时预算及 request copy 保留对象身份。`compileall`、TypeScript typecheck、Electron 源码 build、wheel/sdist build 与 `git diff --check` 通过。探针未提交；未调用真实模型、网络或招聘平台。真实 provider 长会话、Electron 桌面交互与用户验收仍未完成。
+
+## 第一百轮：分支按摘要来源保留上下文检查点
+
+本项目 [Issue #235](https://github.com/can4hou6joeng4/boss-cli/issues/235) 在主线 `382dbc2b43e9c1b836ce7d7893605379168baeb0` 上复现：父会话先保存 `throughTurnId=t1` 的摘要，再包含已结束回合 `t2`；父 `ContextService.history()` 正确显示摘要和 `t2` 尾部，但 `fork_thread(..., turn_id="t2")` 仅按物理 boundary 复制 JSONL，丢弃追加在边界后的 checkpoint，使 `t1` 原始用户和助手内容重新进入子会话模型上下文。此行为与本项目 [Issue #53](https://github.com/can4hou6joeng4/boss-cli/issues/53) 已记录的分支契约不符：上下文 checkpoint 及其来源字段应随对话历史保留。
+
+分支现在按所选回合在完整 turn 序列中的位置筛选 checkpoint：来源 `throughTurnId` 位于所选回合之前或等于所选回合时，即使记录位于物理 boundary 后也纳入；覆盖更晚回合或引用未知来源回合的 checkpoint 不进入该分支。符合条件的多个 checkpoint 保持原记录顺序，现有 `_validated_checkpoint()` 继续负责来源校验；无效来源仍安全回退为完整原始历史。上下文编辑、工具修订、父历史和分支再分叉保持各自来源边界。本轮独立实现，不复制 Pi 源码或增加依赖。
+
+合成离线 `SessionStore` / `ContextService` 探针覆盖 `t1→checkpoint(t1)→t2→t3→checkpoint(t2)`：fork `t1` 仅显示摘要 `t1`；fork `t2` 显示摘要 `t2`，不把被摘要覆盖的原始 `t1`/`t2` 文本重新带入；fork 后再 fork 继续保留正确摘要，父日志逐字不变。探针无模型、网络、招聘 CLI 或子进程调用，代码仅保留本地。
+
+## 第九十九轮：等待 Harness 子进程完成优雅关闭
+
+参考 Pi MIT [PR #11544](https://github.com/earendil-works/pi/pull/11544)，已合入 Pi main，合并提交 `a87b742ff4ce262c07b7830a25c73c1442dab41b`。该问题报告指出，客户端结束 daemon stdin 后立即发 `SIGTERM` 会跳过 EOF 收尾；PR 的 Unix daemon signal handling 不适用于本项目的 Python Harness，因此这里只采用“EOF 后给后端留出清理窗口”的生命周期原则，不复制 Pi 源码或增加依赖。本项目复现与修复基于 main `05ce291fb2670b78a107927b334836d3ef50e15f`。
+
+本项目 `HarnessClient.dispose()` 在结束 stdin 后原等待 250ms 即发送 `SIGTERM`，而 `ApplicationService.close()` 对取消、worker、摘要、生命周期 hook、快照与资源收尾使用共享 2 秒期限。真实离线集成探针通过 `HarnessClient` 启动 CLI 与 `ApplicationService`，注入 650ms `kernel/shutdown` hook；旧等待时间只记录 hook `entered`，随后子进程被 `SIGTERM` 中断，50ms 对照正常退出。现在等待 2.5 秒后才发 `SIGTERM`，其后 1 秒仍发 `SIGKILL` 兜底；同一 650ms 场景约 677ms 正常结束，hook 完成且 CLI 返回 0。该结果证明关闭流程不再被 250ms 客户端计时器打断，不代表所有操作系统级故障或超出内核期限的回调都可完成。
+
+本地 Python 应用并发探针另对照 Pi 开放 [Issue #10982](https://github.com/earendil-works/pi/issues/10982)：摘要 provider 被事件门控时，直接 `turn/start` 被拒绝，follow-up 保持 queued；摘要完成事件先于后续 `turn/started`，队列只交付一次。现有 thread admission 和 compaction owner 已覆盖该路径，无对应运行时代码改动。
+
+另核对 Pi MIT 开放 [PR #9126](https://github.com/earendil-works/pi/pull/9126)，截至 2026-10-30 仍为 OPEN，目标为 `main@f1b2e77f5b13b2a199b1052cb79c235451afe7d7`。它报告活动工具尚未结算时 runtime disposal 先断开持久化；提议在 shutdown/dispose 前等待 `session.abort()`，作者注明等待没有超时，忽略取消的工具不在此改动范围内。该问题位于 session 持久化结算边界，与本 PR 延长 Harness 子进程 EOF 后宽限期的客户端生命周期边界不同，Pi 的无超时等待不直接适用于本项目的有界关闭策略。
+
+本项目以真实 `ApplicationService` 和工具 handler 做了关机时序探针：handler 在 close 开始时已派发并阻塞 2.15 秒；`close()` 约 2.006 秒返回时 runtime job 与 state owner 仍存活。handler 约在 2.151 秒返回，随后 JSONL 先追加同一工具调用从 `executing/running` 到 `completed/completed` 的修订，再追加 `turn interrupted`；worker 约在 2.168 秒退出后 runtime job 归零并释放 state owner。重启后工具仍为 completed、回合仍为 interrupted，没有重放或第二次模型请求，handler/provider 各调用一次。超过内核等待期限时若进程在工具结算前退出，隔离对照恢复为 `failed / outcome_unknown / SESSION_INTERRUPTED`，同样不重放；因此本地证据验证的是 owner 在 worker 结束前不释放以及有界关闭内完成的工具结果可持久化，不承诺超出进程存活窗口的工具也能结算。
+
+本轮 `npm run typecheck`、`npm run build`、Python `compileall`、wheel/sdist 构建、Source build、GitGuardian 与 `git diff --check` 通过。所有探针使用合成 provider、生命周期 hook 和临时状态，无真实模型或招聘平台请求；探针只保留于本地，不提交测试材料。真实 Electron 退出与用户界面验收尚未完成。
+
+## 第九十八轮：停止重试智谱五小时硬用量上限
+
+Pi MIT [Issue #11537](https://github.com/earendil-works/pi/issues/11537) 报告智谱/Z.ai 在五小时硬用量上限时返回 HTTP 429 与结构化 `code=1308`；消息含数小时后的重置时间，重复请求无法在当前窗口成功。Pi 已合并 [PR #11572](https://github.com/earendil-works/pi/pull/11572)，固定 merge commit `c719d5b08e5d9fb9bbcb1f1792281eea8b442812`，在 agent-level classifier 中精确识别 code 字段；该 PR 明确未调整 Pi provider-level 的 429 重试策略。上游实现仅作行为参考，本轮不复制源码或引入依赖。
+
+本项目 OpenAI Responses 适配器会对 HTTP 429 及带瞬时标记的流内错误自动重试。共享错误分类器现在只把结构化 `code` 精确等于整数或字符串 `1308` 视为硬用量上限，并将 provider code 安全规范为字符串；HTTP 与流内重试决策遵从该明确的不可重试结果。未命中既有终态分类的其他 429、非结构化消息和相似数字仍保持原行为。适配器面向 OpenAI 兼容端点，因此匹配范围刻意收窄到该 code 字段，不按自由文本推断供应商或配额语义。
+
+## 第九十七轮：JSONL 追加失败后的有界回滚
+
+参考 Pi 已合并 [PR #11486](https://github.com/earendil-works/pi/pull/11486) 对会话写入失败状态分叉的修复，并核对其 [Issue #11460](https://github.com/earendil-works/pi/issues/11460)。Pi 的故障点是内存 leaf 已更新而文件 append 失败；BOSS-CLI 不保留同类内存 transcript，但直接追加 JSONL 后若出现短写或 `ENOSPC`，SQLite 事务回滚无法撤销已写入的文件后缀，严格读取会因此失败。本轮针对本项目的持久化边界独立实现，不复制 Pi 源码。
+
+本项目 [Issue #229](https://github.com/can4hou6joeng4/boss-cli/issues/229) 通过临时 `SessionStore` 和半行 `ENOSPC` 故障注入复现：原日志增加残缺后缀，下一次 `read_entries()` 报 JSONL 损坏。现在共享 `_append_line()` 使用无缓冲文件描述符逐段写入，并记录起始 inode/长度和每次成功写入的字节数；追加或 `fsync` 失败时，只有目标身份、文件长度和已写后缀都与本次操作匹配才会尝试 `ftruncate` 回起点并再次 `fsync`。被替换、外部追加、回滚写入或回滚同步结果不确定时返回 `SessionAppendRollbackError`，不覆盖或假称未写入。普通会话追加和工具结果修订在写前校验当前索引切面，避免继续追加到已损坏日志；事件追加沿用事件日志 fingerprint 冷读校验。
+
+故障探针覆盖短写、`fsync` 失败、回滚失败与目标文件替换/追加，以及会话条目、事件与工具修订的共享调用边界；成功回滚须恢复原字节且可继续读取，无法确认时必须明确失败。Python compileall、wheel/sdist、TypeScript、Electron 源码构建、产物扫描及 `git diff --check` 按最新 PR head 验证；探针和测试材料仅保留本地。
+
+## 第九十六轮：删除清理复用严格事件 JSONL 解码
+
+参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的持久化恢复边界，并延续本项目 [Issue #221](https://github.com/can4hou6joeng4/boss-cli/issues/221) 的损坏日志约束：事件事实源在冷重建、读取和删除清理之间必须使用同一套可验证解析规则。本轮不复制 Pi 源码或引入依赖。
+
+本项目 [Issue #227](https://github.com/can4hou6joeng4/boss-cli/issues/227) 发现 `_rewrite_events_for_deletion()` 仍直接调用 `json.loads`，因此删除会话可能接受重复对象键、非有限浮点、坏 UTF-8 或过深 JSON，而事件索引重建会拒绝同一输入。严格解码还会拒绝 JSON 转义表示的孤立 UTF-16 代理项，避免 Python 字符串无法重新编码为持久 UTF-8 的记录。现在删除重写按 64 KiB 块流式读取，复用带行号的严格事件对象解码器；空白行与索引重建一样跳过但保留，写回的每条记录恢复 LF 分隔，避免删除后事件行粘连。任何损坏在临时文件发布前都停止清理，不截断、修补、重放或发布部分日志，原有删除意图可继续用于恢复。
+
+验证覆盖重复键、非有限浮点、孤立代理项、坏 UTF-8、过深结构、合法删除事件和损坏发生在目标事件前后的边界；网络、真实模型、招聘 CLI 和提交测试材料均为零。Python 编译、wheel/sdist、TypeScript、Electron 源码构建、`git diff --check` 与远程必需检查按最新 PR head 核对。
+
+## 第九十五轮：上游 CLI JSON 信封的严格边界
+
+本项目 [Issue #225](https://github.com/can4hou6joeng4/boss-cli/issues/225) 复现 `BossCliTool` 对 `boss-agent-cli --json` 输出使用宽松 `json.loads` 的缺口：重复键采用最后值，`NaN`/`Infinity` 和孤立代理项会进入 `ToolResult`，深层结构可能在后续投影才失败。该边界属于业务 CLI 进程契约，不把 Python 对象的合法性推断为上游信封合法。
+
+现在适配器在七键集合与退出码校验前拒绝重复对象键、非有限浮点、超过 64 层的 JSON 和孤立 Unicode 代理项。JSON 语法错误继续返回 `CLI_ERROR`；语法可解析但违反严格信封完整性的内容返回固定 `CLI_CONTRACT_ERROR`，不持久化其数据、不回交模型，且暂停当前回合、后续工具与队列，不自动重试。若该错误来自已派发写工具，工具结果仍以 `outcome_unknown` 持久化并要求核对外部状态。保留 `raw`/分页投影及其他写操作未知结果语义；不修改 `boss-agent-cli` 或平台行为，不复制 Pi 源码或引入依赖。
+
+离线假的子进程探针覆盖正常信封、重复键、`NaN`/`Infinity`、坏 Unicode、深度边界、失败退出码和下游错误投影；探针只使用合成 stdout，无真实进程、网络、模型或招聘平台调用。
+
+## 第九十四轮：JSON-RPC 帧的严格解析与坏帧后继续服务
+
+参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 RPC 输入循环，并结合本项目 [Issue #223](https://github.com/can4hou6joeng4/boss-cli/issues/223) 的本地边界复现。Python `json.loads` 默认会接受重复对象键的最后值、把 `1e999` 转为 `Infinity`，过深输入可能抛出未捕获 `RecursionError`；孤立代理项会在 handler 已执行后让响应 UTF-8 编码失败。审批响应中的重复 `approved` 键同样会被最后值覆盖。
+
+本轮独立增加对象键唯一性、有限浮点、64 层深度及 Unicode 代理项校验。解析失败在派发前返回 `-32700` 并继续读取后续帧；handler 已执行但结果含非有限数值、过深结构、孤立代理项或不可 JSON 序列化对象时返回 `RESPONSE_INVALID`，不重放 handler，也不把编码失败误报为业务成功。帧大小和 LF framing 规则保持不变；不复制 Pi 源码或引入依赖。
+
+内存 JSON-RPC 探针覆盖重复顶层/嵌套键、`1e999`、1500 层嵌套、孤立代理项、不可编码响应及每种坏帧后的正常请求；Python 编译、wheel/sdist、TypeScript 检查与 Electron 源码构建须以最新 PR head 为准。测试材料仅保留本地，未调用模型、招聘 CLI、网络或平台。
+## 第九十三轮：共享附件容量与损坏日志的发布门禁
+
+参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 `packages/coding-agent/src/extensions/mcp/tools.ts` 及开放 [Issue #11386](https://github.com/earendil-works/pi/issues/11386)：Pi 对发给模型的 MCP 文本输出设有 20 KiB 默认上限，该提案希望支持分层配置。BOSS-CLI 的附件属于跨会话持久对象，与单次工具输出不同；本轮只采用显式资源预算原则，独立实现，不复制代码或新增依赖。
+
+本项目 [Issue #219](https://github.com/can4hou6joeng4/boss-cli/issues/219) 记录了单附件和单回合均受限、共享对象目录却可持续增长的缺口。附件存储现在默认限制为 512 MiB / 4096 个对象，允许配置正整数上限；按对象目录的逻辑长度和文件数计量，包括未引用的孤儿。内容去重复用可信对象，新增唯一内容在发布前检查配额；发布、引用追加与删除清理共用 SQLite 写锁，失败清理须确认全局无引用，中断临时对象在启动时按私有文件约束清理。
+
+与 [PR #222](https://github.com/can4hou6joeng4/boss-cli/pull/222) 的严格 JSONL 校验组合时，离线探针发现：目标会话正文已损坏但头部有效，原附件路径会先追加引用，随后索引读取才报错。现在对象发布前在同一写锁内流式校验完整会话，预先存在的损坏不得改变日志或对象目录。容量扫描和这次日志校验都在写锁内执行；目录越大、会话越长，写入等待可能越久，当前未承诺恒定延迟。
+
+隔离探针覆盖配额精确边界、去重、共享引用删除、孤儿计量、损坏头部及七种中间正文损坏，后者对共享与唯一内容分别验证日志和对象字节不变；跨两个 `SessionStore` 实例的并发新增和删除/共享新增各运行 16 轮通过。网络与子进程尝试为零；探针仅保留本地。Python 3.12 编译、wheel/sdist 构建及包内容核对通过；类型检查与桌面源码构建通过，真实模型、平台及桌面交互未做验收。
+
+## 第九十二轮：损坏的持久 JSONL 必须显式失败
+
+参考 Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的 `packages/coding-agent/src/core/session-manager.ts`：`loadEntriesFromFile()` 与 `parseSessionEntryLine()` 会跳过 JSON 解析失败的行。这种 salvage 行为适合 Pi 的会话加载契约；BOSS-CLI 的冻结恢复会报告 `itemCount` 并提供完整历史页，静默丢弃记录会把部分历史伪装成完整快照，因此不沿用该容错语义，也不复制 Pi 代码。
+
+本项目 [Issue #221](https://github.com/can4hou6joeng4/boss-cli/issues/221) 在两条有效记录之间插入损坏行后，复现 `read_entries()` 与 `SnapshotBuilder` 都曾成功并忽略该行；删除 SQLite 索引后，重启还会静默隐藏无法重建的会话。
+
+现在会话普通冷读、固定文件快照、冻结快照、工具结果幂等核对、附件引用扫描和事件索引重建共用严格 JSONL 校验。无效 UTF-8、JSON、重复对象键、非有限浮点数、重复 session header 或无效记录结构均报告日志类型与行号并停止；冻结快照不发布部分结果。已有 SQLite 条目时保留旧列表投影以便定位受损会话，读取会给出损坏行；没有可保留条目时，索引恢复明确失败。损坏的源日志不会被截断、自动修补或重放。
+
+离线临时目录探针覆盖中间 JSON 损坏、坏 UTF-8、重复键、溢出浮点数、缺失 payload、重复 header、损坏事件日志、已有索引保留、无索引恢复失败和冻结快照不发布。Python 3.11 compileall、wheel/sdist 构建、npm audit、TypeScript 检查、Electron 源码构建以及 PR Source build / GitGuardian 均通过；没有新增依赖或提交测试材料。
 
 ## 第九十一轮：暴露有界运行资源 owner 快照
 
@@ -108,7 +261,7 @@ Pi MIT main `f09d01b85e0384647fcab6779d35ab9dabe04be3` 的开放 [Issue #10697](
 
 本项目 [Issue #187](https://github.com/can4hou6joeng4/boss-cli/issues/187) 的只读任务归属视图参考 Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/11332) 关于持久任务事实与进程执行责任分离的讨论。独立代码审查发现，PR #188 的 `task/read` 虽限制关系投影数量，却调用 `read_entries()` 将整个会话 JSONL 解码并保存在列表中，再多次扫描；超长会话仍会令查询峰值内存随历史总量增长。
 
-现在 `SessionStore.open_entries_snapshot()` 在 writer lock 内验证会话并固定打开文件的 inode 与长度，之后由同一可回绕句柄按 64 KiB 块、32 MiB 会话正文单行上限逐次扫描固定前缀；会话头和事件日志仍各自保持 8 MiB 上限。`task/read` 将目标身份和冲突验证器直接应用于流式迭代器，不保留完整历史列表；会话追加不会改变当前查询切面。每会话准入锁覆盖扫描并阻止并发删除；全局 runtime/queue 锁只用于捕获运行时归属并打开快照，文件扫描期间已释放。坏 JSON 跳过、坏 UTF-8 替换、通用换行与条目筛选语义和关系数量上限保持不变。
+现在 `SessionStore.open_entries_snapshot()` 在 writer lock 内验证会话并固定打开文件的 inode 与长度，之后由同一可回绕句柄按 64 KiB 块、32 MiB 会话正文单行上限逐次扫描固定前缀；会话头和事件日志仍各自保持 8 MiB 上限。`task/read` 将目标身份和冲突验证器直接应用于流式迭代器，不保留完整历史列表；会话追加不会改变当前查询切面。每会话准入锁覆盖扫描并阻止并发删除；全局 runtime/queue 锁只用于捕获运行时归属并打开快照，文件扫描期间已释放。该轮当时保留坏 JSON 跳过、坏 UTF-8 替换、通用换行与条目筛选语义和关系数量上限；第九十二轮改为损坏记录严格失败。
 
 忽略目录的离线探针以 60,002 条记录、49,200,327 字节的合成会话对比：`task/read` 峰值 Python 分配为 308,017 字节，原 `read_entries()` 列表路径为 87,747,515 字节；打开快照后追加记录，两次回绕仍得到相同记录数且不包含新记录。另一探针暂停文件扫描时确认 runtime/queue 全局锁可被其他工作获取。查询前后 session 与 event 文件 SHA-256 相同；未调用 provider、招聘 CLI、真实平台或桌面 UI。数据只验证合成冷读路径，不代表完整应用进程 RSS 或墙钟延迟。
 
@@ -148,7 +301,7 @@ Pi Durable 开放 [Issue #10845](https://github.com/earendil-works/pi/issues/108
 
 继续参考 Pi MIT 仓库当前 `main` `e65b3b88c08412bb8ffbd21fb5dc5756064a6e5a` 的 `loadEntriesFromFile()`：固定 1 MiB 读取缓冲区配合增量解码和逐行解析。本项目此前 [Issue #103](https://github.com/can4hou6joeng4/boss-cli/issues/103) 只把原始 bytes 快照与 JSON 解码拆开，降低了解码额外峰值；`SessionStore.read_entries()` 仍先 `read_bytes()`，长期会话会把完整原始 JSONL 保留在内存。本轮延伸同一存储边界，不复制 Pi 源码或增加依赖。
 
-`read_entries()` 现在在既有 `SessionStore` 锁内按 64 KiB 块解析会话文件，保留坏 JSON 行跳过、坏 UTF-8 替换、LF/CRLF/CR 行边界、尾部无换行和条目筛选语义；单行超过 8 MiB 时拒绝，避免损坏或外部追加的无界长行。事件索引冷重建共用同一有界解析器，事件仍使用原有 LF 语义与游标冲突校验。锁覆盖整个解析过程，维持一次读取对应稳定文件切面；所有写入仍通过 `SessionStore` 串行化。
+`read_entries()` 当时在既有 `SessionStore` 锁内按 64 KiB 块解析会话文件，保留坏 JSON 行跳过、坏 UTF-8 替换、LF/CRLF/CR 行边界、尾部无换行和条目筛选语义；单行超过 8 MiB 时拒绝，避免损坏或外部追加的无界长行。第九十二轮改为损坏记录严格失败。事件索引冷重建共用同一有界解析器，事件仍使用原有 LF 语义与游标冲突校验。锁覆盖整个解析过程，维持一次读取对应稳定文件切面；所有写入仍通过 `SessionStore` 串行化。
 
 独立复核发现，前置 `require_thread()` 原先仍会无界 `readline()` 并 JSON 解码首行，导致正文解析器的上限无法保护超长会话头。合成 16 MiB 有效头在旧实现产生约 32 MiB 的分配峰值。现在首行也复用同一字节上限与通用换行解析器，在 JSON 解码前拒绝超限头；只读取首行并立即关闭迭代器，空文件仍返回原有头损坏错误。对同类输入，修复后测得峰值为 9058344 字节；该测量只说明超限首行的资源边界，不代表完整会话投影的总内存恒定。
 
@@ -162,7 +315,7 @@ Pi Durable 开放 [Issue #10845](https://github.com/earendil-works/pi/issues/108
 
 本项目基线 `f7832c70be77045225fb281b0f8b3dac20e86dc4` 的 `SessionStore._index_events()` 在 SQLite writer 事务内对 `events.jsonl` 调用 `read_text().split("\\n")`。事件日志会持久化文本与思考增量，长期文件可能远大于单次 8 MiB JSON-RPC 帧；索引丢失、修复或恢复时，整文件物化会让内存峰值随历史长度增长，并延长 writer 锁持有时间。既有会话 JSONL 解析优化没有覆盖该共享事件索引。
 
-现在以 64 KiB 固定块增量拆分事件行，单行上限为 8 MiB；超过上限的损坏或外部追加内容立即拒绝，避免任意长行重新制造无界分配。正常坏 JSON 行继续跳过，重复游标、线程校验、SQLite 单事务、checkpoint 指纹和事件顺序语义保持不变。`append_event()` 在写入前也拒绝超过该上限的记录，防止内核生成无法重建的事件。
+该轮以 64 KiB 固定块增量拆分事件行，单行上限为 8 MiB；超过上限的损坏或外部追加内容立即拒绝，避免任意长行重新制造无界分配。正常坏 JSON 行当时继续跳过；第九十二轮改为损坏记录严格失败。重复游标、线程校验、SQLite 单事务、checkpoint 指纹和事件顺序语义保持不变。`append_event()` 在写入前也拒绝超过该上限的记录，防止内核生成无法重建的事件。
 
 本地隔离探针生成 2400 条事件后删除 SQLite 索引冷重建：事件分页、方法筛选、游标、坏尾行恢复和超限行拒绝均通过；`tracemalloc` 观测本轮重建峰值为 196196 字节，未随完整日志内容保留。探针、合成事件和临时状态未进入 Git、wheel 或 sdist；未调用真实模型、招聘平台或桌面 UI。
 
@@ -1062,3 +1215,23 @@ Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/113
 本项目在两种内置 provider 的失败事件交付边界复查 `_abort_requested`。已经观察到取消时统一发送 `error(reason=aborted, error=请求已取消)`，不保留 SDK/EOF 错误及结构化诊断；OpenAI 同时清除可重试标志与退避信息。内层生成器由交付层 finally 关闭，保留 SDK/pump 的清理和额度责任；未取消失败与正常完成消息不改写。pump 的完成、取消和自动清理语义保持不变，JSON-RPC、持久格式与工具执行边界不变。
 
 本地探针直接加载生产 provider/pump，只在 SDK 流边界使用内存替身；覆盖两家 provider 的 producer 已完成 EOF、排队 SDK/通用异常、活动及重复取消、未取消 EOF/异常、正常完成和完成交付后的取消，并覆盖 Anthropic thinking 签名及 redacted 数据。修复后连续三轮 90/90 通过，取消错误不含 `errorInfo` 或私密 opaque 数据，正常完成仍保留合法私密续接数据；每例仅一次传输创建，流与客户端清理结束，每进程 8 个额度全部归还，网络/DNS 尝试为零。探针和报告仅在本地 `/tmp` 保留，不进入提交；未验收真实 SDK 网络传输、真实模型、招聘平台或桌面 UI。
+
+## 显式续接中断回合
+
+本项目 [Issue #239](https://github.com/can4hou6joeng4/boss-cli/issues/239) 延续已关闭的 [Issue #216](https://github.com/can4hou6joeng4/boss-cli/issues/216)：重启恢复继续只把未完成阶段标记为人工复核；不会自动启动 provider、工具或招聘 CLI。借鉴 Pi Durable [Issue #11557](https://github.com/earendil-works/pi/issues/11557) 对 handoff 后延续任务身份的讨论，本实现独立建立 JSON-RPC 预检与显式续接流程，不复制 Pi 源码、不保存凭据或供应商远端会话状态，也不承诺供应商 exactly-once。
+
+续接只接受最新、已中断且边界可验证的来源回合。请求边界、历史前缀摘要、模型/provider、系统提示、工具 schema、技能、附件来源、推理参数与工具策略必须仍匹配。完整工具批次会以持久开始/完成清单及调用 ID、模型响应条目和 request fingerprint 交叉核对；续接把原有工具结果重建为模型上下文，不再次调用 handler、审批、队列或招聘 CLI。未知副作用、未决审批、未完成批次、损坏/变化的来源、过期来源或冲突续接编号均拒绝，返回稳定错误码供 UI 显示。
+
+每个来源仅能创建一个带 `continuedFromTurnId` 和 `continuationId` 的子回合；同一编号的并发重复请求返回同一个回合，其他续接会因已有子回合被拒绝。新回合沿用来源累计的模型请求上限，普通新回合重新从请求编号零开始。续接仍经过现有会话 owner、取消、队列暂停、审批、收尾和资源限制。Electron 在握手 capability 为真且只读预检通过后展示显式操作；内核拒绝时展示原因并重新预检，传输结果未知时不会自动重发。提示用户模型端可能已完成无持久终态的请求，因此续接可能重复调用并增加费用。
+
+本轮使用真实 `ApplicationService`、临时 `SessionStore`、合成 provider/bridge 与虚构 handler 验证完整工具批次后中断、显式续接、相同续接编号的并发幂等，以及 handler 调用次数不增加；额外回归探针确认续接后的普通新回合从 request index 0 开始。Python 编译、TypeScript 检查、Electron 构建、wheel/sdist、npm audit 和 `git diff --check` 均通过。真实模型、招聘 CLI、招聘平台和默认 Electron profile 均未调用；桌面交互仍需单独人工验收。
+
+## 模型自动重试的可观测通知
+
+参考 Pi 固定 commit `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/agent-session.ts`：`_prepareRetry` 在退避前发出 `auto_retry_start`（attempt、maxAttempts、delayMs、errorMessage），重试成功、最终失败或在等待中被取消时发出 `auto_retry_end`；交互模式据此显示重试提示。本项目 #242 后两条内置 provider 已共用首个输出前的自动重试，但重试过程只写 stderr，桌面与其他客户端只能看到长时间无输出。本轮独立实现、不复制 Pi 源码或新增依赖。
+
+同时复核其他候选：工具调用前后钩子已由 `LifecycleHooks.before_tool_call` / `after_tool_call` 覆盖，且不能绕过逐次审批；会话分支与上下文变换涉及持久格式和前端交互，风险与改动面更大，留待后续。
+
+Pi 在 Agent 层重放整轮请求；本项目重试仍留在 provider 内，只发生在尚未产出内容事件前，并受回合共享恢复额度约束。provider 在每次退避前产出不含内容的 `retry_start` 流事件；外层 `with_retry_outcome` 在首个非错误事件前补 `retry_end(success)`，在错误或取消终态前补失败的 `retry_end`，`reason` 取取消归一化之后的值。未发生重试的流不增加任何事件。`TurnRunner` 将二者映射为 `model/retryStarted` / `model/retryEnded` 通知，携带 threadId、turnId、尝试序号与脱敏错误说明，不写入会话条目，也不计入输出观测；摘要任务与连接检查的消费者忽略这两类事件。协议保持 `0.2.0`：新增的是可选通知，旧客户端按未知通知忽略，或经 `optOutNotificationMethods` 屏蔽；Electron 渲染层暂不展示。
+
+本地临时探针（`/tmp`，不入库）在 Anthropic provider 的单次尝试边界注入内存替身，覆盖无重试、重试后成功、重试耗尽、重试后遇不可重试错误、退避期间取消与中途关闭生成器；并用真实 `TurnRunner` 与临时 `SessionStore` 确认成功与失败两种回合的通知顺序及 `session/error` 不变。OpenAI 线路共用同一辅助函数，仅经编译与类型检查覆盖。未调用真实模型、招聘 CLI、招聘平台或桌面 UI。

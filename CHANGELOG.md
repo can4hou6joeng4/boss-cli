@@ -4,6 +4,17 @@
 
 ### 新增
 
+- [PR #109](https://github.com/can4hou6joeng4/boss-cli/pull/109)：参考 Pi 固定提交 `a14cdf90` 的会话级模型切换，`model/list` 列出本机可用线路，新增 `thread/model/set` 与 `thread/model/updated`（`capabilities.sessionModelSelection`）；空闲时才可切换，fork 继承线路，切换后旧中断回合续接被拒绝，旧会话沿用默认线路。
+- 参考 Pi `packages/ai` 用量字段与 `coding-agent/src/core/cache-stats.ts`：新增只读 `thread/usage/read`（`threadId`、可选 `view` `log`/`branch`、`cursor`、`limit` 1–200，默认 50），按回合汇总已持久的 `model_usage` 记录，另列摘要任务（`context_summary_usage`）与会话合计。只计入类型、范围与 provider 语义可验证的 usage（OpenAI `input` 含缓存读、Anthropic 不含），缺失、类型错误、负数、超大值、内部不一致或全零的记录不计入并按原因计数；provider 未上报的字段（OpenAI 缓存写、Anthropic 推理）返回 `null`，费用无可信价目来源固定为 `null`。读取不写入会话；能力以 `capabilities.threadUsage` 声明，协议仍为 `0.2.0`，旧会话返回空汇总。
+- 参考 Pi `session-manager.ts` 的 `branchWithSummary()`：会话内分支第三步。`thread/leaf/set` 新增可选 `summarize: true`，切换后以既有可取消后台摘要任务（隔离 provider、`context/compact/read|abort`、终态记录上限，事件带 `kind: "branchSummary"`）为被放弃分支（原 leaf 回溯至共同祖先）生成摘要，写入新分支上的 append-only `branch_summary` 条目，在模型上下文中以「被放弃分支摘要」标注（区分平台事实与模型判断、不扩大授权），`context/read` 附 `branchSummaries`。前置检查失败（provider=none 返回 `BRANCH_SUMMARY_MODEL_UNAVAILABLE`、无被放弃回合返回 `BRANCH_SUMMARY_NO_SOURCE`）不切换分支；指针移动后摘要失败或取消不回滚。能力以 `capabilities.sessionBranchSummary` 声明，协议仍为 `0.2.0`，旧会话不变。
+- 参考 Pi `session-manager.ts` 的会话树（`getTree()` / `getChildren()`）：会话内分支第二步补完。新增只读 `thread/branches/list`（`threadId`、可选 `cursor` / `limit` 1–200，默认 50），按追加时投影尾部还原回合树，列出无子回合的分支端点，附状态、时间、深度、分叉回合、分支首回合与端点回合的用户输入摘要（≤120 字符）、是否含当前 leaf 及是否可切换；伪造指针 fail closed，读取不写入。`thread/fork` 的 `turnId` 现可指向任一分支上已结束的回合（只复制该回合所在分支，不改变当前 leaf）。能力以 `capabilities.sessionBranchTree` 声明，协议仍为 `0.2.0`；旧会话返回单一端点。
+- 参考 Pi `session-manager.ts` 的 `buildSessionContext()`：会话内分支第二步。`thread/read`（非快照）、`thread/turns/list` 与 `thread/items/list`（非快照）新增可选参数 `view`（`log` 默认完整日志 / `branch` 按当前 leaf 分支投影），分支视图下线程 `lastTurn` 改为当前分支末回合并附 `branch` 元信息，分页游标与视图绑定不可混用；未传 `view` 的客户端行为不变。能力以 `capabilities.sessionBranchViews` 声明，协议仍为 `0.2.0`。快照分页、`task/read` 与分支端点列表留待后续。
+- 参考 Pi `session-manager.ts` 的 `leafId` / `branch()`：会话内分支第一步。新增持久 append-only `leaf` 指针与只读 `thread/leaf/read`、写入 `thread/leaf/set`（`turnId` 为已结束回合或 `null`），模型上下文、预算与压缩、续接预检和 `thread/fork` 改为按当前分支投影；无指针的旧会话行为不变，伪造指针 fail closed。能力以 `capabilities.sessionLeaf` 声明，切换后发送可选通知 `thread/leafChanged`；协议仍为 `0.2.0`。会话展示类读取与 Electron 入口留待后续步骤。
+- 参考 Pi `agent-loop.ts` 的 `transformContext`：生命周期 hook 新增可选 `transform_context(context) -> ContextTransform | None`，在业务回合每次模型请求的 `before_request` 之前运行。内核把请求历史按“以用户输入开头的单元”给出有界元数据（脱敏输入预览、消息数、工具名与字符数），宿主只能省略除当前输入外的整单元，不能新增或改写消息，工具调用与结果保持成对；持久历史、摘要与连接检查请求不受影响。hook 异常、超时、非法返回或省略当前单元时拒绝该次请求（fail closed）。协议仍为 `0.2.0`；`@boss-cli/protocol` 补齐 `ConfigReadResponse` 与可选 `steeringMode` 类型声明。
+- 参考 Pi `agent.ts` 的 `steeringMode`：新增 `BOSS_HARNESS_STEERING_MODE`（`all` / `one-at-a-time`，默认 `all` 保持原行为）。`one-at-a-time` 时每个投递点只注入最早一条 steering，其余留在持久队列等待后续模型请求，压缩后的追补也不会在同一请求叠加第二条；非法值启动即报错，`config/read` 公开 `steeringMode`。协议仍为 `0.2.0`，持久格式不变。
+- 参考 Pi `agent-session.ts` 的 `auto_retry_start` / `auto_retry_end`：业务回合中 provider 在首个输出前进入自动重试时，新增可选通知 `model/retryStarted`（即将发起的尝试序号、尝试上限、退避毫秒与脱敏失败说明）与 `model/retryEnded`（成功，或以 `error` / `aborted` 结束并附最终错误）。通知仅供观测，不改变重试判定、恢复额度或会话条目；协议仍为 `0.2.0`，旧客户端忽略未知通知即可，也可经 `optOutNotificationMethods` 屏蔽。摘要与连接检查请求不发送该通知。
+- [Issue #239](https://github.com/can4hou6joeng4/boss-cli/issues/239)：新增显式 `turn/continuation/read` 预检与 `turn/continue` 操作，从最新且可验证的中断回合边界创建关联续接回合；续接编号幂等，同一会话仍只允许一个运行 owner。续接会核对持久工具批次、历史前缀及模型/工具/提示/技能/附件指纹，复用已完成的工具结果并沿用原请求上限；存在未知副作用、未决审批、未完成批次或上下文变化时拒绝续接。Electron 仅在内核声明能力后显示入口，并明确提示 provider 请求可能重复及产生额外费用。
+- [Issue #219](https://github.com/can4hou6joeng4/boss-cli/issues/219)：持久文本附件增加默认 512 MiB / 4096 对象的目录级配额，可用环境变量调整并通过 `config/read` 查看生效值；配额按实际目录对象计入已引用附件和孤儿，相同 SHA-256 内容去重。附件准入、文件发布、会话引用追加与删除清理共享 SQLite 写锁，发布前严格校验目标会话日志，异常后只清理确认未引用的新对象，重启清理中断遗留的临时文件；容量拒绝返回结构化 `ATTACHMENT_STORAGE_LIMIT`，不写会话引用。
 - [Issue #187](https://github.com/can4hou6joeng4/boss-cli/issues/187)：新增只读 `task/read`，按会话与任务类型读取 turn、队列或摘要任务的状态、阶段、运行时 owner、恢复策略及已验证关系；查询使用固定长度会话快照流式投影，不将完整历史载入内存；仅将相互印证的 follow-up/steering 与自动摘要关联到回合，手动摘要保持独立，冲突和孤儿不推断为所有权。
 - [Issue #213](https://github.com/can4hou6joeng4/boss-cli/issues/213)：新增 `runtime/resources/read` 进程内只读快照，展示 turn/摘要执行与清理 owner、FIFO follow-up 等待位置和耗时；列表最多各 32 项并返回截断标志，不读取历史、改变调度或暴露任务正文。
 - [Issue #193](https://github.com/can4hou6joeng4/boss-cli/issues/193)：活动及收尾业务回合合计最多保留 `2 * parallelThreads` 个 owner，配置读取公开 `maxRetainedTurns`；超限返回 `TURN_OWNER_LIMIT`，不创建 provider 或写入新输入。follow-up 保持 queued/FIFO，迟到 abort 退休后也唤醒等待者，保留正常执行与收尾重叠。
@@ -12,6 +23,15 @@
 
 ### 修复
 
+- 参考 Pi `agent-session.ts` 的模型调用自动重试：Anthropic provider 补齐与 OpenAI 一致的传输重试，仅在尚未产出任何内容事件前对连接失败、HTTP 408/409/429/5xx/529 及流内 overloaded 等瞬时错误重试，尊重 `Retry-After` / `Retry-After-Ms`，硬用量上限、上下文溢出与参数/鉴权错误不重试；每次额外尝试消耗回合共享恢复额度，退避期间取消退还额度。两条线路共用 `BOSS_HARNESS_RETRY_ATTEMPTS` / `BOSS_HARNESS_RETRY_BASE_MS` 设置。
+- 参考 Pi MIT 开放 [Issue #9474](https://github.com/earendil-works/pi/issues/9474) 与本项目 [Issue #237](https://github.com/can4hou6joeng4/boss-cli/issues/237)：每个逻辑业务回合共享默认 8 次的有限恢复额度，覆盖 OpenAI provider 瞬时传输重试、上下文溢出恢复及自动摘要 provider 重试；手动摘要独立计数。取消退避会退还预留额度，耗尽后不发起后续尝试并报告不可重试，运行时预算不写入会话或外部请求。
+- [Issue #235](https://github.com/can4hou6joeng4/boss-cli/issues/235)：创建会话分支时按摘要 `throughTurnId` 与所选回合的来源顺序保留适用 checkpoint，即使 checkpoint 在 JSONL 中位于分支物理边界之后；排除覆盖更晚回合的摘要，防止被摘要覆盖的旧消息重新进入分支上下文。
+- [Issue #233](https://github.com/can4hou6joeng4/boss-cli/issues/233)：事件事实源 `events.jsonl` 缺失或 fingerprint 改变时，在 SQLite 事务内从当前日志完整重建事件投影，避免过期尾事件继续可见；会话删除先验证日志、再发布重写并重建投影。安全清除 SQLite 旧页并保留自增游标高水位；损坏日志在文件变更前 fail closed。
+- 参考 Pi MIT [Issue #11537](https://github.com/earendil-works/pi/issues/11537) 与已合并 [PR #11572](https://github.com/earendil-works/pi/pull/11572)（merge commit `c719d5b08e5d9fb9bbcb1f1792281eea8b442812`）：OpenAI 兼容接口返回结构化 `code=1308` 时，将智谱/Z.ai 的硬用量上限识别为不可重试；覆盖 HTTP 错误与流内错误，未命中既有终态分类的其他 429 仍按原策略重试。
+- [Issue #229](https://github.com/can4hou6joeng4/boss-cli/issues/229)：会话、工具结果及事件日志共用的 JSONL 追加失败时，按文件身份、原长度和本次写入后缀核验后尽力截回起点并 `fsync`；无法证明安全回滚时返回明确的不确定错误。普通会话追加在写前校验当前索引切面，避免向已损坏日志继续追加。
+- [Issue #227](https://github.com/can4hou6joeng4/boss-cli/issues/227)：会话删除重写事件日志时复用严格 JSONL 解码，与索引语义一致跳过空白行并保留每条记录的换行分隔；拒绝重复对象键、非有限浮点、无效 Unicode、坏 UTF-8、过深结构及损坏记录；删除在发现损坏前不发布部分日志，保留可恢复的清理暂停语义。
+- [Issue #225](https://github.com/can4hou6joeng4/boss-cli/issues/225)：严格校验 `boss-agent-cli --json` 七键信封，拒绝重复键、非有限浮点、超过 64 层的 JSON 和孤立 Unicode 代理项；语法错误保持 `CLI_ERROR`，结构或完整性违反返回 `CLI_CONTRACT_ERROR` 并暂停当前回合，不把坏数据交给后续模型或工具。写工具已派发时仍按 `outcome_unknown` 持久化并要求核对。
+- [Issue #223](https://github.com/can4hou6joeng4/boss-cli/issues/223)：JSON-RPC 输入帧拒绝重复键、非有限浮点、超过 64 层的 JSON 和孤立 Unicode 代理项；坏帧返回协议错误后继续服务。handler 已执行但结果无法编码时返回有界 `RESPONSE_INVALID`，不重放副作用。
 - [Issue #208](https://github.com/can4hou6joeng4/boss-cli/issues/208)：模型流传输失败沿 SDK 异常链提取固定原因分类及白名单 errno，并通过 `errorInfo` 与会话错误消息提供诊断；不保存 cause 原文或类型名、URL、请求内容或凭据，也不改变重试与恢复策略。
 - [Issue #211](https://github.com/can4hou6joeng4/boss-cli/issues/211)：OpenAI Responses 与 Anthropic Messages 在失败终态交付前复查取消标志；即使后台 producer 已结束并排入 EOF 或异常，也统一返回 `aborted`、清除错误诊断及重试状态，保留未取消的真实失败与已确认的正常结果。
 - [Issue #205](https://github.com/can4hou6joeng4/boss-cli/issues/205)：为 OpenAI Responses 与 Anthropic Messages 单次传输增加不可重置的 600 秒总时限，覆盖连接建立及流式响应；支持用 `BOSS_HARNESS_MODEL_REQUEST_TIMEOUT_SECONDS` 配置 1–3600 秒。清理确认后超时按可重试传输错误处理；无法确认后台清理时停止自动重试，并由每进程 8 个 pump 槽位限制残留传输。事件缓冲估算限制为总计 4 MiB、单事件 2 MiB，不冒充用户取消或上下文溢出；OpenAI 仅在尚无输出时遵循既有重试，未增加跨重试恢复预算。
@@ -58,7 +78,6 @@
 - [Issue #152](https://github.com/can4hou6joeng4/boss-cli/issues/152)：`ApplicationService(prompt_preamble=...)` 只覆盖默认招聘提示的身份段，保留工具说明、招聘规则、技能与只读后缀；默认工具组合和平台检查/登录 host 能力继续启用。自定义 `ToolBundle` 不猜测提示分段，不能同时传入该参数。
 - [Issue #138](https://github.com/can4hou6joeng4/boss-cli/issues/138)：增加同步 `after_tool_call` 宿主回调，覆盖已持久化的成功、失败、拒绝、未执行和结果未知工具终态；结果内容默认隐藏，需嵌入端显式 opt-in，回调只读且不能改写执行事实。
 
-- 参考 Pi 开放 PR [#11368](https://github.com/earendil-works/pi/pull/11368) 的 provider/model 定义拆分，为本机可用线路增加模型目录和会话级 provider/model 选择；选择追加到会话历史并随 fork 继承，旧会话继续继承启动默认线路。
 
 ### 修复
 

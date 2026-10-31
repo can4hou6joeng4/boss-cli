@@ -12,7 +12,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 from boss_harness.models.types import (
     DEFAULT_MODEL_TOOL_RESULT_BYTES, MAX_MODEL_TOOL_RESULT_BYTES, MIN_MODEL_TOOL_RESULT_BYTES, ToolSpec,
@@ -23,6 +23,7 @@ from boss_harness.toolkit import ToolResult
 
 ToolHandler = Callable[[Any, dict[str, Any]], ToolResult]
 ArgumentValidator = Callable[[dict[str, Any]], None]
+ExecutionMode = Literal["sequential", "parallel"]
 _DEFINITION_ERROR = "工具定义无效"
 _BUNDLE_ERROR = "工具组合定义无效"
 _ARGUMENT_ERROR = "工具参数不符合已注册的 schema"
@@ -34,6 +35,7 @@ class ToolDefinition:
     description: str
     handler: ToolHandler = field(repr=False)
     requires_approval: bool
+    execution_mode: ExecutionMode
     max_model_result_bytes: int
     validate_arguments: ArgumentValidator | None = field(default=None, repr=False)
     _schema_json: str = field(default="", repr=False)
@@ -41,10 +43,13 @@ class ToolDefinition:
     def __init__(self, name: str, description: str, input_schema: Mapping[str, Any],
                  handler: ToolHandler, requires_approval: bool,
                  validate_arguments: ArgumentValidator | None = None,
-                 max_model_result_bytes: int = DEFAULT_MODEL_TOOL_RESULT_BYTES) -> None:
+                 max_model_result_bytes: int = DEFAULT_MODEL_TOOL_RESULT_BYTES,
+                 execution_mode: ExecutionMode = "sequential") -> None:
         if (not isinstance(name, str) or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name) is None
                 or not isinstance(description, str) or not description.strip()
                 or not callable(handler) or type(requires_approval) is not bool
+                or type(execution_mode) is not str or execution_mode not in {"sequential", "parallel"}
+                or (execution_mode == "parallel" and requires_approval)
                 or type(max_model_result_bytes) is not int
                 or not MIN_MODEL_TOOL_RESULT_BYTES <= max_model_result_bytes <= MAX_MODEL_TOOL_RESULT_BYTES
                 or (validate_arguments is not None and not callable(validate_arguments))):
@@ -52,6 +57,7 @@ class ToolDefinition:
         schema_json = canonical_schema(input_schema)
         for key, value in (("name", name), ("description", description), ("handler", handler),
                            ("requires_approval", requires_approval),
+                           ("execution_mode", execution_mode),
                            ("max_model_result_bytes", max_model_result_bytes),
                            ("validate_arguments", validate_arguments),
                            ("_schema_json", schema_json)):
@@ -130,8 +136,12 @@ class ToolRegistry:
         allowed = self.allowed_names(read_only)
         return [{"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema,
                  "maxModelResultBytes": tool.max_model_result_bytes,
-                 "readOnly": not tool.requires_approval, "requiresApproval": tool.requires_approval}
+                 "readOnly": not tool.requires_approval, "requiresApproval": tool.requires_approval,
+                 "executionMode": tool.execution_mode}
                 for tool in self.definitions if tool.name in allowed]
+
+    def execution_modes(self) -> Mapping[str, ExecutionMode]:
+        return MappingProxyType({tool.name: tool.execution_mode for tool in self.definitions})
 
     def validate(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(name, str) or name not in self._by_name:

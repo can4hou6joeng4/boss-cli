@@ -15,6 +15,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any
@@ -40,13 +41,14 @@ from boss_harness.models.output_budget import OutputBudgetExceeded, ResponseText
 from boss_harness.models.errors import transport_diagnostic
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.types import (
-    DEFAULT_MODEL_TOOL_RESULT_BYTES, ChatMessage, ModelRequest, ModelErrorInfo, TextBlock, ThinkingBlock,
+    DEFAULT_MODEL_TOOL_RESULT_BYTES, ChatMessage, ModelRequest, ModelErrorInfo, ModelRecoveryBudget,
+    TextBlock, ThinkingBlock,
 )
 from boss_harness.model_tools import (
     MODEL_RESULT_READ_SPEC, MODEL_RESULT_READ_TOOL, model_tool_specs,
     read_model_tool_result, validate_model_result_read,
 )
-from boss_harness.session import (Entry, SessionStore, ToolRevisionPersistenceError,
+from boss_harness.session import (MAX_TOOL_BATCH_CALLS, Entry, SessionStore, ToolRevisionPersistenceError,
                                   approval_parameters_digest)
 from boss_harness.toolkit import ToolResult, snapshot_result
 from boss_harness.tool_results import (
@@ -64,6 +66,8 @@ DEFAULT_APPROVAL_TIMEOUT_SECONDS = 300.0
 N_TURN_STARTED = "turn/started"
 N_AGENT_MESSAGE_DELTA = "agentMessage/delta"
 N_AGENT_THINKING_DELTA = "agentThinking/delta"
+N_MODEL_RETRY_STARTED = "model/retryStarted"
+N_MODEL_RETRY_ENDED = "model/retryEnded"
 N_ITEM_STARTED = "item/started"
 N_ITEM_COMPLETED = "item/completed"
 N_TOOL_CALL_STARTED = "toolCall/started"
@@ -77,6 +81,27 @@ Notify = Callable[[str, dict[str, Any] | None], None]
 
 class ToolCompletionNotificationError(RuntimeError):
     """The result is durable, but its observer notification failed."""
+
+
+class _ParallelUnavailable(RuntimeError):
+    """并行批次在任何调用落库或 handler 启动前即无法获得独立工具桥。"""
+
+
+@dataclass
+class _PreparedTool:
+    """已在主线程完成校验、策略与 start 持久化、等待派发的一次工具调用。"""
+
+    name: str
+    arguments: dict[str, Any]
+    call_id: str | None
+    entry: Entry
+    approval: dict[str, Any] | None
+    invalid: ToolResult | None
+    policy_denied: bool
+    handler: Callable[[Any, dict[str, Any]], ToolResult] | None
+    dispatched: bool = False
+    dispatch_persistence_failed: bool = False
+    cancelled_before_dispatch: bool = False
 
 
 @dataclass
@@ -115,6 +140,10 @@ class TurnRunner:
         persistence_fence: Callable[[str], None] | None = None,
         phase_recorder: Callable[[str, int], None] | None = None,
         dispatch_lock: Any | None = None,
+        execution_modes: Mapping[str, str] | None = None,
+        parallel_bridge_factory: Callable[[], Any] | None = None,
+        parallel_bridge_close: Callable[[Any], None] | None = None,
+        parallel_max_workers: int = 4,
         max_model_requests: int = DEFAULT_MAX_MODEL_REQUESTS,
     ) -> None:
         self.sessions = sessions
@@ -143,6 +172,8 @@ class TurnRunner:
         self.context_check = context_check
         self.drain_steering = drain_steering
         self.stage_steering = stage_steering
+        # Set by the host; "one-at-a-time" forbids a second staged batch per request.
+        self.steering_mode = "all"
         self.request_preparer = request_preparer
         self.last_preparation: tuple[ModelRequest, dict[str, Any]] | None = None
         self.recover_context = recover_context
@@ -151,12 +182,24 @@ class TurnRunner:
         self.phase_recorder = phase_recorder
         # The application shares this lock with interrupt acceptance.
         self._dispatch_lock = dispatch_lock or threading.Lock()
+        if execution_modes is not None and (
+                not isinstance(execution_modes, Mapping)
+                or any(type(key) is not str or type(mode) is not str or mode not in {"sequential", "parallel"}
+                       for key, mode in execution_modes.items())):
+            raise ValueError("工具执行模式映射无效")
+        if type(parallel_max_workers) is not int or not 1 <= parallel_max_workers <= 8:
+            raise ValueError("并行工具 worker 上限必须是 1 到 8")
+        self._execution_modes = dict(execution_modes or {})
+        self._parallel_bridge_factory = parallel_bridge_factory
+        self._parallel_bridge_close = parallel_bridge_close or (lambda bridge: None)
+        self._parallel_max_workers = parallel_max_workers
         self.context_abort: Callable[[], None] | None = None
         self.last_stream_error: ModelErrorInfo | None = None
         self.last_stream_recoverable = False
         self.last_stream_output_observed = False
         self.preparing_request_index: int | None = None
         self.max_model_requests = model_request_limit(max_model_requests)
+        self.request_offset = 0
 
     @property
     def tool_names(self) -> list[str]:
@@ -266,6 +309,7 @@ class TurnRunner:
         approval: dict[str, Any] | None = None,
         batch_id: str | None = None,
         provider_continuation: dict[str, Any] | None = None,
+        tool_batch_assistant_item_id: str | None = None,
     ) -> Entry:
         """记一条工具调用（running）。
 
@@ -288,6 +332,8 @@ class TurnRunner:
             payload["toolCallId"] = call_id
         if batch_id:
             payload["toolBatchId"] = batch_id
+        if tool_batch_assistant_item_id is not None:
+            payload["toolBatchAssistantItemId"] = tool_batch_assistant_item_id
         if provider_continuation is not None:
             payload[ANTHROPIC_CONTINUATION_FIELD] = provider_continuation
         if approval is not None:
@@ -392,12 +438,28 @@ class TurnRunner:
     def execute_tool(
         self, thread_id: str, name: str, arguments: dict[str, Any], call_id: str | None = None,
         batch_id: str | None = None, provider_continuation: dict[str, Any] | None = None,
+        tool_batch_assistant_item_id: str | None = None,
     ) -> ToolResultItem:
         """执行一个工具：审批闸门 -> 落库 + 发事件 -> 返回给模型的结果块。
 
         闸门对应 Pi 的 `beforeToolCall`（它可以阻断一次调用）：被拒绝的调用不执行，
         而是以 `is_error` 的工具结果回填给模型，让模型知道没被批准，而不是静默跳过。
         """
+        prepared = self._prepare_tool(thread_id, name, arguments, call_id, batch_id, provider_continuation,
+                                      tool_batch_assistant_item_id)
+        if isinstance(prepared, ToolResultItem):
+            return prepared
+        result = self._begin_dispatch(thread_id, prepared)
+        if result is None:
+            result = self._call_handler(prepared, self.tool_bridge)
+        return self._finish_tool(thread_id, prepared, result)
+
+    def _prepare_tool(
+        self, thread_id: str, name: str, arguments: dict[str, Any], call_id: str | None,
+        batch_id: str | None, provider_continuation: dict[str, Any] | None,
+        tool_batch_assistant_item_id: str | None = None,
+    ) -> _PreparedTool | ToolResultItem:
+        """校验、生命周期策略、审批与 start 持久化；只在回合主线程按模型顺序执行。"""
         approval: dict[str, Any] | None = None
         invalid: ToolResult | None = None
         try:
@@ -445,7 +507,7 @@ class TurnRunner:
                     deadline=time.monotonic() + self.approval_timeout)
 
         entry = self.start_tool_call(thread_id, name, arguments, call_id, approval, batch_id,
-                                     provider_continuation)
+                                     provider_continuation, tool_batch_assistant_item_id)
 
         if approval is not None:
             self.notify(
@@ -494,39 +556,49 @@ class TurnRunner:
         handler = self.handlers.get(name)
         if name == MODEL_RESULT_READ_TOOL:
             handler = lambda _bridge, values: read_model_tool_result(self.sessions, thread_id, values)
-        dispatched = False
-        dispatch_persistence_failed = False
+        return _PreparedTool(name=name, arguments=arguments, call_id=call_id, entry=entry,
+                             approval=approval, invalid=invalid, policy_denied=policy_denied,
+                             handler=handler)
+
+    def _begin_dispatch(self, thread_id: str, prepared: _PreparedTool) -> ToolResult | None:
+        """在主线程写入 executing 阶段并确认可派发；返回 None 表示 handler 可以开始。"""
+        name = prepared.name
         if self.cancelled():
-            cancelled_before_dispatch = True
-            result = ToolResult(ok=False, command=name, error={"code": "CANCELLED", "message": "操作已取消，未执行工具"})
-        elif invalid is not None:
-            cancelled_before_dispatch = False
-            result = invalid
-        elif handler is None:
-            cancelled_before_dispatch = False
-            result = ToolResult(ok=False, command=name, error={"code": "NOT_SUPPORTED", "message": f"未知工具 {name}"})
-        else:
-            cancelled_before_dispatch = False
-            try:
-                self._tool_phase(thread_id, entry, "executing", approval)
-                with self._dispatch_lock:
-                    cancelled_before_dispatch = self.cancelled()
-                    dispatched = not cancelled_before_dispatch
-                if cancelled_before_dispatch:
-                    result = ToolResult(ok=False, command=name,
-                        error={"code": "CANCELLED", "message": "操作已取消，未执行工具"})
-                else:
-                    result = snapshot_result(handler(self.tool_bridge, arguments))
-            except Exception as exc:
-                if dispatched:
-                    result = ToolResult(ok=False, command=name, error={"code": "TOOL_ERROR", "message": self.safe_error(exc)})
-                else:
-                    dispatch_persistence_failed = True
-                    result = ToolResult(ok=False, command=name, error={
-                        "code": "SESSION_PERSISTENCE_ERROR",
-                        "message": "执行状态未能持久化，工具未派发；请检查会话状态后再继续",
-                    })
-                    self._blocked = result
+            prepared.cancelled_before_dispatch = True
+            return ToolResult(ok=False, command=name, error={"code": "CANCELLED", "message": "操作已取消，未执行工具"})
+        if prepared.invalid is not None:
+            return prepared.invalid
+        if prepared.handler is None:
+            return ToolResult(ok=False, command=name, error={"code": "NOT_SUPPORTED", "message": f"未知工具 {name}"})
+        try:
+            self._tool_phase(thread_id, prepared.entry, "executing", prepared.approval)
+            with self._dispatch_lock:
+                prepared.cancelled_before_dispatch = self.cancelled()
+                prepared.dispatched = not prepared.cancelled_before_dispatch
+        except Exception:
+            prepared.dispatch_persistence_failed = True
+            result = ToolResult(ok=False, command=name, error={
+                "code": "SESSION_PERSISTENCE_ERROR",
+                "message": "执行状态未能持久化，工具未派发；请检查会话状态后再继续",
+            })
+            self._blocked = result
+            return result
+        if prepared.cancelled_before_dispatch:
+            return ToolResult(ok=False, command=name, error={"code": "CANCELLED", "message": "操作已取消，未执行工具"})
+        return None
+
+    def _call_handler(self, prepared: _PreparedTool, bridge: Any) -> ToolResult:
+        """只调用 handler；可在并行 worker 中运行，不触碰会话持久化或回合状态。"""
+        try:
+            return snapshot_result(prepared.handler(bridge, prepared.arguments))
+        except Exception as exc:
+            return ToolResult(ok=False, command=prepared.name,
+                              error={"code": "TOOL_ERROR", "message": self.safe_error(exc)})
+
+    def _finish_tool(self, thread_id: str, prepared: _PreparedTool, result: ToolResult) -> ToolResultItem:
+        """暂停判定、finish 持久化与通知；只在回合主线程按模型顺序执行。"""
+        name, call_id, entry, approval = prepared.name, prepared.call_id, prepared.entry, prepared.approval
+        dispatched = prepared.dispatched
         pause = False
         if not result.ok and name != MODEL_RESULT_READ_TOOL and self.pause_on_result is not None:
             try:
@@ -536,7 +608,7 @@ class TurnRunner:
             except Exception:
                 result = ToolResult(ok=False, command=name, error={"code": "TOOL_ERROR", "message": "工具暂停策略回调失败"})
                 pause = True
-        if policy_denied:
+        if prepared.policy_denied:
             self._blocked = result
         if not result.ok and (pause
                               or (name in self.approval_required and (result.error or {}).get("code") not in {"INVALID_PARAM", "CANCELLED"})):
@@ -545,8 +617,9 @@ class TurnRunner:
                    and (result.error or {}).get("code") in {
                        "CANCELLED", "TOOL_TIMEOUT", "TOOL_ERROR", "CLI_ERROR", "CLI_CONTRACT_ERROR", "CLI_OUTPUT_LIMIT", "INVALID_ENVELOPE",
                        "GREET_RESULT_UNKNOWN", "ACTION_UNCONFIRMED"})
-        execution_state = ("not_executed" if policy_denied or dispatch_persistence_failed
-                           or cancelled_before_dispatch or invalid is not None or handler is None
+        execution_state = ("not_executed" if prepared.policy_denied or prepared.dispatch_persistence_failed
+                           or prepared.cancelled_before_dispatch or prepared.invalid is not None
+                           or prepared.handler is None
                            else "outcome_unknown" if unknown else None)
         try:
             recovered_persistence = self.finish_tool_call(thread_id, entry, name, result, call_id, approval,
@@ -598,6 +671,147 @@ class TurnRunner:
             is_error=not result.ok,
         )
 
+    def _parallel_batch_enabled(self, calls: tuple[ToolCallBlock, ...]) -> bool:
+        """整批显式 parallel、均无审批且宿主能提供独立工具桥时才并发（任一 sequential 即整批串行）。"""
+        if len(calls) < 2 or self._parallel_bridge_factory is None or self._parallel_max_workers < 2:
+            return False
+        return all(self._execution_modes.get(call.name) == "parallel"
+                   and call.name not in self.approval_required and call.name in self.handlers
+                   for call in calls)
+
+    def _execute_parallel_batch(
+        self, thread_id: str, calls: tuple[ToolCallBlock, ...], batch_id: str,
+        provider_continuation: dict[str, Any] | None,
+        assistant_item_id: str | None = None,
+    ) -> list[ToolResultItem]:
+        """按模型顺序 prepare，有界并发 handler，按模型顺序落 finish。
+
+        在途 handler 不超过 worker 上限，工具桥按需创建并在批内复用，每个至多关闭一次。
+        prepare 惰性进行：仅在有空闲槽位即将派发时才运行钩子并落 start；拒绝、暂停或取消
+        后未 prepare 的调用与串行一致只经 `_skip_calls` 收尾；异常时先收尾已 prepare 的调用
+        再传播。额外工具桥创建失败后本批不再重试。只有首个工具桥创建失败时抛出
+        `_ParallelUnavailable`，此时尚无任何调用落库或启动。
+        """
+        bridges: list[Any] = []
+        free: list[Any] = []
+
+        def new_bridge() -> Any | None:
+            try:
+                bridge = self._parallel_bridge_factory()
+            except Exception:
+                return None
+            if bridge is None or bridge is self.tool_bridge or any(bridge is known for known in bridges):
+                return None
+            try:
+                bridge.cancel_event = self._cancel
+            except Exception:
+                try:
+                    self._parallel_bridge_close(bridge)
+                except Exception:
+                    pass
+                return None
+            bridges.append(bridge)
+            return bridge
+
+        first = new_bridge()
+        if first is None:
+            raise _ParallelUnavailable("并行工具桥无法安全创建")
+        free.append(first)
+        bridge_failed = False
+        try:
+            results: list[ToolResultItem] = []
+            limit = min(self._parallel_max_workers, len(calls))
+            # 已 prepare 但尚未 finalize 的调用：index -> (prepared, future|None, bridge|None, early outcome|None)
+            pending: dict[int, tuple[_PreparedTool | ToolResultItem, Future[ToolResult] | None, Any, ToolResult | None]] = {}
+            next_index = 0
+            stopped = False
+            with ThreadPoolExecutor(max_workers=limit) as executor:
+                try:
+                    for index in range(len(calls)):
+                        while (not stopped and next_index < len(calls)
+                               and sum(1 for p in pending.values() if p[1] is not None) < limit):
+                            if self._blocked is not None or self.cancelled():
+                                stopped = True
+                                break
+                            if free:
+                                bridge = free.pop()
+                            elif bridge_failed:
+                                break
+                            else:
+                                bridge = new_bridge()
+                                if bridge is None:
+                                    # 本批不再尝试新建工具桥，等待在途调用释放已有工具桥。
+                                    bridge_failed = True
+                                    break
+                            call = calls[next_index]
+                            try:
+                                # 惰性按源顺序 prepare：仅在即将派发时运行钩子并落 start。
+                                item = self._prepare_tool(thread_id, call.name, dict(call.arguments), call.id,
+                                                          batch_id, provider_continuation if next_index == 0 else None,
+                                                          assistant_item_id)
+                            except BaseException:
+                                free.append(bridge)
+                                raise
+                            if isinstance(item, ToolResultItem):
+                                free.append(bridge)
+                                pending[next_index] = (item, None, None, None)
+                            elif item.policy_denied:
+                                # 与串行一致：策略拒绝会暂停回合，其后的调用不再 prepare。
+                                free.append(bridge)
+                                pending[next_index] = (item, None, None, item.invalid)
+                                stopped = True
+                            else:
+                                outcome = self._begin_dispatch(thread_id, item)
+                                if outcome is None:
+                                    pending[next_index] = (item, executor.submit(self._call_handler, item, bridge),
+                                                           bridge, None)
+                                else:
+                                    free.append(bridge)
+                                    pending[next_index] = (item, None, None, outcome)
+                                    if self._blocked is not None:
+                                        stopped = True
+                            next_index += 1
+                        if index >= next_index:
+                            break
+                        item, future, bridge, outcome = pending.pop(index)
+                        if isinstance(item, ToolResultItem):
+                            results.append(item)
+                        else:
+                            if future is not None:
+                                outcome = future.result()
+                                free.append(bridge)
+                            results.append(self._finish_tool(thread_id, item, outcome))
+                        if self._blocked is not None or self.cancelled():
+                            stopped = True
+                except BaseException:
+                    # 异常前已 prepare 的调用：等待在途 handler 并按序收尾，不留孤儿 start，再原样传播。
+                    for index in sorted(pending):
+                        item, future, _bridge, outcome = pending.pop(index)
+                        try:
+                            if future is not None:
+                                outcome = future.result()
+                            if isinstance(item, _PreparedTool):
+                                self._finish_tool(thread_id, item, outcome)
+                        except Exception:
+                            pass
+                    raise
+            if next_index < len(calls):
+                # 与串行一致：拒绝 / 暂停 / 取消后未 prepare 的调用只经 `_skip_calls` 收尾。
+                self._skip_calls(thread_id, calls[next_index:], batch_id,
+                                 provider_continuation=provider_continuation if next_index == 0 else None,
+                                 assistant_item_id=assistant_item_id)
+            return results
+        finally:
+            for bridge in bridges:
+                try:
+                    bridge.cancel_event = None
+                except Exception:
+                    pass
+                try:
+                    self._parallel_bridge_close(bridge)
+                except Exception:
+                    pass
+
     # ---------- 历史重建 ----------
 
     def history(self, thread_id: str) -> tuple[ChatMessage, ...]:
@@ -627,13 +841,16 @@ class TurnRunner:
         self.tool_bridge.cancel_event = self._cancel
         self._blocked = None
         self.last_preparation = None
+        recovery_budget = ModelRecoveryBudget()
 
         try:
             messages = list(self.history(thread_id))
             specs = self.tool_specs()
+            if type(self.request_offset) is not int or not 0 <= self.request_offset <= max_model_requests:
+                raise ValueError("模型续接请求偏移超出配置上限")
             pending_steering: tuple[list[UserMessage], Callable[[], None]] | None = None
             overflow_retried = False
-            for _round in range(max_model_requests):
+            for _round in range(self.request_offset, max_model_requests):
                 if self.cancelled():
                     return "interrupted"
 
@@ -655,6 +872,7 @@ class TurnRunner:
                     max_tokens=self.config.max_tokens,
                     effort=self.config.effort,
                     thinking=self.config.thinking,
+                    recovery_budget=recovery_budget,
                 )
                 request_budget: dict[str, Any] = {}
                 if self.request_preparer is not None:
@@ -666,7 +884,9 @@ class TurnRunner:
                         # A summary can take long enough for new steering to arrive.
                         # Catch up once, before consuming either batch or calling a model.
                         commits = [staged[1]] if staged is not None else []
-                        if request.messages != before.messages and self.stage_steering is not None:
+                        if (request.messages != before.messages and self.stage_steering is not None
+                                and not (self.steering_mode == "one-at-a-time"
+                                         and staged is not None and staged[0])):
                             catch_up, commit = self.stage_steering()
                             if catch_up:
                                 messages.extend(catch_up)
@@ -702,26 +922,35 @@ class TurnRunner:
                 elif staged is not None:
                     staged[1]()
                 self._record_phase("model_request", _round + 1)
-                assistant, error, interrupted, assistant_item_id = self._stream_round(thread_id, request)
+                tool_batch_id = uuid.uuid4().hex[:12]
+                assistant, error, interrupted, assistant_item_id = self._stream_round(
+                    thread_id, request, tool_batch_id)
 
                 if interrupted:
                     return "interrupted"
 
                 if error is not None:
+                    recovery_blocked = False
                     if (self.last_stream_recoverable and self.recover_context is not None and
                             not overflow_retried and _round + 1 < max_model_requests):
-                        overflow_retried = True
-                        try:
-                            replacement = self.recover_context(request)
-                        except ContextCompactionFailed as exc:
-                            return self._context_failed(thread_id, exc)
-                        except ModelRequestRejected as exc:
-                            return self._request_rejected(thread_id, exc)
-                        if self.cancelled():
-                            return "interrupted"
-                        if replacement is not None:
-                            messages = list(replacement.messages)
-                            continue
+                        if recovery_budget.consume_retry(self._cancel):
+                            overflow_retried = True
+                            try:
+                                replacement = self.recover_context(request)
+                            except ContextCompactionFailed as exc:
+                                return self._context_failed(thread_id, exc)
+                            except ModelRequestRejected as exc:
+                                return self._request_rejected(thread_id, exc)
+                            if self.cancelled():
+                                return "interrupted"
+                            if replacement is not None:
+                                messages = list(replacement.messages)
+                                continue
+                        else:
+                            if self.cancelled():
+                                return "interrupted"
+                            recovery_blocked = True
+                            error = f"{error}（共享模型恢复次数已用尽，未启动自动上下文恢复）"
                     self.append_agent(thread_id, f"模型调用失败：{error}")
                     details = {"threadId": thread_id, "message": error,
                                "outputObserved": self.last_stream_output_observed}
@@ -729,7 +958,8 @@ class TurnRunner:
                         details["errorInfo"] = self.last_stream_error.event_payload()
                         if self.last_stream_error.code is not None:
                             details.update(code=self.last_stream_error.code,
-                                           recoveryAttempted=overflow_retried)
+                                           recoveryAttempted=overflow_retried,
+                                           recoveryBlocked=recovery_blocked)
                     self.notify(N_SESSION_ERROR, details)
                     return "error"
 
@@ -753,11 +983,11 @@ class TurnRunner:
                 if assistant.stop_reason == "length":
                     code = "MODEL_OUTPUT_TRUNCATED"
                     recovery = "请检查请求并调整输出上限后，明确发起新回合；不会自动重试。"
-                    self._skip_calls(thread_id, calls, uuid.uuid4().hex[:12], error={
+                    self._skip_calls(thread_id, calls, tool_batch_id, error={
                         "code": code,
                         "message": "模型输出达到长度上限，工具参数可能不完整，该工具未执行",
                         "recovery_action": recovery,
-                    }, provider_continuation=continuation)
+                    }, provider_continuation=continuation, assistant_item_id=assistant_item_id)
                     message = "模型输出达到长度上限，本回合未正常完成；本次响应中的工具均未执行。\n\n恢复提示：" + recovery
                     self.append_agent(thread_id, message)
                     self.notify(N_SESSION_ERROR, {"threadId": thread_id, "code": code, "message": message})
@@ -777,29 +1007,82 @@ class TurnRunner:
                         continue
                     return "completed"
 
+                if len(calls) > MAX_TOOL_BATCH_CALLS:
+                    self.append_agent(thread_id, "模型工具调用数量超过单批次持久化上限；本批操作均未执行。")
+                    self.notify(N_SESSION_ERROR, {"threadId": thread_id,
+                        "code": "TOOL_BATCH_LIMIT", "message": "模型工具调用数量超过单批次上限，本批操作均未执行。"})
+                    return "error"
+
+                request_fingerprint = (self.last_preparation[1].get("requestFingerprint")
+                                       if self.last_preparation is not None else None)
+                self.sessions.record_tool_batch(
+                    thread_id, self.turn_id, tool_batch_id, [call.id for call in calls], "started",
+                    assistant_item_id=assistant_item_id,
+                    request_fingerprint=request_fingerprint if isinstance(request_fingerprint, str) else None)
+
                 messages.append(assistant)
                 results: list[ToolResultItem] = []
-                batch_id = uuid.uuid4().hex[:12]
+                batch_id = tool_batch_id
                 self._record_phase("tool_execution", _round + 1)
-                for index, call in enumerate(calls):
+                if self._parallel_batch_enabled(calls):
                     if self.cancelled():
-                        self._skip_calls(thread_id, calls[index:], batch_id,
-                                         provider_continuation=continuation if index == 0 else None)
+                        self._skip_calls(thread_id, calls, batch_id, provider_continuation=continuation,
+                                         assistant_item_id=assistant_item_id)
                         return "interrupted"
-                    results.append(
-                        self.execute_tool(thread_id, call.name, dict(call.arguments), call.id, batch_id,
-                                          continuation if index == 0 else None)
-                    )
-                    if self._blocked is not None:
-                        self._skip_calls(thread_id, calls[index + 1:], batch_id)
-                        result = self._blocked
-                        code = (result.error or {}).get("code", "UNKNOWN")
-                        recovery = (result.error or {}).get("recovery_action") or "请核对操作结果，处理后再明确发起下一步；不要自动重试。"
-                        self.append_agent(thread_id, f"操作已暂停（{code}）：{summarize_result(result)}\n\n恢复提示：{recovery}")
-                        return "blocked"
-                    if self.cancelled():
-                        self._skip_calls(thread_id, calls[index + 1:], batch_id)
-                        return "interrupted"
+                    try:
+                        results = self._execute_parallel_batch(thread_id, calls, batch_id, continuation,
+                                                               assistant_item_id)
+                    except _ParallelUnavailable:
+                        # 首个独立工具桥不可用：尚无调用落库或启动，回到串行路径。
+                        results = []
+                    if results:
+                        if self._blocked is not None:
+                            result = self._blocked
+                            code = (result.error or {}).get("code", "UNKNOWN")
+                            recovery = (result.error or {}).get("recovery_action") or "请核对操作结果，处理后再明确发起下一步；不要自动重试。"
+                            self.append_agent(thread_id, f"操作已暂停（{code}）：{summarize_result(result)}\n\n恢复提示：{recovery}")
+                            return "blocked"
+                        if self.cancelled():
+                            # 仅当整批均已真实执行收尾（无 not_executed）时才记完成，供显式续接复用结果。
+                            if len(results) == len(calls):
+                                self.sessions.record_tool_batch(
+                                    thread_id, self.turn_id, batch_id, [call.id for call in calls], "completed",
+                                    assistant_item_id=assistant_item_id,
+                                    request_fingerprint=request_fingerprint if isinstance(request_fingerprint, str) else None)
+                            return "interrupted"
+                if not results:
+                    for index, call in enumerate(calls):
+                        if self.cancelled():
+                            self._skip_calls(thread_id, calls[index:], batch_id,
+                                             provider_continuation=continuation if index == 0 else None,
+                                             assistant_item_id=assistant_item_id)
+                            return "interrupted"
+                        results.append(
+                            self.execute_tool(thread_id, call.name, dict(call.arguments), call.id, batch_id,
+                                              continuation if index == 0 else None, assistant_item_id)
+                        )
+                        if self._blocked is not None:
+                            self._skip_calls(thread_id, calls[index + 1:], batch_id,
+                                             assistant_item_id=assistant_item_id)
+                            result = self._blocked
+                            code = (result.error or {}).get("code", "UNKNOWN")
+                            recovery = (result.error or {}).get("recovery_action") or "请核对操作结果，处理后再明确发起下一步；不要自动重试。"
+                            self.append_agent(thread_id, f"操作已暂停（{code}）：{summarize_result(result)}\n\n恢复提示：{recovery}")
+                            return "blocked"
+                        if self.cancelled():
+                            if index + 1 < len(calls):
+                                self._skip_calls(thread_id, calls[index + 1:], batch_id,
+                                                 assistant_item_id=assistant_item_id)
+                                return "interrupted"
+                            self.sessions.record_tool_batch(
+                                thread_id, self.turn_id, batch_id, [call.id for call in calls], "completed",
+                                assistant_item_id=assistant_item_id,
+                                request_fingerprint=request_fingerprint if isinstance(request_fingerprint, str) else None)
+                            return "interrupted"
+                self.sessions.record_tool_batch(
+                    thread_id, self.turn_id, batch_id, [call.id for call in calls], "completed",
+                    assistant_item_id=assistant_item_id,
+                    request_fingerprint=request_fingerprint if isinstance(request_fingerprint, str) else None)
                 messages.append(ToolResultsMessage(results=tuple(results)))
 
             message = (f"已达到模型调用上限（{max_model_requests} 次请求），本回合已暂停。"
@@ -849,16 +1132,18 @@ class TurnRunner:
 
     def _skip_calls(self, thread_id: str, calls: tuple[ToolCallBlock, ...], batch_id: str,
                     *, error: dict[str, Any] | None = None,
-                    provider_continuation: dict[str, Any] | None = None) -> None:
+                    provider_continuation: dict[str, Any] | None = None,
+                    assistant_item_id: str | None = None) -> None:
         for index, call in enumerate(calls):
             entry = self.start_tool_call(thread_id, call.name, dict(call.arguments), call.id,
-                batch_id=batch_id, provider_continuation=provider_continuation if index == 0 else None)
+                batch_id=batch_id, provider_continuation=provider_continuation if index == 0 else None,
+                tool_batch_assistant_item_id=assistant_item_id)
             result = ToolResult(ok=False, command=call.name, error=error or {
                 "code": "NOT_EXECUTED", "message": "回合中断或平台暂停，该工具未执行"})
             self.finish_tool_call(thread_id, entry, call.name, result, call.id, execution_state="not_executed")
 
     def _stream_round(
-        self, thread_id: str, request: ModelRequest
+        self, thread_id: str, request: ModelRequest, tool_batch_id: str
     ) -> tuple[AssistantMessage | None, str | None, bool, str | None]:
         """消费一轮事件流：文本增量实时发事件，返回 (最终消息, 错误说明, 是否被中断)。
 
@@ -905,6 +1190,22 @@ class TurnRunner:
                 if self.cancelled():
                     interrupted = True
                     break
+
+                if event.type == "retry_start":
+                    # 仅观测：不改变重试判定，也不写入会话条目；旧客户端可忽略或 opt-out。
+                    self.notify(N_MODEL_RETRY_STARTED, {
+                        "threadId": thread_id, "turnId": self.turn_id, "attempt": event.attempt,
+                        "maxAttempts": event.max_attempts, "delayMs": event.delay_ms,
+                        "errorMessage": event.error})
+                    continue
+                if event.type == "retry_end":
+                    payload = {"threadId": thread_id, "turnId": self.turn_id, "attempt": event.attempt,
+                               "success": event.reason == "success"}
+                    if event.reason != "success":
+                        payload["reason"] = "aborted" if event.reason == "aborted" else "error"
+                        payload["finalError"] = event.error or "模型请求失败"
+                    self.notify(N_MODEL_RETRY_ENDED, payload)
+                    continue
 
                 if event.type.startswith(("text_", "thinking_", "toolcall_")):
                     output_observed = True
@@ -1054,6 +1355,8 @@ class TurnRunner:
             payload = {"kind": "agentMessage", "text": text, "thinking": "".join(thinking),
                        "revises": entry.id, "status": "failed" if interrupted or error or truncated else "completed",
                        "turnId": self.turn_id}
+            if assistant is not None and assistant.tool_calls():
+                payload["toolBatchId"] = tool_batch_id
             self.sessions.append(thread_id, Entry(type="item",
                 parent_id=self.sessions.last_entry_id(thread_id), payload=payload))
             self.notify(N_ITEM_COMPLETED, {"threadId": thread_id, "itemId": entry.id, **payload})

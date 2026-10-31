@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 import threading
 from collections.abc import Iterator, Sequence
@@ -33,6 +32,13 @@ from boss_harness.models.output_budget import (
     bounded_error,
 )
 from boss_harness.models.provider import ModelConfig
+from boss_harness.models.retry import (
+    retry_after_seconds,
+    retry_delay,
+    retry_settings,
+    retry_start_event,
+    with_retry_outcome,
+)
 from boss_harness.models.secret import redact_secrets
 from boss_harness.models.stream_pump import (
     AsyncStreamPump,
@@ -69,10 +75,6 @@ _THINKING_DELTA_EVENTS = ("response.reasoning_summary_text.delta", "response.rea
 
 #: 可重试的 HTTP 状态：请求超时/冲突/限流/服务端错误。
 _RETRYABLE_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504})
-#: 单次退避的上限（秒）。
-_MAX_RETRY_DELAY_SECONDS = 8.0
-DEFAULT_RETRY_ATTEMPTS = 3
-DEFAULT_RETRY_BASE_MS = 500
 
 #: 网关把失败写在流里时用的标记。这是对当前网关的启发式识别，不是协议保证。
 _TRANSIENT_ERROR_MARKERS = ("service_unavailable", "server_error", "overloaded", "temporarily")
@@ -80,19 +82,6 @@ _TRANSIENT_ERROR_MARKERS = ("service_unavailable", "server_error", "overloaded",
 
 def _reject_json_constant(value: str) -> None:
     raise ValueError(f"非法 JSON 常量: {value}")
-
-
-def _retry_settings() -> tuple[int, float]:
-    """重试次数与基础退避；可用 BOSS_HARNESS_RETRY_ATTEMPTS / _BASE_MS 覆盖。"""
-    try:
-        attempts = int(os.environ.get("BOSS_HARNESS_RETRY_ATTEMPTS") or DEFAULT_RETRY_ATTEMPTS)
-    except ValueError:
-        attempts = DEFAULT_RETRY_ATTEMPTS
-    try:
-        base_ms = int(os.environ.get("BOSS_HARNESS_RETRY_BASE_MS") or DEFAULT_RETRY_BASE_MS)
-    except ValueError:
-        base_ms = DEFAULT_RETRY_BASE_MS
-    return max(1, min(attempts, 10)), max(0, base_ms) / 1000.0
 
 
 def _looks_transient(code: str, detail: str) -> bool:
@@ -190,7 +179,7 @@ class OpenAIResponsesProvider:
         self.base_url = config.base_url
         self._secret = config.api_key.get()
         self._request_timeout_seconds = config.request_timeout_seconds
-        self._max_attempts, self._retry_base_delay = _retry_settings()
+        self._max_attempts, self._retry_base_delay = retry_settings()
         #: 当前正在读的流；`request_abort()` 从别的线程关掉它，用来打断卡住的连接。
         self._active_stream: object | None = None
         #: 本次请求是否被要求中止（中止导致的失败不重试）。
@@ -254,6 +243,10 @@ class OpenAIResponsesProvider:
     # ---------- 事件流 ----------
 
     def stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
+        # retry_end 要看到取消归一化之后的终态，所以包在最外层。
+        return with_retry_outcome(self._normalized_stream(request))
+
+    def _normalized_stream(self, request: ModelRequest) -> Iterator[StreamEvent]:
         events = self._stream(request)
         try:
             for event in events:
@@ -277,18 +270,26 @@ class OpenAIResponsesProvider:
         2. 失败是可重试的：连接/超时、HTTP 408/409/429/5xx、以及网关在流里回的
            `service_unavailable_error` 一类过载标记。参数错、鉴权错等不重试。
 
-        `start` 只发一次；重试期间对调用方是静默的，只往 stderr 记一行。
+        `start` 只发一次；每次退避前产出不含内容的 `retry_start`，结束时补 `retry_end`
+        （见 `with_retry_outcome`），调用方可忽略二者。
         """
         self._abort_requested = False
         self._abort_event.clear()
         yield StreamEvent(type="start")
 
         attempts = self._max_attempts
+        reservation = None
         try:
             for attempt in range(1, attempts + 1):
-                if self._abort_requested:
+                if self._abort_requested or self._abort_event.is_set():
+                    if reservation is not None:
+                        reservation.release()
+                        reservation = None
                     yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                     return
+                if reservation is not None:
+                    reservation.commit()
+                    reservation = None
                 emitted = False
                 retry_message: str | None = None
                 retry_after: float | None = None
@@ -323,12 +324,30 @@ class OpenAIResponsesProvider:
                     yield replace(retry_event, error=self._redact(
                         retry_message + "；后台清理未确认，已停止自动重试"), error_info=info)
                     return
+                reservation = (request.recovery_budget.reserve_retry(self._abort_event)
+                               if request.recovery_budget is not None else None)
+                if request.recovery_budget is not None and reservation is None:
+                    if self._abort_requested:
+                        yield StreamEvent(type="error", reason="aborted", error="请求已取消")
+                        return
+                    self._last_error_retryable = False
+                    self._last_error_retry_after = None
+                    assert retry_event is not None
+                    info = (replace(retry_event.error_info, retryable=False)
+                            if retry_event.error_info is not None else None)
+                    yield replace(retry_event, error=self._redact(
+                        retry_message + "；共享模型恢复次数已用尽，已停止自动重试"), error_info=info)
+                    return
                 delay = self._retry_delay(attempt, retry_after)
                 print(
                     f"[harness] 模型请求第 {attempt}/{attempts} 次尝试失败，{delay:.1f}s 后重试：{retry_message}",
                     file=sys.stderr,
                 )
+                yield retry_start_event(attempt + 1, attempts, delay, self._redact(retry_message or ""))
                 if self._abort_event.wait(delay):
+                    if reservation is not None:
+                        reservation.release()
+                        reservation = None
                     yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                     return
 
@@ -340,10 +359,7 @@ class OpenAIResponsesProvider:
             self._active_stream = None
 
     def _retry_delay(self, attempt: int, retry_after: float | None) -> float:
-        """退避时长：网关给了 Retry-After 就听它的，否则指数退避，两者都设上限。"""
-        if retry_after is not None:
-            return max(0.0, min(retry_after, _MAX_RETRY_DELAY_SECONDS))
-        return min(self._retry_base_delay * (2 ** (attempt - 1)), _MAX_RETRY_DELAY_SECONDS)
+        return retry_delay(self._retry_base_delay, attempt, retry_after)
 
     # ---------- 单次尝试 ----------
 
@@ -698,7 +714,9 @@ class OpenAIResponsesProvider:
                         message = str(getattr(error, "message", "") or "") or "响应失败"
                         error_info = openai_error_info(error, source="stream_error", status_code=200)
                         self._last_error_retryable = not (
-                            error_info is not None and error_info.code == "CONTEXT_OVERFLOW"
+                            error_info is not None and (
+                                error_info.code == "CONTEXT_OVERFLOW" or error_info.retryable is False
+                            )
                         ) and _looks_transient(code, f"{error_type} {message}")
                         yield StreamEvent(
                             type="error", reason="error", error=self._redact(f"接口错误 {code}：{message}"),
@@ -711,7 +729,9 @@ class OpenAIResponsesProvider:
                         message = str(getattr(event, "message", "") or "")
                         error_info = openai_error_info(event, source="stream_error", status_code=200)
                         self._last_error_retryable = not (
-                            error_info is not None and error_info.code == "CONTEXT_OVERFLOW"
+                            error_info is not None and (
+                                error_info.code == "CONTEXT_OVERFLOW" or error_info.retryable is False
+                            )
                         ) and _looks_transient(code, message)
                         yield StreamEvent(
                             type="error", reason="error", error=self._redact(f"接口错误 {code}：{message}"),
@@ -752,9 +772,11 @@ class OpenAIResponsesProvider:
         except openai.APIStatusError as exc:
             error_info = openai_error_info(exc.body, source="http_error", status_code=exc.status_code)
             self._last_error_retryable = not (
-                error_info is not None and error_info.code == "CONTEXT_OVERFLOW"
+                error_info is not None and (
+                    error_info.code == "CONTEXT_OVERFLOW" or error_info.retryable is False
+                )
             ) and exc.status_code in _RETRYABLE_STATUS
-            self._last_error_retry_after = _retry_after_seconds(exc)
+            self._last_error_retry_after = retry_after_seconds(exc)
             yield StreamEvent(
                 type="error",
                 reason="error",
@@ -881,23 +903,6 @@ def _parse_arguments(raw: str | None) -> dict[str, Any] | None:
     except (TypeError, ValueError, RecursionError):
         return None
     return parsed if isinstance(parsed, dict) else None
-
-
-def _retry_after_seconds(exc: openai.APIStatusError) -> float | None:
-    """读 Retry-After / Retry-After-Ms 头；网关没给就返回 None 走指数退避。"""
-    headers = getattr(exc, "response", None)
-    headers = getattr(headers, "headers", None)
-    if headers is None:
-        return None
-    for name, scale in (("retry-after-ms", 0.001), ("retry-after", 1.0)):
-        raw = headers.get(name)
-        if not raw:
-            continue
-        try:
-            return float(str(raw).strip()) * scale
-        except ValueError:
-            continue
-    return None
 
 
 def _error_message(exc: openai.APIStatusError) -> str:

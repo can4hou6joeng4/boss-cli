@@ -94,7 +94,9 @@ function registerIPC(): void {
     if (!host) throw new Error("harness host is not attached");
     try { return await host.request(request.method, request.params); }
     catch (error) {
-      if (request.method === "context/compact/start" && error instanceof HarnessRpcError && error.code !== -32603) {
+      const preservesRpcError = request.method === "context/compact/start" ||
+        request.method === "turn/continuation/read" || request.method === "turn/continue";
+      if (preservesRpcError && error instanceof HarnessRpcError && error.code !== -32603) {
         return { __harnessRpcError: { code: error.code, message: error.message, data: error.data } };
       }
       throw error;
