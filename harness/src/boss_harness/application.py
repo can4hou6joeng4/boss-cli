@@ -1977,7 +1977,17 @@ class ApplicationService:
             job = self._compaction_jobs.get(job_id)
             if job is None:
                 raise self._missing_compaction_job()
-            return self._compaction_public(job)
+            public = self._compaction_public(job)
+            if (public["status"] != "running"
+                    and self._compaction_by_thread.get(job["threadId"]) == job["jobId"]):
+                # The worker has decided the outcome but still owns the thread.
+                # Expose the terminal state only after the busy registration is
+                # released so a client acting on it is never rejected as busy.
+                public = {key: public[key] for key in
+                          ("jobId", "threadId", "throughTurnId", "sourceDigest", "kind", "targetTurnId")
+                          if key in public}
+                public["status"] = "running"
+            return public
 
     def _stream_compaction(self, provider: Provider, request: ModelRequest,
                            cancel: threading.Event, *, character_limit: int = 32_000) -> AssistantMessage:
