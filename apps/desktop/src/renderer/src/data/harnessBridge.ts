@@ -40,6 +40,10 @@ import {
   type ContextCompactAbortResponse,
   type ContextEditReadResponse,
   type ApprovalRespondResponse,
+  type ThreadBranchesListResponse,
+  type ThreadLeafState,
+  type ThreadLeafSetParams,
+  type TurnListResponse,
 } from "@boss-cli/protocol";
 import { formatRelativeTime } from "@boss-cli/shared";
 import type { MessageItem, SessionItem } from "./mockData";
@@ -103,6 +107,13 @@ export const readContextEdit = (threadId: string, itemId: string): Promise<Conte
   contextRequest(ClientMethods.contextEditRead, { threadId, itemId });
 export const writeContextEdit = (params: { threadId: string; itemId: string; sourceDigest: string; replacementText: string | null }): Promise<ContextEditReadResponse> =>
   contextRequest(ClientMethods.contextEdit, params);
+
+/** 会话内分支：仅在内核声明 sessionLeaf / sessionBranchTree / sessionBranchViews 后调用；错误保留内核错误码。 */
+export const listThreadBranches = (threadId: string, cursor?: string | null): Promise<ThreadBranchesListResponse> =>
+  contextRequest(ClientMethods.threadBranchesList, cursor ? { threadId, cursor, limit: 200 } : { threadId, limit: 200 });
+export const setThreadLeaf = (params: ThreadLeafSetParams): Promise<ThreadLeafState> => contextRequest(ClientMethods.threadLeafSet, params);
+export const listBranchTurns = (threadId: string, cursor?: string | null): Promise<TurnListResponse> =>
+  contextRequest(ClientMethods.threadTurnsList, cursor ? { threadId, view: "branch", cursor, limit: 200 } : { threadId, view: "branch", limit: 200 });
 
 /** 内核是否已连接（preload 未注入或进程未起时返回 false）。 */
 export async function isHarnessUp(): Promise<boolean> {

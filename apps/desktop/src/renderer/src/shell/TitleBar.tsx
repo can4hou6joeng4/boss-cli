@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { IconPanel, IconPanelRight, IconMore, IconFolder, IconPlus, IconChevronRight, IconCopy, IconHistory, IconSettings, IconEdit, IconPin } from "../components/Icons";
+import { IconPanel, IconPanelRight, IconMore, IconFolder, IconPlus, IconChevronRight, IconCopy, IconHistory, IconSettings, IconEdit, IconPin, IconBranch } from "../components/Icons";
 import { Popover } from "../components/Popover";
 interface Props {
   title: string; hasConversation: boolean; summaryAvailable: boolean; isSidebarOpen: boolean; isSummaryOpen: boolean; canGoBack: boolean; canGoForward: boolean;
@@ -8,6 +8,8 @@ interface Props {
   onRename: () => void; onPin: () => void; isPinned: boolean;
   onOpenBrowser?: () => void; browserOpen?: boolean;
   onOpenContext?: () => void;
+  /** 仅在内核声明会话内分支能力时提供。 */
+  onOpenBranches?: () => void;
 }
 export function TitleBar(props: Props) {
   const [menu, setMenu] = useState(false);
@@ -33,6 +35,7 @@ export function TitleBar(props: Props) {
     </div>
     <div className="titlebar-thread"><IconFolder size={15} /><span>{props.title}</span></div>
     <div className="titlebar-right">
+      {props.onOpenBranches && <button type="button" className="titlebar-btn" title="会话分支 · 切换分支或从已结束回合重新开始" aria-label="会话分支" disabled={!props.hasConversation} onClick={props.onOpenBranches}><IconBranch size={16} /></button>}
       {props.onOpenBrowser && <button type="button" className={`titlebar-btn${props.browserOpen ? " active" : ""}`} title="会话浏览器 · BOSS 直聘登录" aria-label="打开会话浏览器" aria-pressed={props.browserOpen} disabled={!props.hasConversation} onClick={props.onOpenBrowser}><svg width="17" height="17" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true"><rect x="2" y="3" width="16" height="14" rx="2" /><path d="M2 7h16M5 5h.1M7 5h.1M12 7v10" /></svg></button>}
       <div className="popover-anchor">
         <button className="titlebar-btn" title="聊天选项" aria-label="聊天选项" aria-haspopup="menu" aria-expanded={menu} onClick={() => { copyVersion.current += 1; setCopyState("idle"); setMenu(!menu); }}><IconMore size={17} /></button>
@@ -46,6 +49,7 @@ export function TitleBar(props: Props) {
           {copyState === "failed" && <div className="menu-note" role="status">无法访问剪贴板，请检查权限后重试。</div>}
           <button disabled={!props.hasConversation} onClick={() => { props.onOpenRewind(); setMenu(false); }}><IconHistory />查看会话回溯</button>
           {props.onOpenContext && <button disabled={!props.hasConversation} onClick={() => { props.onOpenContext?.(); setMenu(false); }}><IconPanelRight />会话上下文</button>}
+          {props.onOpenBranches && <button disabled={!props.hasConversation} onClick={() => { props.onOpenBranches?.(); setMenu(false); }}><IconBranch />会话分支</button>}
           <div className="menu-divider" />
           <button onClick={() => { props.onOpenSettings(); setMenu(false); }}><IconSettings />设置<span className="menu-shortcut">⌘,</span></button>
         </Popover>
