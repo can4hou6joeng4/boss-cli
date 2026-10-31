@@ -33,6 +33,7 @@ from boss_harness.models.output_budget import (
 )
 from boss_harness.models.provider import ModelConfig
 from boss_harness.models.retry import (
+    retry_aborted_before_attempt_event,
     retry_after_seconds,
     retry_delay,
     retry_settings,
@@ -285,6 +286,8 @@ class OpenAIResponsesProvider:
                     if reservation is not None:
                         reservation.release()
                         reservation = None
+                    if attempt > 1:
+                        yield retry_aborted_before_attempt_event(attempt)
                     yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                     return
                 if reservation is not None:
@@ -348,6 +351,7 @@ class OpenAIResponsesProvider:
                     if reservation is not None:
                         reservation.release()
                         reservation = None
+                    yield retry_aborted_before_attempt_event(attempt + 1)
                     yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                     return
 

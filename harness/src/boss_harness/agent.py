@@ -1175,6 +1175,21 @@ class TurnRunner:
                 self.notify(N_ITEM_STARTED, {"threadId": thread_id, "itemId": entry.id, "kind": "agentMessage"})
             return entry
 
+        #: 已发 retryStarted、尚未发 retryEnded 的尝试序号；本轮返回前必须收尾，保证成对且早于回合终态。
+        retry_pending: int | None = None
+
+        def end_retry(attempt: int, reason: str, final_error: str = "") -> None:
+            nonlocal retry_pending
+            if retry_pending is None:
+                return  # 没有可见的 retryStarted 就不发孤立的 retryEnded
+            retry_pending = None
+            payload = {"threadId": thread_id, "turnId": self.turn_id, "attempt": attempt,
+                       "success": reason == "success"}
+            if reason != "success":
+                payload["reason"] = "aborted" if reason == "aborted" else "error"
+                payload["finalError"] = final_error or ("请求已取消" if reason == "aborted" else "模型请求失败")
+            self.notify(N_MODEL_RETRY_ENDED, payload)
+
         stream = self.provider.stream(request)
         try:
             while True:
@@ -1189,22 +1204,21 @@ class TurnRunner:
 
                 if self.cancelled():
                     interrupted = True
+                    if event.type == "retry_end":
+                        # 退避中停止时 provider 给出的就是这条收尾，照实转出再停。
+                        end_retry(event.attempt, event.reason, event.error)
                     break
 
                 if event.type == "retry_start":
                     # 仅观测：不改变重试判定，也不写入会话条目；旧客户端可忽略或 opt-out。
+                    retry_pending = event.attempt
                     self.notify(N_MODEL_RETRY_STARTED, {
                         "threadId": thread_id, "turnId": self.turn_id, "attempt": event.attempt,
                         "maxAttempts": event.max_attempts, "delayMs": event.delay_ms,
                         "errorMessage": event.error})
                     continue
                 if event.type == "retry_end":
-                    payload = {"threadId": thread_id, "turnId": self.turn_id, "attempt": event.attempt,
-                               "success": event.reason == "success"}
-                    if event.reason != "success":
-                        payload["reason"] = "aborted" if event.reason == "aborted" else "error"
-                        payload["finalError"] = event.error or "模型请求失败"
-                    self.notify(N_MODEL_RETRY_ENDED, payload)
+                    end_retry(event.attempt, event.reason, event.error)
                     continue
 
                 if event.type.startswith(("text_", "thinking_", "toolcall_")):
@@ -1318,6 +1332,14 @@ class TurnRunner:
                     if not self.cancelled():
                         error = self.safe_error(exc)
                         self.last_stream_error = None
+
+        if retry_pending is not None:
+            # provider 没来得及给出 retry_end（提前停止、关闭或异常）：在本轮返回、回合终态之前补发恰好一次。
+            stopped = interrupted or self.cancelled()
+            try:
+                end_retry(retry_pending, "aborted" if stopped else "error", "" if stopped else (error or ""))
+            except Exception:  # noqa: BLE001 - 仅观测通知，不能改变回合结果
+                pass
 
         interrupted = interrupted or self.cancelled() or (assistant is not None and assistant.stop_reason == "aborted")
         if not interrupted and error is None and assistant is None:

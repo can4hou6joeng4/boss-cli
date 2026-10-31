@@ -18,7 +18,7 @@ export interface ModelRetryStatus {
   receivedAt: number;
   errorMessage?: string;
   finalError?: string;
-  /** 回合在退避期间结束（如用户停止），内核未补发 retryEnded：attempt 为未发起的那次。 */
+  /** 兜底：回合已结束却没收到 retryEnded（旧内核），按回合中断推断；attempt 为未发起的那次。 */
   endedBeforeAttempt?: boolean;
 }
 
@@ -69,8 +69,9 @@ export function reduceModelRetry(previous: ModelRetryStatus | undefined, method:
 }
 
 /**
- * 回合收尾时收敛仍在等待的重试：内核在用户停止退避时直接结束回合、不保证补发 retryEnded，
- * 因此中断回合转为“已停止”，其他终态直接移除；已有终态（恢复 / 失败 / 已停止）保持不变。
+ * 回合收尾时收敛仍在等待的重试。内核会在回合终态前补发 retryEnded（含停止时的 aborted），
+ * 已有终态（恢复 / 失败 / 已停止）以通知为准保持不变；仅当仍处于等待（旧内核未补发）时兜底：
+ * 中断回合转为“已停止”，其他终态直接移除。
  */
 export function settleModelRetryOnTurnEnd(previous: ModelRetryStatus | undefined, turnStatus: string | undefined, now: number): ModelRetryStatus | undefined {
   if (previous?.phase !== "waiting") return previous;
