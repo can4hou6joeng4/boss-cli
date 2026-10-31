@@ -22,6 +22,9 @@ export interface HarnessEvent {
     eventCursor?: string; eventId?: string; clientUserMessageId?: string;
     state?: string; generation?: number; running?: boolean;
     queueId?: string; queue?: QueueItem[];
+    /** model/retryStarted / model/retryEnded（仅观测，见 data/modelRetry.ts）。 */
+    attempt?: number; maxAttempts?: number; delayMs?: number; errorMessage?: string;
+    success?: boolean; reason?: string; finalError?: string;
   };
 }
 
