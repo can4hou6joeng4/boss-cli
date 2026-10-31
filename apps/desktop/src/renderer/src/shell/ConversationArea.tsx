@@ -6,7 +6,7 @@ import { RichMarkdown } from "../components/RichMarkdown";
 import { ToolResultDetails } from "../components/ToolResultDetails";
 import { QueuePanel } from "./QueuePanel";
 import { ContextEditDialog } from "../components/ContextEditDialog";
-import type { QueueItem, TurnContinuationReadResponse } from "@boss-cli/protocol";
+import type { ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-cli/protocol";
 import type { ContextEditReadResponse, SkillDescriptor } from "@boss-cli/protocol";
 import { type MessageItem, type ConversationMode } from "../data/mockData";
 import type { SkillCatalogState } from "../data/harnessBridge";
@@ -18,7 +18,8 @@ export interface ConversationAreaProps {
   onSendMessage: ComposerSend;
   onQueueMessage?: ComposerQueue; onCheckQueueSubmission?: CheckQueueSubmission; queueItems?: QueueItem[]; onRemoveQueueItem?: (id: string) => Promise<boolean>;
   draft?: ComposerDraft; onDraftChange?: UpdateComposerDraft; simulateLocal?: boolean; harnessUp?: boolean; running?: boolean; taskBlocked?: boolean;
-  activeModelId?: string; onSelectModel?: (id: string) => void; onOpenSettings?: () => void; onInterrupt?: () => void;
+  models?: ModelDescriptor[]; activeModelProvider?: string; activeModelId?: string;
+  onSelectModel?: (provider: string, id: string) => void | boolean | Promise<void | boolean>; onOpenSettings?: () => void; onInterrupt?: () => void;
   skills?: SkillDescriptor[]; skillCatalogState?: SkillCatalogState; onRefreshSkills?: () => void;
   threadId?: string;
   configuredModelLabel?: string; readOnly?: boolean;
@@ -32,7 +33,7 @@ export interface ConversationAreaProps {
 }
 export const ConversationArea: React.FC<ConversationAreaProps> = ({
   messages: initialMessages, readOnly = false, currentMode, onModeChange, onSendMessage, onQueueMessage, onCheckQueueSubmission, queueItems = [], onRemoveQueueItem, simulateLocal = true, harnessUp = false,
-  running = false, taskBlocked = false, draft, onDraftChange, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, sessionReasoning,
+  running = false, taskBlocked = false, draft, onDraftChange, models, activeModelProvider, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, sessionReasoning,
   onInterrupt, onApprovalDecision, onReviewDiff, onRevertDiff, onOpenRewind, loginGuide, onLogin,
   skills = [], skillCatalogState = "unavailable", onRefreshSkills,
   threadId, continuationCheck, onContinueInterruptedTurn,
@@ -621,7 +622,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
           {approvalError && <div className="composer-notice" role="alert">{approvalError}</div>}
           <div className="thread-composer-input"><Composer ref={textareaRef} value={inputText} onChange={setInputText} onSend={onSendMessage} onQueue={simulateLocal ? undefined : onQueueMessage} onCheckQueueSubmission={simulateLocal ? undefined : onCheckQueueSubmission} draft={composerDraft} onDraftChange={updateDraft} skills={skills} skillCatalogState={skillCatalogState} onRefreshSkills={onRefreshSkills}
             readOnly={readOnly} isRunning={running} blocked={taskBlocked} onInterrupt={onInterrupt} preview={simulateLocal}
-            currentMode={currentMode} onModeChange={onModeChange} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel}
+            currentMode={currentMode} onModeChange={onModeChange} models={models} activeModelProvider={activeModelProvider} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel}
             onSelectModel={onSelectModel} sessionReasoning={sessionReasoning} onOpenSettings={onOpenSettings} onLogin={onLogin} /></div>
         </div>
       </div>

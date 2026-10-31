@@ -276,6 +276,7 @@ class ApplicationService:
         self.registry = ToolRegistry(tool_bundle.tools)
         model_tool_specs(self.registry.specs())
         self.provider_factory = provider_factory
+        self._model_configs = self._discover_model_configs()
         self.workspace = (workspace or Path.cwd()).resolve()
         if isinstance(lifecycle_hooks, LifecycleHooks):
             if hook_timeout != 0.25 or expose_tool_results_to_hooks:
@@ -461,6 +462,7 @@ class ApplicationService:
             "thread/fork": self.on_thread_fork, "thread/archive": self.on_thread_archive,
             "thread/delete": self.on_thread_delete,
             "thread/unarchive": self.on_thread_unarchive, "thread/name/set": self.on_thread_name,
+            "thread/model/set": self.on_thread_model_set,
             "thread/reasoning/read": self.on_thread_reasoning_read,
             "thread/reasoning/set": self.on_thread_reasoning_set,
             "thread/leaf/read": self.on_thread_leaf_read, "thread/usage/read": self.on_thread_usage_read,
@@ -546,7 +548,7 @@ class ApplicationService:
                              "durableApprovals": True, "explicitTurnContinuation": True,
                              "sessionLeaf": True, "sessionBranchViews": True,
                              "sessionBranchTree": True, "sessionBranchSummary": True,
-                             "threadUsage": True},
+                             "threadUsage": True, "sessionModelSelection": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -593,10 +595,71 @@ class ApplicationService:
                 "autoCompaction": self.compaction_policy.describe(),
                 "approvalPolicy": "each-consequential-call", "approvalTimeoutSeconds": self.approval_timeout}
 
+    def _discover_model_configs(self) -> dict[str, ModelConfig]:
+        routes = {self.config.provider: self.config}
+        if self.config.provider == "none":
+            routes["none"] = replace(self.config, model="none", effort=None)
+        if self.provider_factory is None:
+            return routes
+
+        environ = dict(os.environ)
+        environ.pop("BOSS_HARNESS_PROVIDER", None)
+        for provider in ("anthropic", "openai"):
+            if provider in routes:
+                continue
+            if provider == "anthropic" and not (
+                environ.get("ANTHROPIC_API_KEY") or environ.get("ANTHROPIC_AUTH_TOKEN")
+            ):
+                continue
+            candidate_env = dict(environ)
+            candidate_env.pop("BOSS_HARNESS_MODEL", None)
+            candidate_env.pop("BOSS_HARNESS_EFFORT", None)
+            model = environ.get(f"BOSS_HARNESS_{provider.upper()}_MODEL")
+            effort = environ.get(f"BOSS_HARNESS_{provider.upper()}_EFFORT")
+            if model:
+                candidate_env[f"BOSS_HARNESS_{provider.upper()}_MODEL"] = model
+            if effort:
+                candidate_env["BOSS_HARNESS_EFFORT"] = effort
+            try:
+                routes[provider] = resolve_config(environ=candidate_env, provider=provider)
+            except (OSError, TypeError, ValueError):
+                # An optional route with incomplete local credentials is not selectable.
+                continue
+        return routes
+
+    @staticmethod
+    def _canonical_provider(value: object) -> str:
+        if not isinstance(value, str) or not value.strip() or len(value) > 64 or any(c.isspace() for c in value):
+            raise ValueError("provider 格式无效")
+        provider = value.strip().lower()
+        return "openai" if provider == "codex" else provider
+
+    @staticmethod
+    def _validate_model_id(value: object) -> str:
+        if not isinstance(value, str) or not value.strip() or len(value) > 200 or any(c.isspace() for c in value):
+            raise ValueError("model 格式无效")
+        return value.strip()
+
+    def _configured_route(self, provider: str) -> ModelConfig:
+        config = self._model_configs.get(provider)
+        if config is None or not self._route_available(provider):
+            raise RpcError(-32013, "本机没有可用的该模型线路配置",
+                           {"code": "MODEL_PROVIDER_UNAVAILABLE", "provider": provider})
+        return config
+
+    def _route_available(self, provider: str) -> bool:
+        return (provider in self._model_configs and
+                (provider == "none" or self.provider_factory is not None or
+                 (provider == self.config.provider and self.provider is not None)))
+
     def on_model_list(self, params: dict | None) -> dict:
-        return {"models": [{"id": self.config.model, "provider": self.config.provider,
-                            "configured": True, "available": self.provider is not None,
-                            "capabilities": self.model_catalog.resolve(self.config.provider, self.config.model).describe()}],
+        models = []
+        for provider, config in self._model_configs.items():
+            model = config.model
+            available = self._route_available(provider)
+            models.append({"id": model, "provider": provider, "configured": True, "available": available,
+                           "capabilities": self.model_catalog.resolve(provider, model).describe()})
+        return {"models": models,
                 "source": "local-config"}
 
     def on_thread_start(self, params: dict | None) -> dict:
@@ -607,8 +670,14 @@ class ApplicationService:
         policy = params.get("toolPolicy", "approval")
         if not isinstance(policy, str) or policy not in {"readOnly", "approval"}:
             raise ValueError("toolPolicy 必须是 readOnly 或 approval")
+        provider = self._canonical_provider(params.get("provider", self.config.provider))
+        config = self._configured_route(provider)
+        model = self._validate_model_id(params.get("model", config.model))
+        if model != config.model:
+            raise RpcError(-32013, "该 provider/model 不在本机配置目录中",
+                           {"code": "MODEL_ROUTE_UNAVAILABLE", "provider": provider, "model": model})
         thread = self.sessions.create(title, projectId=params.get("projectId"),
-                                      model=params.get("model") or self.config.model, cwd=str(self.workspace), toolPolicy=policy)
+                                      provider=provider, model=model, cwd=str(self.workspace), toolPolicy=policy)
         self.events.emit("thread/created", {"threadId": thread["id"], "thread": thread})
         return {"thread": thread}
 
@@ -1220,6 +1289,38 @@ class ApplicationService:
         self.events.emit("thread/renamed", {"threadId": thread_id, "thread": thread})
         return {"thread": thread}
 
+    def on_thread_model_set(self, params: dict | None) -> dict:
+        params = params or {}
+        if set(params) != {"threadId", "provider", "model"}:
+            raise ValueError("thread/model/set 只接受 threadId、provider 和 model")
+        thread_id = _text(params, "threadId")
+        provider = self._canonical_provider(params["provider"])
+        model = self._validate_model_id(params["model"])
+        config = self._configured_route(provider)
+        if model != config.model:
+            raise RpcError(-32013, "该 provider/model 不在本机配置目录中",
+                           {"code": "MODEL_ROUTE_UNAVAILABLE", "provider": provider, "model": model})
+        with self._follow_up_admission_lock, self.runtimes.lock:
+            if self.runtimes.closed:
+                raise RpcError(-32003, "内核正在关闭")
+            thread = self.sessions.get_thread(thread_id)
+            if thread.get("archived"):
+                raise ValueError("请先恢复归档会话")
+            self._idle(thread_id)
+            with self.queue.lock:
+                pending = [item for item in self.queue.list(thread_id)
+                           if item.get("status") in {"queued", "delivering"}]
+            if pending:
+                raise RpcError(-32004, "会话仍有排队消息，请先处理队列再切换模型线路",
+                               {"code": "MODEL_SWITCH_QUEUE_PENDING", "pending": len(pending)})
+            if (thread.get("provider") == provider and thread.get("model") == model
+                    and thread.get("reasoningEffort") is None):
+                return {"thread": thread}
+            updated = self.sessions.update_thread(thread_id, provider=provider, model=model, reasoningEffort=None)
+        self.events.emit("thread/model/updated", {"threadId": thread_id, "provider": provider,
+                                                  "model": model, "thread": updated})
+        return {"thread": updated}
+
     def on_event_list(self, params: dict | None) -> dict:
         params = params or {}
         source = self.sessions.events_after(params.get("cursor"), params.get("threadId"), params.get("limit", 100))
@@ -1237,17 +1338,45 @@ class ApplicationService:
             page, result = candidate, candidate_result
         return result
 
+    def _thread_route(self, thread: dict) -> tuple[str, ModelConfig, set[str]]:
+        """Resolve a session route and the model ids it may send; never pair silently."""
+        stored_model = thread.get("model")
+        if thread.get("provider") is None:
+            # Legacy sessions predate provider selection: only the default route's own model is safe.
+            provider = self._canonical_provider(self.config.provider)
+            base = self._configured_route(provider)
+            if stored_model is not None and stored_model != base.model:
+                raise RpcError(-32013, "旧会话的模型不属于默认线路，请先选择模型线路",
+                               {"code": "MODEL_ROUTE_SELECTION_REQUIRED", "provider": None,
+                                "model": stored_model, "defaultProvider": provider,
+                                "recoveryMethod": "thread/model/set"})
+            return provider, base, {base.model}
+        provider = self._canonical_provider(thread["provider"])
+        base = self._configured_route(provider)
+        allowed = {base.model}
+        if isinstance(stored_model, str) and stored_model:
+            allowed.add(stored_model)
+        return provider, base, allowed
+
     def _model_config(self, thread: dict, params: dict) -> ModelConfig:
-        model = params.get("model") or thread.get("model") or self.config.model
-        if not isinstance(model, str) or not model.strip() or len(model) > 200 or any(c.isspace() for c in model):
-            raise ValueError("model 格式无效")
-        effort = self._effective_reasoning_effort(thread, self.config.provider, model)
-        return replace(self.config, model=model, effort=effort)
+        provider, base, allowed = self._thread_route(thread)
+        requested_provider = params.get("provider")
+        if requested_provider is not None and self._canonical_provider(requested_provider) != provider:
+            raise RpcError(-32013, "provider 由会话模型选择决定，不能按回合切换",
+                           {"code": "MODEL_PROVIDER_MISMATCH", "provider": provider})
+        stored = thread.get("model")
+        model = self._validate_model_id(params.get("model") or (stored if stored in allowed else None) or base.model)
+        if model not in allowed:
+            raise RpcError(-32013, "回合模型不属于会话模型线路",
+                           {"code": "MODEL_ROUTE_MISMATCH", "provider": provider, "model": model,
+                            "available": sorted(allowed)})
+        effort = self._effective_reasoning_effort(thread, provider, model)
+        return replace(base, model=model, effort=effort)
 
     def _effective_reasoning_effort(self, thread: dict, provider: str, model: str) -> str | None:
         effort = thread.get("reasoningEffort")
         if effort is None:
-            return self.config.effort
+            return self._configured_route(provider).effort
         capabilities = self.model_catalog.resolve(provider, model)
         if effort not in capabilities.reasoning_efforts:
             raise RpcError(-32012, "当前模型未声明支持该推理档位",
@@ -1511,7 +1640,7 @@ class ApplicationService:
             capabilities = self.model_catalog.resolve(config.provider, config.model)
             effort = thread.get("reasoningEffort")
             return {"threadId": thread_id, "model": config.model, "effort": effort,
-                    "configuredEffort": self.config.effort,
+                    "configuredEffort": config.effort,
                     "supported": effort is None or effort in available,
                     "availableEfforts": available, "summaryActive": summary_active,
                     "capabilitySource": capabilities.source,
@@ -2701,6 +2830,8 @@ class ApplicationService:
                 payload = entry.get("payload") or {}
                 if entry.get("type") == "context_checkpoint":
                     return fail("CONTINUATION_HISTORY_CHANGED", "来源模型请求之后的上下文摘要发生变化。")
+                if entry.get("type") == "thread_info" and ({"provider", "model"} & set(payload)):
+                    return fail("CONTINUATION_CONTEXT_CHANGED", "来源回合之后会话模型线路已切换。")
                 if entry.get("type") == "context_edit" and payload.get("targetItemId") in included_item_ids:
                     return fail("CONTINUATION_HISTORY_CHANGED", "来源模型请求之后的上下文条目发生变化。")
                 if entry.get("type") == "item" and payload.get("revises") in included_item_ids:
@@ -2725,7 +2856,11 @@ class ApplicationService:
                 return fail("CONTINUATION_SOURCE_UNVERIFIABLE", "来源模型配置不可用或已超过当前请求上限。")
             if self.provider_factory is None and self.provider is None:
                 return fail("CONTINUATION_PROVIDER_UNAVAILABLE", "当前内核没有可复用的模型供应商实例。")
-            if source_provider != self.config.provider:
+            try:
+                session_provider = self._canonical_provider(thread.get("provider", self.config.provider))
+            except ValueError:
+                return fail("CONTINUATION_SOURCE_UNVERIFIABLE", "会话模型线路无法核验。")
+            if source_provider != session_provider:
                 return fail("CONTINUATION_CONTEXT_CHANGED", "当前供应商与来源回合不一致。")
             skill_ids = source.get("skillIds", [])
             attachment_ids = source.get("attachmentIds", [])

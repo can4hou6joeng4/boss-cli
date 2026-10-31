@@ -73,7 +73,7 @@ export interface InitializeResponse {
   capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean;
     parallelThreads: boolean; durableApprovals?: boolean; explicitTurnContinuation?: boolean;
     sessionLeaf?: boolean; sessionBranchViews?: boolean; sessionBranchTree?: boolean;
-    sessionBranchSummary?: boolean; threadUsage?: boolean };
+    sessionBranchSummary?: boolean; threadUsage?: boolean; sessionModelSelection?: boolean };
   eventCursor?: string;
 }
 
@@ -95,6 +95,7 @@ export const ClientMethods = {
   threadDelete: "thread/delete",
   threadUnarchive: "thread/unarchive",
   threadNameSet: "thread/name/set",
+  threadModelSet: "thread/model/set",
   threadReasoningRead: "thread/reasoning/read",
   threadReasoningSet: "thread/reasoning/set",
   threadTurnsList: "thread/turns/list",
@@ -158,6 +159,7 @@ export const ServerNotifications = {
   threadUnarchived: "thread/unarchived",
   threadRenamed: "thread/renamed",
   threadReasoningUpdated: "thread/reasoning/updated",
+  threadModelUpdated: "thread/model/updated",
   queueUpdated: "queue/updated",
   contextCompactionStarted: "context/compactionStarted",
   contextCompactionProgress: "context/compactionProgress",
@@ -251,6 +253,7 @@ export interface ThreadSummary {
   lastTurn?: Pick<TurnSummary, "turnId" | "status" | "taskPhase" | "taskPhaseStatus" | "taskAttempt" | "taskRestartLimit" | "taskRecoveryReason" | "taskResumePolicy"> | null;
   sessionId?: string;
   projectId?: string | null;
+  provider?: string;
   model?: string;
   reasoningEffort?: string | null;
   cwd?: string;
@@ -376,6 +379,8 @@ export interface ThreadStartParams {
   toolPolicy?: "readOnly" | "approval";
   title?: string;
   projectId?: string;
+  provider?: string;
+  /** Persisted session selection; must match a model/list entry for this provider. */
   model?: string;
 }
 
@@ -389,6 +394,12 @@ export interface ThreadReasoningSetParams {
   effort: string | null;
 }
 export interface ThreadReasoningSetResponse { thread: ThreadSummary }
+export interface ThreadModelSetParams {
+  threadId: string;
+  provider: string;
+  model: string;
+}
+export interface ThreadModelSetResponse { thread: ThreadSummary }
 export interface ThreadReasoningReadResponse {
   threadId: string;
   model: string;
@@ -491,6 +502,7 @@ export interface TurnStartParams {
   input: string;
   /** Per-thread identity shared by direct and follow-up submissions; retries retain the first input. */
   clientUserMessageId?: string;
+  /** Per-turn model override on the session's persisted provider; does not change session metadata. */
   model?: string;
   attachmentIds?: string[];
   skillIds?: string[];
