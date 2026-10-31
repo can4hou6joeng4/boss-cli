@@ -40,6 +40,10 @@ _TERMINAL = frozenset({"completed", "interrupted", "blocked", "error"})
 # In-session branch pointer (Pi session-manager leafId).  Sessions that never
 # record one keep the historical linear projection byte-for-byte.
 LEAF_ENTRY_TYPE = "leaf"
+# Pi branchWithSummary(): a model summary of the abandoned branch, appended
+# right after the leaf record it belongs to, so it projects only on that branch.
+BRANCH_SUMMARY_ENTRY_TYPE = "branch_summary"
+MAX_BRANCH_SUMMARY_CHARS = 32_000
 MAX_LEAF_ACTIVE_TURN_IDS = 200
 MAX_BRANCH_PREVIEW_CHARS = 120
 _TASK_PHASES = frozenset({"admission", "prepare", "model_request", "tool_execution", "finish"})
@@ -2316,7 +2320,7 @@ class SessionStore:
         with self._lock:
             return self._leaf_state(thread_id, self.read_entries(thread_id))
 
-    def set_leaf(self, thread_id: str, turn_id: str | None) -> dict:
+    def set_leaf(self, thread_id: str, turn_id: str | None, *, _with_entry_id: bool = False) -> dict:
         """Move the in-session branch pointer to a settled turn (None = before the first turn)."""
         if turn_id is not None:
             _identifier(turn_id, "turnId")
@@ -2351,7 +2355,54 @@ class SessionStore:
                 raise ValueError("分支指针目标与回合边界不一致")
             self._append_line(self.path_for(thread_id), entry.to_dict())
             self._index_thread(thread_id, connection)
-            return {**state, "changed": True}
+            result = {**state, "changed": True}
+            if _with_entry_id:
+                result["_leafEntryId"] = entry.id
+            return result
+
+    def abandoned_branch(self, thread_id: str, target_turn_id: str | None,
+                         entries: list[dict] | None = None) -> dict:
+        """Turns given up by moving the leaf to target: old leaf back to the common ancestor (exclusive)."""
+        entries = self.read_entries(thread_id) if entries is None else entries
+        parent, _ = self._turn_tree(entries)
+        leaf = self._leaf_state(thread_id, entries)
+        if target_turn_id is not None and target_turn_id not in parent:
+            raise ValueError("目标回合不存在")
+        ancestors: set[str] = set()
+        cursor = target_turn_id
+        while cursor is not None:
+            ancestors.add(cursor)
+            cursor = parent.get(cursor)
+        abandoned: list[str] = []
+        cursor = leaf["leafTurnId"]
+        while cursor is not None and cursor not in ancestors:
+            abandoned.append(cursor)
+            cursor = parent.get(cursor)
+        abandoned.reverse()
+        return {"fromTurnId": leaf["leafTurnId"], "targetTurnId": target_turn_id,
+                "commonTurnId": cursor, "abandonedTurnIds": abandoned}
+
+    def append_branch_summary(self, thread_id: str, leaf_entry_id: str, payload: dict,
+                              *, on_committed: Callable[[], None] | None = None) -> Entry:
+        """Append a branch summary only while the leaf record that requested it is still current."""
+        summary = payload.get("summary")
+        if not isinstance(summary, str) or not summary.strip() or len(summary) > MAX_BRANCH_SUMMARY_CHARS:
+            raise ValueError("被放弃分支摘要必须是 1 到 32000 字符")
+        with self._lock, self._index.transaction() as connection:
+            self.require_thread(thread_id)
+            entries = self.read_entries(thread_id)
+            index = next((position for position in range(len(entries) - 1, -1, -1)
+                          if entries[position].get("type") == LEAF_ENTRY_TYPE), None)
+            if index is None or entries[index]["id"] != leaf_entry_id:
+                raise ValueError("分支指针已变化，未写入被放弃分支摘要")
+            if any(entry.get("type") in {"turn", BRANCH_SUMMARY_ENTRY_TYPE} for entry in entries[index + 1:]):
+                raise ValueError("切换后已有新回合或摘要，未写入被放弃分支摘要")
+            entry = Entry(type=BRANCH_SUMMARY_ENTRY_TYPE, payload={**payload, "leafEntryId": leaf_entry_id})
+            self._append_line(self.path_for(thread_id), entry.to_dict())
+            if on_committed is not None:
+                on_committed()
+            self._index_thread(thread_id, connection)
+            return entry
 
     def fork_thread(self, thread_id: str, *, turn_id: str | None = None, title: str | None = None) -> dict:
         with self._lock:
