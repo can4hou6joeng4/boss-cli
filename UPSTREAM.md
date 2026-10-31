@@ -1,5 +1,11 @@
 # 上游吸收记录
 
+## 第一百一十一轮：会话级模型线路切换
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/model-registry.ts`（本机已配置模型目录与可用性）、`model-resolver.ts`（provider/model 精确解析）与 `agent-session.ts`（会话级 `setModel` 追加模型变更记录，后续回合按会话选择发起请求）。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+本项目 [PR #109](https://github.com/can4hou6joeng4/boss-cli/pull/109) 起于主线 `bec83e7`，本轮合并当前主线并对齐其后的续接、工具调度、重试通知、steering、transform_context、会话分支与 usage 查询。适配差异：模型目录只列出本机显式配置且可用的线路，不返回端点或凭据，不做远程目录或启动探测；`thread/model/set` 只接受目录中的精确 provider/model，在活动回合、压缩或分支摘要任务、后续回合启动期间以及归档会话上拒绝，切换时清除不再适用的推理档位，并以 `capabilities.sessionModelSelection` 标示。选择写入会话元数据记录（不随分支切换改变），fork 继承来源会话当前线路；压缩与分支摘要默认使用会话线路（显式摘要模型配置仍优先）；usage 按请求记录实际 provider/model。来源回合之后若切换过线路，续接以 `CONTINUATION_CONTEXT_CHANGED` 拒绝（切回也保守拒绝）；续接的 provider 比对改为会话线路，非默认线路会话亦可续接。旧会话无线路记录时继续使用进程默认线路；`turn/start.model` 仍仅覆盖单回合模型 ID，provider 不可按回合切换。
+
 ## 第一百一十轮：每回合 provider 用量只读汇总
 
 参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/ai`（`Usage` 的 input/output/cacheRead/cacheWrite 与 cost）及 `packages/coding-agent/src/core/cache-stats.ts`（按 assistant 消息逐条累计，未报告缓存的 provider 不计入缓存统计）。本轮独立实现，不复制 Pi 源码或新增依赖。

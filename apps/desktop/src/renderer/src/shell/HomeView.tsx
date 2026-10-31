@@ -3,12 +3,13 @@ import { Composer } from "./Composer";
 import { IconFolder, IconChevronDown, IconSparkles, IconSearch, IconChat, IconCockpit, IconCheck, IconPlus } from "../components/Icons";
 import { Popover } from "../components/Popover";
 import type { ProjectFolder, ConversationMode } from "../data/mockData";
-import type { SkillDescriptor } from "@boss-cli/protocol";
+import type { ModelDescriptor, SkillDescriptor } from "@boss-cli/protocol";
 import type { SkillCatalogState } from "../data/harnessBridge";
 import { withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
 interface Props {
-  onStartSessionWithPrompt: (prompt: string, domainId: string, modelId: string, skillIds?: string[]) => ReturnType<ComposerSend>;
-  activeModelId: string; onSelectModel?: (id: string) => void; currentMode: ConversationMode; onModeChange: (mode: ConversationMode) => void;
+  onStartSessionWithPrompt: (prompt: string, domainId: string, provider: string, modelId: string, skillIds?: string[]) => ReturnType<ComposerSend>;
+  models?: ModelDescriptor[]; activeModelProvider?: string; activeModelId: string;
+  onSelectModel?: (provider: string, id: string) => void | boolean | Promise<void | boolean>; currentMode: ConversationMode; onModeChange: (mode: ConversationMode) => void;
   configuredModelLabel?: string;
   selectedProjectId: string; onSelectProject: (id: string) => void; onNewProject: () => void;
   folders: ProjectFolder[]; preview: boolean; harnessUp: boolean; blocked?: boolean; onOpenSettings: () => void; draft: ComposerDraft; onDraftChange: UpdateComposerDraft;
@@ -40,8 +41,8 @@ export function HomeView(props: Props) {
           <div className="menu-note">项目作为任务上下文随消息提供。</div>
         </Popover>
       </div>
-      <Composer ref={ref} value={value} onChange={setValue} draft={props.draft} onDraftChange={props.onDraftChange} home readOnly={!props.preview} preview={props.preview} blocked={props.blocked} activeModelId={props.activeModelId} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} currentMode={props.currentMode} onModeChange={props.onModeChange} onOpenSettings={props.onOpenSettings} skills={props.skills} skillCatalogState={props.skillCatalogState} onRefreshSkills={props.onRefreshSkills}
-        onSend={(text, skillIds) => props.onStartSessionWithPrompt(project ? `招聘项目：${props.folders.find(folder => folder.id === project)?.name}\n\n${text}` : text, "precision-match", props.activeModelId, skillIds)} />
+      <Composer ref={ref} value={value} onChange={setValue} draft={props.draft} onDraftChange={props.onDraftChange} home readOnly={!props.preview} preview={props.preview} blocked={props.blocked} models={props.models} activeModelProvider={props.activeModelProvider} activeModelId={props.activeModelId} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} currentMode={props.currentMode} onModeChange={props.onModeChange} onOpenSettings={props.onOpenSettings} skills={props.skills} skillCatalogState={props.skillCatalogState} onRefreshSkills={props.onRefreshSkills}
+        onSend={(text, skillIds) => props.onStartSessionWithPrompt(project ? `招聘项目：${props.folders.find(folder => folder.id === project)?.name}\n\n${text}` : text, "precision-match", props.activeModelProvider ?? "", props.activeModelId, skillIds)} />
       <div className="starter-prompts">
         {suggestions.map(item => <button key={item.title} onClick={() => { setValue(item.prompt); ref.current?.focus(); }}><item.icon size={18} /><strong>{item.title}</strong><span>{item.detail}</span></button>)}
       </div>

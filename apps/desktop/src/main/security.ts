@@ -76,9 +76,11 @@ export function loginCaptureReadiness(url: string, cookies: Record<string, strin
   return { ready: true, phase: "verify", identity, summary: "正在验证账号并保存连接，请稍候；此过程不会发送消息或修改职位" };
 }
 
+// Shape check only; the kernel canonicalizes case and aliases such as "codex".
+const PROVIDER_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const RENDERER_METHODS = new Set([
   "thread/start", "thread/list", "thread/read", "thread/resume", "thread/fork",
-  "thread/archive", "thread/unarchive", "thread/name/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
+  "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
   "turn/start", "turn/interrupt", "turn/steer", "turn/read", "turn/continuation/read", "turn/continue", "task/read", "queue/list", "queue/add", "queue/remove",
   "event/list", "model/list", "config/read", "skills/list", "tool/list", "attachment/add", "attachment/read",
   "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "context/edit/read", "context/edit", "approval/list", "approval/respond",
@@ -86,7 +88,7 @@ const RENDERER_METHODS = new Set([
   "runtime/resources/read",
 ]);
 const THREAD_METHODS = new Set([
-  "thread/read", "thread/resume", "thread/fork", "thread/archive", "thread/unarchive", "thread/name/set",
+  "thread/read", "thread/resume", "thread/fork", "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set",
   "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read", "turn/start", "turn/interrupt", "turn/steer", "turn/read", "turn/continuation/read", "turn/continue",
   "task/read", "queue/list", "queue/add", "queue/remove", "context/read", "context/compact/plan", "context/compact/start", "context/compact", "context/edit/read", "context/edit",
 ]);
@@ -156,6 +158,16 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
   }
   if (payload.method === "thread/start" && params?.title !== undefined &&
     (typeof params.title !== "string" || params.title.length > 500)) throw new Error("invalid thread title");
+  if (payload.method === "thread/start" && params?.provider !== undefined &&
+    (typeof params.provider !== "string" || !PROVIDER_PATTERN.test(params.provider))) {
+    throw new Error("invalid thread provider");
+  }
+  if (payload.method === "thread/model/set" && (!params ||
+    Object.keys(params).some(key => !["threadId", "provider", "model"].includes(key)) ||
+    typeof params.provider !== "string" || !PROVIDER_PATTERN.test(params.provider) ||
+    typeof params.model !== "string" || !/^[^\s]{1,200}$/.test(params.model))) {
+    throw new Error("invalid thread model selection");
+  }
   if (payload.method === "approval/respond" && (typeof params?.approvalId !== "string" || !params.approvalId ||
     typeof params.approved !== "boolean")) throw new Error("invalid approval decision");
   if (payload.method === "approval/list" && params && (

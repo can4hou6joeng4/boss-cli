@@ -135,14 +135,18 @@ flowchart LR
 
 | 场景 | 配置入口 |
 | --- | --- |
-| OpenAI Responses | `BOSS_HARNESS_OPENAI_BASE_URL`、`BOSS_HARNESS_OPENAI_API_KEY`；模型取命令行 `--model`，其次为 `BOSS_HARNESS_MODEL`。 |
+| OpenAI Responses | `BOSS_HARNESS_OPENAI_BASE_URL`、`BOSS_HARNESS_OPENAI_API_KEY`；模型由命令行 `--model`、`BOSS_HARNESS_MODEL`、`BOSS_HARNESS_OPENAI_MODEL` 或 Codex profile 提供。 |
 | 本地 Codex profile | 显式 OpenAI 配置缺项时，依次读取 `BOSS_HARNESS_CODEX_CONFIG`、`CODEX_HOME/config.toml`、`~/.codex/config.toml`。 |
-| Anthropic Messages | 使用 `ANTHROPIC_*` 环境变量。 |
+| Anthropic Messages | 使用 `ANTHROPIC_*` 环境变量；`BOSS_HARNESS_ANTHROPIC_MODEL` 可指定默认模型。 |
 | 单次模型传输 | 默认总时限 600 秒；`BOSS_HARNESS_MODEL_REQUEST_TIMEOUT_SECONDS` 可设为 1–3600 秒。 |
 | 招聘 CLI 可执行文件 | 按 `BOSS_CLI_BIN`、并排的 `boss-agent-cli/.venv/bin/boss`、PATH 顺序查找。 |
 | 两类本地状态 | `BOSS_CLI_DATA_DIR` 管理上游登录/平台状态；`BOSS_CLI_HARNESS_DIR` 管理本项目会话。 |
 | steering 投递 | `BOSS_HARNESS_STEERING_MODE` 为 `all`（默认，每个投递点注入全部排队 steering）或 `one-at-a-time`（每次只注入最早一条）。 |
 | 持久附件存储 | 默认最多 512 MiB、4096 个对象；`BOSS_HARNESS_MAX_ATTACHMENT_STORAGE_BYTES` 和 `BOSS_HARNESS_MAX_ATTACHMENT_STORAGE_OBJECTS` 可分别设置正整数上限，实际生效值可由 `config/read` 查询。 |
+
+`BOSS_HARNESS_MODEL` 覆盖进程默认 provider 的模型；多 provider 目录中的其他线路使用对应的 `BOSS_HARNESS_OPENAI_MODEL` 或 `BOSS_HARNESS_ANTHROPIC_MODEL`。OpenAI 的端点、凭据和模型均显式配置齐全时不会读取 Codex profile；缺项时才按上表查找本地配置。
+
+`model/list` 只列出本机已配置且当前可用的 provider/model，不探测远程目录，也不返回端点或凭据。`thread/start` 可为新会话选择 provider/model；空闲会话可通过 `thread/model/set` 切换到目录中的精确组合，选择会写入会话元数据并由 fork 继承。旧会话未记录 provider 时，仅当其模型属于进程默认线路才沿用，否则以 `MODEL_ROUTE_SELECTION_REQUIRED` 拒绝回合，需先 `thread/model/set` 选择线路；切换模型会清除不再适用的推理档位。活动回合、压缩、分支摘要进行中或仍有排队消息（`MODEL_SWITCH_QUEUE_PENDING`）时不可切换；fork 继承会话当前线路，而非来源回合当时的线路；来源回合之后切换过线路的中断回合不再允许续接。能力字段为 `capabilities.sessionModelSelection`。`turn/start.model` 只能覆盖为会话线路本身的模型 ID，跨线路模型以 `MODEL_ROUTE_MISMATCH` 拒绝而不改写；provider 由会话选择决定，大小写与 `codex` 别名以内核规范化为准。
 
 完整的配置优先级、浏览器来源覆盖、职位筛选和沟通列表契约见[使用指南](docs/USER_GUIDE.md)。不要把 API key 或其他凭据写入仓库、配置样例或日志。
 

@@ -67,6 +67,7 @@ export const MODEL_OPTIONS: ModelOption[] = [
 
 export interface SessionItem {
   toolPolicy?: "readOnly" | "approval";
+  provider?: string;
   model?: string;
   reasoningEffort?: string | null;
   /** 内核回报的当前/最近回合，用于界面重载后恢复停止控制。 */
