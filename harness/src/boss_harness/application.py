@@ -2925,6 +2925,7 @@ class ApplicationService:
         source_turn_id = _text(params, "sourceTurnId", maximum=128)
         if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", source_turn_id) is None:
             raise ValueError("sourceTurnId 格式无效")
+        self.sessions.require_thread(thread_id)
         plan = self._turn_continuation_plan(thread_id, source_turn_id)
         result = {"threadId": thread_id, "sourceTurnId": source_turn_id,
                   "eligible": plan["eligible"], "warning": CONTINUATION_WARNING}
@@ -2949,6 +2950,8 @@ class ApplicationService:
         job = None
         with self._follow_up_admission_lock, self.runtimes.lock:
             with self.queue.lock, self.sessions._lock:
+                # Missing/deleted sessions get the stable public error, never a raw path.
+                self.sessions.require_thread(thread_id)
                 if self.sessions.path_for(thread_id).stat().st_size > MAX_CONTINUATION_HISTORY_BYTES:
                     raise RpcError(-32004, "会话历史超过续接读取上限。",
                                    {"code": "CONTINUATION_HISTORY_LIMIT",
