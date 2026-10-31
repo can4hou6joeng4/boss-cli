@@ -75,6 +75,31 @@ _CONTEXT_EDIT_MAX_CHARS = 32_000
 _CONTEXT_EDIT_MAX_BYTES = 128 * 1024
 
 
+
+_EXECUTION_LABELS = {
+    "completed": "已执行成功",
+    "failed": "执行失败",
+    "not_approved": "用户拒绝，未执行",
+    "not_executed": "未执行",
+    "outcome_unknown": "已中断或结果未知，需核对",
+}
+_WRITE_TOOLS = frozenset({"boss_hr_greet"})
+
+
+def _annotate_tool_execution(item: dict[str, Any]) -> dict[str, Any]:
+    """Derive a read-only execution label for summary sources; never persisted."""
+    if item.get("kind") != "toolCall":
+        return item
+    state = item.get("executionState") or item.get("status")
+    write = item.get("toolName") in _WRITE_TOOLS or "approval" in item
+    label = _EXECUTION_LABELS.get(state, "状态不明，不得视为已执行")
+    if write and state == "outcome_unknown":
+        label = "结果未知，需核对"
+    executed = True if state == "completed" else False if state in {"not_approved", "not_executed"} else None
+    return {**item, "summaryExecutionStatus": {
+        "state": state, "label": label, "externalWrite": write, "executed": executed}}
+
+
 class ContextBudgetExceeded(ValueError):
     """A request cannot fit without silently reducing its reserved response."""
 
@@ -865,7 +890,8 @@ class ContextService:
             raise ValueError("压缩来源已变化，请重新读取压缩计划")
         covered = (set(self._checkpoint_source_item_ids(checkpoint["payload"], selected))
                    if checkpoint else set())
-        fresh = [{key: value for key, value in item.items() if key != ANTHROPIC_CONTINUATION_FIELD}
+        fresh = [_annotate_tool_execution({key: value for key, value in item.items()
+                                           if key != ANTHROPIC_CONTINUATION_FIELD})
                  for item in selected if item["id"] not in covered]
         if not fresh and checkpoint is not None:
             raise NoCompactionSource("没有新增可压缩内容")
@@ -889,7 +915,8 @@ class ContextService:
         items, _ = self._compaction_items(thread_id, entries)
         if any(item.get("status") == "running" for item in items if item.get("turnId") in abandoned):
             raise ValueError("被放弃分支仍有未收尾条目")
-        selected = [{key: value for key, value in item.items() if key != ANTHROPIC_CONTINUATION_FIELD}
+        selected = [_annotate_tool_execution({key: value for key, value in item.items()
+                                              if key != ANTHROPIC_CONTINUATION_FIELD})
                     for item in items if item.get("turnId") in abandoned
                     and not item.get("contextEdit", {}).get("excluded")]
         if not selected:
