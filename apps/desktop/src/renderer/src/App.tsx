@@ -14,6 +14,7 @@ import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, typ
 import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn } from "./data/harnessBridge";
 import { reduceHarnessEvent, type HarnessEvent } from "./data/harnessEvents";
 import { HarnessReplica } from "./data/harnessReplica";
+import { reduceModelRetry, settleModelRetryOnTurnEnd, type ModelRetryStatus } from "./data/modelRetry";
 import { toMessage } from "./data/harnessBridge";
 import type { ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-cli/protocol";
 import type { QueueIntent, QueueSubmissionCheck } from "./data/composerDraft";
@@ -47,6 +48,8 @@ export function App(): JSX.Element {
     uncertain?: boolean; response?: TurnContinuationReadResponse; error?: string;
   } | null>(null);
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
+  const [modelRetries, setModelRetries] = useState<Record<string, ModelRetryStatus>>({});
+  const retryTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [error, setError] = useState("");
   const activeRef = useRef<SessionItem | null>(null);
   const runningRef = useRef(new Set<string>());
@@ -80,6 +83,21 @@ export function App(): JSX.Element {
     runningRef.current = next; setRunningThreadIds(next);
     setFolders(previous => previous.map(folder => ({ ...folder, sessions: folder.sessions.map(session => session.id === id ? { ...session, status: running ? "running" : "completed" } : session) })));
   }, []);
+  /** 重试状态只用于观测：按会话保存，回合开始、断连或会话收尾时清理；已恢复的提示短暂停留后自动消失。 */
+  const updateModelRetry = useCallback((id: string, change: (previous: ModelRetryStatus | undefined) => ModelRetryStatus | undefined) => {
+    setModelRetries(previous => {
+      const next = change(previous[id]);
+      if (next === previous[id]) return previous;
+      const copy = { ...previous };
+      if (next) copy[id] = next; else delete copy[id];
+      return copy;
+    });
+  }, []);
+  const clearModelRetry = useCallback((id: string, keep?: (status: ModelRetryStatus) => boolean) => {
+    const timer = retryTimers.current.get(id);
+    if (timer && !keep) { clearTimeout(timer); retryTimers.current.delete(id); }
+    updateModelRetry(id, previous => previous && keep?.(previous) ? previous : undefined);
+  }, [updateModelRetry]);
   const insertSession = useCallback((session: SessionItem) => {
     setFolders(previous => {
       const exists = previous.some(folder => folder.id === session.projectId);
@@ -137,6 +155,7 @@ export function App(): JSX.Element {
       if (["thread/created", "thread/archived", "thread/unarchived", "thread/renamed", "thread/model/updated"].includes(event.method)) { void refresh(); return; }
       if (event.method === "turn/started") {
         lifecycleVersion.current += 1;
+        clearModelRetry(id);
         if (params.turnId) turnIds.current.set(id, params.turnId);
         if (activeRef.current?.id === id) setContinuationCheck(null);
         markRunning(id, true); return;
@@ -145,9 +164,24 @@ export function App(): JSX.Element {
       if (event.method === "approval/requested" && params.approvalId && !params.consequential && params.toolName && rememberedApprovals.current.get(id)?.has(params.toolName)) {
         void respondApproval(params.approvalId, true); return;
       }
+      if (event.method === "model/retryStarted" || event.method === "model/retryEnded") {
+        const receivedAt = Date.now();
+        updateModelRetry(id, previous => reduceModelRetry(previous, event.method, event.params, receivedAt));
+        const timer = retryTimers.current.get(id);
+        if (timer) { clearTimeout(timer); retryTimers.current.delete(id); }
+        if (event.method === "model/retryEnded" && event.params?.success === true) {
+          retryTimers.current.set(id, setTimeout(() => {
+            retryTimers.current.delete(id);
+            updateModelRetry(id, previous => previous?.phase === "recovered" && previous.receivedAt === receivedAt ? undefined : previous);
+          }, 5000));
+        }
+        return;
+      }
       if (event.method === "session/error") { setError(params.message ?? "任务遇到错误，请检查后重试。"); return; }
       if (event.method === "thread/updated") {
         lifecycleVersion.current += 1; markRunning(id, false);
+        // 回合已收尾：等待中的重试不再成立（中断转为“已停止”）；终态说明保留到下一回合、自动消失或手动关闭。
+        updateModelRetry(id, previous => settleModelRetryOnTurnEnd(previous, params.status, Date.now()));
         void replica.resume(id); void refresh(); return;
       }
       updateThread(id, previous => reduceHarnessEvent(previous, event));
@@ -158,6 +192,7 @@ export function App(): JSX.Element {
       const real = snapshot.items.map(toMessage).filter((item): item is MessageItem => item !== null);
       updateThread(id, () => real);
       if (snapshot.activeTurnId) turnIds.current.set(id, snapshot.activeTurnId);
+      else clearModelRetry(id, status => status.phase !== "waiting");
       markRunning(id, Boolean(snapshot.activeTurnId));
     });
     replicaRef.current = replica;
@@ -221,6 +256,8 @@ export function App(): JSX.Element {
       }
       if (event.method === "harness/disconnected") {
         replica.invalidate(); setHarnessUp(false); setContinuationSupported(false); setConfiguredModelLabel(undefined); setModelOptions([]);
+        for (const timer of retryTimers.current.values()) clearTimeout(timer);
+        retryTimers.current.clear(); setModelRetries({});
         setError("本地内核已断开，正在恢复连接；结果未确认的对外操作请先核对平台状态。");
         for (const id of runningRef.current) markRunning(id, false);
         return;
@@ -229,8 +266,11 @@ export function App(): JSX.Element {
     });
     void refresh();
     return () => { cancelled = true; replica.invalidate(); unsubscribe(); if (replicaRef.current === replica) replicaRef.current = null; };
-  }, [markRunning, readContinuationCheck, updateThread]);
-  useEffect(() => () => { for (const timer of timers.current.values()) clearTimeout(timer); }, []);
+  }, [clearModelRetry, markRunning, readContinuationCheck, updateModelRetry, updateThread]);
+  useEffect(() => () => {
+    for (const timer of timers.current.values()) clearTimeout(timer);
+    for (const timer of retryTimers.current.values()) clearTimeout(timer);
+  }, []);
   const handleSelectSession = useCallback((session: SessionItem) => {
     const requestVersion = ++selectionVersion.current;
     activeRef.current = session; setActiveSession(session); setIsHomeView(false); setError("");
@@ -506,6 +546,8 @@ export function App(): JSX.Element {
       sessionReasoning={contextThreadId ? sessionReasoning : undefined}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession}
       continuationCheck={continuationCheck} onContinueInterruptedTurn={handleContinueInterruptedTurn}
+      modelRetry={activeSession && !isHomeView ? modelRetries[activeSession.id] : undefined}
+      onDismissModelRetry={() => { const id = activeRef.current?.id; if (id) clearModelRetry(id); }}
       onInterrupt={handleInterrupt} onApprovalDecision={handleApproval} onStartSessionWithPrompt={handleStartSessionWithPrompt} models={modelOptions} activeModelProvider={activeModelProvider} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel} onSelectModel={handleSelectModel}
       onOpenCockpit={() => setIsCockpitOpen(true)} onOpenSideChat={() => setIsSideChatOpen(previous => !previous)} onOpenRewind={openRewind} onOpenContext={contextThreadId ? contextPanel.open : undefined}
       onOpenShortcuts={() => setIsShortcutsOpen(true)} onReviewDiff={() => setIsDiffModalOpen(true)} onRevertDiff={() => setIsRevertModalOpen(true)} />

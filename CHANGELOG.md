@@ -4,6 +4,7 @@
 
 ### 新增
 
+- 桌面接入模型自动重试观测通知 `model/retryStarted` / `model/retryEnded`：会话区按会话显示「正在自动重试（第 n/m 次）」、按秒倒计时与脱敏失败原因，运行指示改为「等待模型重试…」；成功后短暂显示「已恢复」并自动消失，重试用尽显示最终错误并保留到下一回合或手动关闭。内核在退避期间被停止时不补发 `retryEnded`，桌面在回合以 `interrupted` 收尾时将等待状态收敛为「自动重试已停止」，其他终态直接清除。通知字段经校验与截断后才展示，内核不发送通知时界面不变；不新增 RPC 与预加载接口，不触发任何请求。
 - [PR #109](https://github.com/can4hou6joeng4/boss-cli/pull/109)：参考 Pi 固定提交 `a14cdf90` 的会话级模型切换，`model/list` 列出本机可用线路，新增 `thread/model/set` 与 `thread/model/updated`（`capabilities.sessionModelSelection`）；空闲时才可切换，fork 继承线路，切换后旧中断回合续接被拒绝；回合模型覆盖须属于会话线路，旧会话仅在模型属于默认线路时沿用、否则要求选择线路，有排队消息时拒绝切换。
 - 参考 Pi `packages/ai` 用量字段与 `coding-agent/src/core/cache-stats.ts`：新增只读 `thread/usage/read`（`threadId`、可选 `view` `log`/`branch`、`cursor`、`limit` 1–200，默认 50），按回合汇总已持久的 `model_usage` 记录，另列摘要任务（`context_summary_usage`）与会话合计。只计入类型、范围与 provider 语义可验证的 usage（OpenAI `input` 含缓存读、Anthropic 不含），缺失、类型错误、负数、超大值、内部不一致或全零的记录不计入并按原因计数；provider 未上报的字段（OpenAI 缓存写、Anthropic 推理）返回 `null`，费用无可信价目来源固定为 `null`。读取不写入会话；能力以 `capabilities.threadUsage` 声明，协议仍为 `0.2.0`，旧会话返回空汇总。
 - 参考 Pi `session-manager.ts` 的 `branchWithSummary()`：会话内分支第三步。`thread/leaf/set` 新增可选 `summarize: true`，切换后以既有可取消后台摘要任务（隔离 provider、`context/compact/read|abort`、终态记录上限，事件带 `kind: "branchSummary"`）为被放弃分支（原 leaf 回溯至共同祖先）生成摘要，写入新分支上的 append-only `branch_summary` 条目，在模型上下文中以「被放弃分支摘要」标注（区分平台事实与模型判断、不扩大授权），`context/read` 附 `branchSummaries`。前置检查失败（provider=none 返回 `BRANCH_SUMMARY_MODEL_UNAVAILABLE`、无被放弃回合返回 `BRANCH_SUMMARY_NO_SOURCE`）不切换分支；指针移动后摘要失败或取消不回滚。能力以 `capabilities.sessionBranchSummary` 声明，协议仍为 `0.2.0`，旧会话不变。

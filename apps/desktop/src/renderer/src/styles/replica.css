@@ -374,3 +374,19 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .tool-result-controls button { border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 8px; color: var(--text-primary); background: var(--bg-tertiary); cursor: pointer; }
 .tool-result-controls button:disabled { opacity: .45; cursor: default; }
 .tool-result-segments [role="alert"] { color: var(--accent-error); }
+
+.model-retry-notice { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 2px; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--accent-warning) 35%, var(--border-color)); border-radius: 10px; background: color-mix(in srgb, var(--accent-warning) 6%, transparent); color: var(--text-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.model-retry-notice.recovered { border-color: color-mix(in srgb, var(--accent-green) 35%, var(--border-color)); background: color-mix(in srgb, var(--accent-green) 6%, transparent); }
+.model-retry-notice.failed { border-color: color-mix(in srgb, var(--accent-error) 40%, var(--border-color)); background: color-mix(in srgb, var(--accent-error) 6%, transparent); }
+.model-retry-notice.aborted { border-color: var(--border-color); background: transparent; }
+.model-retry-icon { display: flex; flex: none; padding-top: 2px; color: var(--accent-warning); }
+.model-retry-notice.recovered .model-retry-icon { color: var(--accent-green); }
+.model-retry-notice.failed .model-retry-icon { color: var(--accent-error); }
+.model-retry-notice.aborted .model-retry-icon { color: var(--text-faint); }
+.model-retry-body { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.model-retry-title { color: var(--text-main); font-weight: 500; }
+.model-retry-countdown { color: var(--accent-warning); font-variant-numeric: tabular-nums; }
+.model-retry-detail { color: var(--text-muted); }
+.model-retry-hint { color: var(--text-faint); font-size: 11px; }
+.model-retry-dismiss { display: flex; flex: none; border: 0; background: transparent; color: var(--text-faint); cursor: pointer; padding: 2px; border-radius: 4px; }
+.model-retry-dismiss:hover { color: var(--text-main); background: var(--btn-ghost-hover); }

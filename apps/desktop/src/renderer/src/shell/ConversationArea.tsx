@@ -6,6 +6,8 @@ import { RichMarkdown } from "../components/RichMarkdown";
 import { ToolResultDetails } from "../components/ToolResultDetails";
 import { QueuePanel } from "./QueuePanel";
 import { ContextEditDialog } from "../components/ContextEditDialog";
+import { ModelRetryNotice } from "../components/ModelRetryNotice";
+import type { ModelRetryStatus } from "../data/modelRetry";
 import type { ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-cli/protocol";
 import type { ContextEditReadResponse, SkillDescriptor } from "@boss-cli/protocol";
 import { type MessageItem, type ConversationMode } from "../data/mockData";
@@ -26,6 +28,7 @@ export interface ConversationAreaProps {
   continuationCheck?: { threadId: string; sourceTurnId: string; loading: boolean; submitting?: boolean;
     uncertain?: boolean; response?: TurnContinuationReadResponse; error?: string } | null;
   onContinueInterruptedTurn?: () => void;
+  modelRetry?: ModelRetryStatus; onDismissModelRetry?: () => void;
   sessionReasoning?: SessionReasoningControl;
   loginGuide?: React.ReactNode; onLogin?: () => void;
   onApprovalDecision?: (approvalId: string, approved: boolean, toolName: string, remember: boolean) => void | boolean | Promise<boolean>;
@@ -36,7 +39,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   running = false, taskBlocked = false, draft, onDraftChange, models, activeModelProvider, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, sessionReasoning,
   onInterrupt, onApprovalDecision, onReviewDiff, onRevertDiff, onOpenRewind, loginGuide, onLogin,
   skills = [], skillCatalogState = "unavailable", onRefreshSkills,
-  threadId, continuationCheck, onContinueInterruptedTurn,
+  threadId, continuationCheck, onContinueInterruptedTurn, modelRetry, onDismissModelRetry,
 }) => {
   const [messages, setMessages] = useState<MessageItem[]>(initialMessages);
   const [localDraft, setLocalDraft] = useState(createComposerDraft);
@@ -45,6 +48,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const inputText = composerDraft.text;
   const setInputText = (text: string) => updateDraft(previous => withDraftText(previous, text));
   const currentContinuationCheck = continuationCheck?.threadId === threadId ? continuationCheck : null;
+  const currentModelRetry = !simulateLocal && modelRetry?.threadId === threadId ? modelRetry : undefined;
   const [approvalDrafts, setApprovalDrafts] = useState<Record<string, string>>({});
   const [approvalEditing, setApprovalEditing] = useState<Record<string, boolean>>({});
   const [rememberChoices, setRememberChoices] = useState<Record<string, boolean>>({});
@@ -63,7 +67,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const wasAtBottom = useRef(true);
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   useEffect(() => { setMessages(initialMessages); }, [initialMessages]);
-  useEffect(() => { if (wasAtBottom.current) messagesEndRef.current?.scrollIntoView({ behavior: "auto" }); }, [messages, running]);
+  useEffect(() => { if (wasAtBottom.current) messagesEndRef.current?.scrollIntoView({ behavior: "auto" }); }, [messages, running, modelRetry?.phase]);
   const handleScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;
     wasAtBottom.current = target.scrollHeight - target.scrollTop - target.clientHeight < 120;
@@ -588,7 +592,8 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
               </div>
             );
           })}
-          {running && <div className="agent-running-indicator" role="status"><span /><span /><span /><p>正在处理任务…</p></div>}
+          {currentModelRetry && <ModelRetryNotice status={currentModelRetry} onDismiss={onDismissModelRetry} />}
+          {running && <div className="agent-running-indicator" role="status"><span /><span /><span /><p>{currentModelRetry?.phase === "waiting" ? "等待模型重试…" : "正在处理任务…"}</p></div>}
           {!messages.length && !running && <div className="conversation-empty"><IconSparkles size={25} /><p>开始这个聊天</p><span>在下方输入你的招聘任务。</span></div>}
           <div ref={messagesEndRef} />
         </div>
