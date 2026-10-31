@@ -17,6 +17,12 @@ import { HarnessReplica } from "./data/harnessReplica";
 import { toMessage } from "./data/harnessBridge";
 import type { ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-cli/protocol";
 import type { QueueIntent, QueueSubmissionCheck } from "./data/composerDraft";
+
+const LEGACY_ROUTE_HINT = "该旧会话记录的模型不属于默认线路，请先在模型菜单中选择线路后再发送。";
+function legacyRouteMismatch(session: { provider?: string; model?: string }, defaultModel: { provider: string; model: string } | null): boolean {
+  return !session.provider && !!session.model && !!defaultModel && session.model !== defaultModel.model;
+}
+
 export function App(): JSX.Element {
   const [isDark, setIsDark] = useState(() => {
     try { const saved = localStorage.getItem("boss-cli.ui.theme"); if (saved) return saved === "dark"; } catch {}
@@ -228,11 +234,12 @@ export function App(): JSX.Element {
   const handleSelectSession = useCallback((session: SessionItem) => {
     const requestVersion = ++selectionVersion.current;
     activeRef.current = session; setActiveSession(session); setIsHomeView(false); setError("");
+    if (legacyRouteMismatch(session, defaultModel)) setError(LEGACY_ROUTE_HINT);
     const provider = session.provider ?? defaultModel?.provider ?? activeModelProvider;
     const model = session.model ?? (provider === defaultModel?.provider ? defaultModel.model : undefined)
       ?? modelOptions.find(candidate => candidate.provider === provider)?.id ?? activeModelId;
     setActiveModelProvider(provider); setActiveModelId(model);
-    setConfiguredModelLabel(`${provider} · ${model}`);
+    setConfiguredModelLabel(legacyRouteMismatch(session, defaultModel) ? `需选择线路 · ${model}` : `${provider} · ${model}`);
     setQueueItems([]);
     void readContinuationCheck(session);
     if (window.innerWidth < 700) setIsSidebarOpen(false);
@@ -253,7 +260,9 @@ export function App(): JSX.Element {
           ?? modelOptions.find(candidate => candidate.provider === provider)?.id ?? activeModelId;
         const updated = { ...session, provider: snapshot.thread.provider, model: snapshot.thread.model };
         activeRef.current = updated; setActiveSession(updated);
-        setActiveModelProvider(provider); setActiveModelId(model); setConfiguredModelLabel(`${provider} · ${model}`);
+        const needsRoute = legacyRouteMismatch(updated, defaultModel);
+        if (needsRoute) setError(LEGACY_ROUTE_HINT);
+        setActiveModelProvider(provider); setActiveModelId(model); setConfiguredModelLabel(needsRoute ? `需选择线路 · ${model}` : `${provider} · ${model}`);
       }
     });
   }, [activeModelId, activeModelProvider, defaultModel, modelOptions, readContinuationCheck]);
@@ -298,13 +307,13 @@ export function App(): JSX.Element {
         sessions: folder.sessions.map(item => item.id === updated.id ? { ...item, provider, model, reasoningEffort: null } : item),
       })));
       if (selectionVersion.current !== selectionVersionAtStart || activeRef.current?.id !== session.id) return true;
-      activeRef.current = updated; setActiveSession(updated);
+      activeRef.current = updated; setActiveSession(updated); setError("");
       void sessionReasoning.refresh(); void readContinuationCheck(updated);
     }
     setActiveModelProvider(provider); setActiveModelId(model); setConfiguredModelLabel(`${provider} · ${model}`);
     return true;
   }, [harnessUp, isHomeView, readContinuationCheck, sessionReasoning]);
-  const send = useCallback(async (id: string, text: string, real: boolean, model = activeModelId, skillIds: string[] = []): Promise<boolean> => {
+  const send = useCallback(async (id: string, text: string, real: boolean, model: string | undefined, skillIds: string[] = []): Promise<boolean> => {
     if (real && !harnessUp) { setError("本地内核未连接，请重启应用后再发起任务。"); return false; }
     if (runningRef.current.has(id)) { setError("该会话仍在运行，请等待结束或停止后再发送。"); return false; }
     const clientId = crypto.randomUUID();
@@ -326,7 +335,7 @@ export function App(): JSX.Element {
     }
     // 已交给会话并发起请求；回执未知仍不能作为可自动重发的草稿。
     return true;
-  }, [harnessUp, activeModelId, updateThread, markRunning, simulate]);
+  }, [harnessUp, updateThread, markRunning, simulate]);
   const handleStartSessionWithPrompt = useCallback((prompt: string, _domain: string, provider: string, modelId: string, skillIds: string[] = []) => {
     return (async () => {
       if (window.boss && !harnessUp) { setError("本地内核未连接，请检查启动配置并重启应用。"); return null; }
@@ -339,7 +348,7 @@ export function App(): JSX.Element {
         const started = harnessUp ? await startThread(prompt.slice(0, 32), modelId, provider) : { id: "preview-" + Date.now(), title: prompt.slice(0, 32), timeAgo: "刚刚", status: "idle" as const, projectId: MOCK_PROJECT_FOLDERS[0]?.id ?? "preview", provider, model: modelId };
         if (!started) { setError("创建会话失败，请检查本地内核连接后重试。"); return null; }
         insertSession(started);
-        const transferred = await send(started.id, prompt, started.projectId === HARNESS_PROJECT_ID, modelId, skillIds);
+        const transferred = await send(started.id, prompt, started.projectId === HARNESS_PROJECT_ID, started.model ?? modelId, skillIds);
         if (!transferred) return null;
         if (selectionVersion.current === requestVersion) {
           ++selectionVersion.current; activeRef.current = started; setActiveSession(started); setIsHomeView(false);
@@ -353,8 +362,11 @@ export function App(): JSX.Element {
   }, [harnessUp, insertSession, send]);
   const handleSendMessage = useCallback((text: string, skillIds: string[] = []) => {
     const session = activeRef.current; if (!session || !text.trim()) return false;
-    return send(session.id, text, session.projectId === HARNESS_PROJECT_ID, activeModelId, skillIds);
-  }, [send, activeModelId]);
+    if (session.projectId !== HARNESS_PROJECT_ID) return send(session.id, text, false, activeModelId, skillIds);
+    if (legacyRouteMismatch(session, defaultModel)) { setError(LEGACY_ROUTE_HINT); return false; }
+    // 会话线路由内核持久化的 provider/model 决定；只发送会话自身记录的模型，避免切换后携带旧选择。
+    return send(session.id, text, true, session.model, skillIds);
+  }, [send, activeModelId, defaultModel]);
   const handleContinueInterruptedTurn = useCallback(async () => {
     const check = continuationCheck;
     if (!harnessUp || !continuationSupported) {

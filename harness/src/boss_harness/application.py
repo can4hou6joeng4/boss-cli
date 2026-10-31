@@ -1307,6 +1307,12 @@ class ApplicationService:
             if thread.get("archived"):
                 raise ValueError("请先恢复归档会话")
             self._idle(thread_id)
+            with self.queue.lock:
+                pending = [item for item in self.queue.list(thread_id)
+                           if item.get("status") in {"queued", "delivering"}]
+            if pending:
+                raise RpcError(-32004, "会话仍有排队消息，请先处理队列再切换模型线路",
+                               {"code": "MODEL_SWITCH_QUEUE_PENDING", "pending": len(pending)})
             if (thread.get("provider") == provider and thread.get("model") == model
                     and thread.get("reasoningEffort") is None):
                 return {"thread": thread}
@@ -1332,14 +1338,38 @@ class ApplicationService:
             page, result = candidate, candidate_result
         return result
 
+    def _thread_route(self, thread: dict) -> tuple[str, ModelConfig, set[str]]:
+        """Resolve a session route and the model ids it may send; never pair silently."""
+        stored_model = thread.get("model")
+        if thread.get("provider") is None:
+            # Legacy sessions predate provider selection: only the default route's own model is safe.
+            provider = self._canonical_provider(self.config.provider)
+            base = self._configured_route(provider)
+            if stored_model is not None and stored_model != base.model:
+                raise RpcError(-32013, "旧会话的模型不属于默认线路，请先选择模型线路",
+                               {"code": "MODEL_ROUTE_SELECTION_REQUIRED", "provider": None,
+                                "model": stored_model, "defaultProvider": provider,
+                                "recoveryMethod": "thread/model/set"})
+            return provider, base, {base.model}
+        provider = self._canonical_provider(thread["provider"])
+        base = self._configured_route(provider)
+        allowed = {base.model}
+        if isinstance(stored_model, str) and stored_model:
+            allowed.add(stored_model)
+        return provider, base, allowed
+
     def _model_config(self, thread: dict, params: dict) -> ModelConfig:
-        provider = self._canonical_provider(thread.get("provider", self.config.provider))
+        provider, base, allowed = self._thread_route(thread)
         requested_provider = params.get("provider")
         if requested_provider is not None and self._canonical_provider(requested_provider) != provider:
             raise RpcError(-32013, "provider 由会话模型选择决定，不能按回合切换",
                            {"code": "MODEL_PROVIDER_MISMATCH", "provider": provider})
-        base = self._configured_route(provider)
-        model = self._validate_model_id(params.get("model") or thread.get("model") or base.model)
+        stored = thread.get("model")
+        model = self._validate_model_id(params.get("model") or (stored if stored in allowed else None) or base.model)
+        if model not in allowed:
+            raise RpcError(-32013, "回合模型不属于会话模型线路",
+                           {"code": "MODEL_ROUTE_MISMATCH", "provider": provider, "model": model,
+                            "available": sorted(allowed)})
         effort = self._effective_reasoning_effort(thread, provider, model)
         return replace(base, model=model, effort=effort)
 
