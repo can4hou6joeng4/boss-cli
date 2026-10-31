@@ -1424,7 +1424,7 @@ class ApplicationService:
                 else:
                     worker.start()
             if cancelled_before_start:
-                self.events.emit("context/compactionFailed", self._compaction_public(job))
+                self._emit_compaction_terminal(job, "context/compactionFailed")
                 self._finish_compaction(job)
         except Exception as exc:
             if worker.ident is not None:
@@ -1434,7 +1434,7 @@ class ApplicationService:
                 job.update(status="failed", code="COMPACTION_START_FAILED",
                            message=self._compaction_safe_error(job, exc))
             try:
-                self.events.emit("context/compactionFailed", self._compaction_public(job))
+                self._emit_compaction_terminal(job, "context/compactionFailed")
             except Exception:
                 pass
             finally:
@@ -1467,7 +1467,7 @@ class ApplicationService:
         except _CompactionCancelled:
             with self.runtimes.lock:
                 job.update(status="cancelled", code="COMPACTION_CANCELLED", message="摘要已取消")
-            self.events.emit("context/compactionFailed", self._compaction_public(job))
+            self._emit_compaction_terminal(job, "context/compactionFailed")
         except ContextBudgetExceeded as exc:
             self._compaction_failed(job, "COMPACTION_INPUT_TOO_LARGE", exc)
         except _CompactionFailure as exc:
@@ -1484,7 +1484,7 @@ class ApplicationService:
             try:
                 if job["status"] == "completed":
                     try:
-                        self.events.emit("context/compactionCompleted", self._compaction_public(job))
+                        self._emit_compaction_terminal(job, "context/compactionCompleted")
                     except Exception as exc:
                         self._compaction_committed_warning(job, exc)
             finally:
@@ -1717,6 +1717,27 @@ class ApplicationService:
                 if expired is not None and expired["status"] != "running":
                     self._compaction_jobs.pop(expired_id, None)
 
+    def _emit_compaction_terminal(self, job: dict, method: str, params: dict | None = None) -> None:
+        """Publish a terminal notification only once the job no longer owns its thread."""
+        with self.runtimes.lock:
+            payload = self._compaction_public(job) if params is None else params
+            if not job.get("_retired"):
+                job.setdefault("_terminalEvents", []).append((method, payload))
+                return
+        self.events.emit(method, payload)
+
+    def _flush_compaction_terminal(self, job: dict) -> None:
+        with self.runtimes.lock:
+            if not job.get("_retired"):
+                return
+            pending = job.pop("_terminalEvents", None) or []
+        for method, payload in pending:
+            try:
+                self.events.emit(method, payload)
+            except Exception as exc:
+                if method == "context/compactionCompleted":
+                    self._compaction_committed_warning(job, exc)
+
     def _finish_compaction(self, job: dict) -> None:
         wake_follow_up = False
         with self.runtimes.lock:
@@ -1735,6 +1756,7 @@ class ApplicationService:
             # the queue untouched so no new model or external action starts
             # without an explicit retry.
             wake_follow_up = released and job.get("status") == "completed"
+        self._flush_compaction_terminal(job)
         if wake_follow_up:
             try:
                 self._start_follow_up(job["threadId"])
@@ -1754,6 +1776,7 @@ class ApplicationService:
         released = self._compaction_by_thread.get(job["threadId"]) == job["jobId"]
         if self._compaction_by_thread.get(job["threadId"]) == job["jobId"]:
             self._compaction_by_thread.pop(job["threadId"], None)
+        job["_retired"] = True
         self._remember_compaction_terminal(job)
         return released
 
@@ -1762,6 +1785,7 @@ class ApplicationService:
         with self.runtimes.lock:
             released = self._retire_compaction_locked(job)
             wake_follow_up = released and job.get("status") == "completed"
+        self._flush_compaction_terminal(job)
         if wake_follow_up:
             try:
                 self._start_follow_up(job["threadId"])
@@ -1791,7 +1815,7 @@ class ApplicationService:
                 job.update(status="cancelled", code="COMPACTION_CANCELLED", message="摘要已取消")
             else:
                 job.update(status="failed", code=code, message=self._compaction_safe_error(job, error))
-        self.events.emit("context/compactionFailed", self._compaction_public(job))
+        self._emit_compaction_terminal(job, "context/compactionFailed")
 
     def _compaction_committed_warning(self, job: dict, error: Exception | str) -> None:
         with self.runtimes.lock:
@@ -1934,7 +1958,7 @@ class ApplicationService:
                     worker.start()
                     cancelled_before_start = False
             if cancelled_before_start:
-                self.events.emit("context/compactionFailed", self._compaction_public(job))
+                self._emit_compaction_terminal(job, "context/compactionFailed")
                 self._finish_compaction(job)
         except Exception as exc:
             if worker.ident is not None:
@@ -1943,7 +1967,7 @@ class ApplicationService:
                 job.update(status="failed", code="COMPACTION_START_FAILED",
                            message=self._compaction_safe_error(job, exc))
             try:
-                self.events.emit("context/compactionFailed", self._compaction_public(job))
+                self._emit_compaction_terminal(job, "context/compactionFailed")
             finally:
                 self._finish_compaction(job)
             raise RuntimeError(job["message"]) from None
@@ -2150,7 +2174,7 @@ class ApplicationService:
         except _CompactionCancelled:
             with self.runtimes.lock:
                 job.update(status="cancelled", code="COMPACTION_CANCELLED", message="摘要已取消")
-            self.events.emit("context/compactionFailed", self._compaction_public(job))
+            self._emit_compaction_terminal(job, "context/compactionFailed")
         except ContextBudgetExceeded as exc:
             self._compaction_failed(job, "COMPACTION_INPUT_TOO_LARGE", exc)
         except _CompactionFailure as exc:
@@ -2169,8 +2193,8 @@ class ApplicationService:
             try:
                 if job["status"] == "completed":
                     try:
-                        self.events.emit("context/compactionCompleted", self._compaction_public(job))
-                        self.events.emit("context/compacted", {"threadId": thread_id, "jobId": job["jobId"], "origin": "model"})
+                        self._emit_compaction_terminal(job, "context/compactionCompleted")
+                        self._emit_compaction_terminal(job, "context/compacted", {"threadId": thread_id, "jobId": job["jobId"], "origin": "model"})
                     except Exception as exc:
                         self._compaction_committed_warning(job, exc)
             finally:
@@ -2323,8 +2347,8 @@ class ApplicationService:
                         "modelRequestCount": job["modelRequestCount"], "sourceCharacters": len(source),
                         "sourceTextDigest": planner.source_digest},
                     _active_turn_id=turn["turnId"], _on_committed=lambda: job.update(status="completed"))
-            self.events.emit("context/compactionCompleted", self._compaction_public(job))
-            self.events.emit("context/compacted", {"threadId": thread_id, "jobId": job_id,
+            self._emit_compaction_terminal(job, "context/compactionCompleted")
+            self._emit_compaction_terminal(job, "context/compacted", {"threadId": thread_id, "jobId": job_id,
                                                    "origin": "model", "reason": reason})
             with self.runtimes.lock:
                 owned()
@@ -2333,8 +2357,8 @@ class ApplicationService:
             if isinstance(exc, CheckpointCommittedError) and job is not None:
                 self._compaction_committed_warning(job, exc)
                 try:
-                    self.events.emit("context/compactionCompleted", self._compaction_public(job))
-                    self.events.emit("context/compacted", {"threadId": thread_id, "jobId": job["jobId"],
+                    self._emit_compaction_terminal(job, "context/compactionCompleted")
+                    self._emit_compaction_terminal(job, "context/compacted", {"threadId": thread_id, "jobId": job["jobId"],
                                                            "origin": "model", "reason": reason})
                 except Exception:
                     pass
