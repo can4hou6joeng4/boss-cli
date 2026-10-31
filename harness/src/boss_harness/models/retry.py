@@ -59,11 +59,18 @@ def retry_start_event(next_attempt: int, attempts: int, delay: float, message: s
                        delay_ms=max(0, int(round(delay * 1000))), error=message or "模型请求失败")
 
 
+def retry_aborted_before_attempt_event(attempt: int) -> StreamEvent:
+    """退避等待中被取消：本段重试以取消收尾，即将发起的那次尝试并未发出。"""
+    return StreamEvent(type="retry_end", attempt=attempt, reason="aborted",
+                       error=f"已在退避等待中停止，第 {attempt} 次尝试未发起")
+
+
 def with_retry_outcome(events: Iterator[StreamEvent]) -> Iterator[StreamEvent]:
     """在一段已发过 retry_start 的流里补一条 retry_end。
 
     首个非错误事件即视为重试成功；错误事件（含取消）先补失败的 retry_end 再原样转出。
-    没有发生重试的流不会多出任何事件。
+    provider 已自行产出 retry_end（如退避中取消）时不再重复补发。没有发生重试的流不会多出任何事件；
+    调用方提前关闭流时这里无法再产出事件，由回合执行器负责收尾。
     """
     try:
         yield from _retry_outcome(events)

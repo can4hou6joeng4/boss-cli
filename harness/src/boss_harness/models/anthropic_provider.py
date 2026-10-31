@@ -34,6 +34,7 @@ from boss_harness.models.output_budget import (
 )
 from boss_harness.models.provider import ModelConfig
 from boss_harness.models.retry import (
+    retry_aborted_before_attempt_event,
     retry_after_seconds,
     retry_delay,
     retry_settings,
@@ -278,6 +279,8 @@ class AnthropicProvider:
             if self._abort_requested or self._abort_event.is_set():
                 if reservation is not None:
                     reservation.release()
+                if attempt > 1:
+                    yield retry_aborted_before_attempt_event(attempt)
                 yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                 return
             if reservation is not None:
@@ -334,6 +337,7 @@ class AnthropicProvider:
             if self._abort_event.wait(delay):
                 if reservation is not None:
                     reservation.release()
+                yield retry_aborted_before_attempt_event(attempt + 1)
                 yield StreamEvent(type="error", reason="aborted", error="请求已取消")
                 return
 
