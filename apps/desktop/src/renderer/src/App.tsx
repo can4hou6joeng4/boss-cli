@@ -10,6 +10,8 @@ import { UnifiedDiffModal } from "./components/UnifiedDiffModal";
 import { RevertConfirmModal } from "./components/RevertConfirmModal";
 import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
 import { BranchDialog, type BranchTarget } from "./components/BranchDialog";
+import { UsageDialog } from "./components/UsageDialog";
+import { useThreadUsage } from "./data/useThreadUsage";
 import { branchSupport, branchSwitchBlock, useSessionBranches } from "./data/useSessionBranches";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
@@ -80,6 +82,10 @@ export function App(): JSX.Element {
   const contextPanel = useContextPanel(contextThreadId, harnessUp, runningThreadIds);
   const sessionReasoning = useSessionReasoning(contextThreadId, harnessUp);
   const branchCapability = useMemo(() => branchSupport(capabilities), [capabilities?.sessionLeaf, capabilities?.sessionBranchTree, capabilities?.sessionBranchViews, capabilities?.sessionBranchSummary, capabilities?.sessionBranchSummaryRead]);
+  const usageSupported = capabilities?.threadUsage === true;
+  const usageBranchViews = usageSupported && capabilities?.sessionBranchViews === true;
+  const threadUsage = useThreadUsage(contextThreadId, harnessUp, usageSupported, usageBranchViews,
+    Boolean(contextThreadId && runningThreadIds.has(contextThreadId)));
   const sessionBranches = useSessionBranches(contextThreadId, harnessUp, branchCapability,
     id => replicaRef.current?.reload(id));
   const updateThread = useCallback((id: string, change: (previous: MessageItem[]) => MessageItem[]) => {
@@ -586,6 +592,7 @@ export function App(): JSX.Element {
         onCancelSummary: () => { void sessionBranches.cancelSummary(); }, onDismissSummary: sessionBranches.dismissSummaryJob } : undefined}
       onInterrupt={handleInterrupt} onApprovalDecision={handleApproval} onStartSessionWithPrompt={handleStartSessionWithPrompt} models={modelOptions} activeModelProvider={activeModelProvider} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel} onSelectModel={handleSelectModel}
       onOpenCockpit={() => setIsCockpitOpen(true)} onOpenSideChat={() => setIsSideChatOpen(previous => !previous)} onOpenRewind={openRewind} onOpenContext={contextThreadId ? contextPanel.open : undefined}
+      onOpenUsage={usageSupported && contextThreadId && !preview ? threadUsage.open : undefined}
       onOpenShortcuts={() => setIsShortcutsOpen(true)} onReviewDiff={() => setIsDiffModalOpen(true)} onRevertDiff={() => setIsRevertModalOpen(true)} />
     {error && <div className="app-toast" role="alert"><span>{error}</span>{!harnessUp && window.boss && <button onClick={() => { void reconnectHarness(); }}>重新连接</button>}<button onClick={() => setError("")} aria-label="关闭提示"><IconClose size={14} /></button></div>}
     <CockpitModal isOpen={isCockpitOpen} onClose={() => setIsCockpitOpen(false)} />
@@ -609,6 +616,8 @@ export function App(): JSX.Element {
       setIsRevertModalOpen(false);
     }} />
     <KeyboardShortcutsModal isOpen={isShortcutsOpen} onClose={() => setIsShortcutsOpen(false)} />
+    {usageSupported && <UsageDialog isOpen={threadUsage.isOpen && Boolean(contextThreadId)} onClose={threadUsage.close} state={threadUsage.state} messages={messages}
+      branchViews={usageBranchViews} connected={harnessUp} onRefresh={() => { void threadUsage.refresh(); }} onViewChange={threadUsage.setView} />}
     {branchCapability && <BranchDialog isOpen={isBranchesOpen && branchesVisible} onClose={() => setIsBranchesOpen(false)} state={branchState} support={branchCapability}
       messages={messages} block={branchBlock} summaryUnavailable={branchSummaryUnavailable} initialTarget={branchInitialTarget}
       onSwitch={sessionBranches.switchTo} onRefresh={() => { void sessionBranches.refresh(); }} />}

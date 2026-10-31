@@ -98,7 +98,7 @@ function registerIPC(): void {
         request.method === "turn/continuation/read" || request.method === "turn/continue" ||
         request.method === "thread/model/set" || request.method === "thread/leaf/set" ||
         request.method === "thread/leaf/read" || request.method === "thread/branches/list" ||
-        request.method === "thread/branchSummary/read";
+        request.method === "thread/branchSummary/read" || request.method === "thread/usage/read";
       if (preservesRpcError && error instanceof HarnessRpcError && error.code !== -32603) {
         return { __harnessRpcError: { code: error.code, message: error.message, data: error.data } };
       }

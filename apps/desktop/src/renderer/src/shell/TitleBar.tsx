@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { IconPanel, IconPanelRight, IconMore, IconFolder, IconPlus, IconChevronRight, IconCopy, IconHistory, IconSettings, IconEdit, IconPin, IconBranch } from "../components/Icons";
+import { IconPanel, IconPanelRight, IconMore, IconFolder, IconPlus, IconChevronRight, IconCopy, IconHistory, IconSettings, IconEdit, IconPin, IconBranch, IconSliders } from "../components/Icons";
 import { Popover } from "../components/Popover";
 interface Props {
   title: string; hasConversation: boolean; summaryAvailable: boolean; isSidebarOpen: boolean; isSummaryOpen: boolean; canGoBack: boolean; canGoForward: boolean;
@@ -10,6 +10,8 @@ interface Props {
   onOpenContext?: () => void;
   /** 仅在内核声明会话内分支能力时提供。 */
   onOpenBranches?: () => void;
+  /** 仅在内核声明 threadUsage 时提供。 */
+  onOpenUsage?: () => void;
 }
 export function TitleBar(props: Props) {
   const [menu, setMenu] = useState(false);
@@ -50,6 +52,7 @@ export function TitleBar(props: Props) {
           <button disabled={!props.hasConversation} onClick={() => { props.onOpenRewind(); setMenu(false); }}><IconHistory />查看会话回溯</button>
           {props.onOpenContext && <button disabled={!props.hasConversation} onClick={() => { props.onOpenContext?.(); setMenu(false); }}><IconPanelRight />会话上下文</button>}
           {props.onOpenBranches && <button disabled={!props.hasConversation} onClick={() => { props.onOpenBranches?.(); setMenu(false); }}><IconBranch />会话分支</button>}
+          {props.onOpenUsage && <button disabled={!props.hasConversation} onClick={() => { props.onOpenUsage?.(); setMenu(false); }}><IconSliders />会话用量</button>}
           <div className="menu-divider" />
           <button onClick={() => { props.onOpenSettings(); setMenu(false); }}><IconSettings />设置<span className="menu-shortcut">⌘,</span></button>
         </Popover>

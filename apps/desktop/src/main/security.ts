@@ -80,7 +80,7 @@ export function loginCaptureReadiness(url: string, cookies: Record<string, strin
 const PROVIDER_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const RENDERER_METHODS = new Set([
   "thread/start", "thread/list", "thread/read", "thread/resume", "thread/fork",
-  "thread/leaf/read", "thread/leaf/set", "thread/branches/list", "thread/branchSummary/read",
+  "thread/leaf/read", "thread/leaf/set", "thread/branches/list", "thread/branchSummary/read", "thread/usage/read",
   "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
   "turn/start", "turn/interrupt", "turn/steer", "turn/read", "turn/continuation/read", "turn/continue", "task/read", "queue/list", "queue/add", "queue/remove",
   "event/list", "model/list", "config/read", "skills/list", "tool/list", "attachment/add", "attachment/read",
@@ -90,7 +90,7 @@ const RENDERER_METHODS = new Set([
 ]);
 const THREAD_METHODS = new Set([
   "thread/read", "thread/resume", "thread/fork", "thread/leaf/read", "thread/leaf/set", "thread/branches/list",
-  "thread/branchSummary/read", "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set",
+  "thread/branchSummary/read", "thread/usage/read", "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set",
   "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read", "turn/start", "turn/interrupt", "turn/steer", "turn/read", "turn/continuation/read", "turn/continue",
   "task/read", "queue/list", "queue/add", "queue/remove", "context/read", "context/compact/plan", "context/compact/start", "context/compact", "context/edit/read", "context/edit",
 ]);
@@ -139,6 +139,17 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
       typeof params.threadId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(params.threadId) ||
       typeof params.entryId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(params.entryId)) {
       throw new Error("invalid branch summary read");
+    }
+    return { method: payload.method, params };
+  }
+  if (payload.method === "thread/usage/read") {
+    const allowed = new Set(["threadId", "view", "cursor", "limit"]);
+    if (!params || Object.keys(params).some(key => !allowed.has(key)) ||
+      typeof params.threadId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(params.threadId) ||
+      (params.view !== undefined && params.view !== "log" && params.view !== "branch") ||
+      (params.cursor !== undefined && (typeof params.cursor !== "string" || !params.cursor.startsWith("p1_") || params.cursor.length > 4096)) ||
+      (params.limit !== undefined && (typeof params.limit !== "number" || !Number.isSafeInteger(params.limit) || params.limit < 1 || params.limit > 200))) {
+      throw new Error("invalid thread usage read");
     }
     return { method: payload.method, params };
   }
