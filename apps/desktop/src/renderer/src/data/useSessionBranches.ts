@@ -6,10 +6,10 @@ import { abortContextCompaction, listBranchTurns, listThreadBranches, readContex
  * 会话内分支（只在内核同时声明 sessionLeaf / sessionBranchTree / sessionBranchViews 时启用）。
  * 界面只读分支端点与当前分支回合，切换经 thread/leaf/set；摘要任务复用上下文摘要任务的读取与取消。
  */
-export interface BranchSupport { summary: boolean }
+export interface BranchSupport { summary: boolean; /** 可读取被放弃分支摘要正文（sessionBranchSummaryRead）。 */ summaryRead: boolean }
 export function branchSupport(capabilities?: InitializeResponse["capabilities"]): BranchSupport | null {
   if (capabilities?.sessionLeaf !== true || capabilities.sessionBranchTree !== true || capabilities.sessionBranchViews !== true) return null;
-  return { summary: capabilities.sessionBranchSummary === true };
+  return { summary: capabilities.sessionBranchSummary === true, summaryRead: capabilities.sessionBranchSummaryRead === true };
 }
 
 export interface SessionBranchState {

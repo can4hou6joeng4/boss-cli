@@ -35,6 +35,7 @@ export function App(): JSX.Element {
   const [continuationSupported, setContinuationSupported] = useState(false);
   const [capabilities, setCapabilities] = useState<InitializeResponse["capabilities"]>();
   const branchViewsRef = useRef(false);
+  const branchSnapshotsRef = useRef(false);
   const [isBranchesOpen, setIsBranchesOpen] = useState(false);
   const [branchInitialTarget, setBranchInitialTarget] = useState<BranchTarget | null>(null);
   const [isHomeView, setIsHomeView] = useState(true);
@@ -78,7 +79,7 @@ export function App(): JSX.Element {
   const contextThreadId = activeSession?.projectId === HARNESS_PROJECT_ID && !isHomeView ? activeSession.id : null;
   const contextPanel = useContextPanel(contextThreadId, harnessUp, runningThreadIds);
   const sessionReasoning = useSessionReasoning(contextThreadId, harnessUp);
-  const branchCapability = useMemo(() => branchSupport(capabilities), [capabilities?.sessionLeaf, capabilities?.sessionBranchTree, capabilities?.sessionBranchViews, capabilities?.sessionBranchSummary]);
+  const branchCapability = useMemo(() => branchSupport(capabilities), [capabilities?.sessionLeaf, capabilities?.sessionBranchTree, capabilities?.sessionBranchViews, capabilities?.sessionBranchSummary, capabilities?.sessionBranchSummaryRead]);
   const sessionBranches = useSessionBranches(contextThreadId, harnessUp, branchCapability,
     id => replicaRef.current?.reload(id));
   const updateThread = useCallback((id: string, change: (previous: MessageItem[]) => MessageItem[]) => {
@@ -204,7 +205,7 @@ export function App(): JSX.Element {
       if (snapshot.activeTurnId) turnIds.current.set(id, snapshot.activeTurnId);
       else clearModelRetry(id, status => status.phase !== "waiting");
       markRunning(id, Boolean(snapshot.activeTurnId));
-    }, () => branchViewsRef.current);
+    }, () => branchViewsRef.current, () => branchSnapshotsRef.current);
     replicaRef.current = replica;
     function refresh(): Promise<void> {
       if (refreshing) { refreshAgain = true; return refreshing; }
@@ -213,6 +214,7 @@ export function App(): JSX.Element {
         setHarnessUp(status?.running ?? false);
         setContinuationSupported(status?.capabilities?.explicitTurnContinuation === true);
         branchViewsRef.current = branchSupport(status?.capabilities) !== null;
+        branchSnapshotsRef.current = branchViewsRef.current && status?.capabilities?.sessionBranchSnapshots === true;
         setCapabilities(status?.running ? status.capabilities : undefined);
         if (!status?.running) {
           if (status?.state === "disconnected" || status?.state === "stopped") setError(status?.error ?? "本地内核未连接，可重新连接后恢复会话。");
@@ -572,6 +574,7 @@ export function App(): JSX.Element {
       modelRetry={activeSession && !isHomeView ? modelRetries[activeSession.id] : undefined}
       onDismissModelRetry={() => { const id = activeRef.current?.id; if (id) clearModelRetry(id); }}
       sessionBranches={branchesVisible ? { summaries: branchState.summaries, job: branchState.summaryJob, cancelInFlight: branchState.cancelInFlight,
+        summaryRead: branchCapability?.summaryRead === true,
         onOpen: (restartTurnId?: string) => {
           // “从这里重新开始”：回到这条输入所在回合之前（前一回合之后，首回合则为会话开头）。
           const order = [...new Set(messages.flatMap(message => message.turnId ? [message.turnId] : []))];

@@ -41,6 +41,7 @@ import {
   type ContextEditReadResponse,
   type ApprovalRespondResponse,
   type ThreadBranchesListResponse,
+  type ThreadBranchSummaryReadResponse,
   type ThreadLeafState,
   type ThreadLeafSetParams,
   type TurnListResponse,
@@ -112,6 +113,9 @@ export const writeContextEdit = (params: { threadId: string; itemId: string; sou
 export const listThreadBranches = (threadId: string, cursor?: string | null): Promise<ThreadBranchesListResponse> =>
   contextRequest(ClientMethods.threadBranchesList, cursor ? { threadId, cursor, limit: 200 } : { threadId, limit: 200 });
 export const setThreadLeaf = (params: ThreadLeafSetParams): Promise<ThreadLeafState> => contextRequest(ClientMethods.threadLeafSet, params);
+/** 被放弃分支摘要正文；仅在内核声明 sessionBranchSummaryRead 后调用。 */
+export const readBranchSummary = (threadId: string, entryId: string): Promise<ThreadBranchSummaryReadResponse> =>
+  contextRequest(ClientMethods.threadBranchSummaryRead, { threadId, entryId });
 export const listBranchTurns = (threadId: string, cursor?: string | null): Promise<TurnListResponse> =>
   contextRequest(ClientMethods.threadTurnsList, cursor ? { threadId, view: "branch", cursor, limit: 200 } : { threadId, view: "branch", limit: 200 });
 

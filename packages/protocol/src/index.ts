@@ -73,7 +73,11 @@ export interface InitializeResponse {
   capabilities?: { bidirectionalRequests: boolean; eventReplay: boolean; pagination: boolean;
     parallelThreads: boolean; durableApprovals?: boolean; explicitTurnContinuation?: boolean;
     sessionLeaf?: boolean; sessionBranchViews?: boolean; sessionBranchTree?: boolean;
-    sessionBranchSummary?: boolean; threadUsage?: boolean; sessionModelSelection?: boolean };
+    sessionBranchSummary?: boolean; threadUsage?: boolean; sessionModelSelection?: boolean;
+    /** `view: "branch"` 可与 `snapshot: true` / `snapshotId` 同用（冻结分支快照）。 */
+    sessionBranchSnapshots?: boolean;
+    /** 可用 `thread/branchSummary/read` 读取被放弃分支摘要正文。 */
+    sessionBranchSummaryRead?: boolean };
   eventCursor?: string;
 }
 
@@ -90,6 +94,7 @@ export const ClientMethods = {
   threadLeafRead: "thread/leaf/read",
   threadLeafSet: "thread/leaf/set",
   threadBranchesList: "thread/branches/list",
+  threadBranchSummaryRead: "thread/branchSummary/read",
   threadUsageRead: "thread/usage/read",
   threadArchive: "thread/archive",
   threadDelete: "thread/delete",
@@ -422,7 +427,11 @@ export interface ThreadReadParams {
   threadId: string;
   excludeTurns?: boolean;
   snapshot?: boolean;
-  /** 仅在 `capabilities.sessionBranchViews` 为真时可用；`branch` 暂不支持与 `snapshot` 同用。 */
+  /**
+   * 仅在 `capabilities.sessionBranchViews` 为真时可用。`branch` 与 `snapshot` 同用需
+   * `capabilities.sessionBranchSnapshots`：快照绑定视图与当时的 leaf 记录，分页须带同一 `view`；
+   * leaf 移动后旧分支快照的分页与内容读取返回 -32011 `SNAPSHOT_LEAF_CHANGED`，需重新 resume。
+   */
   view?: ThreadReadView;
 }
 
@@ -891,6 +900,22 @@ export interface ContextBranchSummary {
   summaryJobId: string | null;
   characters: number;
 }
+/** `thread/branchSummary/read`；仅在 `capabilities.sessionBranchSummaryRead` 为真时可用，只读当前分支上的摘要。 */
+export interface ThreadBranchSummaryReadParams { threadId: string; entryId: string }
+export interface ThreadBranchSummaryReadResponse extends ContextBranchSummary {
+  threadId: string;
+  /** 模型生成的摘要正文（最多 32000 字符）；不扩大操作授权。 */
+  summary: string;
+  origin: "model";
+  label: string;
+  commonTurnId: string | null;
+  summaryProvider: string | null;
+  summaryModel: string | null;
+  sourceTextDigest: string | null;
+  createdAt: string | null;
+}
+/** 分支快照失效 / 视图不符 / 摘要不存在时的 `error.data.code`（JSON-RPC code -32011）。 */
+export type BranchReadErrorCode = "SNAPSHOT_LEAF_CHANGED" | "SNAPSHOT_VIEW_MISMATCH" | "BRANCH_SUMMARY_NOT_FOUND";
 export type ConnectionTarget = "local" | "model" | "platform";
 export interface ConnectionCheck {
   state: "unchecked" | "checking" | "ready" | "failed" | "blocked" | "disabled";
