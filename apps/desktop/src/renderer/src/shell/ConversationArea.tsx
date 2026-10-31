@@ -19,6 +19,8 @@ import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComp
 /** 会话内分支入口与摘要标注；内核未声明分支能力时不传，界面完全不显示。 */
 export interface SessionBranchesView {
   summaries: ContextBranchSummary[]; job?: ContextCompactJob; cancelInFlight: boolean;
+  /** 内核声明 sessionBranchSummaryRead 时为真：摘要标注可展开读取正文。 */
+  summaryRead?: boolean;
   /** 不带参数打开分支列表；带 turnId 时预选“回到这条输入之前重新开始”。 */
   onOpen: (restartTurnId?: string) => void; onCancelSummary: () => void; onDismissSummary: () => void;
 }
@@ -224,7 +226,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
       {/* 消息滚动流 */}
       <div className="messages-container" ref={scrollerRef} onScroll={handleScroll}>
         <div className="messages-inner">
-          {leadingSummaries.map(summary => <BranchSummaryMarker key={summary.entryId} summary={summary} />)}
+          {leadingSummaries.map(summary => <BranchSummaryMarker key={summary.entryId} summary={summary} threadId={threadId} canRead={sessionBranches?.summaryRead === true} />)}
           {messages.map((item, messageIndex) => <React.Fragment key={item.id}>{(() => {
             if (item.role === "user") {
               return (
@@ -618,7 +620,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                 </div>
               </div>
             );
-          })()}{summariesAfter.get(messageIndex)?.map(summary => <BranchSummaryMarker key={summary.entryId} summary={summary} />)}</React.Fragment>)}
+          })()}{summariesAfter.get(messageIndex)?.map(summary => <BranchSummaryMarker key={summary.entryId} summary={summary} threadId={threadId} canRead={sessionBranches?.summaryRead === true} />)}</React.Fragment>)}
           {!simulateLocal && sessionBranches?.job && <BranchSummaryJobNotice job={sessionBranches.job} cancelInFlight={sessionBranches.cancelInFlight}
             onCancel={sessionBranches.onCancelSummary} onDismiss={sessionBranches.onDismissSummary} />}
           {currentModelRetry && <ModelRetryNotice status={currentModelRetry} onDismiss={onDismissModelRetry} />}

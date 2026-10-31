@@ -1,5 +1,11 @@
 # 上游吸收记录
 
+## 第一百一十二轮：分支视图冻结快照与被放弃分支摘要正文读取
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-manager.ts`：`getBranch()` 自 leaf 回溯返回当前路径上的原始条目（含 `branch_summary` 条目及其 `summary` 正文），`buildSessionContext()` 把摘要正文投影为模型消息；Pi 没有单独的正文读取接口，调用方直接读原始条目。本轮独立实现，不复制 Pi 源码或新增依赖。
+
+适配差异：Pi 在内存中读取会话，没有跨进程分页问题；本项目的桌面经 JSON-RPC 分页读取大会话，原 `view=branch` 只有非冻结分页，与事件游标没有同一切点，运行中打开会把分页期间已持久的增量再重放一次。本轮让 `thread/read` / `thread/resume` 的 `snapshot: true` 可与 `view: "branch"` 同用：沿用既有冻结快照的写入方互斥切点固定会话文件、大小与事件游标，在锁外按同一前缀计算 leaf 投影，只把当前分支的记录写入快照。快照绑定视图与切点上最新的 `leaf` 记录，分页须带同一视图（否则返回 `SNAPSHOT_VIEW_MISMATCH`）。`thread/leaf/set` 移动指针后，绑定旧 leaf 的分支快照（包括锁外构建、随后才注册的）被删除并保留有界墓碑，分页与内容读取稳定返回 -32011 `SNAPSHOT_LEAF_CHANGED`；日志视图快照不受影响。分支投影需读入整个前缀，内存开销与非快照分支读取相同。摘要正文不并入 `context/read`（多条摘要会放大常规读取），而是新增只读 `thread/branchSummary/read`，只返回当前分支上通过校验的摘要，并标注为模型生成。两项能力分别以 `capabilities.sessionBranchSnapshots` / `sessionBranchSummaryRead` 声明，协议仍为 `0.2.0`。
+
 ## 第一百一十一轮：会话级模型线路切换
 
 参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/model-registry.ts`（本机已配置模型目录与可用性）、`model-resolver.ts`（provider/model 精确解析）与 `agent-session.ts`（会话级 `setModel` 追加模型变更记录，后续回合按会话选择发起请求）。本轮独立实现，不复制 Pi 源码或新增依赖。

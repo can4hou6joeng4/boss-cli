@@ -418,5 +418,12 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .branch-summary-icon { display: flex; flex: none; padding-top: 2px; color: var(--accent-green); }
 .branch-summary-title { color: var(--text-main); font-weight: 500; }
 .branch-summary-detail { color: var(--text-faint); font-size: 11px; }
+.branch-summary-main { flex: 1; min-width: 0; }
+.branch-summary-toggle { margin-top: 4px; padding: 0; border: 0; background: none; color: var(--text-muted); font: inherit; font-size: 11px; text-decoration: underline; cursor: pointer; }
+.branch-summary-toggle:hover { color: var(--text-main); }
+.branch-summary-body { margin-top: 6px; padding: 8px 10px; border-radius: 8px; background: var(--bg-sidebar); }
+.branch-summary-label { color: var(--accent-warning); font-size: 11px; font-weight: 500; }
+.branch-summary-text { margin-top: 4px; max-height: 320px; overflow: auto; color: var(--text-main); white-space: pre-wrap; }
+.branch-summary-error { color: var(--accent-error); font-size: 11px; }
 .branch-summary-job .secondary-button { flex: none; padding: 4px 10px; font-size: 11px; }
 @media (max-width: 700px) { .branch-row { flex-direction: column; align-items: stretch; } }

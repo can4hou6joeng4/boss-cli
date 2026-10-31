@@ -2308,8 +2308,8 @@ class SessionStore:
     def read_active_entries(self, thread_id: str) -> list[dict]:
         return self._active_entries(self.read_entries(thread_id))
 
-    def _leaf_state(self, thread_id: str, entries: list[dict]) -> dict:
-        active = self._active_entries(entries)
+    def _leaf_state(self, thread_id: str, entries: list[dict], active: list[dict] | None = None) -> dict:
+        active = self._active_entries(entries) if active is None else active
         turns = self._turns(active, thread_id)
         turn_ids = [turn["turnId"] for turn in turns]
         return {"threadId": thread_id,
@@ -2348,6 +2348,32 @@ class SessionStore:
     def read_leaf(self, thread_id: str) -> dict:
         with self._lock:
             return self._leaf_state(thread_id, self.read_entries(thread_id))
+
+    def branch_snapshot_projection(self, thread_id: str, entries: list[dict], *,
+                                   max_turn_bytes: int = 1024 * 1024) -> dict:
+        """Branch projection of one pinned rollout prefix, for frozen view=branch snapshots.
+
+        keepIds is None when the prefix has no leaf record (the branch equals the
+        log); leafEntryId binds the snapshot to the latest leaf record it saw.
+        Turn metadata matches thread/turns/list view=branch (first page only).
+        """
+        active = self._active_entries(entries)
+        leaf = self._leaf_state(thread_id, entries, active)
+        leaf_entry_id = next((entry["id"] for entry in reversed(entries)
+                              if entry.get("type") == LEAF_ENTRY_TYPE), None)
+        turns = [self._public_turn(turn) for turn in self._turns(active, thread_id)]
+        page: list[dict] = []
+        turn_bytes = 0
+        too_large = False
+        for turn in turns[:50]:
+            turn_bytes += len(_json(turn).encode("utf-8"))
+            if turn_bytes > max_turn_bytes:
+                too_large = True
+                break
+            page.append(turn)
+        return {"leaf": leaf, "leafEntryId": leaf_entry_id,
+                "keepIds": frozenset(entry["id"] for entry in active) if leaf["branched"] else None,
+                "lastTurn": turns[-1] if turns else None, "turns": page, "turnsTooLarge": too_large}
 
     def set_leaf(self, thread_id: str, turn_id: str | None, *, _with_entry_id: bool = False) -> dict:
         """Move the in-session branch pointer to a settled turn (None = before the first turn)."""

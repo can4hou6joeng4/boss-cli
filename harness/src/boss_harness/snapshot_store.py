@@ -12,6 +12,7 @@ from typing import BinaryIO
 import uuid
 
 from boss_harness.private_files import ensure_private_directory, open_private_file, restrict_private_file
+from boss_harness.rpc import RpcError
 from boss_harness.session import MAX_SESSION_LINE_BYTES, _decode_session_record
 
 MAX_SNAPSHOT_RECORD_BYTES = MAX_SESSION_LINE_BYTES
@@ -21,8 +22,39 @@ MAX_SNAPSHOT_BYTES = 256 * 1024 * 1024
 MAX_SNAPSHOT_CACHE_BYTES = 512 * 1024 * 1024
 MAX_SNAPSHOTS = 16
 SNAPSHOT_TTL_SECONDS = 120
+MAX_STALE_SNAPSHOTS = 64
 _CONTEXT_EDIT_MAX_CHARS = 32_000
 _CONTEXT_EDIT_MAX_BYTES = 128 * 1024
+
+
+def snapshot_leaf_changed(snapshot_id: str) -> RpcError:
+    """Stable, recognizable error for a branch snapshot whose leaf moved after it was frozen."""
+    return RpcError(-32011, "会话分支指针已变化，该分支快照已失效；请重新 thread/resume snapshot=true view=branch",
+                    {"code": "SNAPSHOT_LEAF_CHANGED", "snapshotId": snapshot_id,
+                     "recoveryMethod": "thread/resume", "view": "branch", "snapshot": True})
+
+
+def snapshot_view_mismatch(snapshot_id: str, view: str) -> RpcError:
+    return RpcError(-32011, "快照视图与读取视图不一致；分支快照只能用 view=branch 分页，日志快照不能用 view=branch",
+                    {"code": "SNAPSHOT_VIEW_MISMATCH", "snapshotId": snapshot_id, "snapshotView": view})
+
+
+def read_source_entries(source: BinaryIO, size: int) -> list[dict]:
+    """Decode a pinned rollout prefix once (branch projection needs the whole prefix), then rewind."""
+    if size > MAX_SNAPSHOT_SOURCE_BYTES:
+        raise ValueError("会话文件超过冻结快照读取上限")
+    source.seek(0)
+    entries: list[dict] = []
+    try:
+        for line_number, raw in enumerate(_lines(source, size), start=1):
+            if not raw.strip():
+                continue
+            entry = _decode_session_record(raw, line_number=line_number)
+            if entry is not None:
+                entries.append(entry)
+    finally:
+        source.seek(0)
+    return entries
 
 
 class SnapshotBuild:
@@ -171,7 +203,8 @@ class SnapshotBuilder:
                 VALUES(?,?,?) ON CONFLICT(queue_id) DO UPDATE SET payload=excluded.payload""",
                 (queue_id, ordinal, encoded))
 
-    def build(self, source: BinaryIO, size: int, live: dict[str, dict], cancelled) -> int:
+    def build(self, source: BinaryIO, size: int, live: dict[str, dict], cancelled,
+              keep_ids: frozenset[str] | None = None) -> int:
         try:
             if size > MAX_SNAPSHOT_SOURCE_BYTES:
                 raise ValueError("会话文件超过冻结快照读取上限")
@@ -185,6 +218,9 @@ class SnapshotBuilder:
                     continue
                 entry = _decode_session_record(raw, line_number=line_count)
                 if entry is None:
+                    continue
+                if keep_ids is not None and entry.get("id") not in keep_ids:
+                    # Branch view: records outside the frozen leaf projection never enter the snapshot.
                     continue
                 self._entry(entry)
                 pages = self.connection.execute("PRAGMA page_count").fetchone()[0]
@@ -237,6 +273,12 @@ class SnapshotStore:
                     path.unlink(missing_ok=True)
         self._lock = threading.RLock()
         self._snapshots: dict[str, tuple[str, Path, float, int, int]] = {}
+        # snapshotId -> (view, leaf record id frozen with it); "log" snapshots ignore the leaf.
+        self._bindings: dict[str, tuple[str, str | None]] = {}
+        # Latest leaf record id announced per thread since start, and bounded tombstones of
+        # branch snapshots invalidated by a leaf move (snapshotId -> (threadId, expiry)).
+        self._current_leaf: dict[str, str | None] = {}
+        self._stale: dict[str, tuple[str, float]] = {}
         self._active_builds = 0
         self._builds_by_thread: dict[str, set[SnapshotBuild]] = {}
         self._closed = False
@@ -268,17 +310,22 @@ class SnapshotStore:
         self._active_builds -= 1
 
     def _prune_locked(self, now: float) -> None:
+        for key in [key for key, value in self._stale.items() if value[1] <= now]:
+            self._stale.pop(key, None)
         expired = [key for key, value in self._snapshots.items() if value[2] <= now]
         for key in expired:
             _, path, _, _, _ = self._snapshots.pop(key)
+            self._bindings.pop(key, None)
             _remove_snapshot_files(path)
         while len(self._snapshots) > MAX_SNAPSHOTS or sum(value[4] for value in self._snapshots.values()) > MAX_SNAPSHOT_CACHE_BYTES:
             key = next(iter(self._snapshots))
             _, path, _, _, _ = self._snapshots.pop(key)
+            self._bindings.pop(key, None)
             _remove_snapshot_files(path)
 
     def create(self, build: SnapshotBuild, snapshot_id: str, source: BinaryIO, size: int,
-               live: dict[str, dict]) -> tuple[int, int]:
+               live: dict[str, dict], *, keep_ids: frozenset[str] | None = None,
+               view: str = "log", leaf_entry_id: str | None = None) -> tuple[int, int]:
         if build.released:
             raise ValueError("冻结快照构建已结束")
         thread_id = build.thread_id
@@ -289,7 +336,7 @@ class SnapshotStore:
                 if self._closed or build.invalidated or build.released:
                     raise ValueError("会话快照已因删除或关闭而取消")
             builder = SnapshotBuilder(building, thread_id, snapshot_id)
-            builder.build(source, size, live, lambda: self._build_cancelled(build))
+            builder.build(source, size, live, lambda: self._build_cancelled(build), keep_ids)
             count = builder.count
             os.replace(building, final)
             restrict_private_file(final)
@@ -299,15 +346,20 @@ class SnapshotStore:
             with self._lock:
                 if self._closed or build.invalidated or build.released:
                     raise ValueError("会话快照已因删除或关闭而取消")
+                if (view == "branch" and thread_id in self._current_leaf
+                        and self._current_leaf[thread_id] != leaf_entry_id):
+                    raise snapshot_leaf_changed(snapshot_id)
                 self._prune_locked(time.monotonic())
                 while self._snapshots and (
                         len(self._snapshots) >= MAX_SNAPSHOTS
                         or sum(value[4] for value in self._snapshots.values()) + disk_size > MAX_SNAPSHOT_CACHE_BYTES):
                     key = next(iter(self._snapshots))
                     _, path, _, _, _ = self._snapshots.pop(key)
+                    self._bindings.pop(key, None)
                     path.unlink(missing_ok=True)
                 self._snapshots[snapshot_id] = (thread_id, final, time.monotonic() + SNAPSHOT_TTL_SECONDS,
                                                 count, disk_size)
+                self._bindings[snapshot_id] = (view, leaf_entry_id)
             return count, disk_size
         except BaseException:
             _remove_snapshot_files(building)
@@ -330,9 +382,13 @@ class SnapshotStore:
             return value[1], value[3]
 
     def page(self, snapshot_id: str, thread_id: str, offset: int, limit: int,
-             max_payload_bytes: int = 2 * 1024 * 1024) -> tuple[list[tuple[dict, dict | None]], int]:
+             max_payload_bytes: int = 2 * 1024 * 1024, *,
+             view: str = "log") -> tuple[list[tuple[dict, dict | None]], int]:
         with self._lock:
             path, count = self._metadata_locked(snapshot_id, thread_id)
+            bound_view = self._bindings.get(snapshot_id, ("log", None))[0]
+            if bound_view != view:
+                raise snapshot_view_mismatch(snapshot_id, bound_view)
             if offset > count:
                 raise ValueError("条目分页游标超出结果范围")
             connection = sqlite3.connect(path)
@@ -396,6 +452,9 @@ class SnapshotStore:
 
     def _metadata_locked(self, snapshot_id: str, thread_id: str) -> tuple[Path, int]:
         self._prune_locked(time.monotonic())
+        stale = self._stale.get(snapshot_id)
+        if stale is not None and stale[0] == thread_id:
+            raise snapshot_leaf_changed(snapshot_id)
         value = self._snapshots.get(snapshot_id)
         if value is None or value[0] != thread_id:
             raise ValueError("会话快照已过期；请重新 resume")
@@ -404,16 +463,47 @@ class SnapshotStore:
     def delete_snapshot(self, snapshot_id: str) -> None:
         with self._lock:
             value = self._snapshots.pop(snapshot_id, None)
+            self._bindings.pop(snapshot_id, None)
             if value is not None:
                 _remove_snapshot_files(value[1])
+
+    def invalidate_branch(self, thread_id: str, leaf_entry_id: str | None) -> list[str]:
+        """Record the thread's new leaf; branch snapshots frozen at another leaf become stale.
+
+        Stale snapshots are removed from disk but keep a bounded tombstone until
+        their TTL, so later pages and content reads fail with the same
+        SNAPSHOT_LEAF_CHANGED code instead of a generic expiry.  In-flight branch
+        builds compare against the recorded leaf when they register.
+        """
+        with self._lock:
+            self._current_leaf[thread_id] = leaf_entry_id
+            now = time.monotonic()
+            stale = []
+            for key, value in list(self._snapshots.items()):
+                view, leaf = self._bindings.get(key, ("log", None))
+                if value[0] != thread_id or view != "branch" or leaf == leaf_entry_id:
+                    continue
+                self._snapshots.pop(key, None)
+                self._bindings.pop(key, None)
+                _remove_snapshot_files(value[1])
+                self._stale[key] = (thread_id, max(value[2], now + 1))
+                stale.append(key)
+            while len(self._stale) > MAX_STALE_SNAPSHOTS:
+                self._stale.pop(next(iter(self._stale)))
+            return stale
 
     def delete_thread(self, thread_id: str) -> None:
         with self._lock:
             for build in self._builds_by_thread.get(thread_id, ()):
                 build.invalidated = True
+            self._current_leaf.pop(thread_id, None)
+            for key, value in list(self._stale.items()):
+                if value[0] == thread_id:
+                    self._stale.pop(key, None)
             for key, value in list(self._snapshots.items()):
                 if value[0] == thread_id:
                     self._snapshots.pop(key, None)
+                    self._bindings.pop(key, None)
                     _remove_snapshot_files(value[1])
 
     def close(self) -> None:
@@ -425,6 +515,8 @@ class SnapshotStore:
             for _, path, _, _, _ in self._snapshots.values():
                 _remove_snapshot_files(path)
             self._snapshots.clear()
+            self._bindings.clear()
+            self._stale.clear()
             for pattern in (".*.building", ".*.building-journal", ".*.building-wal", ".*.building-shm",
                             "*.sqlite", "*.sqlite-journal", "*.sqlite-wal", "*.sqlite-shm"):
                 for path in self.root.glob(pattern):

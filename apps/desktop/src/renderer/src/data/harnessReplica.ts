@@ -32,9 +32,12 @@ export class HarnessReplica {
   private readonly onSnapshot: (snapshot: ThreadReadResponse) => void;
   /** 内核声明 sessionBranchViews 时为真：已分支的会话改按当前分支（view=branch）读取。 */
   private readonly branchViews: () => boolean;
+  /** 内核另声明 sessionBranchSnapshots 时为真：分支视图也用冻结快照分页，条目与事件游标同一切点。 */
+  private readonly branchSnapshots: () => boolean;
   constructor(api: Api, onEvent: (event: HarnessEvent) => void, onSnapshot: (snapshot: ThreadReadResponse) => void,
-    branchViews: () => boolean = () => false) {
+    branchViews: () => boolean = () => false, branchSnapshots: () => boolean = () => false) {
     this.api = api; this.onEvent = onEvent; this.onSnapshot = onSnapshot; this.branchViews = branchViews;
+    this.branchSnapshots = branchSnapshots;
   }
 
   /** 分支指针移动后重新读取；若已有读取在途，等它结束后再读一次，避免沿用切换前的快照。 */
@@ -44,11 +47,44 @@ export class HarnessReplica {
   }
 
   /**
-   * 已分支会话的当前分支投影。内核暂不支持分支视图的冻结快照，因此优先用一次性的
-   * thread/read（条目与事件游标同锁读取）；响应过大时退回按分支分页读取条目。
+   * 当前分支的冻结快照：thread/resume snapshot=true view=branch 在同一切点固定条目与事件游标，
+   * 分页期间新到的增量只经事件重放应用一次（未分支的会话等同日志快照）。分支指针在分页中移动时
+   * 内核返回 SNAPSHOT_LEAF_CHANGED，这里重新取快照，最多重试两次。
+   */
+  private async frozenBranchSnapshot(threadId: string, current: () => void): Promise<ThreadReadResponse> {
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const snapshot = await this.api.request<ThreadReadResponse>("thread/resume", { threadId, excludeTurns: true, snapshot: true, view: "branch" });
+        current();
+        if (snapshot.view !== "branch" || !snapshot.branch || snapshot.branch.threadId !== threadId || snapshot.thread?.id !== threadId ||
+            typeof snapshot.snapshotId !== "string" || !/^[a-f0-9]{32}$/.test(snapshot.snapshotId)) throw new Error("分支快照响应无效");
+        const snapshotId = snapshot.snapshotId;
+        const items: ThreadItem[] = [];
+        let pageCursor: string | null = null;
+        do {
+          const page: ItemListResponse = await this.api.request("thread/items/list", { threadId, snapshotId, view: "branch", cursor: pageCursor, limit: 100 });
+          current();
+          items.push(...page.items); pageCursor = page.nextCursor;
+        } while (pageCursor);
+        const hydrated: ThreadItem[] = [];
+        for (const item of items) { current(); hydrated.push(await this.resolveItemContent(item, threadId, snapshotId, current)); }
+        snapshot.items = hydrated;
+        return snapshot;
+      } catch (error) {
+        if (attempt >= 2 || !(error instanceof Error) || !/SNAPSHOT_LEAF_CHANGED|分支指针已变化/.test(error.message)) throw error;
+        current();
+      }
+    }
+  }
+
+  /**
+   * 已分支会话的当前分支投影。内核声明 sessionBranchSnapshots 时走冻结快照；更早的内核
+   * 优先用一次性的 thread/read（条目与事件游标同锁读取），响应过大时退回按分支分页读取条目
+   * （该兼容路径无冻结切点，运行中打开可能短暂重复流式内容，回合结束后重新读取会纠正）。
    */
   private async branchSnapshot(threadId: string, current: () => void): Promise<ThreadReadResponse | null> {
     if (!this.branchViews()) return null;
+    if (this.branchSnapshots()) return this.frozenBranchSnapshot(threadId, current);
     const probe = await this.api.request<ThreadReadResponse>("thread/read", { threadId, excludeTurns: true, view: "branch" });
     current();
     if (probe.view !== "branch" || !probe.branch || probe.branch.threadId !== threadId) throw new Error("分支视图响应无效");

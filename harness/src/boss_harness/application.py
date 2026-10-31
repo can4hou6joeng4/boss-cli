@@ -45,7 +45,7 @@ from boss_harness.session import (BRANCH_SUMMARY_ENTRY_TYPE, CheckpointCommitted
                                   SessionSizeLimitExceeded, SessionStore, ThreadNotFound,
                                   ToolRevisionPersistenceError,
                                   MAX_TOOL_BATCH_CALLS)
-from boss_harness.snapshot_store import SnapshotStore
+from boss_harness.snapshot_store import SnapshotStore, read_source_entries
 from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_chunk, wire_size
 from boss_harness.tool_bundle import ToolBundle
 from boss_harness.summary import BRANCH_SUMMARY_SYSTEM, SUMMARY_MAX_REQUESTS, SummaryPlanner
@@ -467,6 +467,7 @@ class ApplicationService:
             "thread/reasoning/set": self.on_thread_reasoning_set,
             "thread/leaf/read": self.on_thread_leaf_read, "thread/usage/read": self.on_thread_usage_read,
             "thread/branches/list": self.on_thread_branches_list, "thread/leaf/set": self.on_thread_leaf_set,
+            "thread/branchSummary/read": self.on_thread_branch_summary_read,
             "thread/turns/list": self.on_turn_list, "thread/items/list": self.on_items_list,
             "thread/item/result/read": self.on_tool_result_read,
             "thread/item/content/read": self.on_item_content_read,
@@ -548,6 +549,7 @@ class ApplicationService:
                              "durableApprovals": True, "explicitTurnContinuation": True,
                              "sessionLeaf": True, "sessionBranchViews": True,
                              "sessionBranchTree": True, "sessionBranchSummary": True,
+                             "sessionBranchSnapshots": True, "sessionBranchSummaryRead": True,
                              "threadUsage": True, "sessionModelSelection": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
@@ -688,8 +690,6 @@ class ApplicationService:
 
     def _snapshot(self, thread_id: str, *, exclude: bool = False, paged: bool = False,
                   branch: bool = False) -> dict:
-        if paged and branch:
-            raise ValueError("view=branch 暂不支持 snapshot=true，请改用非快照读取")
         if paged:
             build = None
             source = None
@@ -698,7 +698,7 @@ class ApplicationService:
                 with self.events.lock:
                     with self.sessions._lock:
                         thread, snapshot_turns, turns_too_large = self.sessions.snapshot_projection(
-                            thread_id, include_turns=not exclude, max_turn_bytes=MAX_PAGE_BYTES)
+                            thread_id, include_turns=not exclude and not branch, max_turn_bytes=MAX_PAGE_BYTES)
                         if turns_too_large:
                             raise RpcError(-32010, "会话响应过大，请用 thread/resume snapshot=true 后分页读取条目",
                                            {"code": "RESPONSE_TOO_LARGE", "recoveryMethod": "thread/resume",
@@ -707,7 +707,24 @@ class ApplicationService:
                         build = self.snapshots.begin_build(thread_id)
                         source, source_size, event_cursor = self.sessions.open_snapshot_source(thread_id)
                         live = {key: dict(value) for key, value in self.events.live.get(thread_id, {}).items()}
-                item_count, _ = self.snapshots.create(build, snapshot_id, source, source_size, live)
+                branch_extra: dict[str, Any] = {}
+                if branch:
+                    # The leaf projection needs the whole pinned prefix; it is computed
+                    # outside the writer lock from the same inode/size as the build.
+                    projection = self.sessions.branch_snapshot_projection(
+                        thread_id, read_source_entries(source, source_size), max_turn_bytes=MAX_PAGE_BYTES)
+                    if not exclude and projection["turnsTooLarge"]:
+                        raise RpcError(-32010, "会话响应过大，请用 thread/resume snapshot=true 后分页读取条目",
+                                       {"code": "RESPONSE_TOO_LARGE", "recoveryMethod": "thread/resume",
+                                        "snapshot": True})
+                    thread = {**thread, "lastTurn": projection["lastTurn"]}
+                    snapshot_turns = projection["turns"]
+                    branch_extra = {"view": "branch", "branch": projection["leaf"]}
+                    item_count, _ = self.snapshots.create(
+                        build, snapshot_id, source, source_size, live, keep_ids=projection["keepIds"],
+                        view="branch", leaf_entry_id=projection["leafEntryId"])
+                else:
+                    item_count, _ = self.snapshots.create(build, snapshot_id, source, source_size, live)
                 snapshot_queue, queue_too_large = self.snapshots.queue(
                     snapshot_id, thread_id, max_payload_bytes=MAX_PAGE_BYTES)
                 if queue_too_large:
@@ -718,7 +735,7 @@ class ApplicationService:
                           "turns": None if exclude else snapshot_turns,
                           "activeTurnId": job["turnId"] if job else None,
                           "eventCursor": event_cursor, "queue": snapshot_queue,
-                          "snapshotId": snapshot_id, "itemCount": item_count}
+                          "snapshotId": snapshot_id, "itemCount": item_count, **branch_extra}
                 self._check_response_budget(result)
                 return result
             except BaseException:
@@ -1088,8 +1105,6 @@ class ApplicationService:
         offset = 0
         snapshot_id = params.get("snapshotId")
         branch = _branch_view(params)
-        if branch and snapshot_id is not None:
-            raise ValueError("view=branch 暂不支持 snapshotId 分页")
         scope_id = thread_id + (":" + snapshot_id if isinstance(snapshot_id, str) else "") + (":branch" if branch else "")
         cursor = params.get("cursor")
         if cursor is not None:
@@ -1103,7 +1118,8 @@ class ApplicationService:
                 raise ValueError("条目分页游标无效") from None
         item_count = None
         if snapshot_id is not None:
-            items, item_count = self.snapshots.page(snapshot_id, thread_id, offset, limit)
+            items, item_count = self.snapshots.page(snapshot_id, thread_id, offset, limit,
+                                                    view="branch" if branch else "log")
         else:
             entries = self.sessions.read_entries(thread_id)
             if branch:
@@ -1447,6 +1463,36 @@ class ApplicationService:
         self._check_response_budget(result)
         return result
 
+    def on_thread_branch_summary_read(self, params: dict | None) -> dict:
+        """Read-only body of one abandoned-branch summary on the current branch.
+
+        context/read keeps listing metadata only; the text (up to 32000
+        characters) is fetched on demand so existing reads stay bounded.
+        """
+        params = params or {}
+        if set(params) != {"threadId", "entryId"}:
+            raise ValueError("thread/branchSummary/read 只接受 threadId 与 entryId")
+        thread_id = _text(params, "threadId")
+        entry_id = _text(params, "entryId", maximum=128)
+        entries = self.sessions.read_active_entries(thread_id)
+        listed = next((summary for summary in self.context._branch_summaries(thread_id, entries)
+                       if summary["entryId"] == entry_id), None)
+        entry = next((value for value in entries if value.get("id") == entry_id), None) if listed else None
+        if listed is None or entry is None:
+            raise RpcError(-32011, "被放弃分支摘要不存在，或不在当前分支上",
+                           {"code": "BRANCH_SUMMARY_NOT_FOUND", "threadId": thread_id, "entryId": entry_id})
+        payload = entry["payload"]
+        result = {"threadId": thread_id, "entryId": entry_id,
+                  **{key: listed[key] for key in ("targetTurnId", "fromTurnId", "abandonedTurnIds",
+                                                  "summaryJobId", "characters")},
+                  "summary": payload["summary"].strip(), "origin": "model",
+                  "label": "模型生成的被放弃分支摘要",
+                  "commonTurnId": payload.get("commonTurnId"),
+                  "summaryProvider": payload.get("summaryProvider"), "summaryModel": payload.get("summaryModel"),
+                  "sourceTextDigest": payload.get("sourceTextDigest"), "createdAt": entry.get("timestamp")}
+        self._check_response_budget(result)
+        return result
+
     def on_thread_branches_list(self, params: dict | None) -> dict:
         params = params or {}
         if not set(params) <= {"threadId", "cursor", "limit"}:
@@ -1485,8 +1531,11 @@ class ApplicationService:
                 # leaf untouched; once the pointer moves, a later summary failure
                 # or cancellation never rolls it back.
                 prepared = self._prepare_branch_summary(thread_id, turn_id) if summarize else None
-                result = self.sessions.set_leaf(thread_id, turn_id, _with_entry_id=summarize)
+                result = self.sessions.set_leaf(thread_id, turn_id, _with_entry_id=True)
                 leaf_entry_id = result.pop("_leafEntryId", None)
+                if result.get("changed"):
+                    # Branch snapshots frozen at the previous leaf now fail with SNAPSHOT_LEAF_CHANGED.
+                    self.snapshots.invalidate_branch(thread_id, leaf_entry_id)
                 if prepared is not None and leaf_entry_id is not None:
                     job = self._register_branch_summary(thread_id, leaf_entry_id, *prepared)
         if result.get("changed"):
