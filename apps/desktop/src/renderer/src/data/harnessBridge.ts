@@ -45,6 +45,7 @@ import {
   type ThreadLeafState,
   type ThreadLeafSetParams,
   type TurnListResponse,
+  type ThreadUsageReadResponse,
 } from "@boss-cli/protocol";
 import { formatRelativeTime } from "@boss-cli/shared";
 import type { MessageItem, SessionItem } from "./mockData";
@@ -116,6 +117,9 @@ export const setThreadLeaf = (params: ThreadLeafSetParams): Promise<ThreadLeafSt
 /** 被放弃分支摘要正文；仅在内核声明 sessionBranchSummaryRead 后调用。 */
 export const readBranchSummary = (threadId: string, entryId: string): Promise<ThreadBranchSummaryReadResponse> =>
   contextRequest(ClientMethods.threadBranchSummaryRead, { threadId, entryId });
+/** 会话用量：仅在内核声明 threadUsage 后调用；只读，错误保留内核错误码。 */
+export const readThreadUsage = (threadId: string, view: "log" | "branch", cursor?: string | null): Promise<ThreadUsageReadResponse> =>
+  contextRequest(ClientMethods.threadUsageRead, cursor ? { threadId, view, cursor, limit: 200 } : { threadId, view, limit: 200 });
 export const listBranchTurns = (threadId: string, cursor?: string | null): Promise<TurnListResponse> =>
   contextRequest(ClientMethods.threadTurnsList, cursor ? { threadId, view: "branch", cursor, limit: 200 } : { threadId, view: "branch", limit: 200 });
 
