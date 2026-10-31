@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { IconCopy, IconThumbsUp, IconThumbsDown, IconRewind, IconSparkles, IconCheck, IconQuote, IconEdit, IconChevronDown, IconTerminal, IconHelp, IconClose, IconPanel, IconShield } from "../components/Icons";
+import { IconCopy, IconThumbsUp, IconThumbsDown, IconRewind, IconSparkles, IconCheck, IconQuote, IconEdit, IconChevronDown, IconTerminal, IconHelp, IconClose, IconPanel, IconShield, IconBranch } from "../components/Icons";
 import { DiffCard } from "./DiffCard";
 import { Composer } from "./Composer";
 import { RichMarkdown } from "../components/RichMarkdown";
@@ -7,14 +7,21 @@ import { ToolResultDetails } from "../components/ToolResultDetails";
 import { QueuePanel } from "./QueuePanel";
 import { ContextEditDialog } from "../components/ContextEditDialog";
 import { ModelRetryNotice } from "../components/ModelRetryNotice";
+import { BranchSummaryJobNotice, BranchSummaryMarker } from "../components/BranchSummaryNotice";
 import type { ModelRetryStatus } from "../data/modelRetry";
 import type { ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-cli/protocol";
-import type { ContextEditReadResponse, SkillDescriptor } from "@boss-cli/protocol";
+import type { ContextBranchSummary, ContextCompactJob, ContextEditReadResponse, SkillDescriptor } from "@boss-cli/protocol";
 import { type MessageItem, type ConversationMode } from "../data/mockData";
 import type { SkillCatalogState } from "../data/harnessBridge";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type CheckQueueSubmission } from "../data/composerDraft";
 
+/** 会话内分支入口与摘要标注；内核未声明分支能力时不传，界面完全不显示。 */
+export interface SessionBranchesView {
+  summaries: ContextBranchSummary[]; job?: ContextCompactJob; cancelInFlight: boolean;
+  /** 不带参数打开分支列表；带 turnId 时预选“回到这条输入之前重新开始”。 */
+  onOpen: (restartTurnId?: string) => void; onCancelSummary: () => void; onDismissSummary: () => void;
+}
 export interface ConversationAreaProps {
   messages: MessageItem[]; currentMode: ConversationMode; onModeChange: (mode: ConversationMode) => void;
   onSendMessage: ComposerSend;
@@ -29,6 +36,7 @@ export interface ConversationAreaProps {
     uncertain?: boolean; response?: TurnContinuationReadResponse; error?: string } | null;
   onContinueInterruptedTurn?: () => void;
   modelRetry?: ModelRetryStatus; onDismissModelRetry?: () => void;
+  sessionBranches?: SessionBranchesView;
   sessionReasoning?: SessionReasoningControl;
   loginGuide?: React.ReactNode; onLogin?: () => void;
   onApprovalDecision?: (approvalId: string, approved: boolean, toolName: string, remember: boolean) => void | boolean | Promise<boolean>;
@@ -39,7 +47,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   running = false, taskBlocked = false, draft, onDraftChange, models, activeModelProvider, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, sessionReasoning,
   onInterrupt, onApprovalDecision, onReviewDiff, onRevertDiff, onOpenRewind, loginGuide, onLogin,
   skills = [], skillCatalogState = "unavailable", onRefreshSkills,
-  threadId, continuationCheck, onContinueInterruptedTurn, modelRetry, onDismissModelRetry,
+  threadId, continuationCheck, onContinueInterruptedTurn, modelRetry, onDismissModelRetry, sessionBranches,
 }) => {
   const [messages, setMessages] = useState<MessageItem[]>(initialMessages);
   const [localDraft, setLocalDraft] = useState(createComposerDraft);
@@ -142,6 +150,16 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
     onSendMessage(`回答：${picked.join("、")}`);
   };
 
+  // 被放弃分支摘要锚定在目标回合之后；目标为会话开头或不在当前列表时显示在最前。
+  const lastIndexOfTurn = new Map<string, number>();
+  messages.forEach((message, index) => { if (message.turnId) lastIndexOfTurn.set(message.turnId, index); });
+  const summariesAfter = new Map<number, ContextBranchSummary[]>();
+  const leadingSummaries: ContextBranchSummary[] = [];
+  for (const summary of simulateLocal ? [] : sessionBranches?.summaries ?? []) {
+    const index = summary.targetTurnId ? lastIndexOfTurn.get(summary.targetTurnId) : undefined;
+    if (index === undefined) leadingSummaries.push(summary);
+    else summariesAfter.set(index, [...(summariesAfter.get(index) ?? []), summary]);
+  }
   const firstUserMsg = messages.find((m) => m.role === "user")?.content;
   const threadTitle = firstUserMsg
     ? firstUserMsg.length > 28
@@ -206,10 +224,11 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
       {/* 消息滚动流 */}
       <div className="messages-container" ref={scrollerRef} onScroll={handleScroll}>
         <div className="messages-inner">
-          {messages.map((item) => {
+          {leadingSummaries.map(summary => <BranchSummaryMarker key={summary.entryId} summary={summary} />)}
+          {messages.map((item, messageIndex) => <React.Fragment key={item.id}>{(() => {
             if (item.role === "user") {
               return (
-                <div key={item.id} className="msg-row-user" id={"message-" + item.id}>
+                <div className="msg-row-user" id={"message-" + item.id}>
                   <div className="user-bubble">{item.content}</div>
                   {contextEditFor(item) && <span className={`context-edit-badge ${contextEditFor(item)?.excluded ? "excluded" : "replaced"}`}>{contextEditFor(item)?.excluded ? "后续模型上下文已排除；原始记录保留" : "后续模型上下文已替换；原始记录保留"}</span>}
                   <div className="user-msg-footer">
@@ -228,6 +247,14 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                       aria-label="编辑后续模型上下文"
                       onClick={() => setContextEditItemId(item.id)}
                     ><IconEdit size={12} /></button>}
+                    {sessionBranches && item.turnId && <button
+                      className="user-msg-action-btn"
+                      type="button"
+                      title="从这里重新开始（会话内分支，原回合保留）"
+                      aria-label="从这里重新开始"
+                      data-restart-turn={item.turnId}
+                      onClick={() => sessionBranches.onOpen(item.turnId)}
+                    ><IconBranch size={12} /></button>}
                     <button
                       className="user-msg-action-btn"
                       type="button"
@@ -242,7 +269,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
             }
 
             return (
-              <div key={item.id} className="msg-row-agent">
+              <div className="msg-row-agent">
                 {/* 思考过程计时器 */}
                 {item.thinkingTime && (
                   <details className="thinking-block">
@@ -591,7 +618,9 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                 </div>
               </div>
             );
-          })}
+          })()}{summariesAfter.get(messageIndex)?.map(summary => <BranchSummaryMarker key={summary.entryId} summary={summary} />)}</React.Fragment>)}
+          {!simulateLocal && sessionBranches?.job && <BranchSummaryJobNotice job={sessionBranches.job} cancelInFlight={sessionBranches.cancelInFlight}
+            onCancel={sessionBranches.onCancelSummary} onDismiss={sessionBranches.onDismissSummary} />}
           {currentModelRetry && <ModelRetryNotice status={currentModelRetry} onDismiss={onDismissModelRetry} />}
           {running && <div className="agent-running-indicator" role="status"><span /><span /><span /><p>{currentModelRetry?.phase === "waiting" ? "等待模型重试…" : "正在处理任务…"}</p></div>}
           {!messages.length && !running && <div className="conversation-empty"><IconSparkles size={25} /><p>开始这个聊天</p><span>在下方输入你的招聘任务。</span></div>}

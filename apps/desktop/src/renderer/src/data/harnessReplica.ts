@@ -30,8 +30,51 @@ export class HarnessReplica {
   private readonly api: Api;
   private readonly onEvent: (event: HarnessEvent) => void;
   private readonly onSnapshot: (snapshot: ThreadReadResponse) => void;
-  constructor(api: Api, onEvent: (event: HarnessEvent) => void, onSnapshot: (snapshot: ThreadReadResponse) => void) {
-    this.api = api; this.onEvent = onEvent; this.onSnapshot = onSnapshot;
+  /** 内核声明 sessionBranchViews 时为真：已分支的会话改按当前分支（view=branch）读取。 */
+  private readonly branchViews: () => boolean;
+  constructor(api: Api, onEvent: (event: HarnessEvent) => void, onSnapshot: (snapshot: ThreadReadResponse) => void,
+    branchViews: () => boolean = () => false) {
+    this.api = api; this.onEvent = onEvent; this.onSnapshot = onSnapshot; this.branchViews = branchViews;
+  }
+
+  /** 分支指针移动后重新读取；若已有读取在途，等它结束后再读一次，避免沿用切换前的快照。 */
+  reload(threadId: string): Promise<ThreadReadResponse | null> {
+    const existing = this.loading.get(threadId);
+    return existing ? existing.flight.then(() => this.resume(threadId)) : this.resume(threadId);
+  }
+
+  /**
+   * 已分支会话的当前分支投影。内核暂不支持分支视图的冻结快照，因此优先用一次性的
+   * thread/read（条目与事件游标同锁读取）；响应过大时退回按分支分页读取条目。
+   */
+  private async branchSnapshot(threadId: string, current: () => void): Promise<ThreadReadResponse | null> {
+    if (!this.branchViews()) return null;
+    const probe = await this.api.request<ThreadReadResponse>("thread/read", { threadId, excludeTurns: true, view: "branch" });
+    current();
+    if (probe.view !== "branch" || !probe.branch || probe.branch.threadId !== threadId) throw new Error("分支视图响应无效");
+    if (!probe.branch.branched) return null;
+    let snapshot: ThreadReadResponse;
+    try {
+      snapshot = await this.api.request<ThreadReadResponse>("thread/read", { threadId, view: "branch" });
+    } catch (error) {
+      if (!(error instanceof Error) || !/RESPONSE_TOO_LARGE|会话响应过大/.test(error.message)) throw error;
+      current();
+      snapshot = probe;
+      const items: ThreadItem[] = [];
+      let pageCursor: string | null = null;
+      do {
+        const page: ItemListResponse = await this.api.request("thread/items/list", { threadId, view: "branch", cursor: pageCursor, limit: 100 });
+        current();
+        items.push(...page.items); pageCursor = page.nextCursor;
+      } while (pageCursor);
+      snapshot.items = items;
+    }
+    current();
+    if (snapshot.view !== "branch" || snapshot.thread?.id !== threadId) throw new Error("分支视图响应无效");
+    const hydrated: ThreadItem[] = [];
+    for (const item of snapshot.items) { current(); hydrated.push(await this.resolveItemContent(item, threadId, undefined, current)); }
+    snapshot.items = hydrated;
+    return snapshot;
   }
 
   invalidate(): void {
@@ -87,9 +130,12 @@ export class HarnessReplica {
     };
     const flight = Promise.resolve().then(async () => {
       current();
-      const snapshot = await this.api.request<ThreadReadResponse>("thread/resume", { threadId, excludeTurns: true, snapshot: true });
+      const branched = await this.branchSnapshot(threadId, current);
+      const snapshot = branched ?? await this.api.request<ThreadReadResponse>("thread/resume", { threadId, excludeTurns: true, snapshot: true });
       current();
-      if (snapshot.snapshotId) {
+      if (branched) {
+        // Items were read together with the branch projection above.
+      } else if (snapshot.snapshotId) {
         const items: ThreadReadResponse["items"] = [];
         let pageCursor: string | null = null;
         do {

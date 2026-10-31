@@ -390,3 +390,33 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .model-retry-hint { color: var(--text-faint); font-size: 11px; }
 .model-retry-dismiss { display: flex; flex: none; border: 0; background: transparent; color: var(--text-faint); cursor: pointer; padding: 2px; border-radius: 4px; }
 .model-retry-dismiss:hover { color: var(--text-main); background: var(--btn-ghost-hover); }
+
+.branch-dialog { width: min(620px, 94vw); max-height: 88vh; }
+.branch-section { display: flex; flex-direction: column; gap: 8px; }
+.branch-section-heading { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-main); }
+.branch-section-heading span { color: var(--text-faint); font-size: 11px; flex: 1; }
+.branch-section-heading .secondary-button { padding: 4px 10px; font-size: 11px; }
+.branch-section .rewind-points { max-height: 28vh; }
+.branch-row { display: flex; gap: 12px; align-items: center; justify-content: space-between; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--border-color); }
+.branch-row.current { border-color: var(--border-active); }
+.branch-row.selected { background: var(--btn-ghost-hover); border-color: var(--border-active); }
+.branch-row-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.branch-row-copy small { color: var(--text-faint); font-size: 11px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; overflow-wrap: anywhere; }
+.branch-row-copy strong { font-size: 12px; font-weight: 500; color: var(--text-main); overflow-wrap: anywhere; }
+.branch-row .secondary-button { flex: none; padding: 5px 10px; font-size: 11px; }
+.branch-row .secondary-button:disabled { opacity: .45; cursor: default; }
+.branch-badge { font-weight: 500; font-size: 10px; padding: 1px 6px; border-radius: 6px; color: var(--accent-green); border: 1px solid color-mix(in srgb, var(--accent-green) 40%, var(--border-color)); }
+.branch-badge.muted { color: var(--text-faint); border-color: var(--border-color); }
+.dialog-form p.branch-block { color: var(--accent-warning); font-size: 12px; }
+.dialog-form p.branch-error { color: var(--accent-error); font-size: 12px; overflow-wrap: anywhere; }
+.branch-confirm { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 10px; border: 1px solid var(--border-active); }
+.dialog-form p.branch-confirm-target { color: var(--text-main); font-size: 12px; }
+.dialog-form label.branch-summary-option { flex-direction: row; align-items: center; gap: 8px; color: var(--text-main); }
+.dialog-form label.branch-summary-option input { width: auto; }
+.dialog-form p.branch-summary-cost { color: var(--accent-warning); }
+.branch-summary-marker { display: flex; align-items: flex-start; gap: 8px; margin: 6px 0 10px; padding: 9px 12px; border: 1px dashed var(--border-active); border-radius: 10px; color: var(--text-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.branch-summary-icon { display: flex; flex: none; padding-top: 2px; color: var(--accent-green); }
+.branch-summary-title { color: var(--text-main); font-weight: 500; }
+.branch-summary-detail { color: var(--text-faint); font-size: 11px; }
+.branch-summary-job .secondary-button { flex: none; padding: 4px 10px; font-size: 11px; }
+@media (max-width: 700px) { .branch-row { flex-direction: column; align-items: stretch; } }

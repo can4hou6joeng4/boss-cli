@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { AppShell } from "./shell/AppShell";
 import { CockpitModal } from "./components/CockpitModal";
 import { ContextPanel } from "./components/ContextPanel";
@@ -9,6 +9,8 @@ import { RewindOverlay } from "./components/RewindOverlay";
 import { UnifiedDiffModal } from "./components/UnifiedDiffModal";
 import { RevertConfirmModal } from "./components/RevertConfirmModal";
 import { KeyboardShortcutsModal } from "./components/KeyboardShortcutsModal";
+import { BranchDialog, type BranchTarget } from "./components/BranchDialog";
+import { branchSupport, branchSwitchBlock, useSessionBranches } from "./data/useSessionBranches";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
 import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn } from "./data/harnessBridge";
@@ -16,7 +18,7 @@ import { reduceHarnessEvent, type HarnessEvent } from "./data/harnessEvents";
 import { HarnessReplica } from "./data/harnessReplica";
 import { reduceModelRetry, settleModelRetryOnTurnEnd, type ModelRetryStatus } from "./data/modelRetry";
 import { toMessage } from "./data/harnessBridge";
-import type { ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-cli/protocol";
+import type { InitializeResponse, ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-cli/protocol";
 import type { QueueIntent, QueueSubmissionCheck } from "./data/composerDraft";
 
 const LEGACY_ROUTE_HINT = "该旧会话记录的模型不属于默认线路，请先在模型菜单中选择线路后再发送。";
@@ -31,6 +33,10 @@ export function App(): JSX.Element {
   });
   const [harnessUp, setHarnessUp] = useState(false);
   const [continuationSupported, setContinuationSupported] = useState(false);
+  const [capabilities, setCapabilities] = useState<InitializeResponse["capabilities"]>();
+  const branchViewsRef = useRef(false);
+  const [isBranchesOpen, setIsBranchesOpen] = useState(false);
+  const [branchInitialTarget, setBranchInitialTarget] = useState<BranchTarget | null>(null);
   const [isHomeView, setIsHomeView] = useState(true);
   const [isSidebarOpen, setIsSidebarOpen] = useState(() => window.innerWidth >= 700);
   const [folders, setFolders] = useState<ProjectFolder[]>(() => window.boss ? [] : MOCK_PROJECT_FOLDERS.map(folder => ({ ...folder, sessions: folder.sessions.map(session => ({ ...session, status: "completed" })) })));
@@ -72,6 +78,9 @@ export function App(): JSX.Element {
   const contextThreadId = activeSession?.projectId === HARNESS_PROJECT_ID && !isHomeView ? activeSession.id : null;
   const contextPanel = useContextPanel(contextThreadId, harnessUp, runningThreadIds);
   const sessionReasoning = useSessionReasoning(contextThreadId, harnessUp);
+  const branchCapability = useMemo(() => branchSupport(capabilities), [capabilities?.sessionLeaf, capabilities?.sessionBranchTree, capabilities?.sessionBranchViews, capabilities?.sessionBranchSummary]);
+  const sessionBranches = useSessionBranches(contextThreadId, harnessUp, branchCapability,
+    id => replicaRef.current?.reload(id));
   const updateThread = useCallback((id: string, change: (previous: MessageItem[]) => MessageItem[]) => {
     const next = change(cache.current.get(id) ?? []);
     cache.current.set(id, next); versions.current.set(id, (versions.current.get(id) ?? 0) + 1);
@@ -177,6 +186,7 @@ export function App(): JSX.Element {
         }
         return;
       }
+      if (event.method === "thread/leafChanged") { void replica.reload(id); return; }
       if (event.method === "session/error") { setError(params.message ?? "任务遇到错误，请检查后重试。"); return; }
       if (event.method === "thread/updated") {
         lifecycleVersion.current += 1; markRunning(id, false);
@@ -194,7 +204,7 @@ export function App(): JSX.Element {
       if (snapshot.activeTurnId) turnIds.current.set(id, snapshot.activeTurnId);
       else clearModelRetry(id, status => status.phase !== "waiting");
       markRunning(id, Boolean(snapshot.activeTurnId));
-    });
+    }, () => branchViewsRef.current);
     replicaRef.current = replica;
     function refresh(): Promise<void> {
       if (refreshing) { refreshAgain = true; return refreshing; }
@@ -202,6 +212,8 @@ export function App(): JSX.Element {
         const status = await harnessStatus(); if (cancelled) return;
         setHarnessUp(status?.running ?? false);
         setContinuationSupported(status?.capabilities?.explicitTurnContinuation === true);
+        branchViewsRef.current = branchSupport(status?.capabilities) !== null;
+        setCapabilities(status?.running ? status.capabilities : undefined);
         if (!status?.running) {
           if (status?.state === "disconnected" || status?.state === "stopped") setError(status?.error ?? "本地内核未连接，可重新连接后恢复会话。");
           return;
@@ -251,11 +263,11 @@ export function App(): JSX.Element {
       const event = raw as HarnessEvent;
       if (event.method === "harness/connectionStatus") {
         if (event.params?.state === "ready") { setError(""); void refresh(); }
-        else { setHarnessUp(false); setContinuationSupported(false); }
+        else { setHarnessUp(false); setContinuationSupported(false); setCapabilities(undefined); }
         return;
       }
       if (event.method === "harness/disconnected") {
-        replica.invalidate(); setHarnessUp(false); setContinuationSupported(false); setConfiguredModelLabel(undefined); setModelOptions([]);
+        replica.invalidate(); setHarnessUp(false); setContinuationSupported(false); setCapabilities(undefined); setConfiguredModelLabel(undefined); setModelOptions([]);
         for (const timer of retryTimers.current.values()) clearTimeout(timer);
         retryTimers.current.clear(); setModelRetries({});
         setError("本地内核已断开，正在恢复连接；结果未确认的对外操作请先核对平台状态。");
@@ -538,16 +550,37 @@ export function App(): JSX.Element {
     window.addEventListener("keydown", handle); return () => window.removeEventListener("keydown", handle);
   }, [handleNewTask, openRewind]);
   const preview = !window.boss && activeSession?.projectId !== HARNESS_PROJECT_ID;
+  const branchState = sessionBranches.state;
+  const branchSummaryRunning = Boolean(contextThreadId && branchState.summaryJob?.status === "running");
+  const compacting = branchSummaryRunning || contextPanel.state.lifecycleActive === true
+    || (contextPanel.state.job?.status === "running" && contextPanel.state.lifecycleActive !== false);
+  const branchBlock = contextThreadId ? branchSwitchBlock({ connected: harnessUp, running: runningThreadIds.has(contextThreadId),
+    queueItems, compacting, switching: branchState.switching }) : null;
+  const sessionProvider = activeSession?.provider ?? defaultModel?.provider;
+  const branchSummaryUnavailable = !harnessUp ? "本地内核未连接。"
+    : sessionProvider?.toLowerCase() === "none" ? "当前会话的模型线路为 none（未配置模型），无法生成摘要。" : null;
+  const branchesVisible = Boolean(branchCapability && contextThreadId && !preview
+    && (branchState.turnCount > 0 || messages.some(message => message.turnId)));
   return <>
     <AppShell isDark={isDark} onToggleTheme={() => setIsDark(previous => !previous)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => setIsSidebarOpen(previous => !previous)}
       folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} currentMode={currentMode} onModeChange={setCurrentMode}
       onSelectSession={handleSelectSession} onNewTask={handleNewTask} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} onRemoveQueueItem={handleRemoveQueueItem} simulateLocal={preview} harnessUp={harnessUp}
       onCreateConnectionSession={createConnectionSession}
       sessionReasoning={contextThreadId ? sessionReasoning : undefined}
-      running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession}
+      running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession || branchSummaryRunning}
       continuationCheck={continuationCheck} onContinueInterruptedTurn={handleContinueInterruptedTurn}
       modelRetry={activeSession && !isHomeView ? modelRetries[activeSession.id] : undefined}
       onDismissModelRetry={() => { const id = activeRef.current?.id; if (id) clearModelRetry(id); }}
+      sessionBranches={branchesVisible ? { summaries: branchState.summaries, job: branchState.summaryJob, cancelInFlight: branchState.cancelInFlight,
+        onOpen: (restartTurnId?: string) => {
+          // “从这里重新开始”：回到这条输入所在回合之前（前一回合之后，首回合则为会话开头）。
+          const order = [...new Set(messages.flatMap(message => message.turnId ? [message.turnId] : []))];
+          const index = restartTurnId ? order.indexOf(restartTurnId) : -1;
+          setBranchInitialTarget(index < 0 ? null : index === 0 ? { turnId: null, label: "会话开头（重新输入第 1 条消息）", abandons: true }
+            : { turnId: order[index - 1]!, label: `第 ${index} 回合之后（重新输入第 ${index + 1} 条消息）`, abandons: true });
+          sessionBranches.clearSwitchError(); void sessionBranches.refresh(); setIsBranchesOpen(true);
+        },
+        onCancelSummary: () => { void sessionBranches.cancelSummary(); }, onDismissSummary: sessionBranches.dismissSummaryJob } : undefined}
       onInterrupt={handleInterrupt} onApprovalDecision={handleApproval} onStartSessionWithPrompt={handleStartSessionWithPrompt} models={modelOptions} activeModelProvider={activeModelProvider} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel} onSelectModel={handleSelectModel}
       onOpenCockpit={() => setIsCockpitOpen(true)} onOpenSideChat={() => setIsSideChatOpen(previous => !previous)} onOpenRewind={openRewind} onOpenContext={contextThreadId ? contextPanel.open : undefined}
       onOpenShortcuts={() => setIsShortcutsOpen(true)} onReviewDiff={() => setIsDiffModalOpen(true)} onRevertDiff={() => setIsRevertModalOpen(true)} />
@@ -573,5 +606,8 @@ export function App(): JSX.Element {
       setIsRevertModalOpen(false);
     }} />
     <KeyboardShortcutsModal isOpen={isShortcutsOpen} onClose={() => setIsShortcutsOpen(false)} />
+    {branchCapability && <BranchDialog isOpen={isBranchesOpen && branchesVisible} onClose={() => setIsBranchesOpen(false)} state={branchState} support={branchCapability}
+      messages={messages} block={branchBlock} summaryUnavailable={branchSummaryUnavailable} initialTarget={branchInitialTarget}
+      onSwitch={sessionBranches.switchTo} onRefresh={() => { void sessionBranches.refresh(); }} />}
   </>;
 }
