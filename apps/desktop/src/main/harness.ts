@@ -95,7 +95,8 @@ function registerIPC(): void {
     try { return await host.request(request.method, request.params); }
     catch (error) {
       const preservesRpcError = request.method === "context/compact/start" ||
-        request.method === "turn/continuation/read" || request.method === "turn/continue";
+        request.method === "turn/continuation/read" || request.method === "turn/continue" ||
+        request.method === "thread/model/set";
       if (preservesRpcError && error instanceof HarnessRpcError && error.code !== -32603) {
         return { __harnessRpcError: { code: error.code, message: error.message, data: error.data } };
       }

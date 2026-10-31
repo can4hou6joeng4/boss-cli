@@ -295,9 +295,12 @@ export function App(): JSX.Element {
       const selectionVersionAtStart = selectionVersion.current;
       try {
         await setThreadModel(session.id, provider, model);
-      } catch {
+      } catch (error) {
         if (selectionVersion.current === selectionVersionAtStart && activeRef.current?.id === session.id) {
-          setError("模型设置失败；当前会话选择保持不变。");
+          const data = (error as { data?: { code?: unknown } } | null)?.data;
+          setError(data?.code === "MODEL_SWITCH_QUEUE_PENDING"
+            ? "会话仍有排队消息，请先处理或移除队列后再切换模型线路；当前会话选择保持不变。"
+            : "模型设置失败；当前会话选择保持不变。");
         }
         return false;
       }
