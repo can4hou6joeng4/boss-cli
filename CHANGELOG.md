@@ -27,6 +27,7 @@
 
 ### 修复
 
+- 会话用量区分「provider 未上报」与「上报为零」：OpenAI Responses（含 Codex / 中转）终态响应缺少 `usage`、或缺少 `input_tokens` / `output_tokens` 计数时，内核此前按全零记录，`thread/usage/read` 与桌面「会话用量」因此显示「全部为零」。现两条线路（Anthropic 以流内是否收到 input / output 计数判断）均把未上报持久为 `usage: null`，不再伪造全零；真实上报的零仍按原因 `zero` 不计入。`thread/usage/read` 各汇总新增可选 `unreportedRequests`（`unverifiedRequests` 的子集，对应原因 `missing`），`requests = verifiedRequests + unverifiedRequests` 不变；旧会话中已有的全零记录保持原判定，不改写历史。被拒绝的摘要请求即使未上报 usage 也记为一次请求。未上报记录不参与上下文预算基线、压缩保留校准与自动压缩阈值，回退字符估算。桌面「会话用量」在旧内核下行为不变，新内核下单独提示「provider 未上报用量 n 次」，每回合「请求」列标注「未上报 n」并与其他「不计入」分开。协议仍为 `0.2.0`。
 - 模型自动重试通知收尾：凡已发出 `model/retryStarted` 的一段重试，退避中停止、请求进行中停止、provider 关闭或流异常等任一终止路径都恰好补发一次 `model/retryEnded`（`success` / `error` / `aborted`），且在 `turn/completed` / `thread/updated` 之前送达；此前退避中停止时内核丢弃了 provider 给出的收尾，桌面只能按「回合已中断」推断。退避中停止的 `finalError` 说明「第 n 次尝试未发起」；协议仍为 `0.2.0`，`reason` 沿用既有 `aborted`，桌面推断保留为旧内核兜底。
 - 参考 Pi `agent-session.ts` 的模型调用自动重试：Anthropic provider 补齐与 OpenAI 一致的传输重试，仅在尚未产出任何内容事件前对连接失败、HTTP 408/409/429/5xx/529 及流内 overloaded 等瞬时错误重试，尊重 `Retry-After` / `Retry-After-Ms`，硬用量上限、上下文溢出与参数/鉴权错误不重试；每次额外尝试消耗回合共享恢复额度，退避期间取消退还额度。两条线路共用 `BOSS_HARNESS_RETRY_ATTEMPTS` / `BOSS_HARNESS_RETRY_BASE_MS` 设置。
 - 参考 Pi MIT 开放 [Issue #9474](https://github.com/earendil-works/pi/issues/9474) 与本项目 [Issue #237](https://github.com/can4hou6joeng4/boss-cli/issues/237)：每个逻辑业务回合共享默认 8 次的有限恢复额度，覆盖 OpenAI provider 瞬时传输重试、上下文溢出恢复及自动摘要 provider 重试；手动摘要独立计数。取消退避会退还预留额度，耗尽后不发起后续尝试并报告不可重试，运行时预算不写入会话或外部请求。

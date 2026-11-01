@@ -8,6 +8,9 @@ packages/coding-agent/src/core/cache-stats.ts（按 assistant 消息累计、
 
 只有字段类型、取值范围与 provider 语义均可验证的记录才计入合计；
 缺失、类型错误、负数、超大值、内部不一致或全零的记录单独计数并标注原因。
+provider 未上报 usage 的请求持久为 ``usage: null``，除计入原因 ``missing`` 外
+另以 ``unreportedRequests`` 计数，与“上报为全零”（原因 ``zero``，含旧会话里
+由旧版内核把缺失写成全零的记录，不改写历史）区分。
 费用没有可信价目来源，始终为 ``None``。
 """
 from __future__ import annotations
@@ -70,7 +73,8 @@ def verify_usage(provider: Any, usage: Any) -> tuple[dict | None, str | None]:
 
 
 def _empty() -> dict:
-    return {"requests": 0, "verifiedRequests": 0, "unverifiedRequests": 0, "unverifiedReasons": {},
+    return {"requests": 0, "verifiedRequests": 0, "unverifiedRequests": 0, "unreportedRequests": 0,
+            "unverifiedReasons": {},
             "promptTokens": 0, "uncachedInputTokens": 0, "outputTokens": 0,
             "cacheReadTokens": None, "cacheWriteTokens": None, "reasoningTokens": None,
             "costUsd": None, "costSource": "unavailable"}
@@ -85,6 +89,9 @@ def _add(bucket: dict, provider: Any, model: Any, usage: Any) -> None:
     normalized, reason = verify_usage(provider, usage)
     if normalized is None:
         bucket["unverifiedRequests"] += 1
+        if reason == "missing":
+            # unverifiedRequests 的子集：provider 没有给出 usage，不是上报为 0。
+            bucket["unreportedRequests"] += 1
         bucket["unverifiedReasons"][reason] = bucket["unverifiedReasons"].get(reason, 0) + 1
         return
     bucket["verifiedRequests"] += 1
@@ -96,8 +103,8 @@ def _add(bucket: dict, provider: Any, model: Any, usage: Any) -> None:
 
 
 def _merge(total: dict, part: dict) -> None:
-    for key in ("requests", "verifiedRequests", "unverifiedRequests", "promptTokens",
-                "uncachedInputTokens", "outputTokens"):
+    for key in ("requests", "verifiedRequests", "unverifiedRequests", "unreportedRequests",
+                "promptTokens", "uncachedInputTokens", "outputTokens"):
         total[key] += part[key]
     for reason, count in part["unverifiedReasons"].items():
         total["unverifiedReasons"][reason] = total["unverifiedReasons"].get(reason, 0) + count

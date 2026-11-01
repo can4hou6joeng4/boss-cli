@@ -58,6 +58,7 @@ from boss_harness.models.types import (
     ToolCallBlock,
     ToolResultsMessage,
     Usage,
+    token_count,
 )
 
 _FALLBACK_BETA = "server-side-fallback-2026-07-01"
@@ -371,6 +372,8 @@ class AnthropicProvider:
         signature_bytes = 0
         usage = {"input_tokens": 0, "output_tokens": 0,
                  "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        # 实际收到过的 usage 字段；input 或 output 计数缺失时视为 provider 未上报，不伪造 0。
+        usage_seen: set[str] = set()
         stop_reason: str | None = None
         saw_message_stop = False
         request_has_private = any(
@@ -433,16 +436,20 @@ class AnthropicProvider:
                         start_usage = getattr(message, "usage", None)
                         if start_usage is not None:
                             for field in usage:
-                                usage[field] = int(getattr(start_usage, field, 0) or 0)
+                                value = token_count(getattr(start_usage, field, None))
+                                if value is not None:
+                                    usage[field] = value
+                                    usage_seen.add(field)
                     elif kind == "message_delta":
                         delta = getattr(event, "delta", None)
                         stop_reason = getattr(delta, "stop_reason", None)
                         delta_usage = getattr(event, "usage", None)
                         if delta_usage is not None:
                             for field in usage:
-                                value = getattr(delta_usage, field, None)
+                                value = token_count(getattr(delta_usage, field, None))
                                 if value is not None:
-                                    usage[field] = int(value or 0)
+                                    usage[field] = value
+                                    usage_seen.add(field)
                     elif kind == "message_stop":
                         saw_message_stop = True
                     elif kind == "content_block_start":
@@ -681,9 +688,10 @@ class AnthropicProvider:
         message = AssistantMessage(
             blocks=tuple(blocks),  # type: ignore[arg-type]
             stop_reason=mapped_stop_reason,  # type: ignore[arg-type]
-            usage=Usage(input=usage["input_tokens"], output=usage["output_tokens"],
-                        cache_read=usage["cache_read_input_tokens"],
-                        cache_write=usage["cache_creation_input_tokens"]),
+            usage=(Usage(input=usage["input_tokens"], output=usage["output_tokens"],
+                         cache_read=usage["cache_read_input_tokens"],
+                         cache_write=usage["cache_creation_input_tokens"])
+                   if {"input_tokens", "output_tokens"} <= usage_seen else None),
         )
         if str(stop_reason) == "refusal":
             yield StreamEvent(type="error", reason="error", error="模型以安全原因拒绝")
