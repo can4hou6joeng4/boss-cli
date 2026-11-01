@@ -77,7 +77,9 @@ export interface InitializeResponse {
     /** `view: "branch"` 可与 `snapshot: true` / `snapshotId` 同用（冻结分支快照）。 */
     sessionBranchSnapshots?: boolean;
     /** 可用 `thread/branchSummary/read` 读取被放弃分支摘要正文。 */
-    sessionBranchSummaryRead?: boolean };
+    sessionBranchSummaryRead?: boolean;
+    /** 可用只读 `thread/export` 导出脱敏后的会话文本（Markdown / JSON）。 */
+    threadExport?: boolean };
   eventCursor?: string;
 }
 
@@ -96,6 +98,7 @@ export const ClientMethods = {
   threadBranchesList: "thread/branches/list",
   threadBranchSummaryRead: "thread/branchSummary/read",
   threadUsageRead: "thread/usage/read",
+  threadExport: "thread/export",
   threadArchive: "thread/archive",
   threadDelete: "thread/delete",
   threadUnarchive: "thread/unarchive",
@@ -952,6 +955,47 @@ export interface PlatformLoginContext {
 export interface SkillDescriptor { id: string; name: string; description: string; digest: string; bytes: number }
 export interface SkillListResponse { skills: SkillDescriptor[] }
 export interface AttachmentDescriptor { id: string; name: string; digest: string; bytes: number; mediaType: string }
+
+/**
+ * `thread/export` 参数；仅在 `capabilities.threadExport` 为真时可用。只读，不写会话。
+ * 默认脱敏：凭据、令牌、环境变量、本机绝对路径与附件内容不导出，工具结果只保留结构与执行状态，
+ * 候选人个人信息在全文打码；`includeToolResults: true` 才导出工具参数与结果明文（凭据与路径仍脱敏）。
+ * `maxBytes`（65536–786432，默认 524288）按传输转义后的字节计，超限按条目截断并标注。
+ */
+export interface ThreadExportParams {
+  threadId: string;
+  view?: "log" | "branch";
+  format?: "markdown" | "json";
+  includeToolResults?: boolean;
+  maxBytes?: number;
+}
+export interface ThreadExportResponse {
+  threadId: string;
+  view: "log" | "branch";
+  format: "markdown" | "json";
+  mediaType: "text/markdown" | "application/json";
+  /** 不含会话标题，避免文件名携带个人信息。 */
+  suggestedFileName: string;
+  content: string;
+  bytes: number;
+  maxBytes: number;
+  truncated: boolean;
+  turnCount: number;
+  exportedTurnCount: number;
+  toolResults: "omitted" | "included";
+  redactions: { secrets: number; environment: number; paths: number; personalInfo: number };
+}
+/** 桌面「导出会话」经主进程保存对话框写盘；渲染层只拿到文件名与统计，不接触导出正文。 */
+export interface SessionExportSaveRequest {
+  threadId: string;
+  view: "log" | "branch";
+  format: "markdown" | "json";
+  includeToolResults: boolean;
+}
+export type SessionExportSaveResult =
+  | { saved: false; canceled: true }
+  | { saved: true; fileName: string; bytes: number; truncated: boolean; turnCount: number; exportedTurnCount: number;
+      toolResults: "omitted" | "included"; redactions: ThreadExportResponse["redactions"] };
 
 /** `thread/usage/read` 参数；仅在 `capabilities.threadUsage` 为真时可用。 */
 export interface ThreadUsageReadParams { threadId: string; view?: "log" | "branch"; cursor?: string; limit?: number }

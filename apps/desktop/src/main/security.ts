@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { PlatformLoginContext } from "@boss-cli/protocol";
+import type { PlatformLoginContext, SessionExportSaveRequest, ThreadExportResponse } from "@boss-cli/protocol";
 
 /** A native child view must stay inside the renderer's measured content slot. */
 export function loginViewBounds(value: unknown, content: { width: number; height: number }): PlatformLoginContext["bounds"] | null {
@@ -88,6 +88,8 @@ const RENDERER_METHODS = new Set([
   "connection/read", "connection/check",
   "runtime/resources/read",
 ]);
+// "thread/export" is deliberately absent: only the main process requests it (session-export:save),
+// so exported text goes straight from the kernel to the user-chosen file and never reaches the renderer.
 const THREAD_METHODS = new Set([
   "thread/read", "thread/resume", "thread/fork", "thread/leaf/read", "thread/leaf/set", "thread/branches/list",
   "thread/branchSummary/read", "thread/usage/read", "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set",
@@ -275,4 +277,38 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
     }
   }
   return { method: payload.method, params };
+}
+
+/** Renderer request for the main-process save flow; only these four fields reach `thread/export`. */
+export function validateSessionExportRequest(payload: unknown): SessionExportSaveRequest {
+  const allowed = new Set(["threadId", "view", "format", "includeToolResults"]);
+  if (!record(payload) || (Object.getPrototypeOf(payload) !== Object.prototype && Object.getPrototypeOf(payload) !== null) ||
+    Reflect.ownKeys(payload).some(key => typeof key !== "string" || !allowed.has(key)) ||
+    typeof payload.threadId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(payload.threadId) ||
+    (payload.view !== "log" && payload.view !== "branch") ||
+    (payload.format !== "markdown" && payload.format !== "json") ||
+    typeof payload.includeToolResults !== "boolean") {
+    throw new Error("invalid session export request");
+  }
+  return { threadId: payload.threadId, view: payload.view, format: payload.format, includeToolResults: payload.includeToolResults };
+}
+
+const EXPORT_MAX_BYTES = 768 * 1024;
+const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+
+/** Kernel export must match the request before anything is written; the file name never carries a title. */
+export function validateThreadExportResponse(value: unknown, request: SessionExportSaveRequest): ThreadExportResponse {
+  if (!record(value) || value.threadId !== request.threadId || value.view !== request.view || value.format !== request.format ||
+    value.toolResults !== (request.includeToolResults ? "included" : "omitted") ||
+    typeof value.content !== "string" || !value.content || Buffer.byteLength(value.content, "utf8") > EXPORT_MAX_BYTES ||
+    typeof value.truncated !== "boolean" || !count(value.bytes) || !count(value.turnCount) || !count(value.exportedTurnCount) ||
+    !record(value.redactions) || !["secrets", "environment", "paths", "personalInfo"].every(key => count((value.redactions as Record<string, unknown>)[key]))) {
+    throw new Error("kernel returned an unrecognized session export");
+  }
+  return value as unknown as ThreadExportResponse;
+}
+
+/** Save-dialog default name: fixed prefix, thread id, view and extension only. */
+export function sessionExportFileName(request: SessionExportSaveRequest): string {
+  return `boss-cli-session-${request.threadId}-${request.view}.${request.format === "markdown" ? "md" : "json"}`;
 }

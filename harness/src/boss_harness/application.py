@@ -466,6 +466,7 @@ class ApplicationService:
             "thread/reasoning/read": self.on_thread_reasoning_read,
             "thread/reasoning/set": self.on_thread_reasoning_set,
             "thread/leaf/read": self.on_thread_leaf_read, "thread/usage/read": self.on_thread_usage_read,
+            "thread/export": self.on_thread_export,
             "thread/branches/list": self.on_thread_branches_list, "thread/leaf/set": self.on_thread_leaf_set,
             "thread/branchSummary/read": self.on_thread_branch_summary_read,
             "thread/turns/list": self.on_turn_list, "thread/items/list": self.on_items_list,
@@ -550,7 +551,7 @@ class ApplicationService:
                              "sessionLeaf": True, "sessionBranchViews": True,
                              "sessionBranchTree": True, "sessionBranchSummary": True,
                              "sessionBranchSnapshots": True, "sessionBranchSummaryRead": True,
-                             "threadUsage": True, "sessionModelSelection": True},
+                             "threadUsage": True, "sessionModelSelection": True, "threadExport": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -1460,6 +1461,23 @@ class ApplicationService:
             raise ValueError("thread/usage/read 只接受 threadId、view、cursor 与 limit")
         result = self.sessions.usage_page(_text(params, "threadId"), branch=_branch_view(params),
                                           cursor=params.get("cursor"), limit=params.get("limit", 50))
+        self._check_response_budget(result)
+        return result
+
+    def on_thread_export(self, params: dict | None) -> dict:
+        """Read-only redacted session export (Markdown or JSON text); the shell writes the file."""
+        from boss_harness.session_export import DEFAULT_EXPORT_BYTES, export_thread
+        params = params or {}
+        if not set(params) <= {"threadId", "view", "format", "includeToolResults", "maxBytes"}:
+            raise ValueError("thread/export 只接受 threadId、view、format、includeToolResults 与 maxBytes")
+        secrets = [config.api_key.get() for config in (self.config, *self._model_configs.values())
+                   if config.api_key]
+        result = export_thread(self.sessions, _text(params, "threadId"), branch=_branch_view(params),
+                               fmt=params.get("format", "markdown"),
+                               include_tool_results=params.get("includeToolResults", False),
+                               max_bytes=params.get("maxBytes", DEFAULT_EXPORT_BYTES),
+                               server_version=__version__, secrets=secrets,
+                               paths=(self.workspace, self.sessions.root.parent))
         self._check_response_budget(result)
         return result
 
