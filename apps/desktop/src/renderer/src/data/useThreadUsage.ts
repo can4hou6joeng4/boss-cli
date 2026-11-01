@@ -32,9 +32,13 @@ function bucketOf(value: unknown): ThreadUsageBucket | null {
     if (!count(amount)) return null;
     unverifiedReasons[reason.slice(0, 40)] = amount;
   }
+  // 新内核才返回 unreportedRequests（未上报 usage，unverifiedRequests 的子集）；旧内核缺省视为不区分。
+  const unreported = raw.unreportedRequests;
+  if (unreported !== undefined && (!count(unreported) || unreported > (raw.unverifiedRequests as number))) return null;
   const bucket = {} as ThreadUsageBucket;
   for (const key of COUNT_KEYS) bucket[key] = raw[key] as number;
   for (const key of NULLABLE_KEYS) bucket[key] = raw[key] as number | null;
+  if (unreported !== undefined) bucket.unreportedRequests = unreported;
   // 费用不展示：内核当前无可信价目来源，界面固定标注“未计价”。
   return { ...bucket, unverifiedReasons, costUsd: null, costSource: "unavailable" };
 }

@@ -117,6 +117,26 @@ class Usage:
         return self.input + self.output
 
 
+def token_count(value: Any) -> int | None:
+    """把 provider 上报的单个 token 计数转成 int；缺失或无法识别时返回 None。
+
+    不把缺失当成 0：调用方据此区分“provider 未上报”与“上报为 0”。
+    负数与超大值原样保留，交给 usage 校验按原因标注。
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else None
+    if isinstance(value, str):
+        text = value.strip()
+        digits = text[1:] if text.startswith("-") else text
+        if digits.isascii() and digits.isdigit():
+            return int(text)
+    return None
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str

@@ -960,6 +960,11 @@ export interface ThreadUsageBucket {
   requests: number;
   verifiedRequests: number;
   unverifiedRequests: number;
+  /**
+   * provider 未上报 usage 的请求数（`unverifiedRequests` 的子集，对应原因 `missing`），
+   * 与上报为全零（原因 `zero`）区分；旧内核不返回该字段。
+   */
+  unreportedRequests?: number;
   /** 原因如 missing / invalidType / negative / outOfRange / inconsistent / zero / unknownProvider。 */
   unverifiedReasons: Record<string, number>;
   promptTokens: number;

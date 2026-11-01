@@ -15,6 +15,8 @@ const number = (value: number) => value.toLocaleString("zh-CN");
 const amount = (bucket: ThreadUsageBucket, value: number | null) => bucket.verifiedRequests === 0 || value === null ? DASH : number(value);
 const reasons = (bucket: ThreadUsageBucket) => Object.entries(bucket.unverifiedReasons)
   .map(([reason, total]) => `${REASONS[reason] ?? reason} ${number(total)} 次`).join("、");
+/** provider 未上报 usage 的请求数（旧内核不返回时为 0，仍由原因 missing 标注）。 */
+const unreported = (bucket: ThreadUsageBucket) => bucket.unreportedRequests ?? 0;
 function clip(text: string | undefined, fallback: string): string {
   const value = (text ?? "").replace(/\s+/g, " ").trim();
   if (!value) return fallback;
@@ -33,6 +35,7 @@ function Facts({ bucket, label }: { bucket: ThreadUsageBucket; label: string }) 
       <dt>其中推理</dt><dd data-usage-field="reasoningTokens">{amount(bucket, bucket.reasoningTokens)}</dd>
       <dt>费用</dt><dd data-usage-field="cost">未计价</dd>
     </dl>
+    {unreported(bucket) > 0 && <p className="context-panel-note" data-usage-field="unreportedRequests">provider 未上报用量 {number(unreported(bucket))} 次：这些请求没有 token 数据，不按 0 计入。</p>}
     {bucket.unverifiedRequests > 0 && <p className="context-panel-note" data-usage-field="unverifiedReasons">未计入合计：{reasons(bucket)}。</p>}
   </div>;
 }
@@ -79,7 +82,7 @@ export function UsageDialog({ isOpen, onClose, state, messages, branchViews, con
             <tbody>{data.turns.map(turn => <tr key={turn.turnId} data-usage-turn={turn.turnId}>
               <td><span title={inputOf(turn.turnId)}>{turnLabel(turn)}</span><small>{clip(inputOf(turn.turnId), turn.turnId)}</small></td>
               <td><span>{turn.models.join("、") || DASH}</span><small>{turn.providers.join("、")}</small></td>
-              <td data-usage-field="requests">{number(turn.requests)}{turn.unverifiedRequests > 0 && <small title={`未计入：${reasons(turn)}`}>不计入 {number(turn.unverifiedRequests)}</small>}</td>
+              <td data-usage-field="requests">{number(turn.requests)}{unreported(turn) > 0 && <small data-usage-unreported title="provider 未上报用量，不是 0">未上报 {number(unreported(turn))}</small>}{turn.unverifiedRequests > unreported(turn) && <small title={`未计入：${reasons(turn)}`}>不计入 {number(turn.unverifiedRequests - unreported(turn))}</small>}</td>
               <td data-usage-field="promptTokens">{amount(turn, turn.promptTokens)}</td>
               <td data-usage-field="cacheReadTokens">{amount(turn, turn.cacheReadTokens)}</td>
               <td data-usage-field="cacheWriteTokens">{amount(turn, turn.cacheWriteTokens)}</td>

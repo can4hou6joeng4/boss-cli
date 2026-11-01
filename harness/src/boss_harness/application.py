@@ -2260,7 +2260,7 @@ class ApplicationService:
     def _record_compaction_usage(self, job: dict, prepared: ModelRequest, budget: dict,
                                  fragment: Any, planner: SummaryPlanner, index: int,
                                  assistant: AssistantMessage, *, failure_code: str | None = None) -> None:
-        """Persist observed terminal usage even when summary content is rejected."""
+        """Persist terminal usage (null when unreported) even when summary content is rejected."""
         config: ModelConfig = job["config"]
         payload = {
             "jobId": job["jobId"], "provider": config.provider, "model": prepared.model,
@@ -2308,7 +2308,8 @@ class ApplicationService:
                 assistant = self._stream_compaction(job["provider"], prepared, job["cancel"],
                                                     character_limit=planner.character_limit)
             except _CompactionFailure as exc:
-                if exc.assistant is not None and exc.assistant.usage is not None:
+                if exc.assistant is not None:
+                    # 终态响应即使未上报 usage 也记为一次请求（usage 为 null），不伪造全零。
                     self._record_compaction_usage(job, prepared, budget, fragment, planner, index,
                                                   exc.assistant, failure_code=exc.code)
                 raise

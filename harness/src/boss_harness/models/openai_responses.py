@@ -57,6 +57,7 @@ from boss_harness.models.types import (
     ToolCallBlock,
     ToolResultsMessage,
     Usage,
+    token_count,
 )
 
 #: Responses 的终态原因 → 我们的 StopReason。Pi 的 mapStopReason 同此。
@@ -130,18 +131,23 @@ def to_input_items(messages: Sequence[ChatMessage]) -> list[dict[str, Any]]:
     return items
 
 
-def _usage_from_response(response: object) -> Usage:
+def _usage_from_response(response: object) -> Usage | None:
+    """终态响应的 usage；未上报（缺失或缺 input/output 计数）时返回 None，不伪造全零。"""
     usage = getattr(response, "usage", None)
     if usage is None:
-        return Usage()
+        return None
+    input_tokens = token_count(getattr(usage, "input_tokens", None))
+    output_tokens = token_count(getattr(usage, "output_tokens", None))
+    if input_tokens is None or output_tokens is None:
+        return None
     details = getattr(usage, "input_tokens_details", None)
     output_details = getattr(usage, "output_tokens_details", None)
     return Usage(
-        input=int(getattr(usage, "input_tokens", 0) or 0),
-        output=int(getattr(usage, "output_tokens", 0) or 0),
-        cache_read=int(getattr(details, "cached_tokens", 0) or 0) if details is not None else 0,
-        cache_write=int(getattr(details, "cache_write_tokens", 0) or 0) if details is not None else 0,
-        reasoning=int(getattr(output_details, "reasoning_tokens", 0) or 0)
+        input=input_tokens,
+        output=output_tokens,
+        cache_read=(token_count(getattr(details, "cached_tokens", None)) or 0) if details is not None else 0,
+        cache_write=(token_count(getattr(details, "cache_write_tokens", None)) or 0) if details is not None else 0,
+        reasoning=(token_count(getattr(output_details, "reasoning_tokens", None)) or 0)
         if output_details is not None
         else None,
     )
