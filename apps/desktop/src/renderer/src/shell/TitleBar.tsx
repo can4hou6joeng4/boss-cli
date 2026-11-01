@@ -12,6 +12,8 @@ interface Props {
   onOpenBranches?: () => void;
   /** 仅在内核声明 threadUsage 时提供。 */
   onOpenUsage?: () => void;
+  /** 仅在内核声明 threadExport 时提供：经主进程导出脱敏会话，替代本地 Markdown 导出。 */
+  onOpenExport?: () => void;
 }
 export function TitleBar(props: Props) {
   const [menu, setMenu] = useState(false);
@@ -45,7 +47,9 @@ export function TitleBar(props: Props) {
           <button disabled={!props.hasConversation} onClick={() => { props.onRename(); setMenu(false); }}><IconEdit />重命名</button>
           <button disabled={!props.hasConversation} onClick={() => { props.onPin(); setMenu(false); }}><IconPin />{props.isPinned ? "取消置顶" : "置顶聊天"}</button>
           <div className="menu-divider" />
-          <button disabled={!props.hasConversation} onClick={() => { props.onExport(); setMenu(false); }}><IconCopy />导出为 Markdown</button>
+          {props.onOpenExport
+            ? <button disabled={!props.hasConversation} onClick={() => { props.onOpenExport?.(); setMenu(false); }}><IconCopy />导出会话…</button>
+            : <button disabled={!props.hasConversation} onClick={() => { props.onExport(); setMenu(false); }}><IconCopy />导出为 Markdown</button>}
           <button data-menu-keep-open disabled={!props.hasConversation || copyState === "pending"} onClick={() => { void copyTitle(); }}><IconCopy />{copyState === "pending" ? "正在复制…" : copyState === "copied" ? "已复制标题" : copyState === "failed" ? "复制失败，点击重试" : "复制聊天标题"}</button>
           {copyState === "copied" && <div className="menu-note" role="status">聊天标题已复制</div>}
           {copyState === "failed" && <div className="menu-note" role="status">无法访问剪贴板，请检查权限后重试。</div>}
