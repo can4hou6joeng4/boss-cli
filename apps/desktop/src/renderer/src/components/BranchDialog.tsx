@@ -35,6 +35,7 @@ export function BranchDialog({ isOpen, onClose, state, support, messages, block,
   if (!isOpen) return null;
   const inputOf = (turnId: string) => messages.find(message => message.role === "user" && message.turnId === turnId)?.content;
   const turns = state.turns.filter(turn => isSettledTurn(turn.status));
+  const leafHidden = state.turnsTruncated && state.leafTurnId !== null && !state.turns.some(turn => turn.turnId === state.leafTurnId);
   const endpointTarget = (endpoint: ThreadBranchEndpoint): Target => ({ turnId: endpoint.turnId,
     label: `分支端点「${clip(endpoint.inputPreview, "无文本输入")}」`, abandons: !endpoint.containsLeaf });
   const summaryBlocked = !support.summary ? "当前内核不支持生成被放弃分支摘要。"
@@ -72,7 +73,8 @@ export function BranchDialog({ isOpen, onClose, state, support, messages, block,
         </div>
       </section>
       <section className="branch-section" aria-label="当前分支回合">
-        <div className="branch-section-heading"><strong>从这里重新开始</strong><span>当前分支 {turns.length} 个已结束回合</span></div>
+        <div className="branch-section-heading"><strong>从这里重新开始</strong><span title={state.turnsTruncated ? "当前分支回合过多，界面只读取前面的若干页；更晚的回合未载入。" : undefined}>当前分支 {turns.length} 个已结束回合{state.turnsTruncated ? `（列表仅载入前 ${state.turns.length} 个）` : ""}</span></div>
+        {leafHidden && <p className="branch-block" role="status" data-branch-turns-truncated>当前分支的回合过多，界面只载入了最早的前若干页；更晚的回合（含当前位置）未列出。可回到会话开头，或从上方分支端点切换。</p>}
         <div className="rewind-points">
           <div className={`branch-row ${target && target.turnId === null ? "selected" : ""}`} data-branch-turn="root">
             <span className="branch-row-copy"><small>会话开头</small><strong>回到第一条输入之前</strong></span>
