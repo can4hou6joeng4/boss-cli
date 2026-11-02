@@ -140,17 +140,19 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     const priorQueueSubmission = submitted.queueSubmission;
     const queueing = Boolean(onQueue && (isRunning || (priorQueueSubmission?.uncertain && priorQueueSubmission.intent === "followUp")));
     if ((!isRunning && blocked) || (isRunning && !queueing) || readingRef.current || submitted.pendingReads > 0 || sendingRef.current || submitted.submitting || (!submitted.text.trim() && !submitted.attachments.length)) return;
-    if (queueing && (submitted.skillIds?.length ?? 0) > 0) {
-      setNotice("队列消息暂不支持技能。请先清除已选技能，或等当前回合结束后直接发送。");
+    if (queueing && queueIntent === "steering" && (submitted.skillIds?.length ?? 0) > 0) {
+      setNotice("转向当前回合的消息不支持技能；可改为排到后续回合，或清除已选技能。");
       return;
     }
-    if (!queueing && (submitted.skillIds?.length ?? 0) > 0 && (skillCatalogState !== "ready" || submitted.skillIds?.some(id => !skills.some(skill => skill.id === id)))) {
+    if ((submitted.skillIds?.length ?? 0) > 0 && (skillCatalogState !== "ready" || submitted.skillIds?.some(id => !skills.some(skill => skill.id === id)))) {
       setNotice("所选技能尚未确认可用，请刷新技能目录或清除不可用技能后再发送。");
       return;
     }
     const text = [submitted.text.trim(), ...submitted.attachments.map(file => `附件：${file.name}\n\n${file.text}`)].filter(Boolean).join("\n\n");
+    const skillIds = submitted.skillIds ?? [];
     if (priorQueueSubmission?.uncertain) {
-      const sameRequest = priorQueueSubmission.text === text && priorQueueSubmission.intent === queueIntent;
+      const sameRequest = priorQueueSubmission.text === text && priorQueueSubmission.intent === queueIntent
+        && JSON.stringify(priorQueueSubmission.skillIds ?? []) === JSON.stringify(skillIds);
       if (!sameRequest) {
         setNotice("上一条队列消息结果尚未确认；恢复原消息和处理方式后才能用相同请求编号重试。");
         return;
@@ -167,12 +169,13 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
       let transferred: void | boolean;
       if (queueing && onQueue) {
         queueRequest = priorQueueSubmission?.text === text && priorQueueSubmission.intent === queueIntent
+          && JSON.stringify(priorQueueSubmission.skillIds ?? []) === JSON.stringify(skillIds)
           ? priorQueueSubmission
-          : { text, intent: queueIntent, id: crypto.randomUUID(), uncertain: false };
+          : { text, intent: queueIntent, id: crypto.randomUUID(), skillIds, uncertain: false };
         updateDraft(previous => previous.id === submitted.id ? { ...previous, queueSubmission: queueRequest } : previous);
-        transferred = await onQueue(text, queueIntent, queueRequest.id);
+        transferred = await onQueue(text, queueIntent, queueRequest.id, skillIds);
       } else {
-        transferred = await onSend(text, submitted.skillIds ?? []);
+        transferred = await onSend(text, skillIds);
       }
       if (transferred === false) {
         updateDraft(previous => previous.id === submitted.id ? { ...previous, submitting: false, ...(queueing ? { queueSubmission: undefined } : {}) } : previous);
@@ -200,7 +203,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     if (!pending?.uncertain) return;
     onChange(pending.text);
     updateDraft(previous => previous.id === draftRef.current.id
-      ? { ...previous, text: pending.text, textVersion: previous.textVersion + 1, attachments: [], queueSubmission: pending }
+      ? { ...previous, text: pending.text, textVersion: previous.textVersion + 1, attachments: [], skillIds: pending.skillIds ?? [], queueSubmission: pending }
       : previous);
     setQueueIntent(pending.intent);
     setNotice("已恢复原队列消息；重试会沿用原请求编号。");
@@ -295,26 +298,26 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
         if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); }
       }} />
     {queueModeActive && onQueue && <div className="composer-queue-mode" role="group" aria-label="运行中消息处理方式">
-      <button type="button" aria-pressed={queueIntent === "steering"} title="当前已发出的工具调用完成后，在下一次模型请求前加入此消息。" onClick={() => setQueueIntent("steering")}>转向当前回合</button>
+      <button type="button" aria-pressed={queueIntent === "steering"} title="当前已发出的工具调用完成后，在下一次模型请求前加入此消息。" onClick={() => { setQueueIntent("steering"); if (selectedSkillIds.length) setNotice("转向消息不使用技能；所选技能仅用于排到后续回合的消息。"); }}>转向当前回合</button>
       <button type="button" aria-pressed={queueIntent === "followUp"} title="等当前任务自然结束后，再以新回合处理此消息。" onClick={() => setQueueIntent("followUp")}>排到后续回合</button>
     </div>}
     <div className="composer-controls">
       <div className="composer-control-left">
         <div className="popover-anchor">
-          <button type="button" className={`composer-mode composer-skills-trigger ${menu === "skills" ? "is-open" : ""}`} aria-label={`选择运行时技能${selectedSkillIds.length ? `，已选 ${selectedSkillIds.length} 项` : ""}`} data-count={selectedSkillIds.length || undefined} title={queueModeActive ? "队列消息不应用技能，当前不能更改技能" : submitting ? "正在转交消息，暂不能更改技能" : "选择应用于消息的运行时技能"} aria-haspopup="menu" aria-expanded={menu === "skills"} disabled={queueModeActive || submitting} onClick={() => toggleMenu("skills")}><IconSparkles size={14} /><span>技能{selectedSkillIds.length ? ` ${selectedSkillIds.length}` : ""}</span><IconChevronDown size={10} /></button>
+          <button type="button" className={`composer-mode composer-skills-trigger ${menu === "skills" ? "is-open" : ""}`} aria-label={`选择运行时技能${selectedSkillIds.length ? `，已选 ${selectedSkillIds.length} 项` : ""}`} data-count={selectedSkillIds.length || undefined} title={submitting ? "正在转交消息，暂不能更改技能" : queueModeActive ? "所选技能应用于排到后续回合的消息；转向消息不使用技能" : "选择应用于消息的运行时技能"} aria-haspopup="menu" aria-expanded={menu === "skills"} disabled={submitting} onClick={() => toggleMenu("skills")}><IconSparkles size={14} /><span>技能{selectedSkillIds.length ? ` ${selectedSkillIds.length}` : ""}</span><IconChevronDown size={10} /></button>
           <Popover open={menu === "skills"} onClose={() => setMenu(null)} above label="选择运行时技能" className="composer-action-menu composer-skills-menu">
             <div className="composer-menu-heading">运行时技能</div>
             {skillCatalogState === "loading" && <div className="composer-menu-empty">正在加载可用技能…</div>}
             {skillCatalogState === "unavailable" && <div className="composer-menu-empty">{preview ? "运行时技能仅在连接桌面 Harness 后可用。" : "连接本地 Harness 后可加载技能。"}</div>}
             {skillCatalogState === "error" && <div className="composer-menu-empty">无法加载技能目录，请重试。</div>}
             {skillCatalogState === "empty" && <div className="composer-menu-empty">当前工作区没有可用技能。</div>}
-            {skillCatalogState === "ready" && skills.map(skill => <button type="button" role="menuitemcheckbox" aria-checked={selectedSkillIds.includes(skill.id)} key={skill.id} disabled={queueModeActive || submitting || (selectedSkillIds.length >= 10 && !selectedSkillIds.includes(skill.id))} onClick={() => toggleSkill(skill.id)}><IconSparkles /><span>{skill.name}<small>{skill.description || "无描述"}</small></span>{selectedSkillIds.includes(skill.id) && <IconCheck className="menu-check" />}</button>)}
+            {skillCatalogState === "ready" && skills.map(skill => <button type="button" role="menuitemcheckbox" aria-checked={selectedSkillIds.includes(skill.id)} key={skill.id} disabled={submitting || (selectedSkillIds.length >= 10 && !selectedSkillIds.includes(skill.id))} onClick={() => toggleSkill(skill.id)}><IconSparkles /><span>{skill.name}<small>{skill.description || "无描述"}</small></span>{selectedSkillIds.includes(skill.id) && <IconCheck className="menu-check" />}</button>)}
             {skillCatalogState === "ready" && selectedSkillIds.length >= 10 && <div className="composer-menu-footer">每回合最多选择 10 项技能。</div>}
             {staleSkillIds.length > 0 && skillCatalogState === "ready" && <div className="composer-menu-empty">{staleSkillIds.length} 项已选技能已不在当前目录中。</div>}
-            {staleSkillIds.length > 0 && skillCatalogState === "ready" && <button type="button" disabled={queueModeActive || submitting} onClick={() => updateDraft(previous => ({ ...previous, skillIds: previous.skillIds.filter(id => !staleSkillIds.includes(id)) }))}>清除不可用技能</button>}
-            {selectedSkillIds.length > 0 && skillCatalogState !== "ready" && <button type="button" disabled={queueModeActive || submitting} onClick={() => updateDraft(previous => ({ ...previous, skillIds: [] }))}>清除已选技能</button>}
-            {skillCatalogState !== "unavailable" && onRefreshSkills && <button type="button" disabled={queueModeActive || submitting || skillCatalogState === "loading"} onClick={onRefreshSkills}>{skillCatalogState === "error" ? "重试加载技能" : "刷新技能目录"}</button>}
-            <div className="composer-menu-footer">所选技能仅应用于本次直接发送，转交成功后清空。</div>
+            {staleSkillIds.length > 0 && skillCatalogState === "ready" && <button type="button" disabled={submitting} onClick={() => updateDraft(previous => ({ ...previous, skillIds: previous.skillIds.filter(id => !staleSkillIds.includes(id)) }))}>清除不可用技能</button>}
+            {selectedSkillIds.length > 0 && skillCatalogState !== "ready" && <button type="button" disabled={submitting} onClick={() => updateDraft(previous => ({ ...previous, skillIds: [] }))}>清除已选技能</button>}
+            {skillCatalogState !== "unavailable" && onRefreshSkills && <button type="button" disabled={submitting || skillCatalogState === "loading"} onClick={onRefreshSkills}>{skillCatalogState === "error" ? "重试加载技能" : "刷新技能目录"}</button>}
+            <div className="composer-menu-footer">所选技能应用于本次发送或排到后续回合的消息；转交成功后清空。</div>
           </Popover>
         </div>
         <div className="popover-anchor">

@@ -2,7 +2,7 @@
 import type { QueueItem } from "@boss-cli/protocol";
 
 export interface DraftAttachment { id: string; name: string; text: string; size: number; }
-export interface QueueSubmission { text: string; intent: QueueIntent; id: string; uncertain: boolean; }
+export interface QueueSubmission { text: string; intent: QueueIntent; id: string; skillIds: string[]; uncertain: boolean; }
 export type QueueSubmissionCheck =
   | { status: "found"; item: QueueItem }
   | { status: "cancelled"; item: QueueItem }
@@ -22,7 +22,7 @@ export type UpdateComposerDraft = (change: (previous: ComposerDraft) => Composer
 /** false 仅表示转交前的明确拒绝；其它返回值表示输入已交给会话，不代表执行完成。 */
 export type ComposerSend = (text: string, skillIds?: string[]) => void | boolean | Promise<void | boolean>;
 export type QueueIntent = "steering" | "followUp";
-export type ComposerQueue = (text: string, intent: QueueIntent, clientUserMessageId: string) => void | boolean | Promise<void | boolean>;
+export type ComposerQueue = (text: string, intent: QueueIntent, clientUserMessageId: string, skillIds?: string[]) => void | boolean | Promise<void | boolean>;
 export type CheckQueueSubmission = (clientUserMessageId: string) => Promise<QueueSubmissionCheck>;
 export function createComposerDraft(id: string = crypto.randomUUID()): ComposerDraft {
   return { id, text: "", textVersion: 0, attachments: [], skillIds: [], pendingReads: 0, submitting: false };
