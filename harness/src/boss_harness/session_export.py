@@ -465,7 +465,9 @@ class _Exporter:
                 "label": {"model": "模型生成的上下文压缩摘要（原始记录仍保留）",
                           "user": "用户提供的上下文压缩摘要（原始记录仍保留）"}.get(
                               origin, "来源未知的上下文压缩摘要（原始记录仍保留）"),
-                "createdAt": entry.get("timestamp"), "text": self.redactor.text(payload.get("summary"))})
+                "createdAt": entry.get("timestamp"), "text": self.redactor.text(payload.get("summary")),
+                "summaryJobId": _identifier(payload.get("summaryJobId")),
+                "reason": payload.get("reason") if payload.get("reason") in _JOB_REASON else None})
         units: list[tuple[str, dict]] = [("", unit) for unit in after.get(None, [])]
         for index, turn in enumerate(self.turns):
             turn_id = turn["turnId"]
@@ -582,6 +584,10 @@ MAX_EXPORT_SUMMARY_JOBS = 20
 _JOB_REASON = {"threshold": "触达阈值", "budget": "预算不足", "overflow": "上下文溢出"}
 
 
+def _identifier(value: Any) -> str | None:
+    return value if isinstance(value, str) and 0 < len(value) <= 128 else None
+
+
 def _summary_job_facts(job: dict) -> list[str]:
     """One bounded, single-line description of a persisted summary-task usage bucket."""
     kind, origin = job.get("kind"), job.get("origin")
@@ -688,6 +694,10 @@ def _render_unit(unit: dict, view_log: bool) -> str:
             extra = f"；被放弃回合 {unit['abandonedTurnCount']} 个"
         if unit.get("summaryModel"):
             extra += f"；摘要模型 {unit['summaryModel']}"
+        if unit.get("summaryJobId"):
+            extra += f"；摘要任务 {_inline_text(unit['summaryJobId'])}"
+        if unit.get("reason") in _JOB_REASON:
+            extra += f"；{_JOB_REASON[unit['reason']]}"
         return "\n".join([f"### {unit['label']}", "", f"- 生成时间：{unit.get('createdAt') or '—'}{extra}",
                           "- 其中平台事实以原始工具结果为准，结论与推断属于模型判断。", "",
                           _fence(unit["text"] or "（空）")])
@@ -949,6 +959,10 @@ def _render_unit_html(unit: dict) -> str:
             extra.append(f"被放弃回合 {unit['abandonedTurnCount']} 个")
         if unit.get("summaryModel"):
             extra.append(f"摘要模型 {unit['summaryModel']}")
+        if unit.get("summaryJobId"):
+            extra.append(f"摘要任务 {_inline_text(unit['summaryJobId'])}")
+        if unit.get("reason") in _JOB_REASON:
+            extra.append(_JOB_REASON[unit["reason"]])
         extra_text = f"；{'；'.join(extra)}" if extra else ""
         return "".join([f'<div class="entry summary"><h3>{_h(unit["label"])}</h3>',
                         f'<p>生成时间：{_h(unit.get("createdAt") or "—")}{_h(extra_text)}</p>',
