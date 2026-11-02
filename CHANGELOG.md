@@ -4,7 +4,7 @@
 
 ### 新增
 
-- `thread/export` 的队列项新增 `autoCompaction`：导出随队列消息持久化的本回合自动压缩覆盖（`enabled`、`triggerPercent`、`keepRecentTokens`，可只含部分字段），JSON 输出同名字段，Markdown / HTML 以「自动压缩：…」列出；非法或未知字段按未设置处理，空覆盖不导出。协议与 `thread/export` 参数不变（仍为 `0.2.0`）。
+- `thread/export` 增加自动压缩策略事实：回合头导出该回合实际使用的 `compactionPolicy`（开关、阈值、保留目标与摘要线路，模型名同样脱敏），队列项新增 `autoCompaction`（随队列消息持久化的本回合覆盖，可只含部分字段）；JSON 输出同名字段，Markdown / HTML 以「自动压缩：…」「摘要线路：…」列出；非法或未知字段按未记录处理，空覆盖不导出。协议与 `thread/export` 参数不变（仍为 `0.2.0`）。
 
 - 桌面会话上下文面板支持「下一回合自动压缩」覆盖：读取 `config/read` 的内核默认值（开关、触发阈值、近期保留目标与摘要线路），可编辑并应用到本会话下一次发送，经 `turn/start.autoCompaction` 传递；直接发送与「排到后续回合」的队列消息都会携带（`queue/add` 新增可选 `autoCompaction`，随队列项持久化并在投递时应用，队列列表回显），发送后立即消耗并恢复内核默认，不写入会话元数据或启动配置，转向与续接消息不携带该覆盖。覆盖值在面板关闭后仍保留至发送；协议类型补全 `config/read.autoCompaction`，协议仍为 `0.2.0`。
 

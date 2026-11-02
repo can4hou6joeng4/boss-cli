@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from boss_harness.context import tool_execution_status
+from boss_harness.models.capabilities import REASONING_EFFORTS
 from boss_harness.models.secret import redact_secrets
 from boss_harness.session import BRANCH_SUMMARY_ENTRY_TYPE, MAX_BRANCH_SUMMARY_CHARS, SessionStore
 from boss_harness.usage import SOURCE as USAGE_SOURCE, summarize_usage
@@ -471,6 +472,7 @@ class _Exporter:
                       "onCurrentBranch": turn_id in self.active_turn_ids,
                       "failureCode": next((turn[key] for key in ("failureCode", "recoveryReason", "taskRecoveryReason")
                                            if isinstance(turn.get(key), str) and len(turn[key]) <= 120), None),
+                      "compactionPolicy": self._compaction_policy(turn.get("compactionPolicy")),
                       "usage": self.usage_turns.get(turn_id),
                       "usageLabel": _usage_line(self.usage_turns.get(turn_id))}
             units.append((turn_id, header))
@@ -490,6 +492,12 @@ class _Exporter:
             "usage": {"source": USAGE_SOURCE, "costAvailable": False,
                       "totals": self.usage_totals, "summaryTasks": self.usage_summary},
         }
+
+    def _compaction_policy(self, value: Any) -> dict | None:
+        policy = _export_auto_compaction(value, _AUTO_COMPACTION_FIELDS)
+        if policy is not None and "model" in policy:
+            policy["model"] = self.redactor.text(policy["model"], limit=120) or None
+        return policy
 
     def queue(self) -> dict:
         """Queue state that never became a turn; thread-global, so independent of the branch view."""
@@ -532,7 +540,8 @@ class _Exporter:
                 "inputPersisted": payload.get("inputPersisted")
                 if type(payload.get("inputPersisted")) is bool else None,
                 "deduplicated": payload.get("deduplicated") is True,
-                "autoCompaction": _queue_auto_compaction(payload.get("autoCompaction")),
+                "autoCompaction": _export_auto_compaction(payload.get("autoCompaction"),
+                                                          _QUEUE_OVERRIDE_FIELDS),
             })
         return {"items": items, "totalItems": len(ordered), "maxItems": MAX_QUEUE_ITEMS}
 
@@ -571,6 +580,8 @@ def _render_unit(unit: dict, view_log: bool) -> str:
             meta.append("在当前分支：" + ("是" if unit["onCurrentBranch"] else "否（已切离的分支）"))
         if unit["failureCode"]:
             meta.append(f"失败 / 恢复原因：{_inline_code(unit['failureCode'])}")
+        if unit["compactionPolicy"]:
+            meta.extend(_compaction_facts(unit["compactionPolicy"]))
         lines.append("- " + "；".join(meta))
         lines.append(f"- 用量（provider 上报，不估算、不计价）：{unit['usageLabel']}")
         return "\n".join(lines)
@@ -640,24 +651,52 @@ def _inline_text(value: Any) -> str:
 
 _QUEUE_STATUS = {"queued": "排队中", "delivering": "正在投递", "paused": "已暂停", "cancelled": "已撤回"}
 _QUEUE_KIND = {"steering": "转向当前回合", "followUp": "后续回合", "unknown": "类型不明"}
+_AUTO_COMPACTION_FIELDS = ("enabled", "triggerPercent", "keepRecentTokens",
+                           "provider", "model", "effort")
+_QUEUE_OVERRIDE_FIELDS = _AUTO_COMPACTION_FIELDS[:3]
+_PROVIDERS = {"anthropic", "openai", "codex"}
 
 
-def _queue_auto_compaction(value: Any) -> dict | None:
-    """只导出与内核覆盖规则一致的本回合自动压缩字段；异常历史数据按未设置处理。"""
-    if not isinstance(value, dict) or not value:
+def _export_auto_compaction(value: Any, fields: tuple[str, ...]) -> dict | None:
+    """只导出与内核策略校验一致的自动压缩字段；异常历史数据按未记录处理。"""
+    if not isinstance(value, dict) or not value or set(value) - set(fields):
         return None
-    if set(value) - {"enabled", "triggerPercent", "keepRecentTokens"}:
-        return None
-    enabled, trigger, keep = (value.get("enabled"), value.get("triggerPercent"),
-                              value.get("keepRecentTokens"))
+    enabled, trigger = value.get("enabled"), value.get("triggerPercent")
+    keep, provider = value.get("keepRecentTokens"), value.get("provider")
+    model, effort = value.get("model"), value.get("effort")
     if "enabled" in value and type(enabled) is not bool:
         return None
     if "triggerPercent" in value and (type(trigger) is not int or not 1 <= trigger <= 100):
         return None
     if "keepRecentTokens" in value and (type(keep) is not int or not 1 <= keep <= 1_000_000):
         return None
-    return {key: value[key] for key in ("enabled", "triggerPercent", "keepRecentTokens")
-            if key in value}
+    if "provider" in value and provider is not None and (
+            not isinstance(provider, str) or provider not in _PROVIDERS):
+        return None
+    if "model" in value and model is not None and (
+            not isinstance(model, str) or not model.strip() or len(model) > 200
+            or any(char.isspace() for char in model)):
+        return None
+    if "effort" in value and effort is not None and effort not in REASONING_EFFORTS:
+        return None
+    return {key: value[key] for key in fields if key in value}
+
+
+def _compaction_facts(policy: dict) -> list[str]:
+    details = []
+    if "enabled" in policy:
+        details.append("开启" if policy["enabled"] else "关闭")
+    if "triggerPercent" in policy:
+        details.append(f"阈值 {policy['triggerPercent']}%")
+    if "keepRecentTokens" in policy:
+        details.append(f"保留最近 {policy['keepRecentTokens']} token")
+    facts = ["自动压缩：" + " · ".join(details)] if details else []
+    if any(key in policy for key in ("provider", "model", "effort")):
+        line = f"摘要线路：{policy.get('provider') or '—'} / {policy.get('model') or '—'}"
+        if policy.get("effort"):
+            line += f" · {policy['effort']}"
+        facts.append(line)
+    return facts
 
 
 def _queue_facts(item: dict) -> list[str]:
@@ -670,16 +709,8 @@ def _queue_facts(item: dict) -> list[str]:
         facts.append("与既有请求关联")
     if item["skillCount"]:
         facts.append(f"技能：{item['skillCount']} 项")
-    policy = item["autoCompaction"]
-    if policy:
-        details = []
-        if "enabled" in policy:
-            details.append("开启" if policy["enabled"] else "关闭")
-        if "triggerPercent" in policy:
-            details.append(f"阈值 {policy['triggerPercent']}%")
-        if "keepRecentTokens" in policy:
-            details.append(f"保留最近 {policy['keepRecentTokens']} token")
-        facts.append("自动压缩：" + " · ".join(details))
+    if item["autoCompaction"]:
+        facts.extend(_compaction_facts(item["autoCompaction"]))
     return facts
 
 
@@ -815,6 +846,8 @@ def _turn_heading_html(unit: dict, view_log: bool) -> str:
         meta.append("在当前分支：" + ("是" if unit["onCurrentBranch"] else "否（已切离的分支）"))
     if unit["failureCode"]:
         meta.append(f"失败 / 恢复原因：{unit['failureCode']}")
+    if unit["compactionPolicy"]:
+        meta.extend(_compaction_facts(unit["compactionPolicy"]))
     return "".join([
         f'<section class="turn">',
         f'<h2>回合 {unit["index"]} · <code>{_h(unit["turnId"])}</code> <span class="badge">{_h(status)}</span></h2>',
