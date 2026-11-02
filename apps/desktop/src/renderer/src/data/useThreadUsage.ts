@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ThreadUsageBucket, ThreadUsageReadResponse, ThreadUsageTurn } from "@boss-cli/protocol";
+import type { ThreadUsageBucket, ThreadUsageReadResponse, ThreadUsageSummaryJob, ThreadUsageTurn } from "@boss-cli/protocol";
 import { readThreadUsage } from "./harnessBridge";
 
 /**
@@ -13,7 +13,9 @@ export interface ThreadUsageState {
   error: string;
   view: UsageView;
   data?: { threadId: string; view: UsageView; turnCount: number; turns: ThreadUsageTurn[]; truncated: boolean;
-    summaryTasks: ThreadUsageBucket; totals: ThreadUsageBucket };
+    summaryTasks: ThreadUsageBucket; totals: ThreadUsageBucket;
+    /** 旧内核不返回摘要任务明细。 */
+    summaryJobs?: ThreadUsageSummaryJob[]; summaryJobCount?: number; summaryJobsTruncated?: boolean };
 }
 
 const MAX_PAGES = 10;
@@ -52,12 +54,42 @@ function turnOf(value: unknown): ThreadUsageTurn | null {
   if (typeof raw.turnId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(raw.turnId) || !providers || !models) return null;
   return { ...bucket, turnId: raw.turnId, providers, models };
 }
+const idOrNull = (value: unknown): string | null | undefined => value === null ? null
+  : typeof value === "string" && value.length > 0 && value.length <= 128 ? value : undefined;
+function summaryJobOf(value: unknown): ThreadUsageSummaryJob | null {
+  const bucket = bucketOf(value);
+  if (!bucket) return null;
+  const raw = value as Record<string, unknown>;
+  const providers = strings(raw.providers, 8), models = strings(raw.models, 8);
+  const jobId = idOrNull(raw.jobId), turnId = idOrNull(raw.turnId);
+  const kind = raw.kind === null ? null : raw.kind === "compaction" || raw.kind === "branchSummary" ? raw.kind : undefined;
+  const reason = raw.reason === null ? null
+    : raw.reason === "threshold" || raw.reason === "budget" || raw.reason === "overflow" ? raw.reason : undefined;
+  const origin = raw.origin === null ? null : raw.origin === "user" || raw.origin === "model" ? raw.origin : undefined;
+  if (!jobId || !providers || !models || kind === undefined || turnId === undefined
+    || reason === undefined || origin === undefined) return null;
+  return { ...bucket, jobId, kind, turnId, reason, origin, providers, models };
+}
+/** 摘要任务明细在每页重复返回；任一页形状不符即报错，展示时只取第一份。 */
+function summaryJobsOf(page: ThreadUsageReadResponse): Pick<NonNullable<ThreadUsageState["data"]>,
+  "summaryJobs" | "summaryJobCount" | "summaryJobsTruncated"> {
+  if (page.summaryJobs === undefined) return {};
+  if (!Array.isArray(page.summaryJobs) || (page.summaryJobCount !== undefined && !count(page.summaryJobCount))
+    || (page.summaryJobsTruncated !== undefined && typeof page.summaryJobsTruncated !== "boolean")) {
+    throw new Error("内核返回的摘要任务用量格式无法识别");
+  }
+  const jobs = page.summaryJobs.slice(0, 50).map(summaryJobOf);
+  if (jobs.some(job => !job)) throw new Error("内核返回的摘要任务用量格式无法识别");
+  return { summaryJobs: jobs as ThreadUsageSummaryJob[], summaryJobCount: page.summaryJobCount,
+    summaryJobsTruncated: page.summaryJobsTruncated };
+}
 
 /** 按页读取（每页 200 个回合，最多 10 页），任一页形状不符即整体报错，不展示部分可疑数据。 */
 async function readAll(threadId: string, view: UsageView, valid: () => boolean): Promise<ThreadUsageState["data"] | null> {
   const turns: ThreadUsageTurn[] = [];
   let cursor: string | null = null, pages = 0, head: ThreadUsageReadResponse | null = null;
   let summaryTasks: ThreadUsageBucket | null = null, totals: ThreadUsageBucket | null = null;
+  let summaryMeta: ReturnType<typeof summaryJobsOf> | null = null;
   do {
     const page: ThreadUsageReadResponse = await readThreadUsage(threadId, view, cursor);
     if (!valid()) return null;
@@ -69,6 +101,8 @@ async function readAll(threadId: string, view: UsageView, valid: () => boolean):
     summaryTasks ??= bucketOf(page.summaryTasks);
     totals ??= bucketOf(page.totals);
     if (!summaryTasks || !totals) throw new Error("内核返回的用量汇总格式无法识别");
+    const pageMeta = page.summaryJobs === undefined ? null : summaryJobsOf(page);
+    summaryMeta ??= pageMeta;
     for (const item of page.turns) {
       const turn = turnOf(item);
       if (!turn) throw new Error("内核返回的回合用量格式无法识别");
@@ -76,7 +110,8 @@ async function readAll(threadId: string, view: UsageView, valid: () => boolean):
     }
     cursor = page.nextCursor; pages += 1;
   } while (cursor && pages < MAX_PAGES);
-  return { threadId, view, turnCount: head!.turnCount, turns, truncated: Boolean(cursor), summaryTasks: summaryTasks!, totals: totals! };
+  return { threadId, view, turnCount: head!.turnCount, turns, truncated: Boolean(cursor), summaryTasks: summaryTasks!,
+    totals: totals!, ...(summaryMeta ?? {}) };
 }
 
 function errorText(error: unknown): string {

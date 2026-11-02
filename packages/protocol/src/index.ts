@@ -1049,6 +1049,17 @@ export interface ThreadUsageBucket {
   costUsd: number | null;
   costSource: "unavailable";
 }
+/** 按 `jobId` 汇总的摘要任务用量；关联字段来自对应的 checkpoint 或分支摘要记录。 */
+export interface ThreadUsageSummaryJob extends ThreadUsageBucket {
+  jobId: string;
+  kind: "compaction" | "branchSummary" | null;
+  /** 自动/手动压缩关联的回合；分支摘要为切换前的目标回合。 */
+  turnId: string | null;
+  reason: "threshold" | "budget" | "overflow" | null;
+  origin: "user" | "model" | null;
+  providers: string[];
+  models: string[];
+}
 export interface ThreadUsageTurn extends ThreadUsageBucket {
   turnId: string;
   providers: string[];
@@ -1065,6 +1076,10 @@ export interface ThreadUsageReadResponse {
   turns: ThreadUsageTurn[];
   nextCursor: string | null;
   summaryTasks: ThreadUsageBucket;
+  /** 最近最多 50 个有 usage 记录的摘要任务；旧内核不返回该字段。 */
+  summaryJobs?: ThreadUsageSummaryJob[];
+  summaryJobCount?: number;
+  summaryJobsTruncated?: boolean;
   totals: ThreadUsageBucket;
   branch?: ThreadLeafState;
 }
