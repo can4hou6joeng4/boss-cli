@@ -61,10 +61,10 @@ export function App(): JSX.Element {
   } | null>(null);
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
   // 内核只返回有界投影；保留总数 / 截断标记，避免界面上无痕丢掉更早的队列记录。
-  const [queueMeta, setQueueMeta] = useState<Pick<QueuePage, "totalItems" | "truncated">>({});
+  const [queueMeta, setQueueMeta] = useState<Pick<QueuePage, "totalItems" | "activeItems" | "truncated">>({});
   const applyQueuePage = useCallback((page: QueuePage) => {
     setQueueItems(page.items);
-    setQueueMeta({ totalItems: page.totalItems, truncated: page.truncated });
+    setQueueMeta({ totalItems: page.totalItems, activeItems: page.activeItems, truncated: page.truncated });
   }, []);
   const [modelRetries, setModelRetries] = useState<Record<string, ModelRetryStatus>>({});
   const retryTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -222,6 +222,7 @@ export function App(): JSX.Element {
         setQueueItems(snapshot.queue ?? []);
         setQueueMeta({
           totalItems: typeof snapshot.queueTotalItems === "number" ? snapshot.queueTotalItems : undefined,
+          activeItems: typeof snapshot.queueActiveItems === "number" ? snapshot.queueActiveItems : undefined,
           truncated: typeof snapshot.queueTruncated === "boolean" ? snapshot.queueTruncated : undefined,
         });
       }
@@ -620,7 +621,7 @@ export function App(): JSX.Element {
   return <>
     <AppShell isDark={isDark} onToggleTheme={() => setIsDark(previous => !previous)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => setIsSidebarOpen(previous => !previous)}
       folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} currentMode={currentMode} onModeChange={setCurrentMode}
-      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} simulateLocal={preview} harnessUp={harnessUp}
+      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueActiveItems={queueMeta.activeItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} simulateLocal={preview} harnessUp={harnessUp}
       onCreateConnectionSession={createConnectionSession}
       sessionReasoning={contextThreadId ? sessionReasoning : undefined}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession || branchSummaryRunning}
