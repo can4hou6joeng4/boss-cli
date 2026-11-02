@@ -7,6 +7,7 @@ import type { JsonRpcNotification, SessionExportSaveResult } from "@boss-cli/pro
 import { isTrustedRendererUrl, sessionExportFileName, validateHarnessRequest, validateLoginContext,
   validateSessionExportRequest, validateThreadExportResponse } from "./security";
 import { PlatformLogin } from "./platformLogin";
+import { preservesRpcError } from "./rpcErrors";
 
 function findRepoRoot(start: string): string {
   let current = resolve(start);
@@ -96,12 +97,7 @@ function registerIPC(): void {
     if (!host) throw new Error("harness host is not attached");
     try { return await host.request(request.method, request.params); }
     catch (error) {
-      const preservesRpcError = request.method === "context/compact/start" ||
-        request.method === "turn/continuation/read" || request.method === "turn/continue" ||
-        request.method === "thread/model/set" || request.method === "thread/leaf/set" ||
-        request.method === "thread/leaf/read" || request.method === "thread/branches/list" ||
-        request.method === "thread/branchSummary/read" || request.method === "thread/usage/read";
-      if (preservesRpcError && error instanceof HarnessRpcError && error.code !== -32603) {
+      if (preservesRpcError(request.method) && error instanceof HarnessRpcError && error.code !== -32603) {
         return { __harnessRpcError: { code: error.code, message: error.message, data: error.data } };
       }
       throw error;
