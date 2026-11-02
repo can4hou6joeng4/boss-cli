@@ -289,7 +289,8 @@ _TURN_STATUS = {"completed": "已完成", "interrupted": "已中断", "blocked":
 
 class _Exporter:
     def __init__(self, sessions: SessionStore, thread_id: str, *, branch: bool,
-                 include_tool_results: bool, redactor: Redactor) -> None:
+                 include_tool_results: bool, redactor: Redactor,
+                 active_summary_job_id: str | None = None) -> None:
         self.thread_id, self.branch = thread_id, branch
         self.include = include_tool_results
         self.redactor = redactor
@@ -305,7 +306,8 @@ class _Exporter:
         self.turns = [sessions._public_turn(turn) for turn in sessions._turns(selected, thread_id)]
         self.active_turn_ids = {turn["turnId"] for turn in sessions._turns(active_entries, thread_id)}
         self.items = sessions._project_items(thread_id, selected)
-        usage = summarize_usage(entries, self.active_turn_ids if branch else None)
+        usage = summarize_usage(entries, self.active_turn_ids if branch else None,
+                                active_job_id=active_summary_job_id)
         self.usage_turns = {bucket["turnId"]: bucket for bucket in usage["turns"]}
         self.usage_summary, self.usage_totals = usage["summaryTasks"], usage["totals"]
         self.usage_jobs = usage["summaryJobs"]
@@ -595,6 +597,8 @@ def _summary_job_facts(job: dict) -> list[str]:
     kind, origin = job.get("kind"), job.get("origin")
     facts = ["分支摘要" if kind == "branchSummary" else
              "手动压缩" if origin == "user" else "自动压缩" if origin == "model" else "摘要任务"]
+    if job.get("active") is True:
+        facts.append("当前生效")
     job_id = job.get("jobId")
     if isinstance(job_id, str) and job_id:
         facts.append("任务 " + job_id[:64])
@@ -1069,8 +1073,13 @@ def _wire_bytes(text: str) -> int:
 
 def export_thread(sessions: SessionStore, thread_id: str, *, branch: bool, fmt: str,
                   include_tool_results: bool, max_bytes: int, server_version: str,
-                  secrets: Iterable[str] = (), paths: Iterable[Path | str] = ()) -> dict:
-    """Render one session as a bounded, redacted document; reads only, writes nothing."""
+                  secrets: Iterable[str] = (), paths: Iterable[Path | str] = (),
+                  active_summary_job_id: str | None = None) -> dict:
+    """Render one session as a bounded, redacted document; reads only, writes nothing.
+
+    ``active_summary_job_id`` is the caller's validated current-branch
+    checkpoint job; it only marks the matching summary-task usage row.
+    """
     if fmt not in EXPORT_FORMATS:
         raise ValueError("format 必须是 markdown、json 或 html")
     if type(include_tool_results) is not bool:
@@ -1079,7 +1088,8 @@ def export_thread(sessions: SessionStore, thread_id: str, *, branch: bool, fmt: 
         raise ValueError(f"maxBytes 必须是 {MIN_EXPORT_BYTES} 到 {MAX_EXPORT_BYTES} 的整数")
     redactor = Redactor(secrets=_known_secrets(secrets), paths=_known_paths(paths))
     exporter = _Exporter(sessions, thread_id, branch=branch,
-                         include_tool_results=include_tool_results, redactor=redactor)
+                         include_tool_results=include_tool_results, redactor=redactor,
+                         active_summary_job_id=active_summary_job_id)
     units = exporter.units()
     meta = exporter.meta(server_version)
     queue = exporter.queue()
