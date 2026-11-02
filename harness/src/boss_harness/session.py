@@ -2320,12 +2320,14 @@ class SessionStore:
                 "activeTurnIdsTruncated": len(turn_ids) > MAX_LEAF_ACTIVE_TURN_IDS}
 
     def usage_page(self, thread_id: str, *, branch: bool, cursor: str | None = None, limit: int = 50,
-                   active_summary_job_id: str | None = None) -> dict:
+                   active_summary_job_id: str | None = None,
+                   entries: list[dict] | None = None) -> dict:
         """Read-only per-turn usage aggregated from persisted usage records.
 
         ``active_summary_job_id`` is the caller's validated current-branch
         checkpoint job; it only marks the matching summary job, never resolves
-        jobs from usage records on its own.
+        jobs from usage records on its own. ``entries`` may pin the snapshot a
+        caller already read so usage and its marker describe the same records.
         """
         from boss_harness.usage import SOURCE, summarize_usage
         _limit(limit)
@@ -2335,7 +2337,10 @@ class SessionStore:
             raise ValueError("用量分页游标无效")
         offset = key[0] if key is not None else 0
         with self._lock:
-            entries = self.read_entries(thread_id)
+            if entries is None:
+                entries = self.read_entries(thread_id)
+            else:
+                self.require_thread(thread_id)
             scope_entries = self._active_entries(entries) if branch else entries
             turns = self._turns(scope_entries, thread_id)
             active = {turn["turnId"] for turn in turns} if branch else None
