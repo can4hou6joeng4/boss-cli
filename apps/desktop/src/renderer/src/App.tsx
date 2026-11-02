@@ -3,6 +3,7 @@ import { AppShell } from "./shell/AppShell";
 import { CockpitModal } from "./components/CockpitModal";
 import { ContextPanel } from "./components/ContextPanel";
 import { useContextPanel } from "./data/useContextPanel";
+import { useAutoCompaction } from "./data/useAutoCompaction";
 import { useSessionReasoning } from "./data/useSessionReasoning";
 import { SideChatModal } from "./components/SideChatModal";
 import { RewindOverlay } from "./components/RewindOverlay";
@@ -81,6 +82,7 @@ export function App(): JSX.Element {
   const [isRevertModalOpen, setIsRevertModalOpen] = useState(false), [isShortcutsOpen, setIsShortcutsOpen] = useState(false);
   const contextThreadId = activeSession?.projectId === HARNESS_PROJECT_ID && !isHomeView ? activeSession.id : null;
   const contextPanel = useContextPanel(contextThreadId, harnessUp, runningThreadIds);
+  const autoCompaction = useAutoCompaction(contextThreadId, contextPanel.isOpen, harnessUp);
   const sessionReasoning = useSessionReasoning(contextThreadId, harnessUp);
   const branchCapability = useMemo(() => branchSupport(capabilities), [capabilities?.sessionLeaf, capabilities?.sessionBranchTree, capabilities?.sessionBranchViews, capabilities?.sessionBranchSummary, capabilities?.sessionBranchSummaryRead]);
   const usageSupported = capabilities?.threadUsage === true;
@@ -388,7 +390,8 @@ export function App(): JSX.Element {
     if (!real) { simulate(id); return true; }
     markRunning(id, true);
     try {
-      const accepted = await sendTurn(id, text, clientId, model, skillIds);
+      // 压缩覆盖只作用于本会话下一条直接发送；入队、转向与续接不携带该覆盖。
+      const accepted = await sendTurn(id, text, clientId, model, skillIds, autoCompaction.take(id));
       if (accepted) turnIds.current.set(id, accepted.turnId);
       else {
         markRunning(id, false);
@@ -402,7 +405,7 @@ export function App(): JSX.Element {
     }
     // 已交给会话并发起请求；回执未知仍不能作为可自动重发的草稿。
     return true;
-  }, [harnessUp, updateThread, markRunning, simulate]);
+  }, [harnessUp, updateThread, markRunning, simulate, autoCompaction.take]);
   const handleStartSessionWithPrompt = useCallback((prompt: string, _domain: string, provider: string, modelId: string, skillIds: string[] = []) => {
     return (async () => {
       if (window.boss && !harnessUp) { setError("本地内核未连接，请检查启动配置并重启应用。"); return null; }
@@ -623,7 +626,7 @@ export function App(): JSX.Element {
       onOpenShortcuts={() => setIsShortcutsOpen(true)} onReviewDiff={() => setIsDiffModalOpen(true)} onRevertDiff={() => setIsRevertModalOpen(true)} />
     {error && <div className="app-toast" role="alert"><span>{error}</span>{!harnessUp && window.boss && <button onClick={() => { void reconnectHarness(); }}>重新连接</button>}<button onClick={() => setError("")} aria-label="关闭提示"><IconClose size={14} /></button></div>}
     <CockpitModal isOpen={isCockpitOpen} onClose={() => setIsCockpitOpen(false)} />
-    <ContextPanel isOpen={contextPanel.isOpen} onClose={contextPanel.close} threadId={contextThreadId} title={activeSession?.title ?? ""} connected={harnessUp} busy={contextPanel.busy} state={contextPanel.state} onKeepRecentChange={contextPanel.changeKeepRecent} onRefresh={() => { void contextPanel.refresh(); }} onPlan={() => { void contextPanel.plan(); }} onStart={() => { void contextPanel.start(); }} onCancel={() => { void contextPanel.cancel(); }} />
+    <ContextPanel isOpen={contextPanel.isOpen} onClose={contextPanel.close} threadId={contextThreadId} title={activeSession?.title ?? ""} connected={harnessUp} busy={contextPanel.busy} state={contextPanel.state} onKeepRecentChange={contextPanel.changeKeepRecent} onRefresh={() => { void contextPanel.refresh(); }} onPlan={() => { void contextPanel.plan(); }} onStart={() => { void contextPanel.start(); }} onCancel={() => { void contextPanel.cancel(); }} autoCompaction={autoCompaction} />
     <SideChatModal isOpen={isSideChatOpen} onClose={() => setIsSideChatOpen(false)} />
     <RewindOverlay messages={messages} fork={!preview} isOpen={isRewindOpen} onClose={() => setIsRewindOpen(false)} onConfirmRewind={messageCount => {
       const id = activeRef.current?.id;

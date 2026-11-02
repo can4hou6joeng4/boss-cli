@@ -779,7 +779,8 @@ export interface ConfigReadResponse {
   maxAttachmentStorageObjects?: number;
   modelCapabilities?: ModelCapabilities;
   toolBundleId?: string;
-  autoCompaction?: unknown;
+  /** 内核启动时解析的自动压缩策略；旧内核可能不返回。 */
+  autoCompaction?: AutoCompactionPolicy;
   approvalPolicy?: string;
   approvalTimeoutSeconds?: number;
 }
