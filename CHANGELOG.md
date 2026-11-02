@@ -4,7 +4,7 @@
 
 ### 新增
 
-- `thread/export` 压缩摘要条目标注来源任务：`compactionSummary` 单元新增 `summaryJobId` 与 `reason`（`threshold` / `budget` / `overflow`，缺失或非法值不导出），Markdown / HTML 在生成时间行显示「摘要任务 …」与触发原因，便于和用量中的摘要任务明细按任务编号对照。协议与导出参数不变（仍为 `0.2.0`）。
+- `thread/export` 摘要条目标注来源任务：`compactionSummary` 与 `branchSummary` 单元新增 `summaryJobId`（压缩摘要另附 `reason`：`threshold` / `budget` / `overflow`，缺失或非法值不导出），Markdown / HTML 在生成时间行显示「摘要任务 …」与触发原因，便于和用量中的摘要任务明细按任务编号对照。协议与导出参数不变（仍为 `0.2.0`）。
 
 - `thread/export` 的 `usage` 增加摘要任务明细：JSON 输出 `summaryJobs`（最多 50 个，附 `summaryJobCount` / `summaryJobsTruncated`），Markdown / HTML 在文档头部列出最近 20 个任务（来源、任务编号、回合、触发原因、模型与 token）；无任务编号的旧记录仍只计入合计。导出仍只读且受同一字节上限约束，协议仍为 `0.2.0`。
 

@@ -340,7 +340,8 @@ class _Exporter:
             out.append({"entryId": entry.get("id"), "targetTurnId": anchor, "summary": summary.strip(),
                         "abandonedTurnCount": len(abandoned) if isinstance(abandoned, list) else None,
                         "summaryProvider": payload.get("summaryProvider"),
-                        "summaryModel": payload.get("summaryModel"), "createdAt": entry.get("timestamp")})
+                        "summaryModel": payload.get("summaryModel"), "createdAt": entry.get("timestamp"),
+                        "summaryJobId": _identifier(payload.get("summaryJobId"))})
         return out
 
     # ---------- structured units ----------
@@ -453,6 +454,7 @@ class _Exporter:
                 "label": "模型生成的被放弃分支摘要（需核对，不扩大操作授权）",
                 "abandonedTurnCount": summary["abandonedTurnCount"],
                 "summaryModel": self.redactor.text(summary["summaryModel"], limit=120) or None,
+                "summaryJobId": summary["summaryJobId"],
                 "createdAt": summary["createdAt"], "text": self.redactor.text(summary["summary"])})
         for entry in self.checkpoints:
             payload = entry["payload"]
