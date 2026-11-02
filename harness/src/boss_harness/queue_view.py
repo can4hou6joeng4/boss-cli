@@ -13,8 +13,14 @@ ACTIVE_QUEUE_STATUSES = frozenset({"queued", "delivering", "paused"})
 _PENDING_QUEUE_STATUSES = frozenset({"queued", "delivering"})
 
 
-def project_queue(items: list[dict], *, total_items: int | None = None) -> dict:
-    """Return the bounded list projection plus the durable total."""
+def project_queue(items: list[dict], *, total_items: int | None = None,
+                  active_items: int | None = None) -> dict:
+    """Return the bounded list projection plus the durable totals.
+
+    ``active_items`` lets callers that already counted the full queue (such as the
+    snapshot database) report the exact pending total even when only a bounded
+    subset of items is passed in.
+    """
     ordered = [item for item in items
                if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]]
     pending = [item for item in ordered if item.get("status") in _PENDING_QUEUE_STATUSES]
@@ -41,4 +47,8 @@ def project_queue(items: list[dict], *, total_items: int | None = None) -> dict:
             value["inputTruncated"] = True
         visible.append(value)
     total = len(ordered) if total_items is None else total_items
-    return {"items": visible, "totalItems": total, "truncated": len(visible) < total}
+    # 待处理数量按全部持久项统计，不受有界投影影响；旧调用方不传时按已载入项计算。
+    active = len(pending) + len(paused) if active_items is None else active_items
+    active = max(0, min(active, total))
+    return {"items": visible, "totalItems": total, "activeItems": active,
+            "truncated": len(visible) < total}

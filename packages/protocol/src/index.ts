@@ -451,6 +451,8 @@ export interface ThreadReadResponse {
   queue?: QueueItem[];
   /** Durable queue count; `queue` is a bounded projection when it is smaller. */
   queueTotalItems?: number;
+  /** Durable count of queued / delivering / paused items; independent of the bounded projection. */
+  queueActiveItems?: number;
   queueTruncated?: boolean;
   snapshotId?: string;
   itemCount?: number;
@@ -710,6 +712,8 @@ export interface QueueListResponse {
   items: QueueItem[];
   /** Durable item count; `items` is a bounded projection when it is smaller. */
   totalItems?: number;
+  /** Durable count of queued / delivering / paused items; independent of `items`. */
+  activeItems?: number;
   truncated?: boolean;
 }
 export interface QueueGetParams { threadId: string; queueId: string }

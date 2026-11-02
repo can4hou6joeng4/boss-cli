@@ -445,12 +445,18 @@ class SnapshotStore:
                 paused: deque[tuple[int, str]] = deque(maxlen=MAX_QUEUE_VIEW_ITEMS)
                 terminal: deque[tuple[int, str]] = deque(maxlen=MAX_QUEUE_VIEW_TERMINAL_ITEMS)
                 total = 0
+                active = 0
                 for ordinal, payload in rows:
                     total += 1
                     try:
-                        status = json.loads(payload).get("status")
+                        decoded = json.loads(payload)
                     except (TypeError, ValueError):
                         continue
+                    status = decoded.get("status") if isinstance(decoded, dict) else None
+                    # 与运行时投影一致：只有带有效 id 的记录才计入待处理。
+                    valid = isinstance(decoded, dict) and isinstance(decoded.get("id"), str) and bool(decoded["id"])
+                    if valid and status in ACTIVE_QUEUE_STATUSES:
+                        active += 1
                     if status in {"queued", "delivering"}:
                         pending.append((ordinal, payload))
                     elif status in ACTIVE_QUEUE_STATUSES:
@@ -466,7 +472,7 @@ class SnapshotStore:
                         continue
                     if isinstance(item, dict):
                         items.append(item)
-                return project_queue(items, total_items=total)
+                return project_queue(items, total_items=total, active_items=active)
             finally:
                 connection.close()
 
