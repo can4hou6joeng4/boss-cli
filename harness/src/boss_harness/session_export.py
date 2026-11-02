@@ -11,6 +11,7 @@ export-html/（完整条目 + leaf 渲染为可阅读文档）。本模块独立
   姓名可能无法识别）；调用方显式传入 ``includeToolResults`` 才导出工具参数与结果明文
   （凭据与路径仍脱敏）；
 - 区分用户输入、模型输出（模型判断）、工具调用（平台事实来源）与模型生成的摘要；
+- 附带当前会话的队列状态（尚未形成回合的排队、暂停与已撤回消息）；
 - 输出有字节上限，超限按条目截断并在文末标注。
 """
 from __future__ import annotations
@@ -36,6 +37,8 @@ MAX_EXPORT_BYTES = 768 * 1024
 MAX_TEXT_CHARS = 16_000
 MAX_RESULT_CHARS = 16_000
 MAX_PII_VALUES = 4_000
+MAX_QUEUE_ITEMS = 20
+MAX_QUEUE_INPUT_CHARS = 800
 EXPORT_SCHEMA = "boss-cli-session-export/1"
 
 SECRET_MARK = "[已脱敏:凭据]"
@@ -295,6 +298,7 @@ class _Exporter:
             leaf = sessions._leaf_state(thread_id, entries, active_entries)
         self.thread = thread
         self.leaf = leaf
+        self.entries = entries
         self.turns = [sessions._public_turn(turn) for turn in sessions._turns(selected, thread_id)]
         self.active_turn_ids = {turn["turnId"] for turn in sessions._turns(active_entries, thread_id)}
         self.items = sessions._project_items(thread_id, selected)
@@ -487,6 +491,38 @@ class _Exporter:
                       "totals": self.usage_totals, "summaryTasks": self.usage_summary},
         }
 
+    def queue(self) -> dict:
+        """Queue state that never became a turn; thread-global, so independent of the branch view."""
+        latest: dict[str, tuple[str, dict]] = {}
+        for entry in self.entries:
+            payload = entry.get("payload")
+            if entry.get("type") != "queue" or not isinstance(payload, dict):
+                continue
+            queue_id = payload.get("id")
+            if not isinstance(queue_id, str) or not queue_id or len(queue_id) > 120:
+                continue
+            if payload.get("status") not in {"queued", "delivering", "paused", "cancelled"}:
+                continue
+            latest[queue_id] = (str(entry.get("timestamp") or ""), payload)
+        ordered = sorted(latest.items(), key=lambda pair: (pair[1][0], pair[0]))
+        items = []
+        for queue_id, (_, payload) in ordered[-MAX_QUEUE_ITEMS:]:
+            kind = payload.get("kind")
+            skill_ids = payload.get("skillIds")
+            failure = payload.get("failureCode")
+            items.append({
+                "queueId": queue_id,
+                "kind": kind if kind in {"steering", "followUp"} else "unknown",
+                "status": payload["status"],
+                "input": self.redactor.text(payload.get("input"), limit=MAX_QUEUE_INPUT_CHARS) or "",
+                "skillCount": len(skill_ids) if isinstance(skill_ids, list) else 0,
+                "failureCode": failure if isinstance(failure, str) and len(failure) <= 120 else None,
+                "inputPersisted": payload.get("inputPersisted")
+                if type(payload.get("inputPersisted")) is bool else None,
+                "deduplicated": payload.get("deduplicated") is True,
+            })
+        return {"items": items, "totalItems": len(ordered), "maxItems": MAX_QUEUE_ITEMS}
+
 
 # ---------- rendering ----------
 
@@ -589,8 +625,47 @@ def _inline_text(value: Any) -> str:
     return str(value).replace("`", "'").replace("\r", " ").replace("\n", " ")
 
 
+_QUEUE_STATUS = {"queued": "排队中", "delivering": "正在投递", "paused": "已暂停", "cancelled": "已撤回"}
+_QUEUE_KIND = {"steering": "转向当前回合", "followUp": "后续回合", "unknown": "类型不明"}
+
+
+def _queue_facts(item: dict) -> list[str]:
+    facts = []
+    if item["inputPersisted"] is not None:
+        facts.append("输入是否已写入会话：" + ("是" if item["inputPersisted"] else "否"))
+    if item["status"] == "paused" and item["failureCode"]:
+        facts.append(f"失败码：{item['failureCode']}")
+    if item["deduplicated"]:
+        facts.append("与既有请求关联")
+    if item["skillCount"]:
+        facts.append(f"技能：{item['skillCount']} 项")
+    return facts
+
+
+def _queue_heading(item: dict) -> str:
+    return (f"队列项 {_inline_code(item['queueId'])} · "
+            f"{_QUEUE_KIND.get(item['kind'], '类型不明')} · {_QUEUE_STATUS.get(item['status'], '状态不明')}")
+
+
+def _render_queue_markdown(queue: dict) -> str:
+    items = queue["items"]
+    if not items:
+        return ""
+    parts = ["## 消息队列（未形成回合）", "",
+             "> 当前会话的队列状态，与导出视图无关；以下消息没有对应的已记录回合。", ""]
+    if queue["totalItems"] > len(items):
+        parts += [f"- 共 {queue['totalItems']} 个未形成回合的队列项，仅列出最近 {len(items)} 个。", ""]
+    for item in items:
+        parts += [f"### {_queue_heading(item)}", ""]
+        facts = _queue_facts(item)
+        if facts:
+            parts += ["- " + "；".join(facts), ""]
+        parts += [_fence(item["input"] or "（空）"), ""]
+    return "\n".join(parts).rstrip()
+
+
 def _render_markdown(meta: dict, units: list[tuple[str, dict]], counts: dict, total_units: int,
-                     max_bytes: int) -> str:
+                     max_bytes: int, queue: dict) -> str:
     view_log = meta["view"] == "log"
     usage = meta["usage"]
     header = [
@@ -609,9 +684,14 @@ def _render_markdown(meta: dict, units: list[tuple[str, dict]], counts: dict, to
     ]
     if usage["summaryTasks"]["requests"]:
         header.append(f"- 摘要任务用量：{_tokens(usage['summaryTasks'])}")
+    if queue["totalItems"]:
+        header.append(f"- 消息队列：{queue['totalItems']} 个未形成回合的队列项")
     header += ["", "内容来源：「用户输入」为操作者原文；「模型输出」与模型生成的摘要属于模型判断，需核对；"
                "「工具调用」的执行状态与结果来自招聘平台工具，是平台事实的来源。", ""]
     body = [_render_unit(unit, view_log) for _, unit in units]
+    queue_block = _render_queue_markdown(queue)
+    if queue_block:
+        body.append(queue_block)
     footer = ["", "---", "",
               f"脱敏统计：凭据 / 令牌 {counts['secrets']} 处，环境变量 {counts['environment']} 处，"
               f"本机路径 {counts['paths']} 处，候选人信息 {counts['personalInfo']} 处。"]
@@ -624,7 +704,7 @@ def _render_markdown(meta: dict, units: list[tuple[str, dict]], counts: dict, to
 
 
 def _render_json(meta: dict, units: list[tuple[str, dict]], counts: dict, total_units: int,
-                 max_bytes: int) -> str:
+                 max_bytes: int, queue: dict) -> str:
     turns: list[dict] = []
     preamble: list[dict] = []
     for _, unit in units:
@@ -638,7 +718,7 @@ def _render_json(meta: dict, units: list[tuple[str, dict]], counts: dict, total_
                                                  "path": PATH_MARK, "personalInfo": PII_MARK},
                                        "counts": dict(counts)},
                 "origins": {"user": "用户输入", "model": "模型判断", "platform": "平台事实（工具结果）"},
-                "beforeFirstTurn": preamble, "turns": turns,
+                "beforeFirstTurn": preamble, "turns": turns, "queue": queue,
                 "truncated": len(units) < total_units,
                 "exportedEntries": len(units), "totalEntries": total_units, "maxBytes": max_bytes}
     return json.dumps(document, ensure_ascii=False, indent=2, default=str) + "\n"
@@ -673,6 +753,7 @@ section.turn > h2 { display: flex; gap: .5rem; align-items: baseline; flex-wrap:
 .entry.tool h3 { color: #047857; }
 .entry.tool.write h3 { color: #b45309; }
 .entry.summary h3 { color: #0369a1; }
+.entry.queue h3 { color: #b45309; }
 .plaintext { border-left: 3px solid #b45309; }
 footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid color-mix(in srgb, CanvasText 25%, Canvas);
   color: color-mix(in srgb, CanvasText 80%, Canvas); }
@@ -772,8 +853,29 @@ def _render_unit_html(unit: dict) -> str:
     return ""
 
 
+def _render_queue_html(queue: dict) -> str:
+    items = queue["items"]
+    if not items:
+        return ""
+    parts = ['<section class="queue"><h2>消息队列（未形成回合）</h2>',
+             "<p>当前会话的队列状态，与导出视图无关；以下消息没有对应的已记录回合。</p>"]
+    if queue["totalItems"] > len(items):
+        parts.append(f"<p>共 {queue['totalItems']} 个未形成回合的队列项，仅列出最近 {len(items)} 个。</p>")
+    for item in items:
+        kind = _QUEUE_KIND.get(item["kind"], "类型不明")
+        status = _QUEUE_STATUS.get(item["status"], "状态不明")
+        parts.append(f'<div class="entry queue"><h3>队列项 <code>{_h(item["queueId"])}</code> · '
+                     f'{_h(kind)} · {_h(status)}</h3>')
+        facts = _queue_facts(item)
+        if facts:
+            parts.append("<ul>" + "".join(f"<li>{_h(fact)}</li>" for fact in facts) + "</ul>")
+        parts.append(f'<pre>{_h(item["input"] or "（空）")}</pre></div>')
+    parts.append("</section>")
+    return "".join(parts)
+
+
 def _render_html(meta: dict, units: list[tuple[str, dict]], counts: dict, total_units: int,
-                 max_bytes: int) -> str:
+                 max_bytes: int, queue: dict) -> str:
     view_log = meta["view"] == "log"
     usage = meta["usage"]
     notice = ("用于复盘与问题报告。默认已脱敏：凭据、令牌、环境变量、本机绝对路径与附件内容不导出。"
@@ -792,6 +894,8 @@ def _render_html(meta: dict, units: list[tuple[str, dict]], counts: dict, total_
     ]
     if usage["summaryTasks"]["requests"]:
         rows.append(f"摘要任务用量：{_h(_tokens(usage['summaryTasks']))}")
+    if queue["totalItems"]:
+        rows.append(f"消息队列：{queue['totalItems']} 个未形成回合的队列项")
     parts = ['<!doctype html>', '<html lang="zh-CN"><head><meta charset="utf-8">',
              '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'">',
              '<meta name="referrer" content="no-referrer">',
@@ -816,6 +920,9 @@ def _render_html(meta: dict, units: list[tuple[str, dict]], counts: dict, total_
             parts.append(_render_unit_html(unit))
     if open_section:
         parts.append("</section>")
+    queue_html = _render_queue_html(queue)
+    if queue_html:
+        parts.append(queue_html)
     parts.append("</main><footer>")
     parts.append(f"<p>脱敏统计：凭据 / 令牌 {counts['secrets']} 处，环境变量 {counts['environment']} 处，"
                  f"本机路径 {counts['paths']} 处，个人信息 {counts['personalInfo']} 处。</p>")
@@ -850,13 +957,14 @@ def export_thread(sessions: SessionStore, thread_id: str, *, branch: bool, fmt: 
                          include_tool_results=include_tool_results, redactor=redactor)
     units = exporter.units()
     meta = exporter.meta(server_version)
+    queue = exporter.queue()
     render = {"markdown": _render_markdown, "json": _render_json, "html": _render_html}[fmt]
     counts = dict(redactor.counts)
 
     def size(count: int) -> int:
         # Budget the escaped transport spelling: it bounds the written file and keeps the
         # response under the single-page RPC limit even for JSON-heavy content.
-        return _wire_bytes(render(meta, units[:count], counts, len(units), max_bytes))
+        return _wire_bytes(render(meta, units[:count], counts, len(units), max_bytes, queue))
 
     keep = len(units)
     if size(keep) > max_bytes:
@@ -868,7 +976,7 @@ def export_thread(sessions: SessionStore, thread_id: str, *, branch: bool, fmt: 
             else:
                 high = middle - 1
         keep = low
-    content = render(meta, units[:keep], counts, len(units), max_bytes)
+    content = render(meta, units[:keep], counts, len(units), max_bytes, queue)
     if _wire_bytes(content) > max_bytes:
         raise ValueError("会话导出头部超出大小上限")
     exported_turns = sum(1 for _, unit in units[:keep] if unit["kind"] == "turn")
