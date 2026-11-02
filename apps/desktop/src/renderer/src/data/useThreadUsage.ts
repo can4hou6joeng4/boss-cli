@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ThreadUsageBucket, ThreadUsageReadResponse, ThreadUsageSummaryJob, ThreadUsageTurn } from "@boss-cli/protocol";
 import { readThreadUsage } from "./harnessBridge";
+import { readPagedItems } from "./pagedRead";
 import { bucketOf, isCount as count, summaryJobOf, turnOf } from "./usageMapping";
 
 /**
@@ -36,14 +37,13 @@ function summaryJobsOf(page: ThreadUsageReadResponse): Pick<NonNullable<ThreadUs
 }
 
 /** 按页读取（每页 200 个回合，最多 10 页），任一页形状不符即整体报错，不展示部分可疑数据。 */
-async function readAll(threadId: string, view: UsageView, valid: () => boolean): Promise<ThreadUsageState["data"] | null> {
-  const turns: ThreadUsageTurn[] = [];
-  let cursor: string | null = null, pages = 0, head: ThreadUsageReadResponse | null = null;
+async function readAll(threadId: string, view: UsageView, valid: () => boolean): Promise<ThreadUsageState["data"]> {
+  let head: ThreadUsageReadResponse | null = null;
   let summaryTasks: ThreadUsageBucket | null = null, totals: ThreadUsageBucket | null = null;
   let summaryMeta: ReturnType<typeof summaryJobsOf> | null = null;
-  do {
+  const reads = await readPagedItems<ThreadUsageTurn>("回合用量", async cursor => {
     const page: ThreadUsageReadResponse = await readThreadUsage(threadId, view, cursor);
-    if (!valid()) return null;
+    if (!valid()) throw new Error("回合用量读取已过期");
     if (!page || page.threadId !== threadId || page.view !== view || page.source !== "provider-usage"
       || !Array.isArray(page.turns) || !count(page.turnCount) || (page.nextCursor !== null && typeof page.nextCursor !== "string")) {
       throw new Error("内核返回的用量不属于当前会话或格式无法识别");
@@ -54,15 +54,16 @@ async function readAll(threadId: string, view: UsageView, valid: () => boolean):
     if (!summaryTasks || !totals) throw new Error("内核返回的用量汇总格式无法识别");
     const pageMeta = page.summaryJobs === undefined ? null : summaryJobsOf(page);
     summaryMeta ??= pageMeta;
+    const turns: ThreadUsageTurn[] = [];
     for (const item of page.turns) {
       const turn = turnOf(item);
       if (!turn) throw new Error("内核返回的回合用量格式无法识别");
       turns.push(turn);
     }
-    cursor = page.nextCursor; pages += 1;
-  } while (cursor && pages < MAX_PAGES);
-  return { threadId, view, turnCount: head!.turnCount, turns, truncated: Boolean(cursor), summaryTasks: summaryTasks!,
-    totals: totals!, ...(summaryMeta ?? {}) };
+    return { items: turns, nextCursor: page.nextCursor ?? null };
+  }, MAX_PAGES);
+  return { threadId, view, turnCount: head!.turnCount, turns: reads.items, truncated: reads.truncated,
+    summaryTasks: summaryTasks!, totals: totals!, ...(summaryMeta ?? {}) };
 }
 
 function errorText(error: unknown): string {
@@ -85,7 +86,7 @@ export function useThreadUsage(threadId: string | null, connected: boolean, supp
     setState(previous => ({ ...previous, loading: true, error: "", data: previous.data?.threadId === id && previous.data.view === view ? previous.data : undefined }));
     try {
       const data = await readAll(id, view, () => version.current === mine);
-      if (data && version.current === mine) setState(previous => ({ ...previous, loading: false, error: "", data }));
+      if (version.current === mine) setState(previous => ({ ...previous, loading: false, error: "", data }));
     } catch (error) {
       if (version.current === mine) setState(previous => ({ ...previous, loading: false, error: errorText(error), data: undefined }));
     }

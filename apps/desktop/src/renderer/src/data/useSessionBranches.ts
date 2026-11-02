@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ContextBranchSummary, ContextCompactJob, InitializeResponse, QueueItem, ThreadBranchEndpoint, TurnSummary } from "@boss-cli/protocol";
 import { abortContextCompaction, listBranchTurns, listThreadBranches, readContext, readContextCompaction, setThreadLeaf } from "./harnessBridge";
+import { readPagedItems } from "./pagedRead";
 
 /**
  * 会话内分支（只在内核同时声明 sessionLeaf / sessionBranchTree / sessionBranchViews 时启用）。
@@ -103,29 +104,20 @@ export function useSessionBranches(threadId: string | null, connected: boolean, 
     const valid = () => alive.current && epoch.current === connectionEpoch && versions.current.get(id) === version;
     update(id, { loading: true });
     try {
-      const endpoints: ThreadBranchEndpoint[] = [];
-      let cursor: string | null = null, pages = 0, truncated = false;
       let head: Awaited<ReturnType<typeof listThreadBranches>> | null = null;
-      do {
+      const endpointPage = await readPagedItems("分支列表", async cursor => {
         const page = await listThreadBranches(id, cursor);
-        if (!valid()) return;
+        if (!valid()) throw new Error("分支列表读取已过期");
         if (page.threadId !== id || !Array.isArray(page.endpoints)) throw new Error("分支列表不属于当前会话");
         head ??= page;
-        endpoints.push(...page.endpoints);
-        cursor = page.nextCursor; pages += 1;
-        if (cursor && pages >= MAX_PAGES) { truncated = true; break; }
-      } while (cursor);
-      const turns: TurnSummary[] = [];
-      let turnsTruncated = false;
-      cursor = null; pages = 0;
-      do {
+        return { items: page.endpoints, nextCursor: page.nextCursor ?? null };
+      }, MAX_PAGES);
+      const turnPage = await readPagedItems("当前分支回合", async cursor => {
         const page = await listBranchTurns(id, cursor);
-        if (!valid()) return;
-        if (page.view !== "branch") throw new Error("当前分支回合响应无效");
-        turns.push(...page.turns.filter(turn => turn.threadId === id));
-        cursor = page.nextCursor; pages += 1;
-        if (cursor && pages >= MAX_PAGES) { turnsTruncated = true; break; }
-      } while (cursor);
+        if (!valid()) throw new Error("当前分支回合读取已过期");
+        if (page.view !== "branch" || !Array.isArray(page.turns)) throw new Error("当前分支回合响应无效");
+        return { items: page.turns.filter(turn => turn.threadId === id), nextCursor: page.nextCursor ?? null };
+      }, MAX_PAGES);
       let summaries: ContextBranchSummary[] = [];
       let jobId: string | undefined;
       try {
@@ -137,8 +129,8 @@ export function useSessionBranches(threadId: string | null, connected: boolean, 
         }
       } catch { /* 摘要条目只用于标注；读取失败不影响分支列表。 */ }
       update(id, state => ({ ...state, loading: false, loaded: true, error: "", branched: head?.branched ?? false,
-        leafTurnId: head?.leafTurnId ?? null, turnCount: head?.turnCount ?? 0, endpoints, endpointsTruncated: truncated,
-        turns, turnsTruncated, summaries }));
+        leafTurnId: head?.leafTurnId ?? null, turnCount: head?.turnCount ?? 0, endpoints: endpointPage.items,
+        endpointsTruncated: endpointPage.truncated, turns: turnPage.items, turnsTruncated: turnPage.truncated, summaries }));
       const known = stateRef.current[id]?.summaryJob;
       const watch = jobId ?? (known?.status === "running" ? known.jobId : undefined);
       if (watch) {
