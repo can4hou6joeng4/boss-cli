@@ -670,6 +670,8 @@ export interface QueueItem {
   status: "queued" | "delivering" | "delivered" | "paused" | "cancelled";
   expectedTurnId?: string | null;
   clientUserMessageId?: string | null;
+  /** Skills loaded for this queued follow-up; applied when it becomes a turn. */
+  skillIds?: string[];
   failureCode?: "TURN_START_FAILED";
   executionStarted?: false;
   turnId?: string;
@@ -687,6 +689,7 @@ export interface QueueAddParams {
   threadId: string;
   input: string;
   clientUserMessageId?: string;
+  skillIds?: string[];
 }
 export interface QueueListResponse { items: QueueItem[] }
 export interface QueueItemResponse { queueItem: QueueItem }

@@ -479,7 +479,7 @@ export function App(): JSX.Element {
       if (continuationSubmitting.current === key) continuationSubmitting.current = null;
     }
   }, [continuationCheck, continuationSupported, harnessUp, markRunning, readContinuationCheck]);
-  const handleQueueMessage = useCallback(async (text: string, intent: QueueIntent, clientUserMessageId: string): Promise<boolean> => {
+  const handleQueueMessage = useCallback(async (text: string, intent: QueueIntent, clientUserMessageId: string, skillIds: string[] = []): Promise<boolean> => {
     const session = activeRef.current;
     if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp || !text.trim()) return false;
     if (intent === "steering") {
@@ -493,7 +493,7 @@ export function App(): JSX.Element {
       if (activeRef.current?.id === session.id) setQueueItems(previous => [...previous.filter(existing => existing.id !== item.id), item]);
       return true;
     }
-    const item = await queueFollowUp({ threadId: session.id, input: text, clientUserMessageId });
+    const item = await queueFollowUp({ threadId: session.id, input: text, clientUserMessageId, skillIds });
     if (activeRef.current?.id === session.id) setQueueItems(previous => [...previous.filter(existing => existing.id !== item.id), item]);
     return true;
   }, [harnessUp]);

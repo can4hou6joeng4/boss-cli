@@ -280,20 +280,28 @@ class TurnQueue:
             return item if associated == item else self._save(thread_id, associated)
 
     def add(self, thread_id: str, text: str, *, kind: str = "followUp", turn_id: str | None = None,
-            client_id: str | None = None) -> dict:
+            client_id: str | None = None, skill_ids: list[str] | None = None) -> dict:
         if kind not in {"steering", "followUp"}:
             raise ValueError("kind 必须是 steering 或 followUp")
         if not isinstance(text, str) or not text.strip() or len(text) > 100_000:
             raise ValueError("队列 input 必须是 1 到 100000 字符")
         if client_id is not None and (not isinstance(client_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", client_id)):
             raise ValueError("clientUserMessageId 格式无效")
+        if skill_ids is None:
+            skill_ids = []
+        if not isinstance(skill_ids, list) or len(skill_ids) > 10 or not all(
+                isinstance(item, str) and item for item in skill_ids):
+            raise ValueError("skillIds 必须是最多 10 项的非空字符串数组")
+        skill_ids = list(dict.fromkeys(skill_ids))
+        if kind == "steering" and skill_ids:
+            raise ValueError("转向消息不支持技能")
         with self.lock:
             self.settle_pauses(thread_id)
             items = self.list(thread_id)
             for item in items:
                 if client_id and item.get("clientUserMessageId") == client_id:
-                    if item["input"] != text or item["kind"] != kind:
-                        raise ValueError("clientUserMessageId 已用于不同输入")
+                    if item["input"] != text or item["kind"] != kind or (item.get("skillIds") or []) != skill_ids:
+                        raise ValueError("clientUserMessageId 已用于不同输入或技能组合")
                     return item
             pending_items, pending_bytes = self._pending_usage(items)
             input_bytes = len(text.encode("utf-8"))
@@ -304,7 +312,7 @@ class TurnQueue:
                                 "maxInputBytes": MAX_PENDING_QUEUE_INPUT_BYTES})
             return self._save(thread_id, {"id": uuid.uuid4().hex, "kind": kind,
                 "input": text, "status": "queued", "expectedTurnId": turn_id,
-                "clientUserMessageId": client_id})
+                "clientUserMessageId": client_id, "skillIds": skill_ids})
 
     def transition(self, thread_id: str, queue_id: str, status: str) -> dict:
         with self.lock:
