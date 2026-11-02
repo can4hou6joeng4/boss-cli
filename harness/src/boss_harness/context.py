@@ -884,9 +884,11 @@ class ContextService:
 
         Mirrors ``read``: a summary that fails validation never takes effect, and
         only a bounded identifier is returned for the read-only usage marker.
+        A damaged branch projection also yields no marker so that a read-only
+        usage report never fails on that account alone.
         """
-        entries = self._entries(thread_id, entries)
         try:
+            entries = self._entries(thread_id, entries)
             checkpoint = self._validated_checkpoint(thread_id, entries)
         except ValueError:
             return None
