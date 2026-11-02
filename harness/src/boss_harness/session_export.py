@@ -24,8 +24,8 @@ from html import escape
 from pathlib import Path
 from typing import Any, Iterable
 
+from boss_harness.compaction import verified_policy
 from boss_harness.context import tool_execution_status
-from boss_harness.models.capabilities import REASONING_EFFORTS
 from boss_harness.models.secret import redact_secrets
 from boss_harness.session import BRANCH_SUMMARY_ENTRY_TYPE, MAX_BRANCH_SUMMARY_CHARS, SessionStore
 from boss_harness.usage import SOURCE as USAGE_SOURCE, summarize_usage
@@ -494,7 +494,7 @@ class _Exporter:
         }
 
     def _compaction_policy(self, value: Any) -> dict | None:
-        policy = _export_auto_compaction(value, _AUTO_COMPACTION_FIELDS)
+        policy = verified_policy(value, _AUTO_COMPACTION_FIELDS)
         if policy is not None and "model" in policy:
             policy["model"] = self.redactor.text(policy["model"], limit=120) or None
         return policy
@@ -540,8 +540,8 @@ class _Exporter:
                 "inputPersisted": payload.get("inputPersisted")
                 if type(payload.get("inputPersisted")) is bool else None,
                 "deduplicated": payload.get("deduplicated") is True,
-                "autoCompaction": _export_auto_compaction(payload.get("autoCompaction"),
-                                                          _QUEUE_OVERRIDE_FIELDS),
+                "autoCompaction": verified_policy(payload.get("autoCompaction"),
+                                                  _QUEUE_OVERRIDE_FIELDS),
             })
         return {"items": items, "totalItems": len(ordered), "maxItems": MAX_QUEUE_ITEMS}
 
@@ -654,32 +654,7 @@ _QUEUE_KIND = {"steering": "转向当前回合", "followUp": "后续回合", "un
 _AUTO_COMPACTION_FIELDS = ("enabled", "triggerPercent", "keepRecentTokens",
                            "provider", "model", "effort")
 _QUEUE_OVERRIDE_FIELDS = _AUTO_COMPACTION_FIELDS[:3]
-_PROVIDERS = {"anthropic", "openai", "codex"}
 
-
-def _export_auto_compaction(value: Any, fields: tuple[str, ...]) -> dict | None:
-    """只导出与内核策略校验一致的自动压缩字段；异常历史数据按未记录处理。"""
-    if not isinstance(value, dict) or not value or set(value) - set(fields):
-        return None
-    enabled, trigger = value.get("enabled"), value.get("triggerPercent")
-    keep, provider = value.get("keepRecentTokens"), value.get("provider")
-    model, effort = value.get("model"), value.get("effort")
-    if "enabled" in value and type(enabled) is not bool:
-        return None
-    if "triggerPercent" in value and (type(trigger) is not int or not 1 <= trigger <= 100):
-        return None
-    if "keepRecentTokens" in value and (type(keep) is not int or not 1 <= keep <= 1_000_000):
-        return None
-    if "provider" in value and provider is not None and (
-            not isinstance(provider, str) or provider not in _PROVIDERS):
-        return None
-    if "model" in value and model is not None and (
-            not isinstance(model, str) or not model.strip() or len(model) > 200
-            or any(char.isspace() for char in model)):
-        return None
-    if "effort" in value and effort is not None and effort not in REASONING_EFFORTS:
-        return None
-    return {key: value[key] for key in fields if key in value}
 
 
 def _compaction_facts(policy: dict) -> list[str]:

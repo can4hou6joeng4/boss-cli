@@ -2,6 +2,7 @@ import { ModalSurface } from "./ModalSurface";
 import type { ThreadUsageBucket, ThreadUsageTurn } from "@boss-cli/protocol";
 import type { MessageItem } from "../data/mockData";
 import type { ThreadUsageState, UsageView } from "../data/useThreadUsage";
+import { compactionLabel, compactionTitle } from "../shell/queueCompaction";
 import "../styles/context-panel.css";
 
 /** 内核 usage.verify_usage 的不计入原因；未知原因原样显示。 */
@@ -80,7 +81,9 @@ export function UsageDialog({ isOpen, onClose, state, messages, branchViews, con
           {data.turns.length ? <div className="usage-table-wrap"><table className="usage-table">
             <thead><tr><th>回合</th><th>模型</th><th>请求</th><th>输入</th><th>缓存读</th><th>缓存写</th><th>输出</th><th>推理</th></tr></thead>
             <tbody>{data.turns.map(turn => <tr key={turn.turnId} data-usage-turn={turn.turnId}>
-              <td><span title={inputOf(turn.turnId)}>{turnLabel(turn)}</span><small>{clip(inputOf(turn.turnId), turn.turnId)}</small></td>
+              <td><span title={inputOf(turn.turnId)}>{turnLabel(turn)}</span><small>{clip(inputOf(turn.turnId), turn.turnId)}</small>
+                {turn.compactionPolicy && <small data-usage-field="compactionPolicy" title={compactionTitle(turn.compactionPolicy)}>{compactionLabel(turn.compactionPolicy)}</small>}
+              </td>
               <td><span>{turn.models.join("、") || DASH}</span><small>{turn.providers.join("、")}</small></td>
               <td data-usage-field="requests">{number(turn.requests)}{unreported(turn) > 0 && <small data-usage-unreported title="provider 未上报用量，不是 0">未上报 {number(unreported(turn))}</small>}{turn.unverifiedRequests > unreported(turn) && <small title={`未计入：${reasons(turn)}`}>不计入 {number(turn.unverifiedRequests - unreported(turn))}</small>}</td>
               <td data-usage-field="promptTokens">{amount(turn, turn.promptTokens)}</td>
@@ -90,7 +93,7 @@ export function UsageDialog({ isOpen, onClose, state, messages, branchViews, con
               <td data-usage-field="reasoningTokens">{amount(turn, turn.reasoningTokens)}</td>
             </tr>)}</tbody>
           </table></div> : <p className="context-panel-note">还没有模型用量记录。</p>}
-          <p className="context-panel-note">“输入”含缓存读写（OpenAI 的输入本身已含缓存读取，Anthropic 由内核合并）；“推理”包含在“输出”内。不计入的记录不参与任何数值。</p>
+          <p className="context-panel-note">“输入”含缓存读写（OpenAI 的输入本身已含缓存读取，Anthropic 由内核合并）；“推理”包含在“输出”内。不计入的记录不参与任何数值。回合下的压缩标记来自该回合开始时记录的自动压缩策略，悬停可看摘要线路。</p>
         </section>
       </>}
       {!data && state.loading && <p className="context-panel-note" role="status">正在读取用量…</p>}

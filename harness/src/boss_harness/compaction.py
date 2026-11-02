@@ -9,12 +9,44 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import os
+from typing import Any
 
 from boss_harness.models.capabilities import REASONING_EFFORTS
 
 
-_COMPACTION_FIELDS = {"enabled", "triggerPercent", "keepRecentTokens", "provider", "model", "effort"}
+_FIELDS = ("enabled", "triggerPercent", "keepRecentTokens", "provider", "model", "effort")
+_COMPACTION_FIELDS = set(_FIELDS)
 _PROVIDERS = {"anthropic", "openai", "codex"}
+
+
+def verified_policy(value: Any, fields: tuple[str, ...] = _FIELDS) -> dict | None:
+    """校验持久化的自动压缩策略快照，按内核策略规则过滤。
+
+    未知字段、空对象或任一非法值都按“未记录”处理，返回 ``None``；
+    合法时只返回 ``fields`` 中实际存在的字段，字段顺序与 ``fields`` 一致。
+    """
+    if not isinstance(value, dict) or not value or set(value) - set(fields):
+        return None
+    enabled, trigger = value.get("enabled"), value.get("triggerPercent")
+    keep, provider = value.get("keepRecentTokens"), value.get("provider")
+    model, effort = value.get("model"), value.get("effort")
+    if "enabled" in value and type(enabled) is not bool:
+        return None
+    if "triggerPercent" in value and (type(trigger) is not int or not 1 <= trigger <= 100):
+        return None
+    if "keepRecentTokens" in value and (type(keep) is not int or not 1 <= keep <= 1_000_000):
+        return None
+    if "provider" in value and provider is not None and (
+            not isinstance(provider, str) or provider not in _PROVIDERS):
+        return None
+    if "model" in value and model is not None and (
+            not isinstance(model, str) or not model.strip() or len(model) > 200
+            or any(char.isspace() for char in model)):
+        return None
+    if "effort" in value and effort is not None and effort not in REASONING_EFFORTS:
+        return None
+    return {key: value[key] for key in fields if key in value}
+
 
 class ContextCompactionFailed(ValueError):
     def __init__(self, code: str, message: str) -> None:

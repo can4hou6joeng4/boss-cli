@@ -1049,7 +1049,13 @@ export interface ThreadUsageBucket {
   costUsd: number | null;
   costSource: "unavailable";
 }
-export interface ThreadUsageTurn extends ThreadUsageBucket { turnId: string; providers: string[]; models: string[] }
+export interface ThreadUsageTurn extends ThreadUsageBucket {
+  turnId: string;
+  providers: string[];
+  models: string[];
+  /** 该回合记录的实际自动压缩策略；非法历史记录或旧内核不返回此字段。 */
+  compactionPolicy?: AutoCompactionPolicy;
+}
 export interface ThreadUsageReadResponse {
   threadId: string;
   view: "log" | "branch";

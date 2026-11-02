@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from boss_harness.compaction import verified_policy
+
 # 单次请求合理上限：远大于任何已知上下文窗口，用于拒绝明显异常的中转数据。
 MAX_REQUEST_TOKENS = 50_000_000
 _FIELDS = ("input", "output", "cache_read", "cache_write")
@@ -113,8 +115,14 @@ def _merge(total: dict, part: dict) -> None:
             total[key] = (total[key] or 0) + part[key]
 
 
-def summarize_usage(entries: Iterable[dict], active_turn_ids: set[str] | None = None) -> dict:
-    """Aggregate persisted usage records per turn (file order) plus summary-task totals."""
+def summarize_usage(entries: Iterable[dict], active_turn_ids: set[str] | None = None,
+                    turn_policies: dict[str, Any] | None = None) -> dict:
+    """Aggregate persisted usage records per turn (file order) plus summary-task totals.
+
+    ``turn_policies`` maps a turn to its recorded compaction policy; only policies
+    that pass the same validation as ``thread/export`` are attached, and turns
+    without a valid record keep no ``compactionPolicy`` field.
+    """
     turns: dict[str, dict] = {}
     summary = _empty()
     for entry in entries:
@@ -129,6 +137,9 @@ def summarize_usage(entries: Iterable[dict], active_turn_ids: set[str] | None = 
             bucket = turns.get(turn_id)
             if bucket is None:
                 bucket = turns[turn_id] = {"turnId": turn_id, "providers": [], "models": [], **_empty()}
+                policy = verified_policy((turn_policies or {}).get(turn_id))
+                if policy is not None:
+                    bucket["compactionPolicy"] = policy
             _add(bucket, payload.get("provider"), payload.get("model"), payload.get("usage"))
         elif kind == "context_summary_usage":
             _add(summary, payload.get("provider"), payload.get("model"), payload.get("usage"))
