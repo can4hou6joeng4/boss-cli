@@ -2,6 +2,9 @@ import type { EventListResponse, ItemContentReference, ItemContentReadResponse, 
 import type { HarnessEvent } from "./harnessEvents";
 
 interface Api { request<T>(method: string, params?: unknown): Promise<T> }
+/** 单次恢复允许的分页上限：只兜住异常内核造成的无尽翻页，正常会话远达不到。 */
+const MAX_PAGE_COUNT = 10_000;
+const MAX_CURSOR_LENGTH = 2048;
 function validateContentReference(reference: ItemContentReference): void {
   if (!reference || reference.encoding !== "text" || typeof reference.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(reference.sha256) ||
       typeof reference.itemId !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/.test(reference.itemId) ||
@@ -59,13 +62,8 @@ export class HarnessReplica {
         if (snapshot.view !== "branch" || !snapshot.branch || snapshot.branch.threadId !== threadId || snapshot.thread?.id !== threadId ||
             typeof snapshot.snapshotId !== "string" || !/^[a-f0-9]{32}$/.test(snapshot.snapshotId)) throw new Error("分支快照响应无效");
         const snapshotId = snapshot.snapshotId;
-        const items: ThreadItem[] = [];
-        let pageCursor: string | null = null;
-        do {
-          const page: ItemListResponse = await this.api.request("thread/items/list", { threadId, snapshotId, view: "branch", cursor: pageCursor, limit: 100 });
-          current();
-          items.push(...page.items); pageCursor = page.nextCursor;
-        } while (pageCursor);
+        const items = await this.readAllItems(
+          pageCursor => ({ threadId, snapshotId, view: "branch", cursor: pageCursor, limit: 100 }), current);
         const hydrated: ThreadItem[] = [];
         for (const item of items) { current(); hydrated.push(await this.resolveItemContent(item, threadId, snapshotId, current)); }
         snapshot.items = hydrated;
@@ -96,14 +94,8 @@ export class HarnessReplica {
       if (!(error instanceof Error) || !/RESPONSE_TOO_LARGE|会话响应过大/.test(error.message)) throw error;
       current();
       snapshot = probe;
-      const items: ThreadItem[] = [];
-      let pageCursor: string | null = null;
-      do {
-        const page: ItemListResponse = await this.api.request("thread/items/list", { threadId, view: "branch", cursor: pageCursor, limit: 100 });
-        current();
-        items.push(...page.items); pageCursor = page.nextCursor;
-      } while (pageCursor);
-      snapshot.items = items;
+      snapshot.items = await this.readAllItems(
+        pageCursor => ({ threadId, view: "branch", cursor: pageCursor, limit: 100 }), current);
     }
     current();
     if (snapshot.view !== "branch" || snapshot.thread?.id !== threadId) throw new Error("分支视图响应无效");
@@ -172,15 +164,9 @@ export class HarnessReplica {
       if (branched) {
         // Items were read together with the branch projection above.
       } else if (snapshot.snapshotId) {
-        const items: ThreadReadResponse["items"] = [];
-        let pageCursor: string | null = null;
-        do {
-          const page: ItemListResponse = await this.api.request("thread/items/list", {
-            threadId, snapshotId: snapshot.snapshotId, cursor: pageCursor, limit: 100,
-          });
-          current();
-          items.push(...page.items); pageCursor = page.nextCursor;
-        } while (pageCursor);
+        const snapshotId = snapshot.snapshotId;
+        const items = await this.readAllItems(
+          pageCursor => ({ threadId, snapshotId, cursor: pageCursor, limit: 100 }), current);
         const hydrated: ThreadItem[] = [];
         for (const item of items) { current(); hydrated.push(await this.resolveItemContent(item, threadId, snapshot.snapshotId, current)); }
         snapshot.items = hydrated;
@@ -192,19 +178,15 @@ export class HarnessReplica {
         for (const item of full.items) { current(); hydrated.push(await this.resolveItemContent(item, threadId, undefined, current)); }
         snapshot.items = hydrated;
       }
+      const eventCursor = snapshot.eventCursor;
+      if (eventCursor !== undefined && (typeof eventCursor !== "string" || !/^\d{1,19}$/.test(eventCursor))) {
+        throw new Error("会话事件游标无效");
+      }
       current();
       this.onSnapshot(snapshot);
-      let after = snapshot.eventCursor ?? "0";
+      const after = eventCursor ?? "0";
       this.cursors.set(threadId, BigInt(after));
-      if (snapshot.eventCursor !== undefined) {
-        let more = true;
-        while (more) {
-          const page: EventListResponse = await this.api.request("event/list", { threadId, cursor: after, limit: 200 });
-          current();
-          for (const event of page.events) this.apply(event as HarnessEvent);
-          after = page.nextCursor; more = page.hasMore;
-        }
-      }
+      if (eventCursor !== undefined) await this.replayEvents(threadId, after, current);
       current();
       return snapshot;
     }).catch(error => {
@@ -219,6 +201,50 @@ export class HarnessReplica {
     });
     this.loading.set(threadId, { buffered, flight });
     return flight;
+  }
+
+  /** 分页读满条目列表；形状、游标前进与页数都要校验，异常响应让恢复失败而不是无限翻页。 */
+  private async readAllItems(
+    params: (cursor: string | null) => Record<string, unknown>,
+    current: () => void,
+  ): Promise<ThreadItem[]> {
+    const items: ThreadItem[] = [];
+    let cursor: string | null = null;
+    for (let pages = 0; ; pages += 1) {
+      if (pages >= MAX_PAGE_COUNT) throw new Error("会话条目分页过多，未能完整读取");
+      const page: ItemListResponse = await this.api.request("thread/items/list", params(cursor));
+      current();
+      if (!page || !Array.isArray(page.items)) throw new Error("会话条目分页响应无效");
+      const next: string | null = page.nextCursor ?? null;
+      if (next !== null && (typeof next !== "string" || !next || next.length > MAX_CURSOR_LENGTH)) {
+        throw new Error("会话条目分页游标无效");
+      }
+      if (next !== null && next === cursor) throw new Error("会话条目分页未前进");
+      items.push(...page.items);
+      if (next === null) return items;
+      cursor = next;
+    }
+  }
+
+  /** 按事件游标重放增量，同样校验形状与游标前进，避免异常响应让恢复一直转圈。 */
+  private async replayEvents(threadId: string, start: string, current: () => void): Promise<void> {
+    let cursor = start;
+    for (let pages = 0; ; pages += 1) {
+      if (pages >= MAX_PAGE_COUNT) throw new Error("会话事件分页过多，未能完整重放");
+      const page: EventListResponse = await this.api.request("event/list", { threadId, cursor, limit: 200 });
+      current();
+      if (!page || !Array.isArray(page.events)) throw new Error("会话事件分页响应无效");
+      const next = page.nextCursor;
+      if (typeof next !== "string" || !next || next.length > MAX_CURSOR_LENGTH) {
+        throw new Error("会话事件分页游标无效");
+      }
+      const more = page.hasMore === true;
+      // 还有下一页却没有新事件、或游标不动：再请求只会得到同一页。
+      if (more && (next === cursor || page.events.length === 0)) throw new Error("会话事件分页未前进");
+      for (const event of page.events) this.apply(event as HarnessEvent);
+      if (!more) return;
+      cursor = next;
+    }
   }
 
   private reportFailure(threadId: string, error: unknown): void {
