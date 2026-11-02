@@ -130,10 +130,11 @@ function registerIPC(): void {
       const exported = validateThreadExportResponse(response, request);
       const parent = BrowserWindow.fromWebContents(event.sender);
       if (!parent || parent.isDestroyed()) throw new Error("export parent was closed");
-      const markdown = request.format === "markdown";
+      const filter = request.format === "markdown" ? { name: "Markdown", extensions: ["md"] }
+        : request.format === "html" ? { name: "HTML", extensions: ["html"] } : { name: "JSON", extensions: ["json"] };
       const choice = await dialog.showSaveDialog(parent, {
         title: "导出会话", defaultPath: join(app.getPath("downloads"), sessionExportFileName(request)),
-        filters: [markdown ? { name: "Markdown", extensions: ["md"] } : { name: "JSON", extensions: ["json"] }],
+        filters: [filter],
         properties: ["createDirectory", "showOverwriteConfirmation"],
       });
       if (choice.canceled || !choice.filePath) return { saved: false, canceled: true };

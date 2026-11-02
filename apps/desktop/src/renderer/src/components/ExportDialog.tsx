@@ -83,6 +83,7 @@ export function ExportDialog({ isOpen, onClose, threadId, branchViews, connected
       <fieldset className="export-options" aria-label="导出格式">
         <legend>格式</legend>
         <label className="branch-summary-option"><input type="radio" name="export-format" checked={format === "markdown"} onChange={() => setFormat("markdown")} /><span>Markdown（便于阅读与粘贴）</span></label>
+        <label className="branch-summary-option"><input type="radio" name="export-format" checked={format === "html"} onChange={() => setFormat("html")} /><span>HTML（自包含，可用浏览器打开与打印）</span></label>
         <label className="branch-summary-option"><input type="radio" name="export-format" checked={format === "json"} onChange={() => setFormat("json")} /><span>JSON（结构化，便于工具处理）</span></label>
       </fieldset>
       <label className="branch-summary-option"><input type="checkbox" data-export-include checked={includeToolResults} onChange={event => { setIncludeToolResults(event.target.checked); setAcknowledged(false); }} /><span>包含工具结果明文</span></label>

@@ -78,7 +78,7 @@ export interface InitializeResponse {
     sessionBranchSnapshots?: boolean;
     /** 可用 `thread/branchSummary/read` 读取被放弃分支摘要正文。 */
     sessionBranchSummaryRead?: boolean;
-    /** 可用只读 `thread/export` 导出脱敏后的会话文本（Markdown / JSON）。 */
+    /** 可用只读 `thread/export` 导出脱敏后的会话文本（Markdown / JSON / 自包含 HTML）。 */
     threadExport?: boolean };
   eventCursor?: string;
 }
@@ -958,6 +958,7 @@ export interface AttachmentDescriptor { id: string; name: string; digest: string
 
 /**
  * `thread/export` 参数；仅在 `capabilities.threadExport` 为真时可用。只读，不写会话。
+ * `format` 为 `markdown`、`json` 或自包含 HTML（内联样式、禁止脚本与外部资源）。
  * 默认脱敏：凭据、令牌、环境变量、本机绝对路径与附件内容不导出，工具结果只保留结构与执行状态，
  * 个人信息按工具数据中识别到的字段值打码（未出现在工具数据中的姓名可能无法识别）；
  * `includeToolResults: true` 才导出工具参数与结果明文（凭据与路径仍脱敏）。
@@ -966,15 +967,15 @@ export interface AttachmentDescriptor { id: string; name: string; digest: string
 export interface ThreadExportParams {
   threadId: string;
   view?: "log" | "branch";
-  format?: "markdown" | "json";
+  format?: "markdown" | "json" | "html";
   includeToolResults?: boolean;
   maxBytes?: number;
 }
 export interface ThreadExportResponse {
   threadId: string;
   view: "log" | "branch";
-  format: "markdown" | "json";
-  mediaType: "text/markdown" | "application/json";
+  format: "markdown" | "json" | "html";
+  mediaType: "text/markdown" | "application/json" | "text/html";
   /** 不含会话标题，避免文件名携带个人信息。 */
   suggestedFileName: string;
   content: string;
@@ -990,7 +991,7 @@ export interface ThreadExportResponse {
 export interface SessionExportSaveRequest {
   threadId: string;
   view: "log" | "branch";
-  format: "markdown" | "json";
+  format: "markdown" | "json" | "html";
   includeToolResults: boolean;
   /** 必填 true 才能带明文导出；主进程同样校验，不只依赖渲染层的确认框。 */
   acknowledgePlaintext?: boolean;

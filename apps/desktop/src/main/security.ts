@@ -290,7 +290,7 @@ export function validateSessionExportRequest(payload: unknown): SessionExportSav
     Reflect.ownKeys(payload).some(key => typeof key !== "string" || !allowed.has(key)) ||
     typeof payload.threadId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(payload.threadId) ||
     (payload.view !== "log" && payload.view !== "branch") ||
-    (payload.format !== "markdown" && payload.format !== "json") ||
+    (payload.format !== "markdown" && payload.format !== "json" && payload.format !== "html") ||
     typeof payload.includeToolResults !== "boolean" ||
     (payload.acknowledgePlaintext !== undefined && typeof payload.acknowledgePlaintext !== "boolean") ||
     (payload.includeToolResults && payload.acknowledgePlaintext !== true)) {
@@ -317,5 +317,6 @@ export function validateThreadExportResponse(value: unknown, request: SessionExp
 
 /** Save-dialog default name: fixed prefix, thread id, view and extension only. */
 export function sessionExportFileName(request: SessionExportSaveRequest): string {
-  return `boss-cli-session-${request.threadId}-${request.view}.${request.format === "markdown" ? "md" : "json"}`;
+  const extension = request.format === "markdown" ? "md" : request.format;
+  return `boss-cli-session-${request.threadId}-${request.view}.${extension}`;
 }

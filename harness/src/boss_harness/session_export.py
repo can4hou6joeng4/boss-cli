@@ -5,10 +5,11 @@ packages/coding-agent/src/core/session-export.ts（按当前分支序列化会�
 export-html/（完整条目 + leaf 渲染为可阅读文档）。本模块独立实现，不复制 Pi 源码：
 
 - 只读取已持久的会话条目，不写会话、不调用模型或工具、不发事件；
-- 输出 Markdown 或 JSON 文本，由外壳主进程经保存对话框写盘，内核不触碰导出目标路径；
+- 输出 Markdown、JSON 或自包含 HTML 文本，由外壳主进程经保存对话框写盘，内核不触碰导出目标路径；
 - 默认脱敏：凭据、令牌、环境变量、本机绝对路径与附件内容一律不导出；工具结果只保留
-  结构与执行状态，候选人个人信息（姓名、手机号、邮箱、微信、简历正文等）在全文中打码；
-  调用方显式传入 ``includeToolResults`` 才导出工具参数与结果明文（凭据与路径仍脱敏）；
+  结构与执行状态，个人信息按工具数据中识别到的字段值在全文打码（未出现在工具数据中的
+  姓名可能无法识别）；调用方显式传入 ``includeToolResults`` 才导出工具参数与结果明文
+  （凭据与路径仍脱敏）；
 - 区分用户输入、模型输出（模型判断）、工具调用（平台事实来源）与模型生成的摘要；
 - 输出有字节上限，超限按条目截断并在文末标注。
 """
@@ -18,6 +19,7 @@ import json
 import os
 import re
 from datetime import datetime, timezone
+from html import escape
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -26,7 +28,7 @@ from boss_harness.models.secret import redact_secrets
 from boss_harness.session import BRANCH_SUMMARY_ENTRY_TYPE, MAX_BRANCH_SUMMARY_CHARS, SessionStore
 from boss_harness.usage import SOURCE as USAGE_SOURCE, summarize_usage
 
-EXPORT_FORMATS = ("markdown", "json")
+EXPORT_FORMATS = ("markdown", "json", "html")
 DEFAULT_EXPORT_BYTES = 512 * 1024
 MIN_EXPORT_BYTES = 64 * 1024
 # 响应须低于传输单页上限（1 MiB，JSON 字符串转义会放大）。
@@ -492,6 +494,22 @@ def _usage_line(bucket: dict | None) -> str:
     return "无模型请求记录" if bucket is None else _tokens(bucket)
 
 
+def _result_facts(result: dict) -> list[str]:
+    facts = [f"ok={str(result['ok']).lower() if result['ok'] is not None else '未知'}",
+             "data：" + result["data"]["type"]]
+    if result["data"].get("itemFields"):
+        facts.append("条目字段：" + "、".join(result["data"]["itemFields"]))
+    if result["data"].get("fields"):
+        facts.append("字段：" + "、".join(f"{k}（{v}）" for k, v in result["data"]["fields"].items()))
+    if result["pagination"] is not None:
+        facts.append("分页：" + json.dumps(result["pagination"], ensure_ascii=False))
+    if result["error"]:
+        facts.append(f"错误：{result['error']['code'] or '—'} {result['error']['message'] or ''}".rstrip())
+    if result["hintCount"]:
+        facts.append(f"hints {result['hintCount']} 条未导出")
+    return facts
+
+
 def _render_unit(unit: dict, view_log: bool) -> str:
     kind = unit["kind"]
     if kind == "turn":
@@ -551,18 +569,7 @@ def _render_unit(unit: dict, view_log: bool) -> str:
             lines.append("")
             lines.append(_fence(result["text"], "json"))
         else:
-            facts = [f"ok={str(result['ok']).lower() if result['ok'] is not None else '未知'}",
-                     "data：" + result["data"]["type"]]
-            if result["data"].get("itemFields"):
-                facts.append("条目字段：" + "、".join(result["data"]["itemFields"]))
-            if result["data"].get("fields"):
-                facts.append("字段：" + "、".join(f"{k}（{v}）" for k, v in result["data"]["fields"].items()))
-            if result["pagination"] is not None:
-                facts.append("分页：" + json.dumps(result["pagination"], ensure_ascii=False))
-            if result["error"]:
-                facts.append(f"错误：{result['error']['code'] or '—'} {result['error']['message'] or ''}".rstrip())
-            if result["hintCount"]:
-                facts.append(f"hints {result['hintCount']} 条未导出")
+            facts = _result_facts(result)
             lines.append("- 结果（仅结构与状态，明文已省略）：" + "；".join(facts))
         return "\n".join(lines)
     if kind in {"branchSummary", "compactionSummary"}:
@@ -637,6 +644,193 @@ def _render_json(meta: dict, units: list[tuple[str, dict]], counts: dict, total_
     return json.dumps(document, ensure_ascii=False, indent=2, default=str) + "\n"
 
 
+_HTML_STYLE = """
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+body { margin: 0 auto; max-width: 62rem; padding: 2rem 1rem 4rem; background: Canvas; color: CanvasText;
+  font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Noto Sans CJK SC", sans-serif; }
+h1 { font-size: 1.5rem; margin: 0 0 .5rem; }
+h2 { font-size: 1.15rem; margin: 0; }
+h3 { font-size: 1rem; margin: 0 0 .5rem; }
+h4 { font-size: .95rem; margin: 1rem 0 .25rem; }
+p { margin: .35rem 0; }
+ul { margin: .25rem 0 .5rem; padding-left: 1.25rem; }
+li { margin: .15rem 0; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em; }
+pre { margin: .5rem 0; padding: .75rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word;
+  background: color-mix(in srgb, CanvasText 6%, Canvas); border-radius: 8px; }
+.notice { padding: .75rem; border-left: 4px solid #c2410c; background: color-mix(in srgb, #c2410c 8%, Canvas); }
+.meta { padding-left: 1.25rem; }
+section { margin: 1.5rem 0 0; padding: 1rem; border: 1px solid color-mix(in srgb, CanvasText 18%, Canvas);
+  border-radius: 10px; }
+section.turn > h2 { display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap; }
+.turn-meta { color: color-mix(in srgb, CanvasText 75%, Canvas); }
+.badge { font-size: .8em; padding: .1rem .45rem; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, CanvasText 30%, Canvas); }
+.entry { margin-top: 1rem; padding-top: .75rem; border-top: 1px dashed color-mix(in srgb, CanvasText 20%, Canvas); }
+.entry.user h3 { color: #1d4ed8; }
+.entry.model h3 { color: #7c3aed; }
+.entry.tool h3 { color: #047857; }
+.entry.tool.write h3 { color: #b45309; }
+.entry.summary h3 { color: #0369a1; }
+.plaintext { border-left: 3px solid #b45309; }
+footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid color-mix(in srgb, CanvasText 25%, Canvas);
+  color: color-mix(in srgb, CanvasText 80%, Canvas); }
+@media print { body { max-width: none; padding: 0; } section { break-inside: avoid; } }
+"""
+
+
+def _h(value: Any) -> str:
+    return escape(str(value), quote=True)
+
+
+def _turn_heading_html(unit: dict, view_log: bool) -> str:
+    status = _TURN_STATUS.get(unit["status"], "状态不明")
+    meta = [f"开始：{unit['startedAt'] or '—'}", f"结束：{unit['completedAt'] or '—'}"]
+    if unit["model"]:
+        meta.append(f"模型：{unit['provider'] or '—'} / {unit['model']}")
+    if view_log:
+        meta.append("在当前分支：" + ("是" if unit["onCurrentBranch"] else "否（已切离的分支）"))
+    if unit["failureCode"]:
+        meta.append(f"失败 / 恢复原因：{unit['failureCode']}")
+    return "".join([
+        f'<section class="turn">',
+        f'<h2>回合 {unit["index"]} · <code>{_h(unit["turnId"])}</code> <span class="badge">{_h(status)}</span></h2>',
+        f'<p class="turn-meta">{"；".join(_h(item) for item in meta)}</p>',
+        f'<p class="turn-meta">用量（provider 上报，不估算、不计价）：{_h(unit["usageLabel"])}</p>',
+    ])
+
+
+def _render_unit_html(unit: dict) -> str:
+    kind = unit["kind"]
+    if kind == "userInput":
+        title = "用户输入" + ("（来自消息队列）" if unit["queued"] else "")
+        parts = [f'<div class="entry user"><h3>{_h(title)}</h3>',
+                 f'<pre>{_h(unit["text"] or "（空）")}</pre>']
+        if unit["attachments"]:
+            items = "".join(
+                f'<li>{_h(a["mediaType"] or "未知类型")} {_h(a["bytes"] if a["bytes"] is not None else "?")} 字节</li>'
+                for a in unit["attachments"])
+            parts.append(f'<p>附件 {len(unit["attachments"])} 个（文件名与内容未导出）：</p><ul>{items}</ul>')
+        parts.append("</div>")
+        return "".join(parts)
+    if kind == "modelOutput":
+        status = "" if unit["status"] == "completed" else f"（状态：{unit['status']}，可能不完整）"
+        parts = [f'<div class="entry model"><h3>模型输出（模型判断，未经平台核实）{_h(status)}</h3>',
+                 f'<pre>{_h(unit["text"] or "（无文本）")}</pre>']
+        if unit["thinkingCharacters"]:
+            parts.append(f'<p>模型推理内容 {unit["thinkingCharacters"]} 字符，未导出。</p>')
+        parts.append("</div>")
+        return "".join(parts)
+    if kind == "toolCall":
+        execution = unit["execution"]
+        executed = {True: "是", False: "否", None: "未知，需核对平台状态"}[execution["executed"]]
+        classes = "entry tool" + (" write" if execution["externalWrite"] else "")
+        parts = [f'<div class="{classes}"><h3>工具调用 <code>{_h(unit["toolName"])}</code> — {_h(execution["label"])}</h3><ul>',
+                 f'<li>执行状态：<code>{_h(execution["state"])}</code>（记录状态 <code>{_h(unit["status"])}</code>）；'
+                 f'已执行：{executed}；{"外部写操作" if execution["externalWrite"] else "只读"}</li>']
+        approval = unit.get("approval")
+        if approval:
+            decision = {"approve": "用户批准", "deny": "用户拒绝", "expired": "审批已过期",
+                        None: "等待审批"}.get(approval["decision"], "状态不明")
+            parts.append(f'<li>审批：{_h(decision)}'
+                         + (f'（{_h(approval["decidedAt"])}）' if approval["decidedAt"] else "") + "</li>")
+        if unit["errorCode"]:
+            parts.append(f'<li>错误码：<code>{_h(unit["errorCode"])}</code></li>')
+        if unit["recoveryAction"]:
+            parts.append(f'<li>恢复建议：{_h(unit["recoveryAction"])}</li>')
+        if unit.get("source"):
+            parts.append("<li>来源：" + "；".join(f"{_h(key)}={_h(value)}" for key, value in unit["source"].items())
+                         + "</li>")
+        if unit["arguments"]:
+            shown = "，".join(f"{_h(key)}={_h(json.dumps(value, ensure_ascii=False))}" if not (
+                isinstance(value, str) and value.startswith(OMITTED)) else f"{_h(key)}={_h(value)}"
+                for key, value in unit["arguments"].items())
+            parts.append(f"<li>参数：{shown}</li>")
+        result = unit["result"]
+        if result is None:
+            parts.append("<li>结果：无（未执行或尚未返回）</li>")
+        elif result["included"]:
+            parts.append(f'<li>结果明文（平台事实；含个人信息，请勿外传）：</li></ul>'
+                         f'<pre class="plaintext">{_h(result["text"])}</pre>')
+            return "".join(parts) + "</div>"
+        else:
+            parts.append(f'<li>结果（仅结构与状态，明文已省略）：{_h("；".join(_result_facts(result)))}</li>')
+        parts.append("</ul></div>")
+        return "".join(parts)
+    if kind in {"branchSummary", "compactionSummary"}:
+        extra = []
+        if kind == "branchSummary" and unit.get("abandonedTurnCount"):
+            extra.append(f"被放弃回合 {unit['abandonedTurnCount']} 个")
+        if unit.get("summaryModel"):
+            extra.append(f"摘要模型 {unit['summaryModel']}")
+        extra_text = f"；{'；'.join(extra)}" if extra else ""
+        return "".join([f'<div class="entry summary"><h3>{_h(unit["label"])}</h3>',
+                        f'<p>生成时间：{_h(unit.get("createdAt") or "—")}{_h(extra_text)}</p>',
+                        "<p>其中平台事实以原始工具结果为准，结论与推断属于模型判断。</p>",
+                        f'<pre>{_h(unit["text"] or "（空）")}</pre></div>'])
+    return ""
+
+
+def _render_html(meta: dict, units: list[tuple[str, dict]], counts: dict, total_units: int,
+                 max_bytes: int) -> str:
+    view_log = meta["view"] == "log"
+    usage = meta["usage"]
+    notice = ("用于复盘与问题报告。默认已脱敏：凭据、令牌、环境变量、本机绝对路径与附件内容不导出。"
+              + ("<strong>本文件包含工具参数与结果明文（未再做个人信息打码，可能含候选人姓名、联系方式、简历等），"
+                 "请勿外传或上传到公开问题报告。</strong>"
+                 if meta["toolResults"] == "included"
+                 else "工具结果只保留结构与执行状态；个人信息按工具数据中识别到的字段值打码，"
+                      "未出现在工具数据中的姓名或联系方式可能无法识别，对外发送前请自行核对。"))
+    rows = [
+        f"会话：<code>{_h(meta['threadId'])}</code>（标题：{_h(meta['title']) or '—'}）",
+        f"视图：{'完整日志（含已切离分支）' if view_log else '当前分支'}；回合 {meta['turnCount']} 个",
+        f"导出时间：{_h(meta['exportedAt'])}；内核 {_h(meta['serverVersion'])}；"
+        f"协议 {_h(meta['protocolVersion'])}",
+        f"工具结果明文：{'已包含' if meta['toolResults'] == 'included' else '未包含'}",
+        f"会话用量（{_h(usage['source'])}，费用未计价）：{_h(_tokens(usage['totals']))}",
+    ]
+    if usage["summaryTasks"]["requests"]:
+        rows.append(f"摘要任务用量：{_h(_tokens(usage['summaryTasks']))}")
+    parts = ['<!doctype html>', '<html lang="zh-CN"><head><meta charset="utf-8">',
+             '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'">',
+             '<meta name="referrer" content="no-referrer">',
+             '<meta name="viewport" content="width=device-width, initial-scale=1">',
+             '<title>BOSS-CLI 会话导出</title>', f"<style>{_HTML_STYLE}</style></head><body>",
+             "<header><h1>BOSS-CLI 会话导出</h1>",
+             f'<p class="notice">{notice}</p>',
+             '<ul class="meta">' + "".join(f"<li>{row}</li>" for row in rows) + "</ul>",
+             "<p>内容来源：「用户输入」为操作者原文；「模型输出」与模型生成的摘要属于模型判断，需核对；"
+             "「工具调用」的执行状态与结果来自招聘平台工具，是平台事实的来源。</p></header><main>"]
+    open_section = False
+    for _, unit in units:
+        if unit["kind"] == "turn":
+            if open_section:
+                parts.append("</section>")
+            parts.append(_turn_heading_html(unit, view_log))
+            open_section = True
+        else:
+            if not open_section:
+                parts.append('<section class="preamble">')
+                open_section = True
+            parts.append(_render_unit_html(unit))
+    if open_section:
+        parts.append("</section>")
+    parts.append("</main><footer>")
+    parts.append(f"<p>脱敏统计：凭据 / 令牌 {counts['secrets']} 处，环境变量 {counts['environment']} 处，"
+                 f"本机路径 {counts['paths']} 处，个人信息 {counts['personalInfo']} 处。</p>")
+    if len(units) < total_units:
+        parts.append(f"<p><strong>已截断</strong>：超出导出上限 {max_bytes:,} 字节，仅包含前 "
+                     f"{len(units)} / {total_units} 个条目；其余回合与条目未导出。</p>")
+    if meta.get("orphanEntries"):
+        parts.append(f"<p>另有 {meta['orphanEntries']} 个条目无法归属到任何回合（记录不完整），未导出。</p>")
+    parts.append("</footer></body></html>")
+    return "\n".join(parts) + "\n"
+
+
+
+
+
 def _wire_bytes(text: str) -> int:
     return len(json.dumps(text, ensure_ascii=False).encode("utf-8"))
 
@@ -646,7 +840,7 @@ def export_thread(sessions: SessionStore, thread_id: str, *, branch: bool, fmt: 
                   secrets: Iterable[str] = (), paths: Iterable[Path | str] = ()) -> dict:
     """Render one session as a bounded, redacted document; reads only, writes nothing."""
     if fmt not in EXPORT_FORMATS:
-        raise ValueError("format 必须是 markdown 或 json")
+        raise ValueError("format 必须是 markdown、json 或 html")
     if type(include_tool_results) is not bool:
         raise ValueError("includeToolResults 必须是布尔值")
     if type(max_bytes) is not int or not MIN_EXPORT_BYTES <= max_bytes <= MAX_EXPORT_BYTES:
@@ -656,7 +850,7 @@ def export_thread(sessions: SessionStore, thread_id: str, *, branch: bool, fmt: 
                          include_tool_results=include_tool_results, redactor=redactor)
     units = exporter.units()
     meta = exporter.meta(server_version)
-    render = _render_markdown if fmt == "markdown" else _render_json
+    render = {"markdown": _render_markdown, "json": _render_json, "html": _render_html}[fmt]
     counts = dict(redactor.counts)
 
     def size(count: int) -> int:
@@ -678,9 +872,10 @@ def export_thread(sessions: SessionStore, thread_id: str, *, branch: bool, fmt: 
     if _wire_bytes(content) > max_bytes:
         raise ValueError("会话导出头部超出大小上限")
     exported_turns = sum(1 for _, unit in units[:keep] if unit["kind"] == "turn")
-    extension = "md" if fmt == "markdown" else "json"
+    extension = {"markdown": "md", "json": "json", "html": "html"}[fmt]
     return {"threadId": thread_id, "view": meta["view"], "format": fmt,
-            "mediaType": "text/markdown" if fmt == "markdown" else "application/json",
+            "mediaType": {"markdown": "text/markdown", "json": "application/json",
+                          "html": "text/html"}[fmt],
             "suggestedFileName": f"boss-cli-session-{thread_id}-{meta['view']}.{extension}",
             "content": content, "bytes": len(content.encode("utf-8")), "maxBytes": max_bytes,
             "truncated": keep < len(units), "turnCount": len(exporter.turns), "exportedTurnCount": exported_turns,
