@@ -496,10 +496,13 @@ export function App(): JSX.Element {
       if (activeRef.current?.id === session.id) setQueueItems(previous => [...previous.filter(existing => existing.id !== item.id), item]);
       return true;
     }
-    const item = await queueFollowUp({ threadId: session.id, input: text, clientUserMessageId, skillIds });
+    // 后续回合与直接发送共享同一个待应用覆盖；转向消息不支持该覆盖。
+    const policy = autoCompaction.take(session.id);
+    const item = await queueFollowUp({ threadId: session.id, input: text, clientUserMessageId, skillIds,
+      ...(policy ? { autoCompaction: policy } : {}) });
     if (activeRef.current?.id === session.id) setQueueItems(previous => [...previous.filter(existing => existing.id !== item.id), item]);
     return true;
-  }, [harnessUp]);
+  }, [harnessUp, autoCompaction.take]);
   const handleCheckQueueSubmission = useCallback(async (clientUserMessageId: string): Promise<QueueSubmissionCheck> => {
     const session = activeRef.current;
     if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp) return { status: "unavailable" };
@@ -520,7 +523,8 @@ export function App(): JSX.Element {
       return false;
     }
     const created = await queueFollowUp({ threadId: session.id, input: full.input,
-      clientUserMessageId: crypto.randomUUID(), skillIds: full.skillIds ?? [] });
+      clientUserMessageId: crypto.randomUUID(), skillIds: full.skillIds ?? [],
+      ...(full.autoCompaction ? { autoCompaction: full.autoCompaction } : {}) });
     try {
       await removeQueuedItem(session.id, item.id);
     } catch {

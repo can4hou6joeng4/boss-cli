@@ -676,6 +676,8 @@ export interface QueueItem {
   clientUserMessageId?: string | null;
   /** Skills loaded for this queued follow-up; applied when it becomes a turn. */
   skillIds?: string[];
+  /** Per-turn auto-compaction override applied when this follow-up becomes a turn. */
+  autoCompaction?: TurnAutoCompactionOverride;
   failureCode?: "TURN_START_FAILED";
   executionStarted?: false;
   turnId?: string;
@@ -696,6 +698,8 @@ export interface QueueAddParams {
   input: string;
   clientUserMessageId?: string;
   skillIds?: string[];
+  /** Optional per-turn auto-compaction override for the delivered follow-up. */
+  autoCompaction?: TurnAutoCompactionOverride;
 }
 export interface QueueListResponse {
   items: QueueItem[];
