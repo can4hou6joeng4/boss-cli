@@ -532,6 +532,7 @@ class _Exporter:
                 "inputPersisted": payload.get("inputPersisted")
                 if type(payload.get("inputPersisted")) is bool else None,
                 "deduplicated": payload.get("deduplicated") is True,
+                "autoCompaction": _queue_auto_compaction(payload.get("autoCompaction")),
             })
         return {"items": items, "totalItems": len(ordered), "maxItems": MAX_QUEUE_ITEMS}
 
@@ -641,6 +642,24 @@ _QUEUE_STATUS = {"queued": "排队中", "delivering": "正在投递", "paused": 
 _QUEUE_KIND = {"steering": "转向当前回合", "followUp": "后续回合", "unknown": "类型不明"}
 
 
+def _queue_auto_compaction(value: Any) -> dict | None:
+    """只导出与内核覆盖规则一致的本回合自动压缩字段；异常历史数据按未设置处理。"""
+    if not isinstance(value, dict) or not value:
+        return None
+    if set(value) - {"enabled", "triggerPercent", "keepRecentTokens"}:
+        return None
+    enabled, trigger, keep = (value.get("enabled"), value.get("triggerPercent"),
+                              value.get("keepRecentTokens"))
+    if "enabled" in value and type(enabled) is not bool:
+        return None
+    if "triggerPercent" in value and (type(trigger) is not int or not 1 <= trigger <= 100):
+        return None
+    if "keepRecentTokens" in value and (type(keep) is not int or not 1 <= keep <= 1_000_000):
+        return None
+    return {key: value[key] for key in ("enabled", "triggerPercent", "keepRecentTokens")
+            if key in value}
+
+
 def _queue_facts(item: dict) -> list[str]:
     facts = []
     if item["inputPersisted"] is not None:
@@ -651,6 +670,16 @@ def _queue_facts(item: dict) -> list[str]:
         facts.append("与既有请求关联")
     if item["skillCount"]:
         facts.append(f"技能：{item['skillCount']} 项")
+    policy = item["autoCompaction"]
+    if policy:
+        details = []
+        if "enabled" in policy:
+            details.append("开启" if policy["enabled"] else "关闭")
+        if "triggerPercent" in policy:
+            details.append(f"阈值 {policy['triggerPercent']}%")
+        if "keepRecentTokens" in policy:
+            details.append(f"保留最近 {policy['keepRecentTokens']} token")
+        facts.append("自动压缩：" + " · ".join(details))
     return facts
 
 
