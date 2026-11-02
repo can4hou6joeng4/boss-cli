@@ -89,8 +89,10 @@ export function harnessErrorText(error: unknown): string {
   const value = error && typeof error === "object"
     ? error as { rpcError?: unknown; code?: unknown; message?: unknown; data?: unknown } : null;
   const data = value?.data && typeof value.data === "object" ? value.data as Record<string, unknown> : null;
-  const message = typeof value?.message === "string" && value.message.trim()
-    ? value.message.slice(0, 300) : "无法读取本地内核响应";
+  const raw = typeof value?.message === "string" && value.message.trim() ? value.message : "";
+  // 未被主进程保留为 RPC 错误的方法只留下 Electron 拼接后的消息；去掉包装前缀再展示。
+  const message = raw ? raw.replace(/^Error invoking remote method '[^']+': (Error: )?/, "").slice(0, 300)
+    : "无法读取本地内核响应";
   if (value?.rpcError === true && typeof value.code === "number") {
     return `${message}（内核 ${value.code}${typeof data?.code === "string" ? ` / ${data.code}` : ""}）`;
   }
