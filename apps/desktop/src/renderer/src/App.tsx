@@ -507,6 +507,22 @@ export function App(): JSX.Element {
     if (!item) return { status: "missing" };
     return item.status === "cancelled" ? { status: "cancelled", item } : { status: "found", item };
   }, [harnessUp]);
+  const handleRetryQueueItem = useCallback(async (item: QueueItem): Promise<boolean> => {
+    const session = activeRef.current;
+    if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp) return false;
+    const created = await queueFollowUp({ threadId: session.id, input: item.input,
+      clientUserMessageId: crypto.randomUUID(), skillIds: item.skillIds ?? [] });
+    try {
+      await removeQueuedItem(session.id, item.id);
+    } catch {
+      // 新请求已受理；旧项保持暂停，刷新后仍可手动撤回。
+    }
+    const items = await listQueue(session.id);
+    if (activeRef.current?.id === session.id) {
+      setQueueItems(items ?? (previous => [...previous.filter(existing => existing.id !== item.id && existing.id !== created.id), created]));
+    }
+    return true;
+  }, [harnessUp]);
   const handleRemoveQueueItem = useCallback(async (queueId: string): Promise<boolean> => {
     const session = activeRef.current;
     if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp) return false;
@@ -576,7 +592,7 @@ export function App(): JSX.Element {
   return <>
     <AppShell isDark={isDark} onToggleTheme={() => setIsDark(previous => !previous)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => setIsSidebarOpen(previous => !previous)}
       folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} currentMode={currentMode} onModeChange={setCurrentMode}
-      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} onRemoveQueueItem={handleRemoveQueueItem} simulateLocal={preview} harnessUp={harnessUp}
+      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} simulateLocal={preview} harnessUp={harnessUp}
       onCreateConnectionSession={createConnectionSession}
       sessionReasoning={contextThreadId ? sessionReasoning : undefined}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession || branchSummaryRunning}

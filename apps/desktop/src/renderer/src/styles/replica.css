@@ -126,6 +126,8 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .turn-queue-skills { color: var(--text-faint); font-size: 10px; white-space: nowrap; }
 .turn-queue-item-copy p { grid-column: 1 / -1; overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; margin: 0; color: var(--text-main); font-size: 11px; line-height: 1.45; overflow-wrap: anywhere; }
 .turn-queue li>button { flex: 0 0 26px; width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; cursor: pointer; }
+.turn-queue li>button.turn-queue-retry { flex: 0 0 auto; width: auto; padding: 0 7px; font-size: 10px; white-space: nowrap; color: var(--accent-success); }
+.turn-queue li>button.turn-queue-retry:hover { background: var(--btn-ghost-hover); }
 .turn-queue li>button:hover { color: var(--accent-warning); background: var(--btn-ghost-hover); }
 .turn-queue li>button:disabled { opacity: .45; cursor: wait; }
 .turn-queue-error { margin: 5px 4px; color: var(--accent-warning); font-size: 10px; }
