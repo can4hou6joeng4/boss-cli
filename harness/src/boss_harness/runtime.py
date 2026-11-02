@@ -286,7 +286,8 @@ class TurnQueue:
             return item if associated == item else self._save(thread_id, associated)
 
     def add(self, thread_id: str, text: str, *, kind: str = "followUp", turn_id: str | None = None,
-            client_id: str | None = None, skill_ids: list[str] | None = None) -> dict:
+            client_id: str | None = None, skill_ids: list[str] | None = None,
+            auto_compaction: dict | None = None) -> dict:
         if kind not in {"steering", "followUp"}:
             raise ValueError("kind 必须是 steering 或 followUp")
         if not isinstance(text, str) or not text.strip() or len(text) > 100_000:
@@ -308,6 +309,9 @@ class TurnQueue:
                 if client_id and item.get("clientUserMessageId") == client_id:
                     if item["input"] != text or item["kind"] != kind or (item.get("skillIds") or []) != skill_ids:
                         raise ValueError("clientUserMessageId 已用于不同输入或技能组合")
+                    # 未显式重发覆盖时沿用既有队列项；显式值不同则拒绝静默改写。
+                    if auto_compaction is not None and item.get("autoCompaction") != auto_compaction:
+                        raise ValueError("clientUserMessageId 已用于不同自动压缩覆盖")
                     return item
             pending_items, pending_bytes = self._pending_usage(items)
             input_bytes = len(text.encode("utf-8"))
@@ -318,7 +322,8 @@ class TurnQueue:
                                 "maxInputBytes": MAX_PENDING_QUEUE_INPUT_BYTES})
             return self._save(thread_id, {"id": uuid.uuid4().hex, "kind": kind,
                 "input": text, "status": "queued", "expectedTurnId": turn_id,
-                "clientUserMessageId": client_id, "skillIds": skill_ids})
+                "clientUserMessageId": client_id, "skillIds": skill_ids,
+                **({"autoCompaction": auto_compaction} if auto_compaction is not None else {})})
 
     def transition(self, thread_id: str, queue_id: str, status: str) -> dict:
         with self.lock:

@@ -48,6 +48,9 @@ export function QueuePanel({ items, onRemove, onRetry }: {
           <span className="turn-queue-status">{item.status === "paused" && item.failureCode === "TURN_START_FAILED" ? "启动失败，未执行"
             : item.status === "delivered" && item.deduplicated ? "已关联已有回合" : LABELS[item.status]}</span>
           {item.skillIds && item.skillIds.length > 0 && <span className="turn-queue-skills" title={item.skillIds.join("、")}>技能 {item.skillIds.length} 项</span>}
+          {item.autoCompaction && <span className="turn-queue-skills" title={item.autoCompaction.enabled
+            ? `触发阈值 ${item.autoCompaction.triggerPercent}%，保留最近 ${item.autoCompaction.keepRecentTokens} token`
+            : "该回合关闭自动压缩"}>压缩覆盖</span>}
           {item.inputTruncated && <span className="turn-queue-skills" title="列表只显示前 600 字符；重新排队会读取并复用完整输入">正文已截断</span>}
           <p title={item.input}>{item.input}</p>
           {item.status === "paused" && item.failureCode === "TURN_START_FAILED" && <p className="turn-queue-error">

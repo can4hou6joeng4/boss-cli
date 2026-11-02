@@ -62,9 +62,9 @@ export function ContextPanel(props: ContextPanelProps) {
           <button type="button" className="secondary-button" onClick={auto.apply} disabled={!connected || !props.threadId || !auto.valid || auto.reading}>应用到下一回合</button>
           {auto.active && <button type="button" className="secondary-button" onClick={auto.clear}>清除覆盖</button>}
         </div>
-        {auto.active && <p className="context-panel-warning" role="status">已应用：下一条直接发送使用{auto.active.enabled ? "开启" : "关闭"}、阈值 {auto.active.triggerPercent}%、保留 {number(auto.active.keepRecentTokens)} token；发送后自动恢复默认。入队、转向与续接消息不使用该覆盖。</p>}
+        {auto.active && <p className="context-panel-warning" role="status">已应用：下一条发送（直接发送或排到后续回合）使用{auto.active.enabled ? "开启" : "关闭"}、阈值 {auto.active.triggerPercent}%、保留 {number(auto.active.keepRecentTokens)} token；发送后自动恢复默认。转向与续接消息不使用该覆盖。</p>}
         {auto.error && <p className="context-panel-warning" role="alert">{auto.error}</p>}
-        <p className="context-panel-note">覆盖只影响本会话下一次直接发送，不修改会话或启动配置；发送失败或回执未知时也不会自动重发。</p>
+        <p className="context-panel-note">覆盖只影响本会话下一次直接发送或后续回合排队消息，不修改会话或启动配置；发送失败或回执未知时也不会自动重发。</p>
       </section>
       <section className="context-panel-section" aria-labelledby="context-plan-heading">
         <h3 id="context-plan-heading">手动压缩</h3>

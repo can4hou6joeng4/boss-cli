@@ -3778,17 +3778,27 @@ class ApplicationService:
                 raise RpcError(-32003, "内核正在关闭")
             self.sessions.require_thread(thread_id)
             skill_ids = [skill["id"] for skill in self.skills.load(params.get("skillIds"))[1]]
+            auto_compaction = params.get("autoCompaction") if "autoCompaction" in params else None
+            if auto_compaction is not None:
+                # 与 turn/start 使用同一套范围、类型和未知字段校验；校验后保存独立副本。
+                self.compaction_policy.override(auto_compaction)
+                auto_compaction = dict(auto_compaction)
             identity = resolve_request(self.sessions, thread_id, params.get("clientUserMessageId"), text)
             for source in (identity.queue, identity.turn):
                 if source is not None and (source.get("skillIds") or []) != skill_ids:
                     raise RpcError(-32004, "clientUserMessageId 已用于不同技能组合",
                                    {"code": "CLIENT_REQUEST_CONFLICT"})
+            if (identity.queue is not None and auto_compaction is not None
+                    and identity.queue.get("autoCompaction") != auto_compaction):
+                raise RpcError(-32004, "clientUserMessageId 已用于不同自动压缩覆盖",
+                               {"code": "CLIENT_REQUEST_CONFLICT"})
             if (thread_id in self._tool_persistence_fences
                     and identity.queue is None and identity.turn is None):
                 raise RpcError(-32004, "该会话的工具结果尚未完成持久化核对，请重启内核后重新读取状态",
                                {"code": "THREAD_REQUIRES_REVIEW"})
             item = identity.queue or self.queue.add(thread_id, text, client_id=params.get("clientUserMessageId"),
-                                                    skill_ids=skill_ids)
+                                                    skill_ids=skill_ids,
+                                                    auto_compaction=auto_compaction)
             if identity.turn is not None:
                 item = self.queue._associate_request(thread_id, item["id"], identity)
             changed = item != identity.queue
@@ -3934,9 +3944,12 @@ class ApplicationService:
         started = False
         deferred = False
         try:
-            self.on_turn_start({"threadId": thread_id, "input": item["input"],
+            start_params = {"threadId": thread_id, "input": item["input"],
                 "skillIds": item.get("skillIds") or [],
-                "clientUserMessageId": item.get("clientUserMessageId") or "queue-" + item["id"]}, queue_item=item)
+                "clientUserMessageId": item.get("clientUserMessageId") or "queue-" + item["id"]}
+            if item.get("autoCompaction") is not None:
+                start_params["autoCompaction"] = item["autoCompaction"]
+            self.on_turn_start(start_params, queue_item=item)
             started = True
         except Exception as error:
             capacity_error = (isinstance(error, RpcError) and isinstance(error.data, dict)
