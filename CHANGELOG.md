@@ -55,6 +55,8 @@
 
 ### 修复
 
+- 任务队列面板此前丢弃内核的有界投影元数据：`queue/list` 的 `totalItems` / `truncated` 与 `thread/read` 快照的 `queueTotalItems` / `queueTruncated` 未被渲染层读取。现保留并在标题显示真实总数与截断说明（如「共 250 项，已载入 25 项」），界面自身 20 条上限也会标注「仅显示 20 项」；待处理数量仍按已载入项统计，内核截断时说明其口径。内核行为与协议不变（仍为 `0.2.0`）。
+
 - 会话用量「每回合用量」的自动压缩策略标记此前不显示：内核已返回 `turns[].compactionPolicy`，但渲染层解码时未读取该字段。现按内核 `verified_policy` 的同一规则校验并传给表格（只保留实际存在的合法字段；空对象、未知字段或任一非法值按未记录处理，只丢弃该可选字段、不丢弃整页用量），协议类型同步放宽为 `Partial<AutoCompactionPolicy>`，协议仍为 `0.2.0`。
 
 - `thread/usage/read` 与 `thread/export` 的用量来源列表有界：每回合与每个摘要任务的 `providers` / `models` 最多保留 8 个，provider 最长 64 字符、model 最长 200 字符，空值与超长值跳过；此前损坏或伪造的持久记录可让只读响应与导出超过单页上限。计数、`unverifiedReasons` 与默认脱敏不变，协议仍为 `0.2.0`。
