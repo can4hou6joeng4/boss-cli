@@ -2330,10 +2330,13 @@ class SessionStore:
         offset = key[0] if key is not None else 0
         with self._lock:
             entries = self.read_entries(thread_id)
-            active = ({turn["turnId"] for turn in self._turns(self._active_entries(entries), thread_id)}
-                      if branch else None)
+            scope_entries = self._active_entries(entries) if branch else entries
+            turns = self._turns(scope_entries, thread_id)
+            active = {turn["turnId"] for turn in turns} if branch else None
+            policies = {turn["turnId"]: turn.get("compactionPolicy") for turn in turns
+                        if turn.get("compactionPolicy") is not None}
             leaf = self._leaf_state(thread_id, entries) if branch else None
-        result = summarize_usage(entries, active)
+        result = summarize_usage(entries, active, policies)
         turns = result["turns"]
         page = turns[offset:offset + limit]
         next_cursor = (_page_cursor("usage", scope, [offset + limit])
