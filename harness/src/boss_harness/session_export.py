@@ -290,13 +290,15 @@ _TURN_STATUS = {"completed": "已完成", "interrupted": "已中断", "blocked":
 class _Exporter:
     def __init__(self, sessions: SessionStore, thread_id: str, *, branch: bool,
                  include_tool_results: bool, redactor: Redactor,
-                 active_summary_job_id: str | None = None) -> None:
+                 active_summary_job_id: str | None = None,
+                 entries: list[dict] | None = None) -> None:
         self.thread_id, self.branch = thread_id, branch
         self.include = include_tool_results
         self.redactor = redactor
         with sessions._lock:
             thread = sessions.get_thread(thread_id)
-            entries = sessions.read_entries(thread_id)
+            if entries is None:
+                entries = sessions.read_entries(thread_id)
             selected = sessions._active_entries(entries) if branch else entries
             active_entries = sessions._active_entries(entries)
             leaf = sessions._leaf_state(thread_id, entries, active_entries)
@@ -1077,11 +1079,14 @@ def _wire_bytes(text: str) -> int:
 def export_thread(sessions: SessionStore, thread_id: str, *, branch: bool, fmt: str,
                   include_tool_results: bool, max_bytes: int, server_version: str,
                   secrets: Iterable[str] = (), paths: Iterable[Path | str] = (),
-                  active_summary_job_id: str | None = None) -> dict:
+                  active_summary_job_id: str | None = None,
+                  entries: list[dict] | None = None) -> dict:
     """Render one session as a bounded, redacted document; reads only, writes nothing.
 
     ``active_summary_job_id`` is the caller's validated current-branch
     checkpoint job; it only marks the matching summary-task usage row.
+    ``entries`` may pin the snapshot a caller already read so the document and
+    that marker describe the same records.
     """
     if fmt not in EXPORT_FORMATS:
         raise ValueError("format 必须是 markdown、json 或 html")
@@ -1092,7 +1097,7 @@ def export_thread(sessions: SessionStore, thread_id: str, *, branch: bool, fmt: 
     redactor = Redactor(secrets=_known_secrets(secrets), paths=_known_paths(paths))
     exporter = _Exporter(sessions, thread_id, branch=branch,
                          include_tool_results=include_tool_results, redactor=redactor,
-                         active_summary_job_id=active_summary_job_id)
+                         active_summary_job_id=active_summary_job_id, entries=entries)
     units = exporter.units()
     meta = exporter.meta(server_version)
     queue = exporter.queue()

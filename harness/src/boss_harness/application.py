@@ -1461,12 +1461,15 @@ class ApplicationService:
             raise ValueError("thread/usage/read 只接受 threadId、view、cursor 与 limit")
         thread_id = _text(params, "threadId")
         with self.runtimes.lock:
+            # One pinned snapshot keeps the usage rows and the active marker on
+            # the same records, and avoids re-reading the full log per RPC.
+            entries = self.sessions.read_entries(thread_id)
             # Only a checkpoint that validates on the active branch counts as
             # active; the usage records themselves never decide this.
-            active_job_id = self.context.active_summary_job_id(thread_id)
+            active_job_id = self.context.active_summary_job_id(thread_id, entries=entries)
             result = self.sessions.usage_page(thread_id, branch=_branch_view(params),
                                               cursor=params.get("cursor"), limit=params.get("limit", 50),
-                                              active_summary_job_id=active_job_id)
+                                              active_summary_job_id=active_job_id, entries=entries)
         self._check_response_budget(result)
         return result
 
@@ -1480,14 +1483,15 @@ class ApplicationService:
                    if config.api_key]
         thread_id = _text(params, "threadId")
         with self.runtimes.lock:
-            active_job_id = self.context.active_summary_job_id(thread_id)
+            entries = self.sessions.read_entries(thread_id)
+            active_job_id = self.context.active_summary_job_id(thread_id, entries=entries)
             result = export_thread(self.sessions, thread_id, branch=_branch_view(params),
                                    fmt=params.get("format", "markdown"),
                                    include_tool_results=params.get("includeToolResults", False),
                                    max_bytes=params.get("maxBytes", DEFAULT_EXPORT_BYTES),
                                    server_version=__version__, secrets=secrets,
                                    paths=(self.workspace, self.sessions.root.parent),
-                                   active_summary_job_id=active_job_id)
+                                   active_summary_job_id=active_job_id, entries=entries)
         self._check_response_budget(result)
         return result
 
