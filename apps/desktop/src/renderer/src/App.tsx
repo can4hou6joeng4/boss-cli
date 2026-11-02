@@ -20,6 +20,7 @@ import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, typ
 import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn } from "./data/harnessBridge";
 import { reduceHarnessEvent, type HarnessEvent } from "./data/harnessEvents";
 import { HarnessReplica } from "./data/harnessReplica";
+import type { QueuePage } from "./data/queueMapping";
 import { reduceModelRetry, settleModelRetryOnTurnEnd, type ModelRetryStatus } from "./data/modelRetry";
 import { toMessage } from "./data/harnessBridge";
 import type { InitializeResponse, ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-cli/protocol";
@@ -59,6 +60,12 @@ export function App(): JSX.Element {
     uncertain?: boolean; response?: TurnContinuationReadResponse; error?: string;
   } | null>(null);
   const [queueItems, setQueueItems] = useState<QueueItem[]>([]);
+  // 内核只返回有界投影；保留总数 / 截断标记，避免界面上无痕丢掉更早的队列记录。
+  const [queueMeta, setQueueMeta] = useState<Pick<QueuePage, "totalItems" | "truncated">>({});
+  const applyQueuePage = useCallback((page: QueuePage) => {
+    setQueueItems(page.items);
+    setQueueMeta({ totalItems: page.totalItems, truncated: page.truncated });
+  }, []);
   const [modelRetries, setModelRetries] = useState<Record<string, ModelRetryStatus>>({});
   const retryTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const [error, setError] = useState("");
@@ -170,8 +177,8 @@ export function App(): JSX.Element {
       const params = event.params ?? {}, id = params.threadId;
       if (!id) return;
       if (["queue/updated", "turn/steeringApplied", "turn/started", "turn/completed"].includes(event.method)) {
-        void listQueue(id).then(items => {
-          if (items && activeRef.current?.id === id) setQueueItems(items);
+        void listQueue(id).then(page => {
+          if (page && activeRef.current?.id === id) applyQueuePage(page);
         });
       }
       if (["thread/created", "thread/archived", "thread/unarchived", "thread/renamed", "thread/model/updated"].includes(event.method)) { void refresh(); return; }
@@ -211,7 +218,13 @@ export function App(): JSX.Element {
     }, snapshot => {
       if (cancelled) return;
       const id = snapshot.thread.id;
-      if (activeRef.current?.id === id) setQueueItems(snapshot.queue ?? []);
+      if (activeRef.current?.id === id) {
+        setQueueItems(snapshot.queue ?? []);
+        setQueueMeta({
+          totalItems: typeof snapshot.queueTotalItems === "number" ? snapshot.queueTotalItems : undefined,
+          truncated: typeof snapshot.queueTruncated === "boolean" ? snapshot.queueTruncated : undefined,
+        });
+      }
       const real = snapshot.items.map(toMessage).filter((item): item is MessageItem => item !== null);
       updateThread(id, () => real);
       if (snapshot.activeTurnId) turnIds.current.set(id, snapshot.activeTurnId);
@@ -292,7 +305,7 @@ export function App(): JSX.Element {
     });
     void refresh();
     return () => { cancelled = true; replica.invalidate(); unsubscribe(); if (replicaRef.current === replica) replicaRef.current = null; };
-  }, [clearModelRetry, markRunning, readContinuationCheck, updateModelRetry, updateThread]);
+  }, [applyQueuePage, clearModelRetry, markRunning, readContinuationCheck, updateModelRetry, updateThread]);
   useEffect(() => () => {
     for (const timer of timers.current.values()) clearTimeout(timer);
     for (const timer of retryTimers.current.values()) clearTimeout(timer);
@@ -307,6 +320,7 @@ export function App(): JSX.Element {
     setActiveModelProvider(provider); setActiveModelId(model);
     setConfiguredModelLabel(legacyRouteMismatch(session, defaultModel) ? `需选择线路 · ${model}` : `${provider} · ${model}`);
     setQueueItems([]);
+    setQueueMeta({});
     void readContinuationCheck(session);
     if (window.innerWidth < 700) setIsSidebarOpen(false);
     if (session.projectId !== HARNESS_PROJECT_ID) {
@@ -506,13 +520,13 @@ export function App(): JSX.Element {
   const handleCheckQueueSubmission = useCallback(async (clientUserMessageId: string): Promise<QueueSubmissionCheck> => {
     const session = activeRef.current;
     if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp) return { status: "unavailable" };
-    const items = await listQueue(session.id);
-    if (!items) return { status: "unavailable" };
-    if (activeRef.current?.id === session.id) setQueueItems(items);
-    const item = items.find(candidate => candidate.clientUserMessageId === clientUserMessageId);
+    const page = await listQueue(session.id);
+    if (!page) return { status: "unavailable" };
+    if (activeRef.current?.id === session.id) applyQueuePage(page);
+    const item = page.items.find(candidate => candidate.clientUserMessageId === clientUserMessageId);
     if (!item) return { status: "missing" };
     return item.status === "cancelled" ? { status: "cancelled", item } : { status: "found", item };
-  }, [harnessUp]);
+  }, [applyQueuePage, harnessUp]);
   const handleRetryQueueItem = useCallback(async (item: QueueItem): Promise<boolean> => {
     const session = activeRef.current;
     if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp) return false;
@@ -530,12 +544,13 @@ export function App(): JSX.Element {
     } catch {
       // 新请求已受理；旧项保持暂停，刷新后仍可手动撤回。
     }
-    const items = await listQueue(session.id);
+    const page = await listQueue(session.id);
     if (activeRef.current?.id === session.id) {
-      setQueueItems(items ?? (previous => [...previous.filter(existing => existing.id !== item.id && existing.id !== created.id), created]));
+      if (page) applyQueuePage(page);
+      else setQueueItems(previous => [...previous.filter(existing => existing.id !== item.id && existing.id !== created.id), created]);
     }
     return true;
-  }, [harnessUp]);
+  }, [applyQueuePage, harnessUp]);
   const handleRemoveQueueItem = useCallback(async (queueId: string): Promise<boolean> => {
     const session = activeRef.current;
     if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp) return false;
@@ -546,11 +561,11 @@ export function App(): JSX.Element {
     } catch {
       if (activeRef.current?.id !== session.id) return false;
       setError("撤回结果尚未确认，正在刷新队列状态；不会自动重复撤回。");
-      const items = await listQueue(session.id);
-      if (items && activeRef.current?.id === session.id) setQueueItems(items);
+      const page = await listQueue(session.id);
+      if (page && activeRef.current?.id === session.id) applyQueuePage(page);
       return false;
     }
-  }, [harnessUp]);
+  }, [applyQueuePage, harnessUp]);
   const handleInterrupt = useCallback(() => {
     const id = activeRef.current?.id; if (!id || !runningRef.current.has(id)) return;
     const timer = timers.current.get(id);
@@ -605,7 +620,7 @@ export function App(): JSX.Element {
   return <>
     <AppShell isDark={isDark} onToggleTheme={() => setIsDark(previous => !previous)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => setIsSidebarOpen(previous => !previous)}
       folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} currentMode={currentMode} onModeChange={setCurrentMode}
-      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} simulateLocal={preview} harnessUp={harnessUp}
+      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} simulateLocal={preview} harnessUp={harnessUp}
       onCreateConnectionSession={createConnectionSession}
       sessionReasoning={contextThreadId ? sessionReasoning : undefined}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession || branchSummaryRunning}

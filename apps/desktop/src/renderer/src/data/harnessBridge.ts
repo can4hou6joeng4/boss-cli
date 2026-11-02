@@ -50,6 +50,7 @@ import {
   type ThreadUsageReadResponse,
 } from "@boss-cli/protocol";
 import { formatRelativeTime } from "@boss-cli/shared";
+import { queuePageOf, type QueuePage } from "./queueMapping";
 import type { MessageItem, SessionItem } from "./mockData";
 
 export const HARNESS_PROJECT_ID = "proj-harness";
@@ -271,11 +272,11 @@ export async function queueFollowUp(params: QueueAddParams): Promise<QueueItem> 
   return response.queueItem;
 }
 
-export async function listQueue(threadId: string): Promise<QueueItem[] | null> {
+export async function listQueue(threadId: string): Promise<QueuePage | null> {
   const api = bridge();
   if (!api) return null;
   try {
-    return (await api.request<QueueListResponse>(ClientMethods.queueList, { threadId })).items;
+    return queuePageOf(await api.request<QueueListResponse>(ClientMethods.queueList, { threadId }));
   } catch {
     return null;
   }

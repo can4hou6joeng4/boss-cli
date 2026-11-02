@@ -12,8 +12,12 @@ const LABELS: Record<QueueItem["status"], string> = {
 };
 const MAX_VISIBLE_ITEMS = 20;
 
-export function QueuePanel({ items, onRemove, onRetry }: {
+export function QueuePanel({ items, totalItems, truncated, onRemove, onRetry }: {
   items: QueueItem[];
+  /** 内核侧总数；旧内核不返回时为 undefined。 */
+  totalItems?: number;
+  /** 内核只返回有界投影，仍有未载入的队列记录。 */
+  truncated?: boolean;
   onRemove: (id: string) => Promise<boolean>;
   onRetry?: (item: QueueItem) => Promise<boolean>;
 }): JSX.Element | null {
@@ -40,8 +44,21 @@ export function QueuePanel({ items, onRemove, onRetry }: {
     const keep = new Set([...visibleActive, ...visibleTerminal].map(item => item.id));
     return items.filter(item => keep.has(item.id));
   })();
+  const pendingCount = items.filter(item => item.status === "queued" || item.status === "delivering" || item.status === "paused").length;
+  // 内核投影与界面自身的 20 条上限都可能隐藏记录；总数只用于说明，不参与任何业务判断。
+  const total = Math.max(totalItems ?? items.length, items.length);
+  const kernelHidden = truncated === true;
+  const hiddenNote = [
+    kernelHidden
+      ? total > items.length ? `共 ${total} 项，已载入 ${items.length} 项` : `列表已截断，已载入 ${items.length} 项`
+      : "",
+    visibleItems.length < items.length ? `仅显示 ${visibleItems.length} 项` : "",
+  ].filter(Boolean).join("，");
   return <section className="turn-queue" aria-label="任务队列" aria-live="polite">
-    <div className="turn-queue-heading"><strong>任务队列</strong><span>{items.filter(item => item.status === "queued" || item.status === "delivering" || item.status === "paused").length} 项待处理</span></div>
+    <div className="turn-queue-heading"><strong>任务队列</strong><span data-queue-pending={pendingCount} title={kernelHidden ? "待处理数量按内核已载入的队列项统计。" : undefined}>{pendingCount} 项待处理</span>
+      {hiddenNote && <span className="turn-queue-more" data-queue-total={total} data-queue-truncated={kernelHidden ? "true" : "false"} data-queue-visible={visibleItems.length}
+        title={kernelHidden ? "内核只返回有界投影（待处理与已结束条目各自封顶），更早的队列记录未载入；待处理数量按已载入项统计。" : "任务队列较长，界面只显示最近的项目。"}>{hiddenNote}</span>}
+    </div>
     <ul>
       {visibleItems.map(item => <li key={item.id}>
         <div className="turn-queue-item-copy">
