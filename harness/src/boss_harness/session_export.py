@@ -306,6 +306,9 @@ class _Exporter:
         usage = summarize_usage(entries, self.active_turn_ids if branch else None)
         self.usage_turns = {bucket["turnId"]: bucket for bucket in usage["turns"]}
         self.usage_summary, self.usage_totals = usage["summaryTasks"], usage["totals"]
+        self.usage_jobs = usage["summaryJobs"]
+        self.usage_job_count = usage["summaryJobCount"]
+        self.usage_jobs_truncated = usage["summaryJobsTruncated"]
         order = [turn["turnId"] for turn in self.turns]
         self.positions = {turn_id: index for index, turn_id in enumerate(order)}
         self.orphan_entries = 0
@@ -490,7 +493,10 @@ class _Exporter:
             "orphanEntries": self.orphan_entries,
             "toolResults": "included" if self.include else "omitted",
             "usage": {"source": USAGE_SOURCE, "costAvailable": False,
-                      "totals": self.usage_totals, "summaryTasks": self.usage_summary},
+                      "totals": self.usage_totals, "summaryTasks": self.usage_summary,
+                      "summaryJobCount": self.usage_job_count,
+                      "summaryJobsTruncated": self.usage_jobs_truncated,
+                      "summaryJobs": self.usage_jobs},
         }
 
     def _compaction_policy(self, value: Any) -> dict | None:
@@ -550,6 +556,30 @@ class _Exporter:
 
 def _usage_line(bucket: dict | None) -> str:
     return "无模型请求记录" if bucket is None else _tokens(bucket)
+
+
+MAX_EXPORT_SUMMARY_JOBS = 20
+_JOB_REASON = {"threshold": "触达阈值", "budget": "预算不足", "overflow": "上下文溢出"}
+
+
+def _summary_job_facts(job: dict) -> list[str]:
+    """One bounded, single-line description of a persisted summary-task usage bucket."""
+    kind, origin = job.get("kind"), job.get("origin")
+    facts = ["分支摘要" if kind == "branchSummary" else
+             "手动压缩" if origin == "user" else "自动压缩" if origin == "model" else "摘要任务"]
+    job_id = job.get("jobId")
+    if isinstance(job_id, str) and job_id:
+        facts.append("任务 " + job_id[:64])
+    turn_id = job.get("turnId")
+    if isinstance(turn_id, str) and turn_id:
+        facts.append("回合 " + turn_id[:64])
+    if job.get("reason") in _JOB_REASON:
+        facts.append(_JOB_REASON[job["reason"]])
+    models = [model[:80] for model in job.get("models", []) if isinstance(model, str)]
+    if models:
+        facts.append("模型 " + "、".join(models[:4]))
+    facts.append(_usage_line(job))
+    return facts
 
 
 def _result_facts(result: dict) -> list[str]:
@@ -731,6 +761,11 @@ def _render_markdown(meta: dict, units: list[tuple[str, dict]], counts: dict, to
     ]
     if usage["summaryTasks"]["requests"]:
         header.append(f"- 摘要任务用量：{_tokens(usage['summaryTasks'])}")
+    jobs = usage.get("summaryJobs") or []
+    if jobs:
+        shown = jobs[-MAX_EXPORT_SUMMARY_JOBS:]
+        header.append(f"- 摘要任务明细：最近 {len(shown)} / {usage.get('summaryJobCount', len(jobs))} 个任务")
+        header += [f"  - {_inline_text('；'.join(_summary_job_facts(job)))}" for job in shown]
     if queue["totalItems"]:
         header.append(f"- 消息队列：{queue['totalItems']} 个未形成回合的队列项")
     header += ["", "内容来源：「用户输入」为操作者原文；「模型输出」与模型生成的摘要属于模型判断，需核对；"
@@ -943,6 +978,11 @@ def _render_html(meta: dict, units: list[tuple[str, dict]], counts: dict, total_
     ]
     if usage["summaryTasks"]["requests"]:
         rows.append(f"摘要任务用量：{_h(_tokens(usage['summaryTasks']))}")
+    jobs = usage.get("summaryJobs") or []
+    if jobs:
+        shown = jobs[-MAX_EXPORT_SUMMARY_JOBS:]
+        rows.append(f"摘要任务明细：最近 {len(shown)} / {usage.get('summaryJobCount', len(jobs))} 个任务")
+        rows += [f"摘要任务：{_h(_inline_text('；'.join(_summary_job_facts(job))))}" for job in shown]
     if queue["totalItems"]:
         rows.append(f"消息队列：{queue['totalItems']} 个未形成回合的队列项")
     parts = ['<!doctype html>', '<html lang="zh-CN"><head><meta charset="utf-8">',

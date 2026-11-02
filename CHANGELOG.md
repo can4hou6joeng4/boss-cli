@@ -4,6 +4,8 @@
 
 ### 新增
 
+- `thread/export` 的 `usage` 增加摘要任务明细：JSON 输出 `summaryJobs`（最多 50 个，附 `summaryJobCount` / `summaryJobsTruncated`），Markdown / HTML 在文档头部列出最近 20 个任务（来源、任务编号、回合、触发原因、模型与 token）；无任务编号的旧记录仍只计入合计。导出仍只读且受同一字节上限约束，协议仍为 `0.2.0`。
+
 - `thread/usage/read` 新增按任务汇总的摘要用量 `summaryJobs`：按 `context_summary_usage.jobId` 聚合，并关联同一 `summaryJobId` 的 checkpoint 或分支摘要记录，附任务类型、关联回合、触发原因（阈值 / 预算 / 溢出）与来源（自动 / 手动 / 分支摘要）；最多返回最近 50 个任务并附 `summaryJobCount` / `summaryJobsTruncated`，无任务编号的旧记录仍只计入 `summaryTasks` 合计。会话用量对话框新增「摘要任务明细」表。合计口径不变，协议仍为 `0.2.0`。
 
 - `thread/usage/read` 每回合附带回合实际使用的自动压缩策略：`turns[]` 新增可选 `compactionPolicy`（与 `thread/export` 相同的校验与字段，非法历史记录不返回该字段，旧内核无此字段）。会话用量对话框在回合下显示「压缩关闭 / 压缩 80% / 压缩开启」标记，悬停展开阈值、保留目标与摘要线路；合计与分页口径不变，协议仍为 `0.2.0`。
