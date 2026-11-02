@@ -1055,6 +1055,8 @@ export interface ThreadUsageSummaryJob extends ThreadUsageBucket {
   kind: "compaction" | "branchSummary" | null;
   /** 自动/手动压缩关联的回合；分支摘要为切换前的目标回合。 */
   turnId: string | null;
+  /** 压缩摘要实际覆盖到的回合；分支摘要或无记录时为 null，旧内核不返回。 */
+  throughTurnId?: string | null;
   reason: "threshold" | "budget" | "overflow" | null;
   origin: "user" | "model" | null;
   /** 当前分支上验证通过并生效的压缩摘要任务；旧内核或非生效任务不返回。 */
