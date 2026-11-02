@@ -267,6 +267,8 @@ def _tokens(bucket: dict) -> str:
         parts.append(f"输入 {bucket['promptTokens']:,} / 输出 {bucket['outputTokens']:,} token")
         if bucket.get("cacheReadTokens") is not None:
             parts.append(f"缓存读取 {bucket['cacheReadTokens']:,}")
+        if bucket.get("cacheWriteTokens") is not None:
+            parts.append(f"缓存写入 {bucket['cacheWriteTokens']:,}")
         if bucket.get("reasoningTokens") is not None:
             parts.append(f"推理 {bucket['reasoningTokens']:,}")
     unreported = bucket.get("unreportedRequests", 0)
@@ -476,7 +478,7 @@ class _Exporter:
                       "failureCode": next((turn[key] for key in ("failureCode", "recoveryReason", "taskRecoveryReason")
                                            if isinstance(turn.get(key), str) and len(turn[key]) <= 120), None),
                       "compactionPolicy": self._compaction_policy(turn.get("compactionPolicy")),
-                      "usage": self.usage_turns.get(turn_id),
+                      "usage": self._scrub_usage(self.usage_turns.get(turn_id)),
                       "usageLabel": _usage_line(self.usage_turns.get(turn_id))}
             units.append((turn_id, header))
             units.extend((turn_id, unit) for unit in by_turn.get(turn_id, []))
@@ -493,11 +495,29 @@ class _Exporter:
             "orphanEntries": self.orphan_entries,
             "toolResults": "included" if self.include else "omitted",
             "usage": {"source": USAGE_SOURCE, "costAvailable": False,
-                      "totals": self.usage_totals, "summaryTasks": self.usage_summary,
+                      "totals": self._scrub_usage(self.usage_totals),
+                      "summaryTasks": self._scrub_usage(self.usage_summary),
                       "summaryJobCount": self.usage_job_count,
                       "summaryJobsTruncated": self.usage_jobs_truncated,
-                      "summaryJobs": self.usage_jobs},
+                      "summaryJobs": [self._scrub_usage(job) for job in self.usage_jobs]},
         }
+
+    def _scrub_usage(self, bucket: dict | None) -> dict | None:
+        """Copy a usage bucket with its provenance strings scrubbed like other exported text.
+
+        ``provider``/``model`` values come from persisted entries and are recorded even
+        when the request is not counted, so they must not bypass default redaction.
+        Numeric totals are unchanged.
+        """
+        if bucket is None:
+            return None
+        out = dict(bucket)
+        for key, limit in (("providers", 80), ("models", 120)):
+            values = out.get(key)
+            if isinstance(values, list):
+                out[key] = [self.redactor.text(value, limit=limit)
+                            for value in values if isinstance(value, str)]
+        return out
 
     def _compaction_policy(self, value: Any) -> dict | None:
         policy = verified_policy(value, _AUTO_COMPACTION_FIELDS)
