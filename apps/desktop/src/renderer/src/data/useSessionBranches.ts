@@ -23,6 +23,8 @@ export interface SessionBranchState {
   endpointsTruncated: boolean;
   /** 当前分支上的回合（自根到 leaf）。 */
   turns: TurnSummary[];
+  /** 回合过多，界面只载入了前面的若干页；更晚的回合（可能含当前位置）未读取。 */
+  turnsTruncated: boolean;
   summaries: ContextBranchSummary[];
   summaryJob?: ContextCompactJob;
   switching: boolean;
@@ -31,7 +33,7 @@ export interface SessionBranchState {
 }
 
 const initial = (): SessionBranchState => ({ loading: false, loaded: false, error: "", branched: false, leafTurnId: null, turnCount: 0,
-  endpoints: [], endpointsTruncated: false, turns: [], summaries: [], switching: false, switchError: "", cancelInFlight: false });
+  endpoints: [], endpointsTruncated: false, turns: [], turnsTruncated: false, summaries: [], switching: false, switchError: "", cancelInFlight: false });
 const MAX_PAGES = 10;
 const TERMINAL_TURN = new Set(["completed", "interrupted", "blocked", "error"]);
 export const isSettledTurn = (status: string | null | undefined): boolean => Boolean(status && TERMINAL_TURN.has(status));
@@ -114,6 +116,7 @@ export function useSessionBranches(threadId: string | null, connected: boolean, 
         if (cursor && pages >= MAX_PAGES) { truncated = true; break; }
       } while (cursor);
       const turns: TurnSummary[] = [];
+      let turnsTruncated = false;
       cursor = null; pages = 0;
       do {
         const page = await listBranchTurns(id, cursor);
@@ -121,7 +124,8 @@ export function useSessionBranches(threadId: string | null, connected: boolean, 
         if (page.view !== "branch") throw new Error("当前分支回合响应无效");
         turns.push(...page.turns.filter(turn => turn.threadId === id));
         cursor = page.nextCursor; pages += 1;
-      } while (cursor && pages < MAX_PAGES);
+        if (cursor && pages >= MAX_PAGES) { turnsTruncated = true; break; }
+      } while (cursor);
       let summaries: ContextBranchSummary[] = [];
       let jobId: string | undefined;
       try {
@@ -133,7 +137,8 @@ export function useSessionBranches(threadId: string | null, connected: boolean, 
         }
       } catch { /* 摘要条目只用于标注；读取失败不影响分支列表。 */ }
       update(id, state => ({ ...state, loading: false, loaded: true, error: "", branched: head?.branched ?? false,
-        leafTurnId: head?.leafTurnId ?? null, turnCount: head?.turnCount ?? 0, endpoints, endpointsTruncated: truncated, turns, summaries }));
+        leafTurnId: head?.leafTurnId ?? null, turnCount: head?.turnCount ?? 0, endpoints, endpointsTruncated: truncated,
+        turns, turnsTruncated, summaries }));
       const known = stateRef.current[id]?.summaryJob;
       const watch = jobId ?? (known?.status === "running" ? known.jobId : undefined);
       if (watch) {
