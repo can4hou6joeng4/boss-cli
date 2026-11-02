@@ -1,5 +1,6 @@
 import { ModalSurface } from "./ModalSurface";
 import type { ContextPanelState } from "../data/useContextPanel";
+import type { AutoCompactionController } from "../data/useAutoCompaction";
 import "../styles/context-panel.css";
 
 export interface ContextPanelProps {
@@ -15,6 +16,7 @@ export interface ContextPanelProps {
   onPlan: () => void;
   onStart: () => void;
   onCancel: () => void;
+  autoCompaction: AutoCompactionController;
 }
 const number = (value: number) => value.toLocaleString("zh-CN");
 const usage = (value: Record<string, unknown> | null | undefined) => value ? Object.entries(value)
@@ -22,7 +24,7 @@ const usage = (value: Record<string, unknown> | null | undefined) => value ? Obj
   .map(([key, amount]) => `${key}: ${typeof amount === "number" ? number(amount) : amount}`).join(" · ") || "服务返回了用量记录，未提供可展示的 token 数" : "暂无用量记录";
 export function ContextPanel(props: ContextPanelProps) {
   if (!props.isOpen) return null;
-  const { state, connected, busy } = props, budget = state.budget, job = state.job, plan = state.plan;
+  const { state, connected, busy } = props, budget = state.budget, job = state.job, plan = state.plan, auto = props.autoCompaction;
   const activeJob = job?.status === "running" && state.lifecycleActive !== false;
   const blocked = !connected || !props.threadId || busy || state.starting || Boolean(state.unknownStart) || state.lifecycleActive === true || activeJob || budget?.requestSource === "active";
   const noSummaryProvider = budget?.summaryAvailable === undefined
@@ -46,6 +48,23 @@ export function ContextPanel(props: ContextPanelProps) {
           <p className="context-panel-note">输入为估算值，不是账单。估算方式：{budget.estimateMethod}；{budget.usageApplied ? "使用历史用量基线校准" : "未应用历史用量校准"}。</p>
           <details><summary>模型用量与检查点</summary><dl className="context-panel-detail"><dt>最近业务用量</dt><dd>{usage(budget.usage)}</dd><dt>最近摘要用量</dt><dd>{usage(budget.summaryUsage)}</dd><dt>摘要检查点</dt><dd>{budget.checkpoint ? `已保留 · 截止回合 ${String(budget.checkpoint.throughTurnId ?? "未知")}` : "尚无摘要检查点"}</dd>{budget.checkpoint?.summaryProvider && <><dt>检查点模型</dt><dd>{String(budget.checkpoint.summaryProvider)} / {String(budget.checkpoint.summaryModel ?? "未知")}</dd><dt>检查点推理档位</dt><dd>{String(budget.checkpoint.summaryEffort ?? "服务默认")}</dd></>}</dl><p className="context-panel-note">历史用量不等于压缩后的精确输入用量。原始历史保留；摘要用于后续模型上下文。</p></details>
         </> : <p className="context-panel-note">{state.reading ? "正在读取当前会话预算…" : "尚未读取预算，可连接内核后刷新。"}</p>}
+      </section>
+      <section className="context-panel-section" aria-labelledby="context-auto-heading">
+        <h3 id="context-auto-heading">下一回合自动压缩</h3>
+        <p className="context-panel-source">内核默认：{auto.defaults ? `${auto.defaults.enabled ? "开启" : "关闭"} · 达到预算 ${auto.defaults.triggerPercent}% 时摘要 · 保留最近 ${number(auto.defaults.keepRecentTokens)} token` : auto.reading ? "正在读取…" : "尚未读取"}</p>
+        {auto.defaults && <p className="context-panel-note">摘要线路：{auto.defaults.provider ?? "当前会话线路"} / {auto.defaults.model ?? "当前模型"}；推理档位：{auto.defaults.effort ?? "服务默认"}。覆盖值不改变摘要线路。</p>}
+        <div className="context-panel-auto-fields">
+          <label className="context-panel-check"><input type="checkbox" checked={auto.draft.enabled} disabled={!connected || !props.threadId} onChange={event => auto.setEnabled(event.target.checked)} /> 启用自动压缩</label>
+          <label htmlFor="context-auto-trigger">触发阈值（%）<input id="context-auto-trigger" inputMode="numeric" type="number" min="1" max="100" step="1" value={auto.draft.triggerPercent} disabled={!connected || !props.threadId} onChange={event => auto.setTriggerPercent(event.target.value)} /></label>
+          <label htmlFor="context-auto-keep">近期保留目标（估算 token）<input id="context-auto-keep" inputMode="numeric" type="number" min="1" max="1000000" step="1" value={auto.draft.keepRecentTokens} disabled={!connected || !props.threadId} onChange={event => auto.setKeepRecentTokens(event.target.value)} /></label>
+        </div>
+        <div className="context-panel-auto-actions">
+          <button type="button" className="secondary-button" onClick={auto.apply} disabled={!connected || !props.threadId || !auto.valid || auto.reading}>应用到下一回合</button>
+          {auto.active && <button type="button" className="secondary-button" onClick={auto.clear}>清除覆盖</button>}
+        </div>
+        {auto.active && <p className="context-panel-warning" role="status">已应用：下一条直接发送使用{auto.active.enabled ? "开启" : "关闭"}、阈值 {auto.active.triggerPercent}%、保留 {number(auto.active.keepRecentTokens)} token；发送后自动恢复默认。入队、转向与续接消息不使用该覆盖。</p>}
+        {auto.error && <p className="context-panel-warning" role="alert">{auto.error}</p>}
+        <p className="context-panel-note">覆盖只影响本会话下一次直接发送，不修改会话或启动配置；发送失败或回执未知时也不会自动重发。</p>
       </section>
       <section className="context-panel-section" aria-labelledby="context-plan-heading">
         <h3 id="context-plan-heading">手动压缩</h3>

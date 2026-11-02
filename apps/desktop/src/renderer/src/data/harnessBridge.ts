@@ -22,6 +22,7 @@ import {
   type TurnContinueParams,
   type TurnContinueResponse,
   type TurnStartResponse,
+  type TurnAutoCompactionOverride,
   type TurnSteerParams,
   type QueueAddParams,
   type QueueItem,
@@ -32,6 +33,7 @@ import {
   type SkillListResponse,
   type ConnectionReport,
   type ConnectionTarget,
+  type ConfigReadResponse,
   type ContextReadResponse,
   type ContextCompactPlan,
   type ContextCompactPlanParams,
@@ -197,14 +199,22 @@ export async function setThreadModel(threadId: string, provider: string, model: 
   return response.thread;
 }
 
-export async function sendTurn(threadId: string, input: string, clientUserMessageId: string, model?: string, skillIds: string[] = []): Promise<TurnStartResponse | null> {
+export async function sendTurn(threadId: string, input: string, clientUserMessageId: string, model?: string, skillIds: string[] = [], autoCompaction?: TurnAutoCompactionOverride): Promise<TurnStartResponse | null> {
   const api = bridge();
   if (!api) return null;
   try {
-    return await api.request(ClientMethods.turnStart, { threadId, input, clientUserMessageId, model, skillIds });
+    // 不发送空对象：省略字段时内核沿用启动时的压缩策略。
+    return await api.request(ClientMethods.turnStart, {
+      threadId, input, clientUserMessageId, model, skillIds,
+      ...(autoCompaction ? { autoCompaction } : {}),
+    });
   } catch {
     return null;
   }
+}
+
+export function readConfig(): Promise<ConfigReadResponse> {
+  return contextRequest(ClientMethods.configRead, {});
 }
 
 export function readTurnContinuation(params: TurnContinuationReadParams): Promise<TurnContinuationReadResponse> {

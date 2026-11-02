@@ -26,6 +26,11 @@
 .context-panel-detail { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 6px 10px; margin: 12px 0; font-size: 12px; }
 .context-panel-plan-input { display: flex; align-items: flex-end; gap: 12px; }
 .context-panel-plan-input label { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; color: var(--text-muted); font-size: 12px; }
+.context-panel-auto-fields { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(0, 1fr); align-items: end; gap: 12px; }
+.context-panel-auto-fields label { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: var(--text-muted); font-size: 12px; }
+.context-panel-auto-fields .context-panel-check { flex-direction: row; align-items: center; gap: 8px; min-height: 34px; }
+.context-panel-auto-fields input[type="checkbox"] { width: auto; margin: 0; }
+.context-panel-auto-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
 .context-panel input { color: var(--text-main); border: 1px solid var(--border-color); border-radius: 6px; background: var(--btn-secondary-bg); padding: 7px 10px; width: 100%; box-sizing: border-box; min-width: 0; }
 .context-panel input:focus-visible { outline: 2px solid var(--border-active); outline-offset: 2px; }
 .context-panel-plan { margin-top: 14px; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; }
@@ -39,5 +44,6 @@
   .context-panel-budget strong { font-size: 21px; }
   .context-panel-plan-input { flex-wrap: wrap; }
   .context-panel-plan-input label { flex-basis: 100%; }
+  .context-panel-auto-fields { grid-template-columns: 1fr; }
   .context-panel-detail { grid-template-columns: 74px minmax(0, 1fr); gap: 6px; }
 }
