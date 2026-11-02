@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import type { InitializeResponse, JsonRpcNotification, PlatformLoginStatus, PlatformLoginAction, PlatformLoginContext } from "@boss-cli/protocol";
+import type { InitializeResponse, JsonRpcNotification, PlatformLoginStatus, PlatformLoginAction, PlatformLoginContext,
+  SessionExportSaveRequest, SessionExportSaveResult } from "@boss-cli/protocol";
 
 interface HarnessStatus {
   running: boolean;
@@ -27,6 +28,10 @@ const api = {
   },
   reconnect(): Promise<HarnessStatus> {
     return ipcRenderer.invoke("harness:reconnect") as Promise<HarnessStatus>;
+  },
+  /** 导出会话：主进程向内核取脱敏文本并经保存对话框写盘；返回文件名与统计，不返回正文或路径。 */
+  exportSession(request: SessionExportSaveRequest): Promise<SessionExportSaveResult> {
+    return ipcRenderer.invoke("session-export:save", request) as Promise<SessionExportSaveResult>;
   },
   platformLogin(action: PlatformLoginAction, context?: PlatformLoginContext): Promise<PlatformLoginStatus> {
     return ipcRenderer.invoke("platform-login:action", action, context) as Promise<PlatformLoginStatus>;

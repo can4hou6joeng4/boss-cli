@@ -1,5 +1,11 @@
 # 上游吸收记录
 
+## 第一百一十三轮：脱敏会话导出
+
+参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-export.ts`（`serializeSessionBranch()` 按当前分支序列化会话条目）与 `export-html/`（读取完整条目与 leaf，渲染为可阅读文档，工具调用与结果分开展示）。本轮只参考设计，独立实现，不复制 Pi 源码或模板、不新增依赖。
+
+适配差异：Pi 的导出原样写出全部条目（含工具结果与本机 `cwd`），由使用者自行把关；本项目会话含候选人个人信息与平台凭据风险，导出改为默认脱敏的只读 `thread/export`：凭据、令牌、环境变量、本机绝对路径与附件内容不导出，工具结果只保留调用名、结构化执行状态（复用 #249 的标注）、审批、错误码与结果结构，候选人姓名、手机号、邮箱、微信、简历正文等在全文打码；显式 `includeToolResults` 才导出明文（凭据与路径仍脱敏）。内容区分用户输入、模型判断与平台事实，分支摘要与压缩摘要标注模型生成，用量沿用 `thread/usage/read` 的同一校验（未上报单独标注）。Pi 由 CLI 进程直接写文件；本项目内核不触碰导出路径，由 Electron 主进程经保存对话框写盘，渲染层不能直接请求 `thread/export`，也拿不到正文。输出按传输转义后的字节设上限（默认 512 KiB，最大 768 KiB），超限按条目截断并标注。只提供 Markdown / JSON，不做 HTML 模板。能力以 `capabilities.threadExport` 声明，协议仍为 `0.2.0`。
+
 ## 第一百一十二轮：分支视图冻结快照与被放弃分支摘要正文读取
 
 参考 Pi MIT 固定提交 `a14cdf90f0a76532f3e20bc3c01872837cef24ba` 的 `packages/coding-agent/src/core/session-manager.ts`：`getBranch()` 自 leaf 回溯返回当前路径上的原始条目（含 `branch_summary` 条目及其 `summary` 正文），`buildSessionContext()` 把摘要正文投影为模型消息；Pi 没有单独的正文读取接口，调用方直接读原始条目。本轮独立实现，不复制 Pi 源码或新增依赖。

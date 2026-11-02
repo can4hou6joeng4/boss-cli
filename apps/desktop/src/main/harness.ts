@@ -1,9 +1,11 @@
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
-import { app, ipcMain, BrowserWindow, type IpcMainInvokeEvent } from "electron";
+import { writeFile, chmod, lstat } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
+import { app, dialog, ipcMain, BrowserWindow, type IpcMainInvokeEvent } from "electron";
 import { HarnessHostManager, HarnessRpcError, type HarnessHostConnection } from "@boss-cli/app-client";
-import type { JsonRpcNotification } from "@boss-cli/protocol";
-import { isTrustedRendererUrl, validateHarnessRequest, validateLoginContext } from "./security";
+import type { JsonRpcNotification, SessionExportSaveResult } from "@boss-cli/protocol";
+import { isTrustedRendererUrl, sessionExportFileName, validateHarnessRequest, validateLoginContext,
+  validateSessionExportRequest, validateThreadExportResponse } from "./security";
 import { PlatformLogin } from "./platformLogin";
 
 function findRepoRoot(start: string): string {
@@ -103,6 +105,57 @@ function registerIPC(): void {
         return { __harnessRpcError: { code: error.code, message: error.message, data: error.data } };
       }
       throw error;
+    }
+  });
+  // Session export: the kernel renders redacted text, the main process asks where to save and writes it.
+  // The renderer only receives the chosen file's base name and counts, never the exported content or path.
+  let exportInFlight = false;
+  ipcMain.handle("session-export:save", async (event, payload: unknown): Promise<SessionExportSaveResult | { __harnessRpcError: unknown }> => {
+    trustedSender(event);
+    const request = validateSessionExportRequest(payload);
+    if (!host) throw new Error("harness host is not attached");
+    if (exportInFlight) throw new Error("another session export is in progress");
+    exportInFlight = true;
+    try {
+      let response: unknown;
+      try {
+        response = await host.request("thread/export", { threadId: request.threadId, view: request.view,
+          format: request.format, includeToolResults: request.includeToolResults });
+      } catch (error) {
+        if (error instanceof HarnessRpcError && error.code !== -32603) {
+          return { __harnessRpcError: { code: error.code, message: error.message, data: error.data } };
+        }
+        throw error;
+      }
+      const exported = validateThreadExportResponse(response, request);
+      const parent = BrowserWindow.fromWebContents(event.sender);
+      if (!parent || parent.isDestroyed()) throw new Error("export parent was closed");
+      const markdown = request.format === "markdown";
+      const choice = await dialog.showSaveDialog(parent, {
+        title: "导出会话", defaultPath: join(app.getPath("downloads"), sessionExportFileName(request)),
+        filters: [markdown ? { name: "Markdown", extensions: ["md"] } : { name: "JSON", extensions: ["json"] }],
+        properties: ["createDirectory", "showOverwriteConfirmation"],
+      });
+      if (choice.canceled || !choice.filePath) return { saved: false, canceled: true };
+      // Never follow a symlink picked (or pre-planted) at the save path, and do not report OS paths back.
+      try {
+        const existing = await lstat(choice.filePath).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        });
+        if (existing?.isSymbolicLink()) throw new Error("symlink");
+        await writeFile(choice.filePath, exported.content, { encoding: "utf8", mode: 0o600 });
+        // `mode` only applies to new files; an overwritten file keeps its old permissions without this.
+        await chmod(choice.filePath, 0o600);
+      } catch {
+        console.error("session export write failed");
+        throw new Error("无法写入所选文件，请换一个位置重试");
+      }
+      return { saved: true, fileName: basename(choice.filePath), bytes: Buffer.byteLength(exported.content, "utf8"),
+        truncated: exported.truncated, turnCount: exported.turnCount, exportedTurnCount: exported.exportedTurnCount,
+        toolResults: exported.toolResults, redactions: { ...exported.redactions } };
+    } finally {
+      exportInFlight = false;
     }
   });
   ipcMain.handle("harness:status", (event) => {

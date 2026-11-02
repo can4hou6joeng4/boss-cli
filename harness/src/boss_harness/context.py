@@ -82,22 +82,27 @@ _EXECUTION_LABELS = {
     "not_approved": "用户拒绝，未执行",
     "not_executed": "未执行",
     "outcome_unknown": "已中断或结果未知，需核对",
+    "running": "进行中（导出时尚未结束）",
 }
 _WRITE_TOOLS = frozenset({"boss_hr_greet"})
 
 
-def _annotate_tool_execution(item: dict[str, Any]) -> dict[str, Any]:
-    """Derive a read-only execution label for summary sources; never persisted."""
-    if item.get("kind") != "toolCall":
-        return item
+def tool_execution_status(item: dict[str, Any]) -> dict[str, Any]:
+    """Structured execution label of one tool-call item (summary sources and exports); never persisted."""
     state = item.get("executionState") or item.get("status")
     write = item.get("toolName") in _WRITE_TOOLS or "approval" in item
     label = _EXECUTION_LABELS.get(state, "状态不明，不得视为已执行")
     if write and state == "outcome_unknown":
         label = "结果未知，需核对"
     executed = True if state == "completed" else False if state in {"not_approved", "not_executed"} else None
-    return {**item, "summaryExecutionStatus": {
-        "state": state, "label": label, "externalWrite": write, "executed": executed}}
+    return {"state": state, "label": label, "externalWrite": write, "executed": executed}
+
+
+def _annotate_tool_execution(item: dict[str, Any]) -> dict[str, Any]:
+    """Derive a read-only execution label for summary sources; never persisted."""
+    if item.get("kind") != "toolCall":
+        return item
+    return {**item, "summaryExecutionStatus": tool_execution_status(item)}
 
 
 class ContextBudgetExceeded(ValueError):
