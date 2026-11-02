@@ -17,7 +17,7 @@ import { useThreadUsage } from "./data/useThreadUsage";
 import { branchSupport, branchSwitchBlock, useSessionBranches } from "./data/useSessionBranches";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
-import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn } from "./data/harnessBridge";
+import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, harnessErrorText, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn } from "./data/harnessBridge";
 import { reduceHarnessEvent, type HarnessEvent } from "./data/harnessEvents";
 import { HarnessReplica } from "./data/harnessReplica";
 import type { QueuePage } from "./data/queueMapping";
@@ -261,7 +261,16 @@ export function App(): JSX.Element {
         if (cancelled) return;
         setModelOptions(modelCatalog.filter(model => model.configured && model.available));
         const version = lifecycleVersion.current;
-        const sessions = await listThreads(); if (cancelled) return;
+        let sessions: Awaited<ReturnType<typeof listThreads>>;
+        try {
+          sessions = await listThreads();
+        } catch (cause) {
+          if (cancelled) return;
+          // 读取失败时保留当前列表，避免把一次 RPC 失败显示成「没有会话」。
+          setError(`会话列表读取失败：${harnessErrorText(cause)}。会话列表未更新，请稍后重试或重新连接。`);
+          return;
+        }
+        if (cancelled) return;
         if (version === lifecycleVersion.current) {
           const next = new Set(sessions.filter(session => session.status === "running").map(session => session.id));
           runningRef.current = next; setRunningThreadIds(next);

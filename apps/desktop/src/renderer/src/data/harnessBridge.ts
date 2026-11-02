@@ -84,6 +84,19 @@ function bridge(): HarnessBridge | null {
   return window.boss ?? null;
 }
 
+/** 渲染层展示用的内核错误文案：保留 RPC 错误码与可选原因码，其余回退为通用描述。 */
+export function harnessErrorText(error: unknown): string {
+  const value = error && typeof error === "object"
+    ? error as { rpcError?: unknown; code?: unknown; message?: unknown; data?: unknown } : null;
+  const data = value?.data && typeof value.data === "object" ? value.data as Record<string, unknown> : null;
+  const message = typeof value?.message === "string" && value.message.trim()
+    ? value.message.slice(0, 300) : "无法读取本地内核响应";
+  if (value?.rpcError === true && typeof value.code === "number") {
+    return `${message}（内核 ${value.code}${typeof data?.code === "string" ? ` / ${data.code}` : ""}）`;
+  }
+  return message;
+}
+
 function contextRequest<T>(method: string, params: unknown): Promise<T> {
   const api = bridge();
   if (!api) return Promise.reject(new Error("本地 Harness 未连接"));
@@ -137,37 +150,36 @@ export async function isHarnessUp(): Promise<boolean> {
   }
 }
 
-/** 内核里的会话列表，映射成侧栏用的条目。 */
+/** 内核里的会话列表，映射成侧栏用的条目。读取失败时抛出，避免把空列表误当成「没有会话」。 */
 export async function listThreads(): Promise<SessionItem[]> {
-  const api = bridge();
-  if (!api) return [];
-  try {
-    const threads: ThreadListResponse["threads"] = [];
-    let cursor: string | null = null;
-    do {
-      const response: ThreadListResponse = await api.request(ClientMethods.threadList, { cursor, limit: 200 });
-      threads.push(...response.threads);
-      cursor = response.nextCursor ?? null;
-    } while (cursor);
-    return threads.map((thread) => ({
-      id: thread.id,
-      title: thread.title,
-      timeAgo: formatRelativeTime(thread.updatedAt),
-      updatedAt: thread.updatedAt,
-      status: thread.lastTurn?.status === "running" ? "running" as const
-        : thread.lastTurn?.status === "interrupted" ? "interrupted" as const : "idle" as const,
-      turnId: thread.lastTurn?.turnId,
-      lastTurnStatus: thread.lastTurn?.status,
-      taskResumePolicy: thread.lastTurn?.taskResumePolicy,
-      toolPolicy: thread.toolPolicy ?? "approval",
-      provider: thread.provider,
-      model: thread.model,
-      reasoningEffort: thread.reasoningEffort,
-      projectId: HARNESS_PROJECT_ID,
-    }));
-  } catch {
-    return [];
-  }
+  if (!bridge()) return [];
+  const threads: ThreadListResponse["threads"] = [];
+  let cursor: string | null = null;
+  do {
+    const response: ThreadListResponse = await contextRequest<ThreadListResponse>(ClientMethods.threadList, { cursor, limit: 200 });
+    if (!response || !Array.isArray(response.threads)) throw new Error("会话列表响应格式无法识别");
+    const next: string | null = response.nextCursor ?? null;
+    if (next !== null && typeof next !== "string") throw new Error("会话列表分页游标无法识别");
+    if (next === cursor) throw new Error("会话列表分页未前进");
+    threads.push(...response.threads);
+    cursor = next;
+  } while (cursor);
+  return threads.map((thread) => ({
+    id: thread.id,
+    title: thread.title,
+    timeAgo: formatRelativeTime(thread.updatedAt),
+    updatedAt: thread.updatedAt,
+    status: thread.lastTurn?.status === "running" ? "running" as const
+      : thread.lastTurn?.status === "interrupted" ? "interrupted" as const : "idle" as const,
+    turnId: thread.lastTurn?.turnId,
+    lastTurnStatus: thread.lastTurn?.status,
+    taskResumePolicy: thread.lastTurn?.taskResumePolicy,
+    toolPolicy: thread.toolPolicy ?? "approval",
+    provider: thread.provider,
+    model: thread.model,
+    reasoningEffort: thread.reasoningEffort,
+    projectId: HARNESS_PROJECT_ID,
+  }));
 }
 
 export async function startThread(title: string, model?: string, provider?: string): Promise<SessionItem | null> {
