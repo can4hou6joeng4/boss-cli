@@ -11,6 +11,8 @@ packages/coding-agent/src/core/cache-stats.ts（按 assistant 消息累计、
 provider 未上报 usage 的请求持久为 ``usage: null``，除计入原因 ``missing`` 外
 另以 ``unreportedRequests`` 计数，与“上报为全零”（原因 ``zero``，含旧会话里
 由旧版内核把缺失写成全零的记录，不改写历史）区分。
+provider / model 来源列表只保留合理长度内的前若干条，避免损坏或伪造的
+持久记录放大只读响应；这不改变任何计数。
 费用没有可信价目来源，始终为 ``None``。
 """
 from __future__ import annotations
@@ -82,12 +84,27 @@ def _empty() -> dict:
             "costUsd": None, "costSource": "unavailable"}
 
 
+# provider/model 只用于展示来源，不参与计数；上限防止损坏或伪造的持久记录
+# 让 thread/usage/read 与 thread/export 的响应超过单页传输上限。
+MAX_PROVENANCE_ITEMS = 8
+MAX_PROVIDER_CHARS = 64
+MAX_MODEL_CHARS = 200
+
+
+def _provenance(values: list, value: Any, limit: int) -> None:
+    if len(values) >= MAX_PROVENANCE_ITEMS or not isinstance(value, str):
+        return
+    if not 0 < len(value) <= limit or value in values:
+        return
+    values.append(value)
+
+
 def _add(bucket: dict, provider: Any, model: Any, usage: Any) -> None:
     bucket["requests"] += 1
-    if isinstance(provider, str) and "providers" in bucket and provider not in bucket["providers"]:
-        bucket["providers"].append(provider)
-    if isinstance(model, str) and "models" in bucket and model not in bucket["models"] and len(bucket["models"]) < 8:
-        bucket["models"].append(model)
+    if "providers" in bucket:
+        _provenance(bucket["providers"], provider, MAX_PROVIDER_CHARS)
+    if "models" in bucket:
+        _provenance(bucket["models"], model, MAX_MODEL_CHARS)
     normalized, reason = verify_usage(provider, usage)
     if normalized is None:
         bucket["unverifiedRequests"] += 1

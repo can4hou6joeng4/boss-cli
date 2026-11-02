@@ -49,6 +49,8 @@
 
 ### 修复
 
+- `thread/usage/read` 与 `thread/export` 的用量来源列表有界：每回合与每个摘要任务的 `providers` / `models` 最多保留 8 个，provider 最长 64 字符、model 最长 200 字符，空值与超长值跳过；此前损坏或伪造的持久记录可让只读响应与导出超过单页上限。计数、`unverifiedReasons` 与默认脱敏不变，协议仍为 `0.2.0`。
+
 - `thread/export` 的用量字段统一脱敏：每回合 `usage` 与 `usage.summaryJobs` 中的 `providers` / `models` 现与其他导出文本一样经过默认脱敏（凭据、本机路径与已识别个人信息），此前持久记录里的原始字符串会直接进入 JSON，并作为摘要任务模型名出现在 Markdown / HTML；数值合计不变。Markdown / HTML 的用量行在 provider 上报时补充「缓存写入」。协议与导出参数不变（仍为 `0.2.0`）。
 
 - 队列面板与协议对齐部分自动压缩覆盖：`queue/add` 与队列项允许只含部分 `autoCompaction` 字段（内核与 `turn/start` 共用合并规则），协议类型由完整对象放宽为 `Partial<TurnAutoCompactionOverride>`；队列项徽标按实际字段显示「压缩关闭」「压缩 80%」「压缩开启」或「压缩覆盖」，悬停提示只列出已提供字段，不再把缺少 `enabled` 的部分覆盖误标为「该回合关闭自动压缩」。`TurnSummary` 补上内核已持久化的 `compactionPolicy` 字段类型。协议仍为 `0.2.0`。
