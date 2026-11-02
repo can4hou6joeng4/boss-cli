@@ -279,18 +279,25 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
   return { method: payload.method, params };
 }
 
-/** Renderer request for the main-process save flow; only these four fields reach `thread/export`. */
+/**
+ * Renderer request for the main-process save flow; only these fields reach `thread/export`.
+ * Plaintext tool results require `acknowledgePlaintext: true` here as well, so a renderer that skipped
+ * its own confirmation step still cannot export plaintext.
+ */
 export function validateSessionExportRequest(payload: unknown): SessionExportSaveRequest {
-  const allowed = new Set(["threadId", "view", "format", "includeToolResults"]);
+  const allowed = new Set(["threadId", "view", "format", "includeToolResults", "acknowledgePlaintext"]);
   if (!record(payload) || (Object.getPrototypeOf(payload) !== Object.prototype && Object.getPrototypeOf(payload) !== null) ||
     Reflect.ownKeys(payload).some(key => typeof key !== "string" || !allowed.has(key)) ||
     typeof payload.threadId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(payload.threadId) ||
     (payload.view !== "log" && payload.view !== "branch") ||
     (payload.format !== "markdown" && payload.format !== "json") ||
-    typeof payload.includeToolResults !== "boolean") {
+    typeof payload.includeToolResults !== "boolean" ||
+    (payload.acknowledgePlaintext !== undefined && typeof payload.acknowledgePlaintext !== "boolean") ||
+    (payload.includeToolResults && payload.acknowledgePlaintext !== true)) {
     throw new Error("invalid session export request");
   }
-  return { threadId: payload.threadId, view: payload.view, format: payload.format, includeToolResults: payload.includeToolResults };
+  return { threadId: payload.threadId, view: payload.view, format: payload.format, includeToolResults: payload.includeToolResults,
+    acknowledgePlaintext: payload.acknowledgePlaintext === true };
 }
 
 const EXPORT_MAX_BYTES = 768 * 1024;

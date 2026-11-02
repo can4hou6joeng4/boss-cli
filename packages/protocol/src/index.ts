@@ -959,7 +959,8 @@ export interface AttachmentDescriptor { id: string; name: string; digest: string
 /**
  * `thread/export` 参数；仅在 `capabilities.threadExport` 为真时可用。只读，不写会话。
  * 默认脱敏：凭据、令牌、环境变量、本机绝对路径与附件内容不导出，工具结果只保留结构与执行状态，
- * 候选人个人信息在全文打码；`includeToolResults: true` 才导出工具参数与结果明文（凭据与路径仍脱敏）。
+ * 个人信息按工具数据中识别到的字段值打码（未出现在工具数据中的姓名可能无法识别）；
+ * `includeToolResults: true` 才导出工具参数与结果明文（凭据与路径仍脱敏）。
  * `maxBytes`（65536–786432，默认 524288）按传输转义后的字节计，超限按条目截断并标注。
  */
 export interface ThreadExportParams {
@@ -991,6 +992,8 @@ export interface SessionExportSaveRequest {
   view: "log" | "branch";
   format: "markdown" | "json";
   includeToolResults: boolean;
+  /** 必填 true 才能带明文导出；主进程同样校验，不只依赖渲染层的确认框。 */
+  acknowledgePlaintext?: boolean;
 }
 export type SessionExportSaveResult =
   | { saved: false; canceled: true }

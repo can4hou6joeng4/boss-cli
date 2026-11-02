@@ -82,6 +82,7 @@ _EXECUTION_LABELS = {
     "not_approved": "用户拒绝，未执行",
     "not_executed": "未执行",
     "outcome_unknown": "已中断或结果未知，需核对",
+    "running": "进行中（导出时尚未结束）",
 }
 _WRITE_TOOLS = frozenset({"boss_hr_greet"})
 

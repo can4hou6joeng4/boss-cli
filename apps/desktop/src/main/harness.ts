@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { writeFile, chmod, lstat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { app, dialog, ipcMain, BrowserWindow, type IpcMainInvokeEvent } from "electron";
 import { HarnessHostManager, HarnessRpcError, type HarnessHostConnection } from "@boss-cli/app-client";
@@ -137,7 +137,20 @@ function registerIPC(): void {
         properties: ["createDirectory", "showOverwriteConfirmation"],
       });
       if (choice.canceled || !choice.filePath) return { saved: false, canceled: true };
-      await writeFile(choice.filePath, exported.content, { encoding: "utf8", mode: 0o600 });
+      // Never follow a symlink picked (or pre-planted) at the save path, and do not report OS paths back.
+      try {
+        const existing = await lstat(choice.filePath).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        });
+        if (existing?.isSymbolicLink()) throw new Error("symlink");
+        await writeFile(choice.filePath, exported.content, { encoding: "utf8", mode: 0o600 });
+        // `mode` only applies to new files; an overwritten file keeps its old permissions without this.
+        await chmod(choice.filePath, 0o600);
+      } catch {
+        console.error("session export write failed");
+        throw new Error("无法写入所选文件，请换一个位置重试");
+      }
       return { saved: true, fileName: basename(choice.filePath), bytes: Buffer.byteLength(exported.content, "utf8"),
         truncated: exported.truncated, turnCount: exported.turnCount, exportedTurnCount: exported.exportedTurnCount,
         toolResults: exported.toolResults, redactions: { ...exported.redactions } };

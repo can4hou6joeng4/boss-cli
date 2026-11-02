@@ -58,7 +58,8 @@ export function ExportDialog({ isOpen, onClose, threadId, branchViews, connected
     const mine = ++version.current;
     setStatus({ kind: "saving" });
     try {
-      const response: unknown = await window.boss.exportSession({ threadId, view: effectiveView, format, includeToolResults });
+      const response: unknown = await window.boss.exportSession({ threadId, view: effectiveView, format, includeToolResults,
+        acknowledgePlaintext: includeToolResults && acknowledged });
       if (version.current !== mine) return;
       const failure = rpcError(response);
       if (failure) throw failure;
@@ -73,7 +74,7 @@ export function ExportDialog({ isOpen, onClose, threadId, branchViews, connected
   };
   return <ModalSurface title="导出会话" onClose={onClose} className="context-panel export-dialog">
     <div className="dialog-form">
-      <p className="context-panel-source" data-export-note>导出用于复盘与提交问题报告。内核默认脱敏：凭据、令牌、环境变量、本机绝对路径与附件内容不导出；工具结果只保留调用名、执行状态与结果结构，候选人个人信息（姓名、手机号、邮箱、微信、简历正文等）打码。文件由主进程写入你选择的位置。</p>
+      <p className="context-panel-source" data-export-note>导出用于复盘与提交问题报告。内核默认脱敏：凭据、令牌、环境变量、本机绝对路径与附件内容不导出；工具结果只保留调用名、执行状态与结果结构，候选人个人信息按工具数据中识别到的字段值打码（未出现在工具数据中的姓名、联系方式可能无法识别，对外发送前请自行核对）。文件由主进程写入你选择的位置。</p>
       {branchViews && <fieldset className="export-options" aria-label="导出范围">
         <legend>范围</legend>
         <label className="branch-summary-option"><input type="radio" name="export-view" checked={view === "branch"} onChange={() => setView("branch")} /><span>当前分支</span></label>

@@ -49,8 +49,9 @@ _PII_KEYS = frozenset({
     "name", "geekname", "realname", "candidatename", "fullname", "nickname", "username", "姓名", "名字",
     "phone", "mobile", "tel", "telephone", "phonenumber", "mobilephone", "手机", "手机号", "电话",
     "email", "mail", "emailaddress", "邮箱", "wechat", "weixin", "wx", "wechatid", "weixinid", "微信",
-    "微信号", "resume", "resumetext", "resumecontent", "简历", "简历正文", "idcard", "身份证", "address",
-    "地址", "住址", "contact", "联系方式",
+    "微信号", "resume", "resumetext", "resumecontent", "resumedesc", "resumedescription", "简历", "简历正文",
+    "idcard", "身份证", "address", "地址", "住址", "contact", "联系方式",
+    "geekdesc", "geekdescription", "workcontent",
 })
 _PII_PATTERNS = (
     re.compile(r"[\w.+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"),
@@ -60,17 +61,23 @@ _PII_PATTERNS = (
 )
 _TOKEN_PATTERNS = (
     re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}"),
-    re.compile(r"(?i)\b(cookie|set-cookie|authorization)\b(\s*[:=]\s*)[^\n]+"),
+    # Header values may be JSON-quoted (`"Authorization": "Basic …"`) or plain `Cookie: …`.
+    re.compile(r"(?i)\b(cookie|set-cookie|authorization|proxy-authorization)\b[\"']?(\s*[:=]\s*)[\"']?[^\n\"']+"),
     re.compile(r"(?i)\b(__zp_[a-z_]*|wt2|zp_token|bst|wbg)=[^;\s]+"),
-    re.compile(r"\b(?=[A-Za-z0-9_+=-]*\d)(?=[A-Za-z0-9_+=-]*[A-Za-z])[A-Za-z0-9_+=-]{40,}"),
+    re.compile(r"\b(?=[A-Za-z0-9_+=/-]*\d)(?=[A-Za-z0-9_+=/-]*[A-Za-z])[A-Za-z0-9_+=/-]{40,}"),
 )
-_ENV_ASSIGNMENT = re.compile(r"\b([A-Z][A-Z0-9]*_[A-Z0-9_]+)=(\"[^\"]*\"|'[^']*'|\S+)")
+# Vendor key prefixes (case-insensitive) and RFC 3986 userinfo, neither of which the
+# generic long-token rule covers for short keys.
+_KEY_PATTERN = re.compile(r"(?i)\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}")
+_URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://)[^/\s:@]+:[^/\s@]+@")
+# Any UPPER_CASE assignment, with or without an underscore, quoted or bare.
+_ENV_ASSIGNMENT = re.compile(r"\b([A-Z][A-Z0-9_]{2,})\s*=\s*(\"[^\"]*\"|'[^']*'|\S+)")
 _SENSITIVE_ENV = re.compile(r"(?i)(key|token|secret|password|passwd|cookie|auth|credential|session)")
-_PATH_SEGMENT = r"[^\s/\"'`<>|()\[\]，。；：、！？（）《》“”‘’]+"
+_PATH_SEGMENT = r"[^\s/\\\"'`<>|()\[\]，。；：、！？（）《》“”‘’]+"
 _ABSOLUTE_PATH = re.compile(
     rf"file://(?:/{_PATH_SEGMENT})+/?"
     rf"|(?<![\w:/.~-])(?:~|/{_PATH_SEGMENT})(?:/{_PATH_SEGMENT})+/?"
-    r"|(?<![\w])[A-Za-z]:\\(?:[^\s\\\"'<>|]+\\?)+")
+    r"|(?<![\w])[A-Za-z]:[\\/](?:[^\s\\/\"'<>|]+[\\/]?)+")
 
 
 def _normalize_key(key: Any) -> str:
@@ -85,6 +92,9 @@ class Redactor:
                               key=len, reverse=True)
         self.paths = sorted({value.rstrip("/\\") for value in paths
                              if isinstance(value, str) and len(value.rstrip("/\\")) > 1}, key=len, reverse=True)
+        # A known path prefix swallows the rest of that path so no trailing segment survives.
+        tail = "[/\\\\][^\\s\"'`<>|()\\[\\]，。；：、！？（）《》“”‘’]*"
+        self.path_patterns = [re.compile(re.escape(value) + f"(?:{tail})?") for value in self.paths]
         self.pii_values: list[str] = []
         self.counts = {"secrets": 0, "environment": 0, "paths": 0, "personalInfo": 0}
 
@@ -135,11 +145,12 @@ class Redactor:
         text = self._sub(_TOKEN_PATTERNS[0], SECRET_MARK, text, "secrets")
         text = self._sub(_TOKEN_PATTERNS[1], lambda m: m.group(1) + m.group(2) + SECRET_MARK, text, "secrets")
         text = self._sub(_TOKEN_PATTERNS[2], lambda m: m.group(1) + "=" + SECRET_MARK, text, "secrets")
+        text = self._sub(_KEY_PATTERN, SECRET_MARK, text, "secrets")
+        text = self._sub(_URL_USERINFO, lambda m: m.group(1) + SECRET_MARK + "@", text, "secrets")
         text = self._sub(_ENV_ASSIGNMENT, lambda m: m.group(1) + "=" + ENV_MARK, text, "environment")
-        for value in self.paths:
-            if value in text:
-                self.counts["paths"] += text.count(value)
-                text = text.replace(value, PATH_MARK)
+        for pattern in self.path_patterns:
+            text, count = pattern.subn(PATH_MARK, text)
+            self.counts["paths"] += count
         text = self._sub(_ABSOLUTE_PATH, PATH_MARK, text, "paths")
         return self._sub(_TOKEN_PATTERNS[3], SECRET_MARK, text, "secrets")
 
@@ -206,13 +217,16 @@ def _describe_value(value: Any) -> str:
     return "未知类型"
 
 
-def _structure(data: Any) -> dict:
-    """Shape of tool data without values: top-level type, list sizes and field names."""
+def _structure(data: Any, redactor: "Redactor") -> dict:
+    """Shape of tool data without values: top-level type, list sizes and (redacted) field names."""
+    def name(key: Any) -> str:
+        return redactor.sensitive(str(key))[:40]
+
     shape: dict[str, Any] = {"type": _describe_value(data)}
     if isinstance(data, dict):
-        shape["fields"] = {str(key)[:40]: _describe_value(value) for key, value in list(data.items())[:24]}
+        shape["fields"] = {name(key): _describe_value(value) for key, value in list(data.items())[:24]}
     elif isinstance(data, list) and data and isinstance(data[0], dict):
-        shape["itemFields"] = [str(key)[:40] for key in list(data[0])[:24]]
+        shape["itemFields"] = [name(key) for key in list(data[0])[:24]]
     return shape
 
 
@@ -226,6 +240,11 @@ def _pagination(value: Any) -> dict | None:
             if key in value:
                 out[key] = item
     return out
+
+
+def _inline_code(value: Any) -> str:
+    """A code span that cannot be broken by backticks or newlines in platform-supplied text."""
+    return "`" + str(value).replace("`", "'").replace("\n", " ") + "`"
 
 
 def _fence(text: str, language: str = "text") -> str:
@@ -282,6 +301,7 @@ class _Exporter:
         self.usage_summary, self.usage_totals = usage["summaryTasks"], usage["totals"]
         order = [turn["turnId"] for turn in self.turns]
         self.positions = {turn_id: index for index, turn_id in enumerate(order)}
+        self.orphan_entries = 0
         self.summaries = self._summaries(selected)
         self.checkpoints = [entry for entry in selected if entry.get("type") == "context_checkpoint"
                             and isinstance(entry.get("payload"), dict)]
@@ -302,7 +322,7 @@ class _Exporter:
                 continue
             summary, anchor = payload.get("summary"), payload.get("targetTurnId")
             if (not isinstance(summary, str) or not summary.strip() or len(summary) > MAX_BRANCH_SUMMARY_CHARS
-                    or (anchor is not None and anchor not in self.positions)):
+                    or (anchor is not None and (not isinstance(anchor, str) or anchor not in self.positions))):
                 continue
             abandoned = payload.get("abandonedTurnIds")
             out.append({"entryId": entry.get("id"), "targetTurnId": anchor, "summary": summary.strip(),
@@ -372,7 +392,8 @@ class _Exporter:
             error = result.get("error") if isinstance(result.get("error"), dict) else None
             unit["result"] = {
                 "included": False, "ok": result.get("ok") if isinstance(result.get("ok"), bool) else None,
-                "data": _structure(result.get("data")), "pagination": _pagination(result.get("pagination")),
+                "data": _structure(result.get("data"), self.redactor),
+                "pagination": _pagination(result.get("pagination")),
                 "error": ({"code": error.get("code") if isinstance(error.get("code"), str) else None,
                            "message": self.redactor.text(error.get("message"), limit=600) or None}
                           if error else None),
@@ -402,12 +423,17 @@ class _Exporter:
     def units(self) -> list[tuple[str, dict]]:
         """Ordered (turnId, unit) list; turn headers precede their items, summaries follow their anchor."""
         by_turn: dict[str, list[dict]] = {}
+        self.orphan_entries = 0
         for item in self.items:
             # Context edits only change model context; the export keeps the original record.
             unit = self._item(item)
             turn_id = item.get("turnId")
-            if unit is not None and isinstance(turn_id, str):
-                by_turn.setdefault(turn_id, []).append(unit)
+            if unit is None:
+                continue
+            if not isinstance(turn_id, str) or turn_id not in self.positions:
+                self.orphan_entries += 1
+                continue
+            by_turn.setdefault(turn_id, []).append(unit)
         after: dict[str | None, list[dict]] = {}
         for summary in self.summaries:
             after.setdefault(summary["targetTurnId"], []).append({
@@ -419,13 +445,14 @@ class _Exporter:
         for entry in self.checkpoints:
             payload = entry["payload"]
             anchor = payload.get("throughTurnId")
-            if anchor not in self.positions:
+            if not isinstance(anchor, str) or anchor not in self.positions:
                 continue
             origin = payload.get("origin") if payload.get("origin") in {"model", "user"} else "unknown"
             after.setdefault(anchor, []).append({
                 "kind": "compactionSummary", "origin": origin, "entryId": entry.get("id"),
-                "label": ("模型生成的上下文压缩摘要（原始记录仍保留）" if origin == "model"
-                          else "用户提供的上下文压缩摘要（原始记录仍保留）"),
+                "label": {"model": "模型生成的上下文压缩摘要（原始记录仍保留）",
+                          "user": "用户提供的上下文压缩摘要（原始记录仍保留）"}.get(
+                              origin, "来源未知的上下文压缩摘要（原始记录仍保留）"),
                 "createdAt": entry.get("timestamp"), "text": self.redactor.text(payload.get("summary"))})
         units: list[tuple[str, dict]] = [("", unit) for unit in after.get(None, [])]
         for index, turn in enumerate(self.turns):
@@ -452,6 +479,7 @@ class _Exporter:
             "threadId": self.thread_id, "title": " ".join(self.redactor.text(self.thread.get("title"), limit=200).split()),
             "createdAt": self.thread.get("createdAt"), "view": "branch" if self.branch else "log",
             "branched": self.leaf["branched"], "turnCount": len(self.turns),
+            "orphanEntries": self.orphan_entries,
             "toolResults": "included" if self.include else "omitted",
             "usage": {"source": USAGE_SOURCE, "costAvailable": False,
                       "totals": self.usage_totals, "summaryTasks": self.usage_summary},
@@ -467,14 +495,15 @@ def _usage_line(bucket: dict | None) -> str:
 def _render_unit(unit: dict, view_log: bool) -> str:
     kind = unit["kind"]
     if kind == "turn":
-        lines = [f"## 回合 {unit['index']} · `{unit['turnId']}` · {_TURN_STATUS.get(unit['status'], '状态不明')}", ""]
+        lines = [f"## 回合 {unit['index']} · {_inline_code(unit['turnId'])} · "
+                 f"{_TURN_STATUS.get(unit['status'], '状态不明')}", ""]
         meta = [f"开始：{unit['startedAt'] or '—'}", f"结束：{unit['completedAt'] or '—'}"]
         if unit["model"]:
             meta.append(f"模型：{unit['provider'] or '—'} / {unit['model']}")
         if view_log:
             meta.append("在当前分支：" + ("是" if unit["onCurrentBranch"] else "否（已切离的分支）"))
         if unit["failureCode"]:
-            meta.append(f"失败 / 恢复原因：`{unit['failureCode']}`")
+            meta.append(f"失败 / 恢复原因：{_inline_code(unit['failureCode'])}")
         lines.append("- " + "；".join(meta))
         lines.append(f"- 用量（provider 上报，不估算、不计价）：{unit['usageLabel']}")
         return "\n".join(lines)
@@ -494,7 +523,7 @@ def _render_unit(unit: dict, view_log: bool) -> str:
         return "\n".join(parts)
     if kind == "toolCall":
         execution = unit["execution"]
-        lines = [f"### 工具调用 `{unit['toolName']}` — {execution['label']}", ""]
+        lines = [f"### 工具调用 {_inline_code(unit['toolName'])} — {execution['label']}", ""]
         executed = {True: "是", False: "否", None: "未知，需核对平台状态"}[execution["executed"]]
         lines.append(f"- 执行状态：`{execution['state']}`（记录状态 `{unit['status']}`）；已执行：{executed}"
                      + ("；外部写操作" if execution["externalWrite"] else "；只读"))
@@ -504,7 +533,7 @@ def _render_unit(unit: dict, view_log: bool) -> str:
                         None: "等待审批"}.get(approval["decision"], "状态不明")
             lines.append(f"- 审批：{decision}" + (f"（{approval['decidedAt']}）" if approval["decidedAt"] else ""))
         if unit["errorCode"]:
-            lines.append(f"- 错误码：`{unit['errorCode']}`")
+            lines.append(f"- 错误码：{_inline_code(unit['errorCode'])}")
         if unit["recoveryAction"]:
             lines.append(f"- 恢复建议：{unit['recoveryAction']}")
         if unit.get("source"):
@@ -548,18 +577,24 @@ def _render_unit(unit: dict, view_log: bool) -> str:
     return ""
 
 
+def _inline_text(value: Any) -> str:
+    """Neutralise Markdown delimiters in a single line of platform/user-supplied text."""
+    return str(value).replace("`", "'").replace("\r", " ").replace("\n", " ")
+
+
 def _render_markdown(meta: dict, units: list[tuple[str, dict]], counts: dict, total_units: int,
                      max_bytes: int) -> str:
     view_log = meta["view"] == "log"
     usage = meta["usage"]
     header = [
         "# BOSS-CLI 会话导出", "",
-        "> 用于复盘与问题报告。默认已脱敏：凭据、令牌、环境变量、本机绝对路径与附件内容不导出；"
-        + ("**本文件包含工具参数与结果明文（可能含候选人姓名、联系方式、简历等个人信息），请勿外传或上传到公开问题报告。**"
+        "> 用于复盘与问题报告。默认已脱敏：凭据、令牌、环境变量、本机绝对路径与附件内容不导出。"
+        + ("**本文件包含工具参数与结果明文（未再做个人信息打码，可能含候选人姓名、联系方式、简历等），请勿外传或上传到公开问题报告。**"
            if meta["toolResults"] == "included"
-           else "工具结果只保留结构与执行状态，候选人个人信息已打码。"),
+           else "工具结果只保留结构与执行状态；个人信息按工具数据中识别到的字段值打码，"
+                "未出现在工具数据中的姓名或联系方式可能无法识别，对外发送前请自行核对。"),
         "",
-        f"- 会话：`{meta['threadId']}`（标题：{meta['title'] or '—'}）",
+        f"- 会话：{_inline_code(meta['threadId'])}（标题：{_inline_text(meta['title']) or '—'}）",
         f"- 视图：{'完整日志（含已切离分支）' if view_log else '当前分支'}；回合 {meta['turnCount']} 个",
         f"- 导出时间：{meta['exportedAt']}；内核 {meta['serverVersion']}；协议 {meta['protocolVersion']}",
         f"- 工具结果明文：{'已包含' if meta['toolResults'] == 'included' else '未包含'}",
@@ -576,6 +611,8 @@ def _render_markdown(meta: dict, units: list[tuple[str, dict]], counts: dict, to
     if len(units) < total_units:
         footer.append(f"\n**已截断**：超出导出上限 {max_bytes:,} 字节，仅包含前 {len(units)} / {total_units} 个条目；"
                       "其余回合与条目未导出。")
+    if meta.get("orphanEntries"):
+        footer.append(f"\n另有 {meta['orphanEntries']} 个条目无法归属到任何回合（记录不完整），未导出。")
     return "\n".join(header) + "\n" + "\n\n".join(body) + "\n" + "\n".join(footer) + "\n"
 
 
