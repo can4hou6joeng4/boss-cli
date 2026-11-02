@@ -31,7 +31,14 @@ export function QueuePanel({ items, onRemove, onRetry }: {
       setPending(null);
     }
   };
-  const visibleItems = items.slice(-MAX_VISIBLE_ITEMS);
+  const visibleItems = (() => {
+    const active = items.filter(item => item.status === "queued" || item.status === "delivering" || item.status === "paused");
+    const visibleActive = active.slice(-MAX_VISIBLE_ITEMS);
+    const room = Math.max(0, MAX_VISIBLE_ITEMS - visibleActive.length);
+    const visibleTerminal = room ? items.filter(item => !active.includes(item)).slice(-room) : [];
+    const keep = new Set([...visibleActive, ...visibleTerminal].map(item => item.id));
+    return items.filter(item => keep.has(item.id));
+  })();
   return <section className="turn-queue" aria-label="任务队列" aria-live="polite">
     <div className="turn-queue-heading"><strong>任务队列</strong><span>{items.filter(item => item.status === "queued" || item.status === "delivering" || item.status === "paused").length} 项待处理</span></div>
     <ul>
@@ -41,6 +48,7 @@ export function QueuePanel({ items, onRemove, onRetry }: {
           <span className="turn-queue-status">{item.status === "paused" && item.failureCode === "TURN_START_FAILED" ? "启动失败，未执行"
             : item.status === "delivered" && item.deduplicated ? "已关联已有回合" : LABELS[item.status]}</span>
           {item.skillIds && item.skillIds.length > 0 && <span className="turn-queue-skills" title={item.skillIds.join("、")}>技能 {item.skillIds.length} 项</span>}
+          {item.inputTruncated && <span className="turn-queue-skills" title="列表只显示前 600 字符；重新排队会读取并复用完整输入">正文已截断</span>}
           <p title={item.input}>{item.input}</p>
           {item.status === "paused" && item.failureCode === "TURN_START_FAILED" && <p className="turn-queue-error">
             {item.inputPersisted === true ? "输入已保留在当前会话，核对后可发起新任务。" : item.inputPersisted === false

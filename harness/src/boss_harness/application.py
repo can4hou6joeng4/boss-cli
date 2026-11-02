@@ -481,6 +481,7 @@ class ApplicationService:
             "approval/list": self.on_approval_list, "approval/respond": self.on_approval_respond,
             "event/list": self.on_event_list,
             "queue/add": self.on_queue_add, "queue/list": self.on_queue_list,
+            "queue/get": self.on_queue_get,
             "queue/remove": self.on_queue_remove, "tool/list": self.on_tool_list,
             "model/list": self.on_model_list, "config/read": self.on_config_read,
             "connection/read": lambda p: self.connections.read(),
@@ -726,16 +727,13 @@ class ApplicationService:
                         view="branch", leaf_entry_id=projection["leafEntryId"])
                 else:
                     item_count, _ = self.snapshots.create(build, snapshot_id, source, source_size, live)
-                snapshot_queue, queue_too_large = self.snapshots.queue(
-                    snapshot_id, thread_id, max_payload_bytes=MAX_PAGE_BYTES)
-                if queue_too_large:
-                    raise RpcError(-32010, "会话响应过大，请用 thread/resume snapshot=true 后分页读取条目",
-                                   {"code": "RESPONSE_TOO_LARGE", "recoveryMethod": "thread/resume",
-                                    "snapshot": True})
+                snapshot_queue = self.snapshots.queue(snapshot_id, thread_id)
                 result = {"thread": thread, "items": [],
                           "turns": None if exclude else snapshot_turns,
                           "activeTurnId": job["turnId"] if job else None,
-                          "eventCursor": event_cursor, "queue": snapshot_queue,
+                          "eventCursor": event_cursor, "queue": snapshot_queue["items"],
+                          "queueTotalItems": snapshot_queue["totalItems"],
+                          "queueTruncated": snapshot_queue["truncated"],
                           "snapshotId": snapshot_id, "itemCount": item_count, **branch_extra}
                 self._check_response_budget(result)
                 return result
@@ -762,11 +760,13 @@ class ApplicationService:
             for item in items:
                 if item["id"] in edit_states:
                     item["contextEdit"] = edit_states[item["id"]]
+            queue = self.queue.view(thread_id)
             result = {"thread": thread, "items": [] if exclude else items,
                     "turns": None if exclude else (self.sessions.list_branch_turns(thread_id) if branch
                                                    else self.sessions.list_turns(thread_id))["turns"],
                     "activeTurnId": job["turnId"] if job else None,
-                    "eventCursor": self.sessions.latest_event_cursor(), "queue": self.queue.list(thread_id)}
+                    "eventCursor": self.sessions.latest_event_cursor(), "queue": queue["items"],
+                    "queueTotalItems": queue["totalItems"], "queueTruncated": queue["truncated"]}
             if branch:
                 result["view"] = "branch"
                 result["branch"] = self.sessions.read_leaf(thread_id)
@@ -3806,7 +3806,10 @@ class ApplicationService:
             self._finish_receipt_notice(notice)
 
     def on_queue_list(self, params: dict | None) -> dict:
-        return {"items": self.queue.list(_text(params, "threadId"))}
+        return self.queue.view(_text(params, "threadId"))
+
+    def on_queue_get(self, params: dict | None) -> dict:
+        return {"queueItem": self.queue.get(_text(params, "threadId"), _text(params, "queueId"))}
 
     def on_queue_remove(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")

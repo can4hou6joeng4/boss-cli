@@ -230,7 +230,7 @@ Electron 运行时从官方源单独下载和校验，失败后需先恢复安�
 
 启动 Harness 或桌面应用前，可用 `BOSS_HARNESS_BROWSER_SOURCE` 覆盖业务 CLI 的浏览器来源：`auto`、`existing-browser` 或 `stored-cookie`。未设置时完整继承上游 `config.json`。显式覆盖只传递上游 `--browser-source` 参数，不读取或改写该共享配置；不支持该参数的 CLI 会明确失败，不自动去掉参数重试。连接设置页会显示当前覆盖值或“继承上游 CLI 配置”。
 
-运行中的会话支持把新消息“转向当前回合”或“排到后续回合”。转向消息会在当前工具批次结束后、下一次模型请求前加入；后续消息等当前任务自然结束后再启动。停止任务仍是独立操作。队列显示持久状态，尚未投递的项目可以撤回；未知提交回执会保留原文并使用同一请求编号重试，不会自动重复排队。仅当后续回合项为 `paused / TURN_START_FAILED` 且 `inputPersisted` 明确为 `false` 时，桌面提供“重新排队”：以新的 `clientUserMessageId` 和原输入、`skillIds` 调用 `queue/add`，受理后再 `queue/remove` 撤回旧项；旧项撤回失败时保留为暂停项可手动撤回，不自动重放任何工具、审批或平台操作。
+运行中的会话支持把新消息“转向当前回合”或“排到后续回合”。转向消息会在当前工具批次结束后、下一次模型请求前加入；后续消息等当前任务自然结束后再启动。停止任务仍是独立操作。队列显示持久状态，尚未投递的项目可以撤回；未知提交回执会保留原文并使用同一请求编号重试，不会自动重复排队。仅当后续回合项为 `paused / TURN_START_FAILED` 且 `inputPersisted` 明确为 `false` 时，桌面提供“重新排队”：以新的 `clientUserMessageId` 和原输入、`skillIds` 调用 `queue/add`，受理后再 `queue/remove` 撤回旧项；旧项撤回失败时保留为暂停项可手动撤回，不自动重放任何工具、审批或平台操作。队列读取有界：`thread/read`、`thread/resume`（含快照）与 `queue/list` 返回全部 `queued` / `delivering` / `paused` 项、最近 50 个已终结项，单次最多 200 项，正文预览截断为 600 字符并标 `inputTruncated`，响应附 `queueTotalItems` / `queueTruncated`（`queue/list` 为 `totalItems` / `truncated`）；完整单项正文经只读 `queue/get` 读取，重新排队使用该结果而不是预览。
 
 后续回合在线程启动前失败时，队列暂停并显示“启动失败，未执行”，同时注明输入是否已保存在当前会话；无法核实时提示先核对。已保存输入保留，相同请求编号不会重复写入或执行。暂停项可撤回，核对后可明确发起新任务，不会自动重试。线程已经实际启动时，即使启动调用随后抛错，也继续由原 worker 完成执行和资源收尾。旧记录缺少失败关联信息时保持原状态，不推断可重试。
 

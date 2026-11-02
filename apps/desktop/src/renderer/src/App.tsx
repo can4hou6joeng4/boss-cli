@@ -16,7 +16,7 @@ import { useThreadUsage } from "./data/useThreadUsage";
 import { branchSupport, branchSwitchBlock, useSessionBranches } from "./data/useSessionBranches";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
-import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn } from "./data/harnessBridge";
+import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn } from "./data/harnessBridge";
 import { reduceHarnessEvent, type HarnessEvent } from "./data/harnessEvents";
 import { HarnessReplica } from "./data/harnessReplica";
 import { reduceModelRetry, settleModelRetryOnTurnEnd, type ModelRetryStatus } from "./data/modelRetry";
@@ -510,8 +510,14 @@ export function App(): JSX.Element {
   const handleRetryQueueItem = useCallback(async (item: QueueItem): Promise<boolean> => {
     const session = activeRef.current;
     if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp) return false;
-    const created = await queueFollowUp({ threadId: session.id, input: item.input,
-      clientUserMessageId: crypto.randomUUID(), skillIds: item.skillIds ?? [] });
+    // 列表与会话读取会截断长正文，重新排队必须使用持久化的完整输入。
+    const full = await readQueueItem(session.id, item.id);
+    if (full.status !== "paused" || full.failureCode !== "TURN_START_FAILED" || full.inputPersisted !== false) {
+      if (activeRef.current?.id === session.id) setError("队列项状态已变化，请刷新队列后再决定是否重新排队。");
+      return false;
+    }
+    const created = await queueFollowUp({ threadId: session.id, input: full.input,
+      clientUserMessageId: crypto.randomUUID(), skillIds: full.skillIds ?? [] });
     try {
       await removeQueuedItem(session.id, item.id);
     } catch {

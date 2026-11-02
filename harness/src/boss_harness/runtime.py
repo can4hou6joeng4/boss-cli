@@ -11,6 +11,7 @@ import uuid
 import re
 from typing import Any, Callable
 
+from boss_harness.queue_view import project_queue
 from boss_harness.rpc import RpcError
 from boss_harness.request_identity import RequestIdentity, resolve_request
 from boss_harness.session import Entry, SessionStore
@@ -215,6 +216,11 @@ class TurnQueue:
             if entry["type"] == "queue":
                 states[entry["payload"]["id"]] = dict(entry["payload"])
         return list(states.values())
+
+    def view(self, thread_id: str) -> dict:
+        """Bounded read projection; full input stays available through get()."""
+        with self.lock:
+            return project_queue(self.list(thread_id))
 
     def _save(self, thread_id: str, item: dict) -> dict:
         self.sessions.append(thread_id, Entry(type="queue", payload=item))
