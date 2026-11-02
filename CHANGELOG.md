@@ -47,6 +47,8 @@
 
 ### 修复
 
+- `thread/export` 的用量字段统一脱敏：每回合 `usage` 与 `usage.summaryJobs` 中的 `providers` / `models` 现与其他导出文本一样经过默认脱敏（凭据、本机路径与已识别个人信息），此前持久记录里的原始字符串会直接进入 JSON，并作为摘要任务模型名出现在 Markdown / HTML；数值合计不变。Markdown / HTML 的用量行在 provider 上报时补充「缓存写入」。协议与导出参数不变（仍为 `0.2.0`）。
+
 - 队列面板与协议对齐部分自动压缩覆盖：`queue/add` 与队列项允许只含部分 `autoCompaction` 字段（内核与 `turn/start` 共用合并规则），协议类型由完整对象放宽为 `Partial<TurnAutoCompactionOverride>`；队列项徽标按实际字段显示「压缩关闭」「压缩 80%」「压缩开启」或「压缩覆盖」，悬停提示只列出已提供字段，不再把缺少 `enabled` 的部分覆盖误标为「该回合关闭自动压缩」。`TurnSummary` 补上内核已持久化的 `compactionPolicy` 字段类型。协议仍为 `0.2.0`。
 
 - 会话用量区分「provider 未上报」与「上报为零」：OpenAI Responses（含 Codex / 中转）终态响应缺少 `usage`、或缺少 `input_tokens` / `output_tokens` 计数时，内核此前按全零记录，`thread/usage/read` 与桌面「会话用量」因此显示「全部为零」。现两条线路（Anthropic 以流内是否收到 input / output 计数判断）均把未上报持久为 `usage: null`，不再伪造全零；真实上报的零仍按原因 `zero` 不计入。`thread/usage/read` 各汇总新增可选 `unreportedRequests`（`unverifiedRequests` 的子集，对应原因 `missing`），`requests = verifiedRequests + unverifiedRequests` 不变；旧会话中已有的全零记录保持原判定，不改写历史。被拒绝的摘要请求即使未上报 usage 也记为一次请求。未上报记录不参与上下文预算基线、压缩保留校准与自动压缩阈值，回退字符估算。桌面「会话用量」在旧内核下行为不变，新内核下单独提示「provider 未上报用量 n 次」，每回合「请求」列标注「未上报 n」并与其他「不计入」分开。协议仍为 `0.2.0`。
