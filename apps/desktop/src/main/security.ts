@@ -82,7 +82,7 @@ const RENDERER_METHODS = new Set([
   "thread/start", "thread/list", "thread/read", "thread/resume", "thread/fork",
   "thread/leaf/read", "thread/leaf/set", "thread/branches/list", "thread/branchSummary/read", "thread/usage/read",
   "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
-  "turn/start", "turn/interrupt", "turn/steer", "turn/read", "turn/continuation/read", "turn/continue", "task/read", "queue/list", "queue/add", "queue/remove",
+  "turn/start", "turn/interrupt", "turn/steer", "turn/read", "turn/continuation/read", "turn/continue", "task/read", "queue/list", "queue/get", "queue/add", "queue/remove",
   "event/list", "model/list", "config/read", "skills/list", "tool/list", "attachment/add", "attachment/read",
   "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "context/edit/read", "context/edit", "approval/list", "approval/respond",
   "connection/read", "connection/check",
@@ -94,7 +94,7 @@ const THREAD_METHODS = new Set([
   "thread/read", "thread/resume", "thread/fork", "thread/leaf/read", "thread/leaf/set", "thread/branches/list",
   "thread/branchSummary/read", "thread/usage/read", "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set",
   "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read", "turn/start", "turn/interrupt", "turn/steer", "turn/read", "turn/continuation/read", "turn/continue",
-  "task/read", "queue/list", "queue/add", "queue/remove", "context/read", "context/compact/plan", "context/compact/start", "context/compact", "context/edit/read", "context/edit",
+  "task/read", "queue/list", "queue/get", "queue/add", "queue/remove", "context/read", "context/compact/plan", "context/compact/start", "context/compact", "context/edit/read", "context/edit",
 ]);
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -166,6 +166,15 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
       (params.kind !== "turn" && params.kind !== "queue" && params.kind !== "compaction") ||
       typeof params.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(params.id)) {
       throw new Error("invalid task read");
+    }
+    return { method: payload.method, params };
+  }
+  if (payload.method === "queue/get") {
+    const allowed = new Set(["threadId", "queueId"]);
+    if (!params || Object.keys(params).some(key => !allowed.has(key)) ||
+      typeof params.threadId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(params.threadId) ||
+      typeof params.queueId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(params.queueId)) {
+      throw new Error("invalid queue read");
     }
     return { method: payload.method, params };
   }

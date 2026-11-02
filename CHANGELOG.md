@@ -4,6 +4,8 @@
 
 ### 新增
 
+- 队列读取改为有界投影：`thread/read` / `thread/resume`（含快照）与 `queue/list` 只返回全部 `queued` / `delivering` / `paused` 项、最近 50 个已终结项，单次最多 200 项；正文预览截断为 600 字符并标 `inputTruncated`，响应附 `queueTotalItems` / `queueTruncated`（`queue/list` 为 `totalItems` / `truncated`）。此前长会话累积的已投递、已撤回项会让整个会话响应超过 1 MiB，`thread/read` 与快照恢复都以 -32010 失败而无法打开。新增只读 `queue/get`（`threadId`、`queueId`）读取单项完整正文，桌面「重新排队」先经它取回完整输入与 `skillIds` 再调用 `queue/add`，队列面板标注正文已截断；持久记录不变，协议仍为 `0.2.0`。
+
 - `thread/export` 附带队列表状态：导出当前会话中未形成回合的队列项（排队、投递中、暂停、已撤回；已投递项仍按用户输入出现在回合中），最多最近 20 项，每项正文最多 800 字符，含类型、状态、失败码、输入是否已写入会话、技能数量与去重标记；该状态与会话绑定，不随 `view` 的 `log` / `branch` 变化，Markdown / JSON / HTML 各自渲染并计入同一字节上限，文本沿用全文的凭据、路径与个人信息脱敏。协议与 `thread/export` 参数不变（仍为 `0.2.0`）。
 
 - 任务队列面板支持「重新排队」：仅对 `paused / TURN_START_FAILED` 且 `inputPersisted === false` 的后续回合项显示，沿用原输入与 `skillIds`、以新请求编号重新提交，受理后撤回旧项；撤回失败时旧项保留为暂停项，可手动再次撤回。其余暂停项仍要求先核对，不自动重放工具、审批或平台操作。复用既有 `queue/add`、`queue/remove`，不改协议（仍为 `0.2.0`）与内核行为。

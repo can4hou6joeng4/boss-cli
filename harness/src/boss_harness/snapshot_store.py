@@ -1,6 +1,7 @@
 """Private, bounded disk-backed projections used by frozen session snapshots."""
 from __future__ import annotations
 
+from collections import deque
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,8 @@ from typing import BinaryIO
 import uuid
 
 from boss_harness.private_files import ensure_private_directory, open_private_file, restrict_private_file
+from boss_harness.queue_view import (ACTIVE_QUEUE_STATUSES, MAX_QUEUE_VIEW_ITEMS,
+                                     MAX_QUEUE_VIEW_TERMINAL_ITEMS, project_queue)
 from boss_harness.rpc import RpcError
 from boss_harness.session import MAX_SESSION_LINE_BYTES, _decode_session_record
 
@@ -430,23 +433,40 @@ class SnapshotStore:
                 connection.close()
             return {"entryId": row[0], "excluded": bool(row[1])} if row else None
 
-    def queue(self, snapshot_id: str, thread_id: str,
-              max_payload_bytes: int = 1024 * 1024) -> tuple[list[dict], bool]:
+    def queue(self, snapshot_id: str, thread_id: str) -> dict:
+        """Bounded queue projection; terminal history is windowed, not truncated by bytes."""
         with self._lock:
             path, _ = self._metadata_locked(snapshot_id, thread_id)
             connection = sqlite3.connect(path)
             try:
                 connection.execute("PRAGMA cache_size=-256")
-                rows = connection.execute(
-                    "SELECT payload FROM queue_items ORDER BY ordinal")
-                result = []
-                payload_bytes = 0
-                for row in rows:
-                    payload_bytes += len(row[0].encode("utf-8"))
-                    if payload_bytes > max_payload_bytes:
-                        return result, True
-                    result.append(json.loads(row[0]))
-                return result, False
+                rows = connection.execute("SELECT ordinal,payload FROM queue_items ORDER BY ordinal")
+                pending: deque[tuple[int, str]] = deque(maxlen=MAX_QUEUE_VIEW_ITEMS)
+                paused: deque[tuple[int, str]] = deque(maxlen=MAX_QUEUE_VIEW_ITEMS)
+                terminal: deque[tuple[int, str]] = deque(maxlen=MAX_QUEUE_VIEW_TERMINAL_ITEMS)
+                total = 0
+                for ordinal, payload in rows:
+                    total += 1
+                    try:
+                        status = json.loads(payload).get("status")
+                    except (TypeError, ValueError):
+                        continue
+                    if status in {"queued", "delivering"}:
+                        pending.append((ordinal, payload))
+                    elif status in ACTIVE_QUEUE_STATUSES:
+                        paused.append((ordinal, payload))
+                    else:
+                        terminal.append((ordinal, payload))
+                selected = sorted((*pending, *paused, *terminal), key=lambda row: row[0])
+                items = []
+                for _, payload in selected:
+                    try:
+                        item = json.loads(payload)
+                    except (TypeError, ValueError):
+                        continue
+                    if isinstance(item, dict):
+                        items.append(item)
+                return project_queue(items, total_items=total)
             finally:
                 connection.close()
 

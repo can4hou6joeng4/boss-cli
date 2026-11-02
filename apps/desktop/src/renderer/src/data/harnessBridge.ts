@@ -271,6 +271,13 @@ export async function listQueue(threadId: string): Promise<QueueItem[] | null> {
   }
 }
 
+export async function readQueueItem(threadId: string, queueId: string): Promise<QueueItem> {
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  const response = await api.request<QueueItemResponse>(ClientMethods.queueGet, { threadId, queueId });
+  return response.queueItem;
+}
+
 export async function removeQueuedItem(threadId: string, queueId: string): Promise<QueueItem> {
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");

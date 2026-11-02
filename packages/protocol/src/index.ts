@@ -123,6 +123,7 @@ export const ClientMethods = {
   eventList: "event/list",
   queueAdd: "queue/add",
   queueList: "queue/list",
+  queueGet: "queue/get",
   queueRemove: "queue/remove",
   modelList: "model/list",
   configRead: "config/read",
@@ -448,6 +449,9 @@ export interface ThreadReadResponse {
   activeTurnId?: string | null;
   eventCursor?: string;
   queue?: QueueItem[];
+  /** Durable queue count; `queue` is a bounded projection when it is smaller. */
+  queueTotalItems?: number;
+  queueTruncated?: boolean;
   snapshotId?: string;
   itemCount?: number;
   view?: "branch";
@@ -678,6 +682,8 @@ export interface QueueItem {
   inputPersisted?: boolean;
   /** Receipt linked to an existing request; delivery does not imply turn success. */
   deduplicated?: boolean;
+  /** List/session reads clip long inputs; read the full item with queue/get before acting on it. */
+  inputTruncated?: boolean;
 }
 export interface TurnSteerParams {
   threadId: string;
@@ -691,7 +697,13 @@ export interface QueueAddParams {
   clientUserMessageId?: string;
   skillIds?: string[];
 }
-export interface QueueListResponse { items: QueueItem[] }
+export interface QueueListResponse {
+  items: QueueItem[];
+  /** Durable item count; `items` is a bounded projection when it is smaller. */
+  totalItems?: number;
+  truncated?: boolean;
+}
+export interface QueueGetParams { threadId: string; queueId: string }
 export interface QueueItemResponse { queueItem: QueueItem }
 
 export type TaskKind = "turn" | "queue" | "compaction";
