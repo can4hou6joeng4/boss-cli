@@ -1057,6 +1057,8 @@ export interface ThreadUsageSummaryJob extends ThreadUsageBucket {
   turnId: string | null;
   reason: "threshold" | "budget" | "overflow" | null;
   origin: "user" | "model" | null;
+  /** 当前分支上验证通过并生效的压缩摘要任务；旧内核或非生效任务不返回。 */
+  active?: boolean;
   providers: string[];
   models: string[];
 }
