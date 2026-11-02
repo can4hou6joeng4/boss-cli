@@ -656,6 +656,8 @@ export interface TurnSummary {
   taskRestartLimit?: number;
   taskRecoveryReason?: "processExit" | "terminalStateRecovered";
   taskResumePolicy?: TurnTaskResumePolicy;
+  /** 该回合实际使用的自动压缩策略；旧记录可能没有此字段。 */
+  compactionPolicy?: AutoCompactionPolicy;
 }
 export interface TurnListResponse { turns: TurnSummary[]; nextCursor: string | null;
   view?: "branch"; branch?: ThreadLeafState }
@@ -676,8 +678,11 @@ export interface QueueItem {
   clientUserMessageId?: string | null;
   /** Skills loaded for this queued follow-up; applied when it becomes a turn. */
   skillIds?: string[];
-  /** Per-turn auto-compaction override applied when this follow-up becomes a turn. */
-  autoCompaction?: TurnAutoCompactionOverride;
+  /**
+   * Per-turn auto-compaction override applied when this follow-up becomes a turn.
+   * Omitted fields inherit the kernel defaults in effect at delivery.
+   */
+  autoCompaction?: Partial<TurnAutoCompactionOverride>;
   failureCode?: "TURN_START_FAILED";
   executionStarted?: false;
   turnId?: string;
@@ -698,8 +703,8 @@ export interface QueueAddParams {
   input: string;
   clientUserMessageId?: string;
   skillIds?: string[];
-  /** Optional per-turn auto-compaction override for the delivered follow-up. */
-  autoCompaction?: TurnAutoCompactionOverride;
+  /** Optional per-turn auto-compaction override for the delivered follow-up; omitted fields inherit the kernel defaults at delivery. */
+  autoCompaction?: Partial<TurnAutoCompactionOverride>;
 }
 export interface QueueListResponse {
   items: QueueItem[];
