@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ThreadUsageBucket, ThreadUsageReadResponse, ThreadUsageSummaryJob, ThreadUsageTurn } from "@boss-cli/protocol";
 import { readThreadUsage } from "./harnessBridge";
+import { bucketOf, isCount as count, summaryJobOf, turnOf } from "./usageMapping";
 
 /**
  * 会话用量（只在内核声明 capabilities.threadUsage 时启用）。
@@ -19,65 +20,7 @@ export interface ThreadUsageState {
 }
 
 const MAX_PAGES = 10;
-const COUNT_KEYS = ["requests", "verifiedRequests", "unverifiedRequests", "promptTokens", "uncachedInputTokens", "outputTokens"] as const;
-const NULLABLE_KEYS = ["cacheReadTokens", "cacheWriteTokens", "reasoningTokens"] as const;
-const count = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 
-function bucketOf(value: unknown): ThreadUsageBucket | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const raw = value as Record<string, unknown>;
-  if (!COUNT_KEYS.every(key => count(raw[key])) || !NULLABLE_KEYS.every(key => raw[key] === null || count(raw[key]))) return null;
-  const reasons = raw.unverifiedReasons;
-  if (!reasons || typeof reasons !== "object" || Array.isArray(reasons)) return null;
-  const unverifiedReasons: Record<string, number> = {};
-  for (const [reason, amount] of Object.entries(reasons as Record<string, unknown>).slice(0, 20)) {
-    if (!count(amount)) return null;
-    unverifiedReasons[reason.slice(0, 40)] = amount;
-  }
-  // 新内核才返回 unreportedRequests（未上报 usage，unverifiedRequests 的子集）；旧内核缺省视为不区分。
-  const unreported = raw.unreportedRequests;
-  if (unreported !== undefined && (!count(unreported) || unreported > (raw.unverifiedRequests as number))) return null;
-  const bucket = {} as ThreadUsageBucket;
-  for (const key of COUNT_KEYS) bucket[key] = raw[key] as number;
-  for (const key of NULLABLE_KEYS) bucket[key] = raw[key] as number | null;
-  if (unreported !== undefined) bucket.unreportedRequests = unreported;
-  // 费用不展示：内核当前无可信价目来源，界面固定标注“未计价”。
-  return { ...bucket, unverifiedReasons, costUsd: null, costSource: "unavailable" };
-}
-const strings = (value: unknown, limit: number): string[] | null => Array.isArray(value) && value.every(item => typeof item === "string")
-  ? (value as string[]).slice(0, limit).map(item => item.slice(0, 120)) : null;
-function turnOf(value: unknown): ThreadUsageTurn | null {
-  const bucket = bucketOf(value);
-  if (!bucket) return null;
-  const raw = value as Record<string, unknown>;
-  const providers = strings(raw.providers, 8), models = strings(raw.models, 8);
-  if (typeof raw.turnId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(raw.turnId) || !providers || !models) return null;
-  return { ...bucket, turnId: raw.turnId, providers, models };
-}
-const idOrNull = (value: unknown): string | null | undefined => value === null ? null
-  : typeof value === "string" && value.length > 0 && value.length <= 128 ? value : undefined;
-function summaryJobOf(value: unknown): ThreadUsageSummaryJob | null {
-  const bucket = bucketOf(value);
-  if (!bucket) return null;
-  const raw = value as Record<string, unknown>;
-  const providers = strings(raw.providers, 8), models = strings(raw.models, 8);
-  const jobId = idOrNull(raw.jobId), turnId = idOrNull(raw.turnId);
-  const kind = raw.kind === null ? null : raw.kind === "compaction" || raw.kind === "branchSummary" ? raw.kind : undefined;
-  const reason = raw.reason === null ? null
-    : raw.reason === "threshold" || raw.reason === "budget" || raw.reason === "overflow" ? raw.reason : undefined;
-  const origin = raw.origin === null ? null : raw.origin === "user" || raw.origin === "model" ? raw.origin : undefined;
-  const active = raw.active === undefined ? undefined : typeof raw.active === "boolean" ? raw.active : null;
-  const throughTurnId = raw.throughTurnId === undefined ? undefined
-    : raw.throughTurnId === null ? null
-      : typeof raw.throughTurnId === "string" && raw.throughTurnId.length > 0 && raw.throughTurnId.length <= 128
-        ? raw.throughTurnId : null;
-  if (!jobId || !providers || !models || kind === undefined || turnId === undefined
-    || reason === undefined || origin === undefined || active === null
-    || (raw.throughTurnId !== undefined && throughTurnId === null)) return null;
-  return { ...bucket, jobId, kind, turnId, reason, origin, providers, models,
-    ...(throughTurnId !== undefined ? { throughTurnId } : {}),
-    ...(active ? { active: true } : {}) };
-}
 /** 摘要任务明细在每页重复返回；任一页形状不符即报错，展示时只取第一份。 */
 function summaryJobsOf(page: ThreadUsageReadResponse): Pick<NonNullable<ThreadUsageState["data"]>,
   "summaryJobs" | "summaryJobCount" | "summaryJobsTruncated"> {

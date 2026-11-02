@@ -55,6 +55,8 @@
 
 ### 修复
 
+- 会话用量「每回合用量」的自动压缩策略标记此前不显示：内核已返回 `turns[].compactionPolicy`，但渲染层解码时未读取该字段。现按内核 `verified_policy` 的同一规则校验并传给表格（只保留实际存在的合法字段；空对象、未知字段或任一非法值按未记录处理，只丢弃该可选字段、不丢弃整页用量），协议类型同步放宽为 `Partial<AutoCompactionPolicy>`，协议仍为 `0.2.0`。
+
 - `thread/usage/read` 与 `thread/export` 的用量来源列表有界：每回合与每个摘要任务的 `providers` / `models` 最多保留 8 个，provider 最长 64 字符、model 最长 200 字符，空值与超长值跳过；此前损坏或伪造的持久记录可让只读响应与导出超过单页上限。计数、`unverifiedReasons` 与默认脱敏不变，协议仍为 `0.2.0`。
 
 - `thread/export` 的用量字段统一脱敏：每回合 `usage` 与 `usage.summaryJobs` 中的 `providers` / `models` 现与其他导出文本一样经过默认脱敏（凭据、本机路径与已识别个人信息），此前持久记录里的原始字符串会直接进入 JSON，并作为摘要任务模型名出现在 Markdown / HTML；数值合计不变。Markdown / HTML 的用量行在 provider 上报时补充「缓存写入」。协议与导出参数不变（仍为 `0.2.0`）。

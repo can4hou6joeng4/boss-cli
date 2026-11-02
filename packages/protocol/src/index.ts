@@ -1068,8 +1068,8 @@ export interface ThreadUsageTurn extends ThreadUsageBucket {
   turnId: string;
   providers: string[];
   models: string[];
-  /** 该回合记录的实际自动压缩策略；非法历史记录或旧内核不返回此字段。 */
-  compactionPolicy?: AutoCompactionPolicy;
+  /** 该回合记录的实际自动压缩策略；内核只返回通过校验的字段（历史记录可能只含部分字段），非法或旧内核不返回。 */
+  compactionPolicy?: Partial<AutoCompactionPolicy>;
 }
 export interface ThreadUsageReadResponse {
   threadId: string;
