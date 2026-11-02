@@ -505,8 +505,20 @@ class _Exporter:
                 continue
             latest[queue_id] = (str(entry.get("timestamp") or ""), payload)
         ordered = sorted(latest.items(), key=lambda pair: (pair[1][0], pair[0]))
+        # 暂停项需要人工核对；即使之后又积累了更多历史项，也优先保留最近 20 个暂停项。
+        keep_ids = {queue_id for queue_id, _ in ordered[-MAX_QUEUE_ITEMS:]}
+        paused_ids = [queue_id for queue_id, (_, payload) in ordered if payload["status"] == "paused"]
+        keep_ids.update(paused_ids[-MAX_QUEUE_ITEMS:])
+        if len(keep_ids) > MAX_QUEUE_ITEMS:
+            for queue_id, (_, payload) in ordered:
+                if len(keep_ids) <= MAX_QUEUE_ITEMS:
+                    break
+                if queue_id in keep_ids and payload["status"] != "paused":
+                    keep_ids.discard(queue_id)
         items = []
-        for queue_id, (_, payload) in ordered[-MAX_QUEUE_ITEMS:]:
+        for queue_id, (_, payload) in ordered:
+            if queue_id not in keep_ids:
+                continue
             kind = payload.get("kind")
             skill_ids = payload.get("skillIds")
             failure = payload.get("failureCode")
@@ -654,7 +666,7 @@ def _render_queue_markdown(queue: dict) -> str:
     parts = ["## 消息队列（未形成回合）", "",
              "> 当前会话的队列状态，与导出视图无关；以下消息没有对应的已记录回合。", ""]
     if queue["totalItems"] > len(items):
-        parts += [f"- 共 {queue['totalItems']} 个未形成回合的队列项，仅列出最近 {len(items)} 个。", ""]
+        parts += [f"- 共 {queue['totalItems']} 个未形成回合的队列项，最多列出 {len(items)} 个（暂停项优先）。", ""]
     for item in items:
         parts += [f"### {_queue_heading(item)}", ""]
         facts = _queue_facts(item)
@@ -860,7 +872,7 @@ def _render_queue_html(queue: dict) -> str:
     parts = ['<section class="queue"><h2>消息队列（未形成回合）</h2>',
              "<p>当前会话的队列状态，与导出视图无关；以下消息没有对应的已记录回合。</p>"]
     if queue["totalItems"] > len(items):
-        parts.append(f"<p>共 {queue['totalItems']} 个未形成回合的队列项，仅列出最近 {len(items)} 个。</p>")
+        parts.append(f"<p>共 {queue['totalItems']} 个未形成回合的队列项，最多列出 {len(items)} 个（暂停项优先）。</p>")
     for item in items:
         kind = _QUEUE_KIND.get(item["kind"], "类型不明")
         status = _QUEUE_STATUS.get(item["status"], "状态不明")
