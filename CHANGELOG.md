@@ -4,6 +4,8 @@
 
 ### 新增
 
+- `thread/export` 的用量摘要任务明细同样标注当前生效的压缩摘要任务：JSON `usage.summaryJobs[].active`，Markdown / HTML 在任务行显示「当前生效」。与 `thread/usage/read` 使用同一校验入口（当前分支上验证通过的 checkpoint 才生效，损坏、未上报或已切离分支的摘要不标注），导出参数与协议不变（仍为 `0.2.0`）。
+
 - `thread/usage/read` 标注当前生效的压缩摘要任务：`summaryJobs[]` 新增可选 `active: true`，仅当该任务的编号与当前分支上验证通过的 `context_checkpoint.summaryJobId` 一致时返回；校验与 `context/read` 相同（摘要、来源摘要、完整回合前缀与来源条目均需一致），损坏或已切离分支的摘要不会获得标记，未上报用量的任务不会出现。桌面「摘要任务明细」对该行显示「当前生效」徽标并说明标记来自上下文而非用量记录。协议字段可选，旧客户端行为不变，协议仍为 `0.2.0`。
 
 - `thread/export` 摘要条目标注来源任务：`compactionSummary` 与 `branchSummary` 单元新增 `summaryJobId`（压缩摘要另附 `reason`：`threshold` / `budget` / `overflow`，缺失或非法值不导出），Markdown / HTML 在生成时间行显示「摘要任务 …」与触发原因，便于和用量中的摘要任务明细按任务编号对照。协议与导出参数不变（仍为 `0.2.0`）。

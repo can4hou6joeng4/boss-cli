@@ -1478,12 +1478,16 @@ class ApplicationService:
             raise ValueError("thread/export 只接受 threadId、view、format、includeToolResults 与 maxBytes")
         secrets = [config.api_key.get() for config in (self.config, *self._model_configs.values())
                    if config.api_key]
-        result = export_thread(self.sessions, _text(params, "threadId"), branch=_branch_view(params),
-                               fmt=params.get("format", "markdown"),
-                               include_tool_results=params.get("includeToolResults", False),
-                               max_bytes=params.get("maxBytes", DEFAULT_EXPORT_BYTES),
-                               server_version=__version__, secrets=secrets,
-                               paths=(self.workspace, self.sessions.root.parent))
+        thread_id = _text(params, "threadId")
+        with self.runtimes.lock:
+            active_job_id = self.context.active_summary_job_id(thread_id)
+            result = export_thread(self.sessions, thread_id, branch=_branch_view(params),
+                                   fmt=params.get("format", "markdown"),
+                                   include_tool_results=params.get("includeToolResults", False),
+                                   max_bytes=params.get("maxBytes", DEFAULT_EXPORT_BYTES),
+                                   server_version=__version__, secrets=secrets,
+                                   paths=(self.workspace, self.sessions.root.parent),
+                                   active_summary_job_id=active_job_id)
         self._check_response_budget(result)
         return result
 
