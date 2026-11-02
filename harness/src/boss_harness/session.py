@@ -2343,7 +2343,9 @@ class SessionStore:
                        if offset + limit < len(turns) else None)
         out = {"threadId": thread_id, "view": scope["view"], "source": SOURCE, "costAvailable": False,
                "turnCount": len(turns), "turns": page, "nextCursor": next_cursor,
-               "summaryTasks": result["summaryTasks"], "totals": result["totals"]}
+               "summaryTasks": result["summaryTasks"], "totals": result["totals"],
+               "summaryJobs": result["summaryJobs"], "summaryJobCount": result["summaryJobCount"],
+               "summaryJobsTruncated": result["summaryJobsTruncated"]}
         if leaf is not None:
             out["branch"] = leaf
         return out

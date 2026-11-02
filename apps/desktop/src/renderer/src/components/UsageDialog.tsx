@@ -1,5 +1,5 @@
 import { ModalSurface } from "./ModalSurface";
-import type { ThreadUsageBucket, ThreadUsageTurn } from "@boss-cli/protocol";
+import type { ThreadUsageBucket, ThreadUsageSummaryJob, ThreadUsageTurn } from "@boss-cli/protocol";
 import type { MessageItem } from "../data/mockData";
 import type { ThreadUsageState, UsageView } from "../data/useThreadUsage";
 import { compactionLabel, compactionTitle } from "../shell/queueCompaction";
@@ -18,6 +18,12 @@ const reasons = (bucket: ThreadUsageBucket) => Object.entries(bucket.unverifiedR
   .map(([reason, total]) => `${REASONS[reason] ?? reason} ${number(total)} 次`).join("、");
 /** provider 未上报 usage 的请求数（旧内核不返回时为 0，仍由原因 missing 标注）。 */
 const unreported = (bucket: ThreadUsageBucket) => bucket.unreportedRequests ?? 0;
+/** 摘要任务来源；内核未记录 origin 时只显示任务类型。 */
+const jobSource = (job: ThreadUsageSummaryJob) => job.kind === "branchSummary" ? "分支摘要"
+  : job.origin === "user" ? "手动压缩" : job.origin === "model" ? "自动压缩" : "摘要任务";
+const JOB_REASON: Record<string, string> = {
+  threshold: "触达阈值", budget: "预算不足", overflow: "上下文溢出",
+};
 function clip(text: string | undefined, fallback: string): string {
   const value = (text ?? "").replace(/\s+/g, " ").trim();
   if (!value) return fallback;
@@ -53,7 +59,8 @@ export function UsageDialog({ isOpen, onClose, state, messages, branchViews, con
   const data = state.data?.view === state.view ? state.data : undefined;
   const order = [...new Set(messages.flatMap(message => message.turnId ? [message.turnId] : []))];
   const inputOf = (turnId: string) => messages.find(message => message.role === "user" && message.turnId === turnId)?.content;
-  const turnLabel = (turn: ThreadUsageTurn) => { const index = order.indexOf(turn.turnId); return index >= 0 ? `第 ${index + 1} 回合` : "不在当前视图"; };
+  const turnLabelById = (turnId: string) => { const index = order.indexOf(turnId); return index >= 0 ? `第 ${index + 1} 回合` : "不在当前视图"; };
+  const turnLabel = (turn: ThreadUsageTurn) => turnLabelById(turn.turnId);
   return <ModalSurface title="会话用量" onClose={onClose} className="context-panel usage-dialog">
     <div className="context-panel-body">
       <p className="context-panel-source" data-usage-source>来源为 provider 上报的用量（按回合汇总已保存的记录，不做估算）；未上报的字段显示为“—”。费用未计价。</p>
@@ -75,6 +82,21 @@ export function UsageDialog({ isOpen, onClose, state, messages, branchViews, con
         {data.summaryTasks.requests > 0 && <section className="context-panel-section" aria-label="摘要任务">
           <h3>摘要任务</h3>
           <Facts bucket={data.summaryTasks} label="summaryTasks" />
+        </section>}
+        {data.summaryJobs && data.summaryJobs.length > 0 && <section className="context-panel-section" aria-label="摘要任务明细">
+          <h3>摘要任务明细<small className="usage-count"> {number(data.summaryJobCount ?? data.summaryJobs.length)} 个任务{data.summaryJobsTruncated ? `，仅显示最近 ${number(data.summaryJobs.length)} 个` : ""}</small></h3>
+          <div className="usage-table-wrap"><table className="usage-table">
+            <thead><tr><th>摘要任务</th><th>回合</th><th>模型</th><th>请求</th><th>输入</th><th>输出</th></tr></thead>
+            <tbody>{data.summaryJobs.map(job => <tr key={job.jobId} data-usage-summary-job={job.jobId}>
+              <td><span>{jobSource(job)}</span><small title={job.jobId}>{[job.reason ? JOB_REASON[job.reason] ?? job.reason : "", job.origin === "user" ? "手动" : job.origin === "model" ? "自动" : ""].filter(Boolean).join(" · ") || job.jobId}</small></td>
+              <td><span>{job.turnId ? turnLabelById(job.turnId) : DASH}</span></td>
+              <td><span>{job.models.join("、") || DASH}</span><small>{job.providers.join("、")}</small></td>
+              <td data-usage-field="requests">{number(job.requests)}{unreported(job) > 0 && <small title="provider 未上报用量，不是 0">未上报 {number(unreported(job))}</small>}{job.unverifiedRequests > unreported(job) && <small title={`未计入：${reasons(job)}`}>不计入 {number(job.unverifiedRequests - unreported(job))}</small>}</td>
+              <td data-usage-field="promptTokens">{amount(job, job.promptTokens)}</td>
+              <td data-usage-field="outputTokens">{amount(job, job.outputTokens)}</td>
+            </tr>)}</tbody>
+          </table></div>
+          <p className="context-panel-note">明细按内核记录的任务编号汇总；没有任务编号的旧记录只计入上方合计。分支摘要的回合为切换前的目标回合。</p>
         </section>}
         <section className="context-panel-section" aria-label="每回合用量">
           <h3>每回合用量<small className="usage-count"> {number(data.turnCount)} 个回合有记录{data.truncated ? `，仅显示前 ${number(data.turns.length)} 个` : ""}</small></h3>

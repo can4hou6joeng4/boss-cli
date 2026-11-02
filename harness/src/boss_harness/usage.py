@@ -115,6 +115,26 @@ def _merge(total: dict, part: dict) -> None:
             total[key] = (total[key] or 0) + part[key]
 
 
+MAX_SUMMARY_JOBS = 50
+_BRANCH_SUMMARY = "branch_summary"
+
+
+def _identifier(value: Any) -> str | None:
+    return value if isinstance(value, str) and 0 < len(value) <= 128 else None
+
+
+def _job_metadata(entry_type: str, payload: dict) -> dict:
+    """只取摘要任务与回合、原因的已验证关联；缺失字段保持 None。"""
+    if entry_type == _BRANCH_SUMMARY:
+        return {"kind": "branchSummary", "turnId": _identifier(payload.get("targetTurnId")),
+                "reason": None, "origin": "model"}
+    reason = payload.get("reason")
+    origin = payload.get("origin")
+    return {"kind": "compaction", "turnId": _identifier(payload.get("turnId")),
+            "reason": reason if reason in {"threshold", "budget", "overflow"} else None,
+            "origin": origin if origin in {"user", "model"} else None}
+
+
 def summarize_usage(entries: Iterable[dict], active_turn_ids: set[str] | None = None,
                     turn_policies: dict[str, Any] | None = None) -> dict:
     """Aggregate persisted usage records per turn (file order) plus summary-task totals.
@@ -122,15 +142,31 @@ def summarize_usage(entries: Iterable[dict], active_turn_ids: set[str] | None = 
     ``turn_policies`` maps a turn to its recorded compaction policy; only policies
     that pass the same validation as ``thread/export`` are attached, and turns
     without a valid record keep no ``compactionPolicy`` field.
+
+    Summary-task usage is also grouped by ``jobId`` (last ``MAX_SUMMARY_JOBS``)
+    with the turn, reason and origin recorded on the matching checkpoint or
+    branch-summary entry. Usage records without a job id still count in totals.
     """
     turns: dict[str, dict] = {}
     summary = _empty()
+    jobs: dict[str, dict] = {}
+    job_meta: dict[str, dict] = {}
     for entry in entries:
         kind = entry.get("type")
         payload = entry.get("payload")
         if not isinstance(payload, dict):
             continue
-        if kind == "model_usage":
+        if kind in ("context_checkpoint", _BRANCH_SUMMARY):
+            job_id = _identifier(payload.get("summaryJobId"))
+            if job_id is not None:
+                meta = job_meta.get(job_id)
+                if meta is None:
+                    meta = job_meta[job_id] = _job_metadata(kind, payload)
+                else:
+                    for key, value in _job_metadata(kind, payload).items():
+                        if meta.get(key) is None:
+                            meta[key] = value
+        elif kind == "model_usage":
             turn_id = payload.get("turnId")
             if not isinstance(turn_id, str) or (active_turn_ids is not None and turn_id not in active_turn_ids):
                 continue
@@ -143,8 +179,19 @@ def summarize_usage(entries: Iterable[dict], active_turn_ids: set[str] | None = 
             _add(bucket, payload.get("provider"), payload.get("model"), payload.get("usage"))
         elif kind == "context_summary_usage":
             _add(summary, payload.get("provider"), payload.get("model"), payload.get("usage"))
+            job_id = _identifier(payload.get("jobId"))
+            if job_id is not None:
+                bucket = jobs.get(job_id)
+                if bucket is None:
+                    bucket = jobs[job_id] = {"jobId": job_id, "providers": [], "models": [], **_empty()}
+                _add(bucket, payload.get("provider"), payload.get("model"), payload.get("usage"))
+    for job_id, bucket in jobs.items():
+        for key in ("kind", "turnId", "reason", "origin"):
+            bucket[key] = (job_meta.get(job_id) or {}).get(key)
     totals = _empty()
     for bucket in turns.values():
         _merge(totals, bucket)
     _merge(totals, summary)
-    return {"turns": list(turns.values()), "summaryTasks": summary, "totals": totals}
+    return {"turns": list(turns.values()), "summaryTasks": summary, "totals": totals,
+            "summaryJobs": list(jobs.values())[-MAX_SUMMARY_JOBS:], "summaryJobCount": len(jobs),
+            "summaryJobsTruncated": len(jobs) > MAX_SUMMARY_JOBS}
