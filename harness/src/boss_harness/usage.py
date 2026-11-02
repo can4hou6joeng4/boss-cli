@@ -144,10 +144,11 @@ def _job_metadata(entry_type: str, payload: dict) -> dict:
     """只取摘要任务与回合、原因的已验证关联；缺失字段保持 None。"""
     if entry_type == _BRANCH_SUMMARY:
         return {"kind": "branchSummary", "turnId": _identifier(payload.get("targetTurnId")),
-                "reason": None, "origin": "model"}
+                "throughTurnId": None, "reason": None, "origin": "model"}
     reason = payload.get("reason")
     origin = payload.get("origin")
     return {"kind": "compaction", "turnId": _identifier(payload.get("turnId")),
+            "throughTurnId": _identifier(payload.get("throughTurnId")),
             "reason": reason if reason in {"threshold", "budget", "overflow"} else None,
             "origin": origin if origin in {"user", "model"} else None}
 
@@ -162,8 +163,9 @@ def summarize_usage(entries: Iterable[dict], active_turn_ids: set[str] | None = 
     without a valid record keep no ``compactionPolicy`` field.
 
     Summary-task usage is also grouped by ``jobId`` (last ``MAX_SUMMARY_JOBS``)
-    with the turn, reason and origin recorded on the matching checkpoint or
-    branch-summary entry. Usage records without a job id still count in totals.
+    with the turn, summarized-through turn, reason and origin recorded on the
+    matching checkpoint or branch-summary entry. Usage records without a job id
+    still count in totals.
     ``active_job_id`` marks that job with ``active: True`` when it is among the
     reported jobs; it is the caller's validated current-branch checkpoint job,
     never inferred from the usage records themselves.
@@ -207,7 +209,7 @@ def summarize_usage(entries: Iterable[dict], active_turn_ids: set[str] | None = 
                     bucket = jobs[job_id] = {"jobId": job_id, "providers": [], "models": [], **_empty()}
                 _add(bucket, payload.get("provider"), payload.get("model"), payload.get("usage"))
     for job_id, bucket in jobs.items():
-        for key in ("kind", "turnId", "reason", "origin"):
+        for key in ("kind", "turnId", "throughTurnId", "reason", "origin"):
             bucket[key] = (job_meta.get(job_id) or {}).get(key)
         if active_job_id is not None and job_id == active_job_id:
             bucket["active"] = True

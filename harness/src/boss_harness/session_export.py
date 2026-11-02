@@ -605,6 +605,9 @@ def _summary_job_facts(job: dict) -> list[str]:
     turn_id = job.get("turnId")
     if isinstance(turn_id, str) and turn_id:
         facts.append("回合 " + turn_id[:64])
+    through = job.get("throughTurnId")
+    if isinstance(through, str) and through:
+        facts.append("摘要至 " + through[:64])
     if job.get("reason") in _JOB_REASON:
         facts.append(_JOB_REASON[job["reason"]])
     models = [model[:80] for model in job.get("models", []) if isinstance(model, str)]

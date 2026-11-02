@@ -67,9 +67,15 @@ function summaryJobOf(value: unknown): ThreadUsageSummaryJob | null {
     : raw.reason === "threshold" || raw.reason === "budget" || raw.reason === "overflow" ? raw.reason : undefined;
   const origin = raw.origin === null ? null : raw.origin === "user" || raw.origin === "model" ? raw.origin : undefined;
   const active = raw.active === undefined ? undefined : typeof raw.active === "boolean" ? raw.active : null;
+  const throughTurnId = raw.throughTurnId === undefined ? undefined
+    : raw.throughTurnId === null ? null
+      : typeof raw.throughTurnId === "string" && raw.throughTurnId.length > 0 && raw.throughTurnId.length <= 128
+        ? raw.throughTurnId : null;
   if (!jobId || !providers || !models || kind === undefined || turnId === undefined
-    || reason === undefined || origin === undefined || active === null) return null;
+    || reason === undefined || origin === undefined || active === null
+    || (raw.throughTurnId !== undefined && throughTurnId === null)) return null;
   return { ...bucket, jobId, kind, turnId, reason, origin, providers, models,
+    ...(throughTurnId !== undefined ? { throughTurnId } : {}),
     ...(active ? { active: true } : {}) };
 }
 /** 摘要任务明细在每页重复返回；任一页形状不符即报错，展示时只取第一份。 */
