@@ -879,6 +879,22 @@ class ContextService:
                 for summary in branch_summaries]
         return result
 
+    def active_summary_job_id(self, thread_id: str, *, entries: list[dict] | None = None) -> str | None:
+        """Job id of the checkpoint in effect on the active branch, if valid.
+
+        Mirrors ``read``: a summary that fails validation never takes effect, and
+        only a bounded identifier is returned for the read-only usage marker.
+        """
+        entries = self._entries(thread_id, entries)
+        try:
+            checkpoint = self._validated_checkpoint(thread_id, entries)
+        except ValueError:
+            return None
+        if checkpoint is None:
+            return None
+        job_id = checkpoint["payload"].get("summaryJobId")
+        return job_id if isinstance(job_id, str) and 0 < len(job_id) <= 128 else None
+
     def compaction_prompt(self, thread_id: str, through_turn_id: str,
                           source_digest: str | None = None) -> tuple[dict[str, Any], str]:
         """Freeze a plan and build a bounded-contract, tool-free summary prompt."""

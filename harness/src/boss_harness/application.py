@@ -1459,8 +1459,14 @@ class ApplicationService:
         params = params or {}
         if not set(params) <= {"threadId", "view", "cursor", "limit"}:
             raise ValueError("thread/usage/read 只接受 threadId、view、cursor 与 limit")
-        result = self.sessions.usage_page(_text(params, "threadId"), branch=_branch_view(params),
-                                          cursor=params.get("cursor"), limit=params.get("limit", 50))
+        thread_id = _text(params, "threadId")
+        with self.runtimes.lock:
+            # Only a checkpoint that validates on the active branch counts as
+            # active; the usage records themselves never decide this.
+            active_job_id = self.context.active_summary_job_id(thread_id)
+            result = self.sessions.usage_page(thread_id, branch=_branch_view(params),
+                                              cursor=params.get("cursor"), limit=params.get("limit", 50),
+                                              active_summary_job_id=active_job_id)
         self._check_response_budget(result)
         return result
 

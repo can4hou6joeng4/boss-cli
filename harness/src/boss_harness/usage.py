@@ -153,7 +153,8 @@ def _job_metadata(entry_type: str, payload: dict) -> dict:
 
 
 def summarize_usage(entries: Iterable[dict], active_turn_ids: set[str] | None = None,
-                    turn_policies: dict[str, Any] | None = None) -> dict:
+                    turn_policies: dict[str, Any] | None = None,
+                    active_job_id: str | None = None) -> dict:
     """Aggregate persisted usage records per turn (file order) plus summary-task totals.
 
     ``turn_policies`` maps a turn to its recorded compaction policy; only policies
@@ -163,6 +164,9 @@ def summarize_usage(entries: Iterable[dict], active_turn_ids: set[str] | None = 
     Summary-task usage is also grouped by ``jobId`` (last ``MAX_SUMMARY_JOBS``)
     with the turn, reason and origin recorded on the matching checkpoint or
     branch-summary entry. Usage records without a job id still count in totals.
+    ``active_job_id`` marks that job with ``active: True`` when it is among the
+    reported jobs; it is the caller's validated current-branch checkpoint job,
+    never inferred from the usage records themselves.
     """
     turns: dict[str, dict] = {}
     summary = _empty()
@@ -205,6 +209,8 @@ def summarize_usage(entries: Iterable[dict], active_turn_ids: set[str] | None = 
     for job_id, bucket in jobs.items():
         for key in ("kind", "turnId", "reason", "origin"):
             bucket[key] = (job_meta.get(job_id) or {}).get(key)
+        if active_job_id is not None and job_id == active_job_id:
+            bucket["active"] = True
     totals = _empty()
     for bucket in turns.values():
         _merge(totals, bucket)

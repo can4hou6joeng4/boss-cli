@@ -66,9 +66,11 @@ function summaryJobOf(value: unknown): ThreadUsageSummaryJob | null {
   const reason = raw.reason === null ? null
     : raw.reason === "threshold" || raw.reason === "budget" || raw.reason === "overflow" ? raw.reason : undefined;
   const origin = raw.origin === null ? null : raw.origin === "user" || raw.origin === "model" ? raw.origin : undefined;
+  const active = raw.active === undefined ? undefined : typeof raw.active === "boolean" ? raw.active : null;
   if (!jobId || !providers || !models || kind === undefined || turnId === undefined
-    || reason === undefined || origin === undefined) return null;
-  return { ...bucket, jobId, kind, turnId, reason, origin, providers, models };
+    || reason === undefined || origin === undefined || active === null) return null;
+  return { ...bucket, jobId, kind, turnId, reason, origin, providers, models,
+    ...(active ? { active: true } : {}) };
 }
 /** 摘要任务明细在每页重复返回；任一页形状不符即报错，展示时只取第一份。 */
 function summaryJobsOf(page: ThreadUsageReadResponse): Pick<NonNullable<ThreadUsageState["data"]>,

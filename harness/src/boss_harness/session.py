@@ -2319,8 +2319,14 @@ class SessionStore:
                 "activeTurnIds": turn_ids[-MAX_LEAF_ACTIVE_TURN_IDS:],
                 "activeTurnIdsTruncated": len(turn_ids) > MAX_LEAF_ACTIVE_TURN_IDS}
 
-    def usage_page(self, thread_id: str, *, branch: bool, cursor: str | None = None, limit: int = 50) -> dict:
-        """Read-only per-turn usage aggregated from persisted usage records."""
+    def usage_page(self, thread_id: str, *, branch: bool, cursor: str | None = None, limit: int = 50,
+                   active_summary_job_id: str | None = None) -> dict:
+        """Read-only per-turn usage aggregated from persisted usage records.
+
+        ``active_summary_job_id`` is the caller's validated current-branch
+        checkpoint job; it only marks the matching summary job, never resolves
+        jobs from usage records on its own.
+        """
         from boss_harness.usage import SOURCE, summarize_usage
         _limit(limit)
         scope = {"threadId": thread_id, "view": "branch" if branch else "log"}
@@ -2336,7 +2342,7 @@ class SessionStore:
             policies = {turn["turnId"]: turn.get("compactionPolicy") for turn in turns
                         if turn.get("compactionPolicy") is not None}
             leaf = self._leaf_state(thread_id, entries) if branch else None
-        result = summarize_usage(entries, active, policies)
+        result = summarize_usage(entries, active, policies, active_summary_job_id)
         turns = result["turns"]
         page = turns[offset:offset + limit]
         next_cursor = (_page_cursor("usage", scope, [offset + limit])

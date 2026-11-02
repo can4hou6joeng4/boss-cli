@@ -88,7 +88,7 @@ export function UsageDialog({ isOpen, onClose, state, messages, branchViews, con
           <div className="usage-table-wrap"><table className="usage-table">
             <thead><tr><th>摘要任务</th><th>回合</th><th>模型</th><th>请求</th><th>输入</th><th>输出</th></tr></thead>
             <tbody>{data.summaryJobs.map(job => <tr key={job.jobId} data-usage-summary-job={job.jobId}>
-              <td><span>{jobSource(job)}</span><small title={job.jobId}>{[job.reason ? JOB_REASON[job.reason] ?? job.reason : "", job.origin === "user" ? "手动" : job.origin === "model" ? "自动" : ""].filter(Boolean).join(" · ") || job.jobId}</small></td>
+              <td><span>{jobSource(job)}</span>{job.active && <span className="usage-active-badge" data-usage-field="active" title="当前分支上已验证生效的压缩摘要任务">当前生效</span>}<small title={job.jobId}>{[job.reason ? JOB_REASON[job.reason] ?? job.reason : "", job.origin === "user" ? "手动" : job.origin === "model" ? "自动" : ""].filter(Boolean).join(" · ") || job.jobId}</small></td>
               <td><span>{job.turnId ? turnLabelById(job.turnId) : DASH}</span></td>
               <td><span>{job.models.join("、") || DASH}</span><small>{job.providers.join("、")}</small></td>
               <td data-usage-field="requests">{number(job.requests)}{unreported(job) > 0 && <small title="provider 未上报用量，不是 0">未上报 {number(unreported(job))}</small>}{job.unverifiedRequests > unreported(job) && <small title={`未计入：${reasons(job)}`}>不计入 {number(job.unverifiedRequests - unreported(job))}</small>}</td>
@@ -96,7 +96,7 @@ export function UsageDialog({ isOpen, onClose, state, messages, branchViews, con
               <td data-usage-field="outputTokens">{amount(job, job.outputTokens)}</td>
             </tr>)}</tbody>
           </table></div>
-          <p className="context-panel-note">明细按内核记录的任务编号汇总；没有任务编号的旧记录只计入上方合计。分支摘要的回合为切换前的目标回合。</p>
+          <p className="context-panel-note">明细按内核记录的任务编号汇总；没有任务编号的旧记录只计入上方合计。分支摘要的回合为切换前的目标回合。“当前生效”来自当前分支上验证通过的压缩摘要，不由用量记录推断。</p>
         </section>}
         <section className="context-panel-section" aria-label="每回合用量">
           <h3>每回合用量<small className="usage-count"> {number(data.turnCount)} 个回合有记录{data.truncated ? `，仅显示前 ${number(data.turns.length)} 个` : ""}</small></h3>
