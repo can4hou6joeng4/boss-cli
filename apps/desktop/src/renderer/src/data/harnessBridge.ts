@@ -57,6 +57,7 @@ import {
   type ThreadLeafSetParams,
   type TurnListResponse,
   type ThreadUsageReadResponse,
+  type ThreadSearchResponse,
   type QueueStatusCounts,
   type WorkspaceInstructionsText,
   type WorkspaceInstructionsWriteResponse,
@@ -180,6 +181,9 @@ export const readBranchSummary = (threadId: string, entryId: string): Promise<Th
 /** 会话用量：仅在内核声明 threadUsage 后调用；只读，错误保留内核错误码。 */
 export const readThreadUsage = (threadId: string, view: "log" | "branch", cursor?: string | null): Promise<ThreadUsageReadResponse> =>
   contextRequest(ClientMethods.threadUsageRead, cursor ? { threadId, view, cursor, limit: 200 } : { threadId, view, limit: 200 });
+/** 跨会话消息搜索：仅在内核声明 threadSearch 后调用；只读、有界。 */
+export const searchThreadMessages = (query: string, limit = 20): Promise<ThreadSearchResponse> =>
+  contextRequest(ClientMethods.threadSearch, { query, limit });
 export const listBranchTurns = (threadId: string, cursor?: string | null): Promise<TurnListResponse> =>
   contextRequest(ClientMethods.threadTurnsList, cursor ? { threadId, view: "branch", cursor, limit: 200 } : { threadId, view: "branch", limit: 200 });
 

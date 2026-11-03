@@ -81,6 +81,7 @@ const PROVIDER_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const RENDERER_METHODS = new Set([
   "thread/start", "thread/list", "thread/read", "thread/resume", "thread/fork",
   "thread/leaf/read", "thread/leaf/set", "thread/branches/list", "thread/branchSummary/read", "thread/usage/read",
+  "thread/search",
   "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
   "turn/start", "turn/interrupt", "turn/steer", "turn/read", "turn/continuation/read", "turn/continue", "task/read", "queue/list", "queue/get", "queue/add", "queue/remove",
   "event/list", "model/list", "config/read", "skills/list", "skills/read", "skills/create", "skills/write", "skills/delete", "tool/list", "attachment/add", "attachment/read",
@@ -314,6 +315,16 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
       (params.snapshotId !== undefined && (typeof params.snapshotId !== "string" || !/^[a-f0-9]{32}$/.test(params.snapshotId))) ||
       (params.limit !== undefined && (typeof params.limit !== "number" || !Number.isSafeInteger(params.limit) || params.limit < 1 || params.limit > 32768))) {
       throw new Error("invalid item content read");
+    }
+    return { method: payload.method, params };
+  }
+  if (payload.method === "thread/search") {
+    const allowed = new Set(["query", "limit"]);
+    if (!params || Object.keys(params).some(key => !allowed.has(key)) ||
+      typeof params.query !== "string" || !params.query.trim() || params.query.length > 200 ||
+      (params.limit !== undefined && (typeof params.limit !== "number" ||
+        !Number.isSafeInteger(params.limit) || params.limit < 1 || params.limit > 50))) {
+      throw new Error("invalid thread search");
     }
     return { method: payload.method, params };
   }

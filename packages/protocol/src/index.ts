@@ -80,6 +80,8 @@ export interface InitializeResponse {
     sessionBranchSummaryRead?: boolean;
     /** 可用只读 `thread/export` 导出脱敏后的会话文本（Markdown / JSON / 自包含 HTML）。 */
     threadExport?: boolean;
+    /** 可用只读 `thread/search` 在未归档会话的消息正文中做有界搜索。 */
+    threadSearch?: boolean;
     /** 可用 `context/instructions/read` / `context/instructions/write` 查看并保存工作区常驻说明。 */
     workspaceInstructionsEdit?: boolean;
     /** 可用只读 `skills/read` 查看单个工作区技能的 SKILL.md 正文（有界，不写入会话）。 */
@@ -108,6 +110,7 @@ export const ClientMethods = {
   threadBranchesList: "thread/branches/list",
   threadBranchSummaryRead: "thread/branchSummary/read",
   threadUsageRead: "thread/usage/read",
+  threadSearch: "thread/search",
   threadExport: "thread/export",
   threadArchive: "thread/archive",
   threadDelete: "thread/delete",
@@ -703,6 +706,22 @@ export interface DurableEvent {
   params: Record<string, unknown> & { eventCursor: string; eventId: string; threadId?: string; turnId?: string };
 }
 export interface EventListResponse { events: DurableEvent[]; nextCursor: string; hasMore: boolean }
+
+export interface ThreadSearchMatch {
+  threadId: string;
+  threadTitle: string;
+  itemId: string;
+  role: "user" | "agent";
+  /** 命中位置前后约 40 字符的片段，已折叠空白并截断。 */
+  snippet: string;
+}
+export interface ThreadSearchParams { query: string; limit?: number }
+export interface ThreadSearchResponse {
+  query: string;
+  matches: ThreadSearchMatch[];
+  /** 达到会话数、文本预算、单会话命中数或总命中上限时为真。 */
+  truncated: boolean;
+}
 
 export interface QueueItem {
   id: string;
