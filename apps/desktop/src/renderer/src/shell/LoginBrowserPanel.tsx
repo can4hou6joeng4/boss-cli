@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import type { PlatformLoginAction, PlatformLoginStatus } from "@boss-harness/protocol";
 import { IconCheck, IconChevronRight, IconClose, IconLock } from "../components/Icons";
+import { harnessErrorText } from "../data/harnessBridge";
 
 export function LoginBrowserPanel({ status, threadId, expanded, onToggleExpanded, onClose, onRetry }: {
   status?: PlatformLoginStatus; threadId: string; expanded: boolean; onToggleExpanded: () => void; onClose: () => void; onRetry: () => void;
@@ -47,7 +48,8 @@ export function LoginBrowserPanel({ status, threadId, expanded, onToggleExpanded
   const control = (action: PlatformLoginAction) => {
     if (!browserId) return;
     setControlError("");
-    void window.boss.platformLogin(action, { threadId, browserId }).catch(() => setControlError("浏览器操作未完成，请检查连接后重试。"));
+    // 内置浏览器操作失败通常是会话已关闭或页面已销毁；保留内核/进程给出的原因才能对症处理。
+    void window.boss.platformLogin(action, { threadId, browserId }).catch(cause => setControlError(`浏览器操作未完成：${harnessErrorText(cause)}。请检查连接后重试。`));
   };
   const connected = status?.state === "succeeded";
   const failed = status?.state === "failed" || status?.state === "blocked";
