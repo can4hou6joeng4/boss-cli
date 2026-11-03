@@ -940,6 +940,19 @@ export interface ContextReadResponse extends ContextBudget {
   branchSummaries?: ContextBranchSummary[];
   /** 工作区常驻说明的加载状态；旧内核不返回，文件不存在时为 null。 */
   workspaceInstructions?: WorkspaceInstructionsState | null;
+  /** 系统提示规模与分段构成；只返回字节数，不返回正文。旧内核不返回。 */
+  systemPromptInfo?: SystemPromptInfo;
+}
+/** `context/read.systemPromptInfo`：分段与实际的系统提示同源。 */
+export interface SystemPromptInfo {
+  bytes: number;
+  /** 运行中的请求可能只有总数，不返回分段。 */
+  sections?: SystemPromptSectionInfo[];
+}
+export interface SystemPromptSectionInfo {
+  id: string;
+  title: string;
+  bytes: number;
 }
 /** `context/read.workspaceInstructions`：只描述读取结果，不返回文件正文。 */
 export interface WorkspaceInstructionsState {
