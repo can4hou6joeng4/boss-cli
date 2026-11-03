@@ -366,7 +366,8 @@ export function App(): JSX.Element {
     setMessages(cache.current.get(session.id) ?? []);
     void replicaRef.current?.resume(session.id).then(snapshot => {
       if (selectionVersion.current !== requestVersion || activeRef.current?.id !== session.id) return;
-      if (!snapshot) setError("读取会话失败，已保留当前内容。请检查本地内核连接。");
+      // 具体原因已随 session/error 送到界面；这里沿用它，只有取不到时才回退到通用文案。
+      if (!snapshot) setError(replicaRef.current?.lastFailure(session.id) ?? "读取会话失败，已保留当前内容。请检查本地内核连接。");
       else {
         const provider = snapshot.thread.provider ?? defaultModel?.provider ?? activeModelProvider;
         const model = snapshot.thread.model ?? (provider === defaultModel?.provider ? defaultModel.model : undefined)

@@ -29,6 +29,8 @@ export class HarnessReplica {
   private epoch = 0;
   private readonly generations = new Map<string, number>();
   private readonly itemVersions = new Map<string, number>();
+  /** 每个会话最近一次恢复失败的具体原因；调用方用它替代通用文案。 */
+  private readonly failures = new Map<string, string>();
   private nextItemVersion = 0;
   private readonly api: Api;
   private readonly onEvent: (event: HarnessEvent) => void;
@@ -111,6 +113,7 @@ export class HarnessReplica {
     this.cursors.clear();
     this.generations.clear();
     this.itemVersions.clear();
+    this.failures.clear();
   }
 
   ingest(event: HarnessEvent): void {
@@ -183,6 +186,7 @@ export class HarnessReplica {
         throw new Error("会话事件游标无效");
       }
       current();
+      this.failures.delete(threadId);
       this.onSnapshot(snapshot);
       const after = eventCursor ?? "0";
       this.cursors.set(threadId, BigInt(after));
@@ -247,10 +251,16 @@ export class HarnessReplica {
     }
   }
 
+  /** 最近一次恢复失败的原因（已含处理建议）；成功恢复或连接作废后清除。 */
+  lastFailure(threadId: string): string | undefined {
+    return this.failures.get(threadId);
+  }
+
   private reportFailure(threadId: string, error: unknown): void {
     const detail = error instanceof Error ? error.message.slice(0, 300) : "响应无效";
-    this.onEvent({ method: "session/error", params: { threadId,
-      message: `读取会话内容失败：${detail}。已保留当前内容，请重新打开会话重试。` } });
+    const message = `读取会话内容失败：${detail}。已保留当前内容，请重新打开会话重试。`;
+    if (threadId) this.failures.set(threadId, message);
+    this.onEvent({ method: "session/error", params: { threadId, message } });
   }
 
   private async readContent(reference: ItemContentReference, current: () => void): Promise<string> {
