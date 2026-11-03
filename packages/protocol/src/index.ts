@@ -87,7 +87,9 @@ export interface InitializeResponse {
     /** 可用 `skills/create` 在当前生效技能目录新建 SKILL.md；只创建不覆盖。 */
     skillsCreate?: boolean;
     /** 可用 `skills/write` 按读取摘要修改已有技能；摘要变化时拒绝写入。 */
-    skillsWrite?: boolean };
+    skillsWrite?: boolean;
+    /** 可用 `skills/delete` 按读取摘要删除技能；目录含其他文件时拒绝。 */
+    skillsDelete?: boolean };
   eventCursor?: string;
 }
 
@@ -142,6 +144,7 @@ export const ClientMethods = {
   skillsRead: "skills/read",
   skillsCreate: "skills/create",
   skillsWrite: "skills/write",
+  skillsDelete: "skills/delete",
   attachmentAdd: "attachment/add",
   attachmentRead: "attachment/read",
   contextRead: "context/read",
@@ -1076,6 +1079,13 @@ export interface SkillCreateResponse { skill: SkillDescriptor; root?: string }
 export interface SkillWriteParams { id: string; content: string; expectedDigest: string }
 /** `skills/write` 结果：写入后的技能描述与生效目录。 */
 export interface SkillWriteResponse { skill: SkillDescriptor; root?: string }
+/**
+ * `skills/delete` 参数；仅在 `capabilities.skillsDelete` 为真时可用。
+ * `expectedDigest` 必须来自最近一次读取；目录还包含其他文件时内核拒绝删除。
+ */
+export interface SkillDeleteParams { id: string; expectedDigest: string }
+/** `skills/delete` 结果：被删除的技能 id 与生效目录。 */
+export interface SkillDeleteResponse { id: string; root?: string }
 export interface AttachmentDescriptor { id: string; name: string; digest: string; bytes: number; mediaType: string }
 
 /**

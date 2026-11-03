@@ -83,7 +83,7 @@ const RENDERER_METHODS = new Set([
   "thread/leaf/read", "thread/leaf/set", "thread/branches/list", "thread/branchSummary/read", "thread/usage/read",
   "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
   "turn/start", "turn/interrupt", "turn/steer", "turn/read", "turn/continuation/read", "turn/continue", "task/read", "queue/list", "queue/get", "queue/add", "queue/remove",
-  "event/list", "model/list", "config/read", "skills/list", "skills/read", "skills/create", "skills/write", "tool/list", "attachment/add", "attachment/read",
+  "event/list", "model/list", "config/read", "skills/list", "skills/read", "skills/create", "skills/write", "skills/delete", "tool/list", "attachment/add", "attachment/read",
   "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "context/edit/read", "context/edit", "context/instructions/read", "context/instructions/write", "approval/list", "approval/respond",
   "connection/read", "connection/check",
   "runtime/resources/read",
@@ -266,6 +266,11 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
     typeof params.content !== "string" || Buffer.byteLength(params.content, "utf8") > 64 * 1024 ||
     typeof params.expectedDigest !== "string" || !/^[a-f0-9]{64}$/.test(params.expectedDigest))) {
     throw new Error("invalid skill write");
+  }
+  if (payload.method === "skills/delete" && (!params || Reflect.ownKeys(params).length !== 2 ||
+    typeof params.id !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(params.id) ||
+    typeof params.expectedDigest !== "string" || !/^[a-f0-9]{64}$/.test(params.expectedDigest))) {
+    throw new Error("invalid skill delete");
   }
   if (payload.method === "context/instructions/write" && (!params ||
     Reflect.ownKeys(params).length !== 1 || typeof params.content !== "string" ||

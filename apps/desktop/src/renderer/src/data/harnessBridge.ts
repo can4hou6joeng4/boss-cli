@@ -34,6 +34,7 @@ import {
   type SkillDescriptor,
   type SkillListResponse,
   type SkillCreateResponse,
+  type SkillDeleteResponse,
   type SkillWriteResponse,
   type SkillReadResponse,
   type ToolDescriptor,
@@ -469,6 +470,10 @@ export const createSkill = (id: string, content: string): Promise<SkillCreateRes
 /** 修改已有技能：必须带上读取时的摘要，技能被外部修改时内核会拒绝。 */
 export const writeSkill = (id: string, content: string, expectedDigest: string): Promise<SkillWriteResponse> =>
   contextRequest(ClientMethods.skillsWrite, { id, content, expectedDigest });
+
+/** 删除技能：必须带读取摘要；技能目录含其他文件时内核会拒绝。 */
+export const deleteSkill = (id: string, expectedDigest: string): Promise<SkillDeleteResponse> =>
+  contextRequest(ClientMethods.skillsDelete, { id, expectedDigest });
 
 /** 内核声明的工具清单。读取失败不吞掉：调用方要区分「没有工具」与「读取失败」。 */
 export async function listTools(): Promise<ToolDescriptor[]> {
