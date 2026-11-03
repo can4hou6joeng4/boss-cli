@@ -161,8 +161,9 @@ export function App(): JSX.Element {
           error: `预检被内核拒绝：${rpc.message}${reasonCode ? `（${reasonCode}）` : ""}` });
         return;
       }
+      // 预检失败也要让用户看到真正的失败原因，否则「不可续接」和「读不到」会被混为一谈。
       setContinuationCheck({ threadId: session.id, sourceTurnId, loading: false,
-        error: "无法确认该中断回合是否可续接。刷新状态前不会发送续接请求。" });
+        error: `无法确认该中断回合是否可续接：${harnessErrorText(error)}。刷新状态前不会发送续接请求。` });
     }
   }, [continuationSupported]);
   useEffect(() => {
