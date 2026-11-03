@@ -16,6 +16,7 @@ import { SearchDialog } from "../components/SearchDialog";
 import { ModalSurface } from "../components/ModalSurface";
 import { IconNotification, IconCheck } from "../components/Icons";
 import { type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "../data/mockData";
+import { booleanPreference, projectFolders, stringList, stringRecord } from "../data/preferenceShapes";
 import { type ModelDescriptor, type SkillDescriptor, type ToolDescriptor } from "@boss-harness/protocol";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
 import type { CheckQueueSubmission, ComposerQueue } from "../data/composerDraft";
@@ -54,8 +55,8 @@ export interface AppShellProps {
   onReviewDiff: () => void; onRevertDiff: () => void;
   onCreateConnectionSession: () => Promise<SessionItem | null>;
 }
-function preference<T>(key: string, initial: T): T {
-  try { return JSON.parse(localStorage.getItem(UI_STORAGE_PREFIX + key) ?? "null") as T ?? initial; } catch { return initial; }
+function preference(key: string, initial: unknown): unknown {
+  try { return JSON.parse(localStorage.getItem(UI_STORAGE_PREFIX + key) ?? "null") ?? initial; } catch { return initial; }
 }
 interface Route { page: WorkspacePage; sessionId?: string; }
 export function AppShell(props: AppShellProps) {
@@ -65,16 +66,17 @@ export function AppShell(props: AppShellProps) {
   const [settings, setSettings] = useState(false), [search, setSearch] = useState(false), [notifications, setNotifications] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [summaryAvailable, setSummaryAvailable] = useState(() => window.matchMedia("(min-width: 1200px)").matches);
-  const [summaryOpen, setSummaryOpen] = useState(() => preference("summaryOpen", true));
-  const [pinned, setPinned] = useState<string[]>(() => preference("pinned", []));
-  const [hidden, setHidden] = useState<string[]>(() => preference("hidden", []));
-  const [aliases, setAliases] = useState<Record<string, string>>(() => preference("aliases", {}));
-  const [groups, setGroups] = useState<ProjectFolder[]>(() => preference("groups", []));
-  const [projectAliases, setProjectAliases] = useState<Record<string, string>>(() => preference("projectAliases", {}));
-  const [threadGroups, setThreadGroups] = useState<Record<string, string>>(() => preference("threadGroups", {}));
+  const [summaryOpen, setSummaryOpen] = useState(() => booleanPreference(preference("summaryOpen", true), true));
+  const [pinned, setPinned] = useState<string[]>(() => stringList(preference("pinned", [])));
+  const [hidden, setHidden] = useState<string[]>(() => stringList(preference("hidden", [])));
+  const [aliases, setAliases] = useState<Record<string, string>>(() => stringRecord(preference("aliases", {})));
+  const [groups, setGroups] = useState<ProjectFolder[]>(() => projectFolders(preference("groups", [])));
+  const [projectAliases, setProjectAliases] = useState<Record<string, string>>(() => stringRecord(preference("projectAliases", {})));
+  const [threadGroups, setThreadGroups] = useState<Record<string, string>>(() => stringRecord(preference("threadGroups", {})));
   const [sidebarPreferences, setSidebarPreferences] = useState<SidebarPreferences>(() => {
-    const saved = preference<Partial<SidebarPreferences>>("sidebar", {});
-    return { grouping: saved.grouping === "list" ? "list" : "project", sort: saved.sort === "name" ? "name" : "updated", showRecent: saved.showRecent ?? false, showHidden: saved.showHidden ?? false };
+    const saved = preference("sidebar", {});
+    const value = saved && typeof saved === "object" && !Array.isArray(saved) ? saved as Partial<SidebarPreferences> : {};
+    return { grouping: value.grouping === "list" ? "list" : "project", sort: value.sort === "name" ? "name" : "updated", showRecent: value.showRecent === true, showHidden: value.showHidden === true };
   });
   const [newProject, setNewProject] = useState(false), [projectName, setProjectName] = useState("");
   const [rename, setRename] = useState<SessionItem | null>(null), [name, setName] = useState("");
