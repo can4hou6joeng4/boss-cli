@@ -18,6 +18,7 @@ import sqlite3
 import stat
 import threading
 import time
+import unicodedata
 import uuid
 from collections.abc import Callable
 from contextlib import closing
@@ -38,6 +39,12 @@ _ATTACHMENT_DIGEST = re.compile(r"[a-f0-9]{64}\Z")
 _ATTACHMENT_TEMP = re.compile(r"tmp-[a-f0-9]{32}\Z")
 _DELETE_INTENT = re.compile(r"\.delete-([a-f0-9]{12})\.json\Z")
 _TERMINAL = frozenset({"completed", "interrupted", "blocked", "error"})
+_SEARCH_THREADS = 100
+_SEARCH_MATCHES = 50
+_SEARCH_PER_THREAD = 5
+_SEARCH_TEXT_BUDGET = 4 * 1024 * 1024
+_SEARCH_THREAD_BYTES = 8 * 1024 * 1024
+_SEARCH_SNIPPET_BYTES = 200
 # In-session branch pointer (Pi session-manager leafId).  Sessions that never
 # record one keep the historical linear projection byte-for-byte.
 LEAF_ENTRY_TYPE = "leaf"
@@ -2025,6 +2032,80 @@ class SessionStore:
         next_cursor = (_page_cursor("threads", scope, [page[-1]["updated_at"], page[-1]["id"]])
                        if len(rows) > limit else None)
         return {"threads": [json.loads(row["metadata_json"]) for row in page], "nextCursor": next_cursor}
+
+    @staticmethod
+    def _search_normalized(value: str) -> tuple[str, list[int]]:
+        """NFKC + casefold 归一化，并记录每个归一化字符对应的原文索引。"""
+        parts: list[str] = []
+        origins: list[int] = []
+        for index, char in enumerate(value):
+            part = unicodedata.normalize("NFKC", char).casefold()
+            if not part:
+                continue
+            parts.append(part)
+            origins.extend([index] * len(part))
+        return "".join(parts), origins
+
+    @staticmethod
+    def _search_snippet(text: str, start: int, end: int) -> str:
+        left, right = max(0, start - 40), min(len(text), end + 40)
+        fragment = re.sub(r"\s+", " ", text[left:right]).strip()
+        if len(fragment) > _SEARCH_SNIPPET_BYTES:
+            fragment = fragment[:_SEARCH_SNIPPET_BYTES].rstrip()
+        return ("…" if left else "") + fragment + ("…" if right < len(text) else "")
+
+    def search_messages(self, query: str, *, limit: int = 30) -> dict:
+        """在未归档会话的用户 / 助手消息中做有界全文搜索；跳过损坏或过大的会话。"""
+        if not isinstance(query, str) or not query.strip() or len(query) > 200:
+            raise ValueError("query 必须是非空字符串（最多 200 字符）")
+        if type(limit) is not int or not 1 <= limit <= 50:
+            raise ValueError("limit 必须是 1–50 的整数")
+        needle, _ = self._search_normalized(query.strip())
+        if not needle:
+            return {"query": query.strip(), "matches": [], "truncated": False}
+        matches: list[dict] = []
+        truncated = False
+        scanned_threads = scanned_chars = 0
+        for thread in self.list_threads():
+            if scanned_threads >= _SEARCH_THREADS or scanned_chars >= _SEARCH_TEXT_BUDGET:
+                truncated = True
+                break
+            try:
+                if self.path_for(thread["id"]).stat().st_size > _SEARCH_THREAD_BYTES:
+                    truncated = True
+                    continue
+                items = self.read_items(thread["id"])
+            except (OSError, ValueError):
+                continue
+            scanned_threads += 1
+            per_thread = 0
+            for item in items:
+                kind, text = item.get("kind"), item.get("text")
+                if kind not in ("userMessage", "agentMessage") or not isinstance(text, str) or not text:
+                    continue
+                scanned_chars += len(text)
+                normalized, origins = self._search_normalized(text)
+                index = normalized.find(needle)
+                if index < 0:
+                    continue
+                start = origins[index]
+                end = origins[index + len(needle) - 1] + 1
+                title = thread.get("title")
+                matches.append({
+                    "threadId": thread["id"],
+                    "threadTitle": title if isinstance(title, str) else "",
+                    "itemId": str(item.get("id") or ""),
+                    "role": "user" if kind == "userMessage" else "agent",
+                    "snippet": self._search_snippet(text, start, end),
+                })
+                per_thread += 1
+                if len(matches) >= limit or per_thread >= _SEARCH_PER_THREAD:
+                    truncated = True
+                    break
+            if len(matches) >= limit or scanned_chars >= _SEARCH_TEXT_BUDGET:
+                truncated = True
+                break
+        return {"query": query.strip(), "matches": matches[:_SEARCH_MATCHES], "truncated": truncated}
 
     def record_turn(self, thread_id: str, turn_id: str, status: str, **fields: Any) -> None:
         _identifier(turn_id, "turnId")

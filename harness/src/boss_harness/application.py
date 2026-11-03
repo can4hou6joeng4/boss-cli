@@ -485,6 +485,7 @@ class ApplicationService:
             "thread/reasoning/read": self.on_thread_reasoning_read,
             "thread/reasoning/set": self.on_thread_reasoning_set,
             "thread/leaf/read": self.on_thread_leaf_read, "thread/usage/read": self.on_thread_usage_read,
+            "thread/search": self.on_thread_search,
             "thread/export": self.on_thread_export,
             "thread/branches/list": self.on_thread_branches_list, "thread/leaf/set": self.on_thread_leaf_set,
             "thread/branchSummary/read": self.on_thread_branch_summary_read,
@@ -578,6 +579,7 @@ class ApplicationService:
                              "sessionBranchTree": True, "sessionBranchSummary": True,
                              "sessionBranchSnapshots": True, "sessionBranchSummaryRead": True,
                              "threadUsage": True, "sessionModelSelection": True, "threadExport": True,
+                             "threadSearch": True,
                              "workspaceInstructionsEdit": True, "skillsRead": True,
                              "skillsCreate": True, "skillsWrite": True,
                              "skillsDelete": True},
@@ -1500,6 +1502,16 @@ class ApplicationService:
             result = self.sessions.usage_page(thread_id, branch=_branch_view(params),
                                               cursor=params.get("cursor"), limit=params.get("limit", 50),
                                               active_summary_job_id=active_job_id, entries=entries)
+        self._check_response_budget(result)
+        return result
+
+    def on_thread_search(self, params: dict | None) -> dict:
+        """只读、有界的跨会话消息搜索；不返回工具结果与思考内容。"""
+        params = params or {}
+        if not set(params) <= {"query", "limit"}:
+            raise ValueError("thread/search 只接受 query 与 limit")
+        result = self.sessions.search_messages(_text(params, "query", maximum=200),
+                                               limit=params.get("limit", 30))
         self._check_response_budget(result)
         return result
 
