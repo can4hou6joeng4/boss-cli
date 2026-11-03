@@ -18,7 +18,8 @@ import { UI_STORAGE_PREFIX } from "./data/uiStorage";
 import { branchSupport, branchSwitchBlock, useSessionBranches } from "./data/useSessionBranches";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
-import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, harnessErrorText, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn } from "./data/harnessBridge";
+import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, deleteThread, harnessErrorText, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn } from "./data/harnessBridge";
+import { deleteThreadFailure } from "./data/deleteThreadError";
 import { reduceHarnessEvent, autoApprovalFallback, type HarnessEvent } from "./data/harnessEvents";
 import { unconfirmedFailure } from "./data/confirmationFailure";
 import { HarnessReplica } from "./data/harnessReplica";
@@ -178,6 +179,15 @@ export function App(): JSX.Element {
     let refreshAgain = false;
     const replica = new HarnessReplica(window.boss, event => {
       const params = event.params ?? {}, id = params.threadId;
+      // 删除通知带 deletedThreadId 而不是 threadId：先按会话 ID 移除，避免残留到下次刷新。
+      if (event.method === "thread/deleted") {
+        const deleted = (params as { deletedThreadId?: unknown }).deletedThreadId;
+        if (typeof deleted === "string") {
+          cache.current.delete(deleted);
+          setFolders(previous => previous.map(folder => ({ ...folder, sessions: folder.sessions.filter(item => item.id !== deleted) })));
+        }
+        return;
+      }
       if (!id) return;
       if (["queue/updated", "turn/steeringApplied", "turn/started", "turn/completed"].includes(event.method)) {
         void listQueue(id).then(page => {
@@ -385,6 +395,20 @@ export function App(): JSX.Element {
     activeRef.current = null; setActiveSession(null); setMessages([]); setIsHomeView(true); setError(""); setContinuationCheck(null);
     if (defaultModel) { setActiveModelProvider(defaultModel.provider); setActiveModelId(defaultModel.model); setConfiguredModelLabel(`${defaultModel.provider} · ${defaultModel.model}`); }
   }, [defaultModel]);
+  /** 删除会话：失败时保留列表并提示原因；已移除（含内核稍后继续清理）时同步清掉本地状态。 */
+  const handleDeleteSession = useCallback(async (session: SessionItem): Promise<boolean> => {
+    try {
+      await deleteThread(session.id);
+    } catch (cause) {
+      const failure = deleteThreadFailure(cause);
+      setError(failure.message);
+      if (failure.status === "failed") return false;
+    }
+    cache.current.delete(session.id);
+    setFolders(previous => previous.map(folder => ({ ...folder, sessions: folder.sessions.filter(item => item.id !== session.id) })));
+    if (activeRef.current?.id === session.id) handleNewTask();
+    return true;
+  }, [handleNewTask]);
   const createConnectionSession = async (): Promise<SessionItem | null> => {
     if (!window.boss || !harnessUp || startingRef.current) return null;
     startingRef.current = true; setStartingSession(true);
@@ -676,7 +700,7 @@ export function App(): JSX.Element {
   return <>
     <AppShell isDark={isDark} onToggleTheme={() => setIsDark(previous => !previous)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => setIsSidebarOpen(previous => !previous)}
       folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} currentMode={currentMode} onModeChange={setCurrentMode}
-      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueActiveItems={queueMeta.activeItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} simulateLocal={preview} harnessUp={harnessUp}
+      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onDeleteSession={handleDeleteSession} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueActiveItems={queueMeta.activeItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} simulateLocal={preview} harnessUp={harnessUp}
       onCreateConnectionSession={createConnectionSession}
       sessionReasoning={contextThreadId ? sessionReasoning : undefined}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession || branchSummaryRunning}

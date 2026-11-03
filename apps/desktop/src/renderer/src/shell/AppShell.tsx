@@ -30,7 +30,9 @@ export interface AppShellProps {
   isDark: boolean; onToggleTheme: () => void; isSidebarOpen: boolean; onToggleSidebar: () => void;
   folders: ProjectFolder[]; activeSession: SessionItem | null; isHomeView: boolean; messages: MessageItem[];
   currentMode: ConversationMode; onModeChange: (mode: ConversationMode) => void;
-  onSelectSession: (session: SessionItem) => void; onNewTask: () => void; onSendMessage: ComposerSend;
+  onSelectSession: (session: SessionItem) => void; onNewTask: () => void;
+  /** 删除会话；返回 false 表示会话仍保留（失败原因由外层提示）。 */
+  onDeleteSession?: (session: SessionItem) => Promise<boolean>; onSendMessage: ComposerSend;
   onQueueMessage?: ComposerQueue; onCheckQueueSubmission?: CheckQueueSubmission; queueItems?: QueueItem[]; queueTotalItems?: number; queueActiveItems?: number; queueTruncated?: boolean; onRemoveQueueItem?: (id: string) => Promise<boolean>; onRetryQueueItem?: (item: QueueItem) => Promise<boolean>;
   simulateLocal?: boolean; harnessUp?: boolean; running?: boolean; taskBlocked?: boolean;
   continuationCheck?: { threadId: string; sourceTurnId: string; loading: boolean; submitting?: boolean;
@@ -76,6 +78,7 @@ export function AppShell(props: AppShellProps) {
   });
   const [newProject, setNewProject] = useState(false), [projectName, setProjectName] = useState("");
   const [rename, setRename] = useState<SessionItem | null>(null), [name, setName] = useState("");
+  const [deleteSession, setDeleteSession] = useState<SessionItem | null>(null), [deleteBusy, setDeleteBusy] = useState(false);
   const [renameProject, setRenameProject] = useState<ProjectFolder | null>(null), [folderName, setFolderName] = useState("");
   const [removeProject, setRemoveProject] = useState<ProjectFolder | null>(null);
   const [draft, updateHomeDraft] = useState(createComposerDraft);
@@ -137,6 +140,23 @@ export function AppShell(props: AppShellProps) {
     return Boolean(session);
   };
   const select = (session: SessionItem) => openRoute({ page: "home", sessionId: session.id });
+  const confirmDeleteSession = async () => {
+    const target = deleteSession;
+    if (!target || deleteBusy || !props.onDeleteSession) return;
+    setDeleteBusy(true);
+    let removed = false;
+    try { removed = await props.onDeleteSession(target); }
+    catch { removed = false; }
+    finally { setDeleteBusy(false); }
+    if (!removed) return;
+    const id = target.id;
+    // 会话已不存在：同时清掉只存在于本设备的隐藏、置顶、别名与分组记录。
+    setPinned(previous => previous.filter(item => item !== id));
+    setHidden(previous => previous.filter(item => item !== id));
+    setAliases(previous => { if (!(id in previous)) return previous; const next = { ...previous }; delete next[id]; return next; });
+    setThreadGroups(previous => { if (!(id in previous)) return previous; const next = { ...previous }; delete next[id]; return next; });
+    setDeleteSession(null);
+  };
   const loginEntry = async (direct = false) => {
     if (!window.boss || loginEntryFlight.current) return;
     loginEntryFlight.current = true;
@@ -232,7 +252,7 @@ export function AppShell(props: AppShellProps) {
           <ProjectSidebar isOpen={props.isSidebarOpen} folders={allFolders} activeSessionId={props.activeSession?.id ?? null} isHomeView={props.isHomeView || page !== "home"} pinned={pinned}
             hiddenSessionIds={hidden} onUnhideSession={id => setHidden(prev => prev.filter(item => item !== id))}
             preferences={sidebarPreferences} onPreferencesChange={setSidebarPreferences} localGroupIds={groups.map(group => group.id)} onSelectSession={select} onNewTask={newTask} onNewTaskInProject={newTaskInProject} onSearch={() => setSearch(true)} onOpenSettings={() => openSettings()} onRecents={() => openRoute({ page: "recents" })} onNewProject={() => setNewProject(true)} onNotifications={() => setNotifications(true)}
-            onRename={session => { setRename(session); setName(session.title); }} onPin={id => setPinned(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id])} onHide={id => setHidden(prev => [...prev.filter(item => item !== id), id])}
+            onRename={session => { setRename(session); setName(session.title); }} onPin={id => setPinned(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id])} onHide={id => setHidden(prev => [...prev.filter(item => item !== id), id])} onDelete={setDeleteSession}
             onMoveSession={(id, folderId) => setThreadGroups(prev => ({ ...prev, [id]: folderId }))} onRenameProject={folder => { setRenameProject(folder); setFolderName(folder.name); }} onRemoveProject={setRemoveProject} />
           <main className="main-canvas">
             {page !== "home" ? <WorkspacePages page={page} folders={allFolders} messages={props.messages} onSelect={select} onNewTask={newTask} onDraft={text => { newTask(); setDraft(text); }} tools={tools} toolCatalogState={toolCatalogState} toolCatalogError={toolCatalogError} preview={props.simulateLocal ?? true} /> : props.isHomeView ? <HomeView key={draft.id} folders={allFolders} draft={draft} onDraftChange={updateHomeDraft} selectedProjectId={draftProjectId} onSelectProject={setDraftProjectId} onNewProject={() => setNewProject(true)} preview={!window.boss} harnessUp={props.harnessUp ?? false} blocked={props.taskBlocked} models={props.models} activeModelProvider={props.activeModelProvider} activeModelId={props.activeModelId ?? "deepseek-v4"} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} currentMode={props.currentMode} onModeChange={props.onModeChange} skills={skills} skillCatalogState={skillCatalogState} skillCatalogError={skillCatalogError} onRefreshSkills={() => setSkillRefresh(previous => previous + 1)} onStartSessionWithPrompt={startInProject} onOpenSettings={() => openSettings("connections")} /> : <>
@@ -256,5 +276,13 @@ export function AppShell(props: AppShellProps) {
     {rename && <ModalSurface title="更改显示名称" onClose={() => setRename(null)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!name.trim()) return; setAliases(prev => ({ ...prev, [rename.id]: name.trim() })); setRename(null); }}><label>聊天名称<input autoFocus value={name} maxLength={100} onChange={event => setName(event.target.value)} /></label><p>只更新此工作区的显示名称。</p><button className="solid-button" disabled={!name.trim()}>保存</button></form></ModalSurface>}
     {renameProject && <ModalSurface title="更改项目显示名称" onClose={() => setRenameProject(null)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!folderName.trim()) return; setProjectAliases(prev => ({ ...prev, [renameProject.id]: folderName.trim() })); setRenameProject(null); }}><label>项目名称<input autoFocus maxLength={60} value={folderName} onChange={event => setFolderName(event.target.value)} /></label><p>显示名称保存在此设备上。</p><button className="solid-button" disabled={!folderName.trim()}>保存</button></form></ModalSurface>}
     {removeProject && <ModalSurface title="移除本地分组" onClose={() => setRemoveProject(null)} className="compact-dialog"><div className="dialog-form"><p>移除“{removeProject.name}”后，其中的聊天会回到原项目。</p><div className="dialog-actions"><button className="secondary-button" onClick={() => setRemoveProject(null)}>取消</button><button className="solid-button" onClick={() => { const id = removeProject.id; setGroups(prev => prev.filter(folder => folder.id !== id)); setThreadGroups(prev => Object.fromEntries(Object.entries(prev).filter(([, folderId]) => folderId !== id))); if (draftProjectId === id) setDraftProjectId(""); setRemoveProject(null); }}>移除分组</button></div></div></ModalSurface>}
+    {deleteSession && <ModalSurface title="删除聊天" onClose={() => { if (!deleteBusy) setDeleteSession(null); }} className="compact-dialog"><div className="dialog-form">
+      <p>“{aliases[deleteSession.id] || deleteSession.title}”及其全部消息会从本机移除，无法恢复。</p>
+      <p>仍有运行中的回合或排队消息时，内核会拒绝删除；请先停止当前回合。</p>
+      <div className="dialog-actions">
+        <button className="secondary-button" disabled={deleteBusy} onClick={() => setDeleteSession(null)}>取消</button>
+        <button className="solid-button danger-button" disabled={deleteBusy} onClick={() => { void confirmDeleteSession(); }}>{deleteBusy ? "正在删除…" : "删除聊天"}</button>
+      </div>
+    </div></ModalSurface>}
   </>;
 }

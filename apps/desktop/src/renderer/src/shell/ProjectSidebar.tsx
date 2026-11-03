@@ -1,5 +1,5 @@
 import { useEffect, useState, type MouseEvent } from "react";
-import { IconNewChat, IconSearch, IconFolder, IconChevronDown, IconChevronRight, IconMore, IconNotification, IconPlus, IconSettings, IconHistory, IconCopy, IconEdit, IconPin, IconCheck, IconSliders, IconClose, IconLock } from "../components/Icons";
+import { IconNewChat, IconSearch, IconFolder, IconChevronDown, IconChevronRight, IconMore, IconNotification, IconPlus, IconSettings, IconHistory, IconCopy, IconEdit, IconPin, IconCheck, IconSliders, IconClose, IconLock, IconTrash } from "../components/Icons";
 import { Popover } from "../components/Popover";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
 import { UI_STORAGE_PREFIX } from "../data/uiStorage";
@@ -16,6 +16,8 @@ interface Props {
   onNewTaskInProject: (folder: ProjectFolder) => void;
   onOpenSettings: () => void; onRecents: () => void; onNewProject: () => void; onNotifications: () => void;
   onRename: (session: SessionItem) => void; onPin: (id: string) => void; onHide: (id: string) => void;
+  /** 打开删除确认；真正的删除与结果提示由外层负责。 */
+  onDelete: (session: SessionItem) => void;
   onMoveSession: (id: string, projectId: string) => void;
   onRenameProject: (folder: ProjectFolder) => void; onRemoveProject: (folder: ProjectFolder) => void;
 }
@@ -68,6 +70,8 @@ export function ProjectSidebar(props: Props) {
           {isHidden
             ? <button onClick={() => { props.onUnhideSession?.(session.id); close(); }}><IconCheck />{hideActionLabel(isHidden)}</button>
             : <button onClick={() => { props.onHide(session.id); close(); }}><IconClose />{hideActionLabel(isHidden)}</button>}
+          <div className="menu-divider" />
+          <button className="menu-danger" onClick={() => { props.onDelete(session); close(); }}><IconTrash />删除聊天…</button>
         </> : view === "move" ? <>
           <button className="menu-back" data-menu-keep-open onClick={() => setView("main")}><IconChevronRight className="rotate-back" />移至项目</button>
           <div className="menu-divider" />
