@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import stat
+import tempfile
 import uuid
 from typing import Any, Callable
 
@@ -33,9 +34,12 @@ class ToolRegistry(_ToolRegistry):
 class SkillCatalog:
     MAX_SKILL_BYTES = 64 * 1024
     MAX_SKILL_DESCRIPTORS = 100
+    SKILL_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 
     def __init__(self, root: Path) -> None:
+        # 读取按解析后的真实目录；新建保留原始路径，便于拒绝符号链接目录。
         self.root = root.resolve()
+        self.create_root = Path(os.path.abspath(root))
 
     @classmethod
     def _read_bounded(cls, path: Path) -> tuple[str, int, str] | None:
@@ -137,6 +141,64 @@ class SkillCatalog:
         return {"id": skill_id, "name": skill["name"], "description": skill["description"],
                 "digest": digest, "bytes": byte_length, "content": source,
                 "limitBytes": self.MAX_SKILL_BYTES}
+
+    @staticmethod
+    def _ensure_directory(path: Path) -> None:
+        """按需创建普通目录；已存在但不是普通目录（含符号链接）时拒绝。"""
+        try:
+            observed = os.lstat(path)
+        except FileNotFoundError:
+            os.mkdir(path, 0o755)
+            return
+        if not stat.S_ISDIR(observed.st_mode) or os.path.islink(path):
+            raise OSError("技能目录必须是普通目录")
+
+    def create(self, skill_id: Any, content: Any) -> dict:
+        """新建技能文件：只创建不覆盖，写入当前生效目录。
+
+        目录缺失时按需创建；同名目录已存在即拒绝，避免覆盖用户手写内容。
+        """
+        if not isinstance(skill_id, str) or not self.SKILL_ID.match(skill_id):
+            raise ValueError("技能 id 只能包含小写字母、数字、下划线与连字符，且不超过 64 字符")
+        if not isinstance(content, str):
+            raise ValueError("技能正文必须是字符串")
+        data = content.encode("utf-8")
+        if len(data) > self.MAX_SKILL_BYTES:
+            raise ValueError(f"技能正文不得超过 {self.MAX_SKILL_BYTES} 字节")
+        if not data.strip():
+            raise ValueError("技能正文不能为空")
+        try:
+            self._ensure_directory(self.create_root.parent)
+            self._ensure_directory(self.create_root)
+            target = self.create_root / skill_id
+            try:
+                os.mkdir(target, 0o755)
+            except FileExistsError:
+                raise ValueError("同名技能已存在，不会覆盖") from None
+            descriptor, temporary = tempfile.mkstemp(prefix=".SKILL-", suffix=".tmp", dir=target)
+            try:
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.chmod(temporary, 0o644)
+                os.replace(temporary, target / "SKILL.md")
+            except BaseException:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+                try:
+                    os.rmdir(target)
+                except OSError:
+                    pass
+                raise
+        except OSError as exc:
+            raise OSError(exc.strerror or str(exc) or "技能创建失败") from None
+        fields = self._fields(content)
+        return {"id": skill_id, "name": fields.get("name", skill_id),
+                "description": fields.get("description", ""),
+                "digest": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
 
     def load(self, ids: Any) -> tuple[str, list[dict]]:
         if ids is None:

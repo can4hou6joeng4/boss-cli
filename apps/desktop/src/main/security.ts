@@ -83,7 +83,7 @@ const RENDERER_METHODS = new Set([
   "thread/leaf/read", "thread/leaf/set", "thread/branches/list", "thread/branchSummary/read", "thread/usage/read",
   "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
   "turn/start", "turn/interrupt", "turn/steer", "turn/read", "turn/continuation/read", "turn/continue", "task/read", "queue/list", "queue/get", "queue/add", "queue/remove",
-  "event/list", "model/list", "config/read", "skills/list", "skills/read", "tool/list", "attachment/add", "attachment/read",
+  "event/list", "model/list", "config/read", "skills/list", "skills/read", "skills/create", "tool/list", "attachment/add", "attachment/read",
   "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "context/edit/read", "context/edit", "context/instructions/read", "context/instructions/write", "approval/list", "approval/respond",
   "connection/read", "connection/check",
   "runtime/resources/read",
@@ -255,6 +255,11 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
   if (payload.method === "skills/read" && (!params || Reflect.ownKeys(params).length !== 1 ||
     typeof params.id !== "string" || params.id.length < 1 || params.id.length > 200 || /[\u0000-\u001f\u007f]/.test(params.id))) {
     throw new Error("invalid skill read");
+  }
+  if (payload.method === "skills/create" && (!params || Reflect.ownKeys(params).length !== 2 ||
+    typeof params.id !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(params.id) ||
+    typeof params.content !== "string" || Buffer.byteLength(params.content, "utf8") > 64 * 1024)) {
+    throw new Error("invalid skill create");
   }
   if (payload.method === "context/instructions/write" && (!params ||
     Reflect.ownKeys(params).length !== 1 || typeof params.content !== "string" ||

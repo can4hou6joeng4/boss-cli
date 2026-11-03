@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { SkillDescriptor, SkillReadResponse } from "@boss-harness/protocol";
 import { harnessErrorText, readSkill, type SkillCatalogState } from "../data/harnessBridge";
+import { CreateSkillDialog } from "./CreateSkillDialog";
 import { IconChevronRight, IconSparkles } from "./Icons";
 
 export interface WorkspaceSkillsProps {
@@ -11,6 +12,8 @@ export interface WorkspaceSkillsProps {
   readable: boolean;
   /** 当前生效的技能目录；旧内核不返回时为 null。 */
   root: string | null;
+  /** 内核声明 skillsCreate 时才显示新建入口。 */
+  creatable: boolean;
   /** 把技能预选进新会话草稿；不会自动发送。 */
   onUseSkill: (skillId: string) => void;
   preview: boolean;
@@ -20,7 +23,7 @@ export interface WorkspaceSkillsProps {
 const byteText = (value: number) => `${value.toLocaleString("zh-CN")} 字节`;
 
 /**
- * 「技能与工具」页的工作区技能列表与只读正文。正文来自 SKILL.md，
+ * 「技能与工具」页的工作区技能列表、正文与新建入口。正文来自 SKILL.md，
  * 选择后才作为上下文注入；这里不提供编辑或执行入口。
  */
 export function WorkspaceSkills(props: WorkspaceSkillsProps) {
@@ -29,6 +32,8 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
   const [detailError, setDetailError] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
   const [reload, setReload] = useState(0);
+  const [creating, setCreating] = useState(false);
+  const [createNotice, setCreateNotice] = useState("");
   const selected = props.skills.find(skill => skill.id === selectedId) ?? null;
   useEffect(() => {
     // 目录刷新后选中项可能消失；正文只属于当前目录中的技能。
@@ -56,8 +61,13 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
   return <section aria-labelledby="workspace-skills-heading">
     <div className="page-section-head">
       <h2 className="page-section-title" id="workspace-skills-heading">工作区技能 <span>{props.state === "ready" || props.state === "empty" ? props.skills.length : "—"}</span></h2>
-      <button type="button" className="subtle-button" onClick={props.onRefresh} disabled={props.state === "loading" || props.state === "unavailable"}>{props.state === "loading" ? "正在读取…" : "刷新技能目录"}</button>
+      <span className="workspace-skill-tools">
+        {props.creatable && <button type="button" className="subtle-button" onClick={() => { setCreateNotice(""); setCreating(true); }} disabled={props.state === "unavailable"}>新建技能…</button>}
+        <button type="button" className="subtle-button" onClick={props.onRefresh} disabled={props.state === "loading" || props.state === "unavailable"}>{props.state === "loading" ? "正在读取…" : "刷新技能目录"}</button>
+      </span>
     </div>
+    {createNotice && <p className="workspace-skill-source" role="status">{createNotice}</p>}
+    {creating && <CreateSkillDialog root={props.root} onClose={() => setCreating(false)} onCreated={skill => { setCreating(false); setCreateNotice(`已创建技能 ${skill.id}；目录刷新后可在列表中查看。`); props.onRefresh(); }} />}
     {props.state === "loading" && <div className="page-tool-empty">正在读取工作区技能…</div>}
     {props.state === "error" && <div className="page-tool-empty">技能目录读取失败{props.error ? `：${props.error}` : ""}。这只表示读取没有完成，不代表工作区没有技能。</div>}
     {props.state === "unavailable" && <div className="page-tool-empty">{props.preview ? "浏览器预览未连接技能目录。启动桌面端后显示工作区技能。" : "连接本地 Harness 后可读取工作区技能。"}</div>}
