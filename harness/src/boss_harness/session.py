@@ -28,6 +28,7 @@ from typing import Any
 
 from boss_harness.persistence import PersistenceIndex, SCHEMA_VERSION
 from boss_harness.private_files import ensure_private_directory, open_private_file, restrict_private_file
+from boss_harness.queue_view import ACTIVE_QUEUE_STATUSES
 from boss_harness.models.capabilities import REASONING_EFFORTS
 
 _THREAD_ID = re.compile(r"[a-f0-9]{12}\Z")
@@ -1416,6 +1417,19 @@ class SessionStore:
         return {key: value for key, value in turn.items()
                 if key not in {"firstOrdinal", "lastOrdinal", "boundaryOrdinal"}}
 
+    @staticmethod
+    def _queue_active_count(entries: list[dict]) -> int:
+        """按队列项 id 归并最新状态，只统计尚未形成回合的待处理项。"""
+        statuses: dict[str, object] = {}
+        for entry in entries:
+            if entry.get("type") != "queue":
+                continue
+            payload = entry.get("payload")
+            item_id = payload.get("id") if isinstance(payload, dict) else None
+            if isinstance(item_id, str) and item_id:
+                statuses[item_id] = payload.get("status")
+        return sum(1 for status in statuses.values() if status in ACTIVE_QUEUE_STATUSES)
+
     def _index_thread(self, thread_id: str, connection: sqlite3.Connection) -> None:
         path = self.path_for(thread_id)
         header = self.require_thread(thread_id)
@@ -1439,6 +1453,7 @@ class SessionStore:
                         archived=bool(metadata.get("archived", False)))
         turns = self._turns(entries, thread_id)
         metadata["lastTurn"] = self._public_turn(turns[-1]) if turns else None
+        metadata["queueActiveItems"] = self._queue_active_count(entries)
         connection.execute("""INSERT INTO threads
             (id,session_id,rollout_path,title,project_id,archived,created_at,updated_at,
              last_turn_id,metadata_json,indexed_size,indexed_mtime_ns)

@@ -267,6 +267,8 @@ export interface ThreadSummary {
   reasoningEffort?: string | null;
   cwd?: string;
   archived?: boolean;
+  /** 尚未形成回合的队列项数量（排队、投递中、暂停）；旧内核不返回。 */
+  queueActiveItems?: number;
   forkedFromId?: string;
   forkedFromTurnId?: string;
 }

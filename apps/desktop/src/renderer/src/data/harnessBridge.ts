@@ -181,6 +181,9 @@ export async function listThreads(archived = false): Promise<SessionItem[]> {
     lastTurnStatus: thread.lastTurn?.status,
     lastTurnErrorCode: thread.lastTurn?.failureCode,
     taskResumePolicy: thread.lastTurn?.taskResumePolicy,
+    queueActiveItems: typeof thread.queueActiveItems === "number"
+      && Number.isSafeInteger(thread.queueActiveItems) && thread.queueActiveItems >= 0
+      ? thread.queueActiveItems : undefined,
     toolPolicy: thread.toolPolicy ?? "approval",
     provider: thread.provider,
     model: thread.model,
@@ -300,6 +303,9 @@ export async function setThreadReasoning(threadId: string, effort: string | null
     turnId: thread.lastTurn?.turnId, lastTurnStatus: thread.lastTurn?.status,
     lastTurnErrorCode: thread.lastTurn?.failureCode,
     taskResumePolicy: thread.lastTurn?.taskResumePolicy,
+    queueActiveItems: typeof thread.queueActiveItems === "number"
+      && Number.isSafeInteger(thread.queueActiveItems) && thread.queueActiveItems >= 0
+      ? thread.queueActiveItems : undefined,
     toolPolicy: thread.toolPolicy ?? "approval", model: thread.model,
     reasoningEffort: thread.reasoningEffort, projectId: HARNESS_PROJECT_ID };
 }
