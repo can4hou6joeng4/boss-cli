@@ -5,7 +5,15 @@ import type { ThreadSearchMatch } from "@boss-harness/protocol";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
 import { sessionRows } from "../data/sessionRows";
 import { buildSearchOptions, type SearchOption } from "../data/searchOptions";
+import { splitHighlight } from "../data/findHighlight";
 import { searchThreadMessages } from "../data/harnessBridge";
+
+/** 用 `mark` 标出关键词；无命中时原样输出。 */
+function Highlighted({ text, query }: { text: string; query: string }) {
+  return <>{splitHighlight(text, query).map((segment, index) => segment.match
+    ? <mark className="search-match" key={index}>{segment.text}</mark>
+    : segment.text)}</>;
+}
 
 export function SearchDialog({ folders, onSelect, onClose, searchMessages = false, onOpenMessage }: {
   folders: ProjectFolder[];
@@ -87,13 +95,13 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
             if (!session) return null;
             const option: SearchOption = { kind: "message", key: `message:${hit.threadId}:${hit.itemId}`, hit, session };
             return <button type="button" key={option.key} title={hit.snippet} {...optionProps(option)}>
-              <IconChat size={17} /><span><strong>{hit.threadTitle || session.title}</strong><small>{hit.role === "user" ? "你" : "助手"} · {hit.snippet}</small></span><IconChevronRight size={13} />
+              <IconChat size={17} /><span><strong><Highlighted text={hit.threadTitle || session.title} query={query} /></strong><small>{hit.role === "user" ? "你" : "助手"} · <Highlighted text={hit.snippet} query={query} /></small></span><IconChevronRight size={13} />
             </button>;
           })}
         </>}
         {rows.map(row => {
           const option: SearchOption = { kind: "session", key: `session:${row.session.id}`, row };
-          return <button type="button" key={option.key} {...optionProps(option)}><IconChat size={17} /><span><strong>{row.session.title}</strong><small>{row.project} · {row.session.timeAgo}</small></span><IconChevronRight size={13} /></button>;
+          return <button type="button" key={option.key} {...optionProps(option)}><IconChat size={17} /><span><strong><Highlighted text={row.session.title} query={query} /></strong><small>{row.project} · {row.session.timeAgo}</small></span><IconChevronRight size={13} /></button>;
         })}
       </div>
       {!rows.length && !hits.length && messageState !== "loading" && <div className="search-empty"><IconSearch size={28} /><strong>{query.trim() ? "没有找到相关聊天或消息" : "还没有聊天"}</strong><span>{query.trim() ? "试试其他关键词、项目名称或消息内容" : "创建聊天后，可以在这里快速找到它"}</span></div>}

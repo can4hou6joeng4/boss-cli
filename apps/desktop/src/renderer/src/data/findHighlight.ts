@@ -43,6 +43,27 @@ export function findTextRanges(text: string, query: string, limit = 200): TextRa
   return ranges;
 }
 
+export interface TextSegment { text: string; match: boolean }
+
+/**
+ * 把文本拆成命中 / 未命中片段，供搜索结果标注关键词。
+ * 复用 `findTextRanges` 的归一化与区间计算，未命中时返回整段原文。
+ */
+export function splitHighlight(text: string, query: string, limit = 50): TextSegment[] {
+  const ranges = findTextRanges(text, query, limit);
+  if (!ranges.length) return text ? [{ text, match: false }] : [];
+  const segments: TextSegment[] = [];
+  let cursor = 0;
+  for (const { start, end } of ranges) {
+    if (start < cursor) continue;
+    if (start > cursor) segments.push({ text: text.slice(cursor, start), match: false });
+    segments.push({ text: text.slice(start, end), match: true });
+    cursor = end;
+  }
+  if (cursor < text.length) segments.push({ text: text.slice(cursor), match: false });
+  return segments;
+}
+
 /** 收集元素内的文本节点并映射到原文偏移量，供 CSS Custom Highlight 使用。 */
 export function collectTextRanges(root: Node, query: string, limit = 200): Range[] {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
