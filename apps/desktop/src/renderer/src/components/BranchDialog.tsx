@@ -52,6 +52,7 @@ export function BranchDialog({ isOpen, onClose, state, support, messages, block,
       {state.switchError && <p className="branch-error" role="alert">{state.switchError}</p>}
       {state.error && <p className="branch-error" role="alert">{state.error}</p>}
       {state.summaryError && <p className="branch-block" role="status">{state.summaryError}</p>}
+      {state.summaryPollError && <p className="branch-block" role="status">{state.summaryPollError}</p>}
       <section className="branch-section" aria-label="分支端点">
         <div className="branch-section-heading"><strong>分支端点</strong><span>{state.loading ? "正在读取…" : `${state.endpoints.length} 个${state.endpointsTruncated ? "（仅显示前若干页）" : ""}`}</span>
           <button type="button" className="secondary-button" onClick={onRefresh} disabled={state.loading}>刷新</button></div>
