@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { IconCopy, IconThumbsUp, IconThumbsDown, IconRewind, IconSparkles, IconCheck, IconQuote, IconEdit, IconChevronDown, IconTerminal, IconHelp, IconClose, IconPanel, IconShield, IconBranch } from "../components/Icons";
+import { IconCopy, IconThumbsUp, IconThumbsDown, IconRewind, IconSparkles, IconCheck, IconQuote, IconEdit, IconChevronDown, IconTerminal, IconHelp, IconClose, IconPanel, IconShield, IconBranch, IconSearch } from "../components/Icons";
 import { DiffCard } from "./DiffCard";
 import { Composer } from "./Composer";
 import { RichMarkdown } from "../components/RichMarkdown";
@@ -17,6 +17,7 @@ import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type CheckQueueSubmission } from "../data/composerDraft";
 import { useClipboardCopy } from "../data/clipboardCopy";
 import { toolOutcomeBadge } from "../data/toolOutcome";
+import { findMessageMatches } from "../data/messageSearch";
 
 /** 会话内分支入口与摘要标注；内核未声明分支能力时不传，界面完全不显示。 */
 export interface SessionBranchesView {
@@ -79,6 +80,33 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const [pendingApproval, setPendingApproval] = useState<string | null>(null);
   const [contextEditItemId, setContextEditItemId] = useState<string | null>(null);
   const [contextEditStates, setContextEditStates] = useState<Record<string, { excluded: boolean }>>({});
+  const [findOpen, setFindOpen] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const [findIndex, setFindIndex] = useState(0);
+  const findMatches = findMessageMatches(messages, findQuery);
+  const findPosition = findMatches.length ? Math.min(findIndex, findMatches.length - 1) : 0;
+  const currentFindId = findOpen && findMatches.length ? findMatches[findPosition] : null;
+  const findMatchSet = new Set(findMatches);
+  const stepFind = (delta: number) => {
+    if (!findMatches.length) return;
+    setFindIndex((findPosition + delta + findMatches.length) % findMatches.length);
+  };
+  const closeFind = () => { setFindOpen(false); setFindQuery(""); setFindIndex(0); };
+  useEffect(() => {
+    if (!findOpen || !currentFindId) return;
+    document.getElementById("message-" + currentFindId)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [findOpen, currentFindId]);
+  useEffect(() => {
+    const handle = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
+      if (document.querySelector('[aria-modal="true"]')) return;
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "f" || event.shiftKey || event.altKey) return;
+      event.preventDefault();
+      setFindOpen(true);
+    };
+    window.addEventListener("keydown", handle);
+    return () => window.removeEventListener("keydown", handle);
+  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -238,15 +266,31 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
         </button>}
       </section>}
 
+      {findOpen && <div className="thread-find-bar" role="search" aria-label="在当前聊天中查找">
+        <IconSearch size={15} />
+        <input autoFocus aria-label="在当前聊天中查找" placeholder="在当前聊天中查找…" value={findQuery}
+          onChange={event => { setFindQuery(event.target.value); setFindIndex(0); }}
+          onKeyDown={event => {
+            if (event.nativeEvent.isComposing || event.keyCode === 229) return;
+            if (event.key === "Escape") { event.preventDefault(); closeFind(); }
+            if (event.key === "Enter") { event.preventDefault(); stepFind(event.shiftKey ? -1 : 1); }
+          }} />
+        <span className="thread-find-count" role="status">{findQuery.trim() ? findMatches.length ? `${findPosition + 1} / ${findMatches.length}` : "无匹配" : "输入关键词"}</span>
+        <button type="button" disabled={!findMatches.length} onClick={() => stepFind(-1)}>上一个</button>
+        <button type="button" disabled={!findMatches.length} onClick={() => stepFind(1)}>下一个</button>
+        <button type="button" className="thread-find-close" aria-label="关闭查找" title="关闭查找（Esc）" onClick={closeFind}><IconClose size={14} /></button>
+      </div>}
+
       {/* 消息滚动流 */}
       <div className="messages-container" ref={scrollerRef} onScroll={handleScroll}>
         <div className="messages-inner">
           {leadingSummaries.map(summary => <BranchSummaryMarker key={summary.entryId} summary={summary} threadId={threadId} canRead={sessionBranches?.summaryRead === true} />)}
           {messages.map((item, messageIndex) => <React.Fragment key={item.id}>{(() => {
             const toolBadge = item.toolUse ? toolOutcomeBadge(item.toolUse.executionState, item.toolUse.status, item.toolUse.errorCode) : null;
+            const findMatch = findOpen && findMatchSet.has(item.id);
             if (item.role === "user") {
               return (
-                <div className="msg-row-user" id={"message-" + item.id}>
+                <div className={"msg-row-user" + (findMatch ? " is-find-match" : "") + (currentFindId === item.id ? " is-find-current" : "")} id={"message-" + item.id}>
                   <div className="user-bubble">{item.content}</div>
                   {(() => {
                     const ids = item.turnId ? turnSkillIds[item.turnId] ?? [] : [];
@@ -300,7 +344,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
             }
 
             return (
-              <div className="msg-row-agent">
+              <div className={"msg-row-agent" + (findMatch ? " is-find-match" : "") + (currentFindId === item.id ? " is-find-current" : "")} id={"message-" + item.id}>
                 {/* 思考过程计时器 */}
                 {item.thinkingTime && (
                   <details className="thinking-block">
