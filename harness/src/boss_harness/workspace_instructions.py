@@ -137,7 +137,9 @@ class WorkspaceInstructions:
                     text = ""
         return {"path": candidate[0] if candidate is not None else _PREFERRED.as_posix(),
                 "pathPreferred": _PREFERRED.as_posix(),
-                "content": text, "status": status, "limitBytes": MAX_INSTRUCTIONS_BYTES}
+                "content": text, "status": status, "limitBytes": MAX_INSTRUCTIONS_BYTES,
+                # 正文会去掉 BOM 与首尾空白，字节数仍按文件本身计，供界面与预算状态一致展示。
+                "bytes": described["bytes"] if described is not None else None}
 
     def write_text(self, text: str) -> dict[str, Any]:
         """把正文原子写入首选路径；拒绝符号链接与非普通文件。
