@@ -3,6 +3,7 @@ import { IconHome, IconHistory, IconFolder, IconMore, IconBranch, IconSparkles, 
 import { Popover } from "../components/Popover";
 import { ModalSurface } from "../components/ModalSurface";
 import type { SettingsSection } from "../components/SettingsDialog";
+import { UI_STORAGE_PREFIX } from "../data/uiStorage";
 import "../styles/navigation-menus.css";
 
 export type WorkspacePage = "home" | "recents" | "library" | "skills";
@@ -32,7 +33,7 @@ function inTriangle(point: Point, a: Point, b: Point, c: Point): boolean {
 }
 function readLayout(): { order: Destination[]; pinned: Destination[] } {
   try {
-    const saved = JSON.parse(localStorage.getItem("boss-cli.ui.navigation") ?? "null");
+    const saved = JSON.parse(localStorage.getItem(UI_STORAGE_PREFIX + "navigation") ?? "null");
     const valid = (id: unknown): id is Destination => DEFAULT_ORDER.includes(id as Destination);
     if (saved && Array.isArray(saved.order) && Array.isArray(saved.pinned)) return {
       order: [...new Set<Destination>(saved.order.filter(valid)), ...DEFAULT_ORDER.filter(id => !saved.order.includes(id))],
@@ -123,7 +124,7 @@ export function NavigationRail(props: Props) {
   const openCustomize = () => { clearHoverTimers(); setMenu(null); setReorderStatus(""); setCustomize(true); };
   const closeCustomize = () => { finishReorder(); setCustomize(false); };
   useEffect(() => {
-    try { localStorage.setItem("boss-cli.ui.navigation", JSON.stringify(layout)); } catch { /* Preferences are optional. */ }
+    try { localStorage.setItem(UI_STORAGE_PREFIX + "navigation", JSON.stringify(layout)); } catch { /* Preferences are optional. */ }
   }, [layout]);
   useLayoutEffect(() => {
     const target = grabbed ?? restoreReorderFocus.current;

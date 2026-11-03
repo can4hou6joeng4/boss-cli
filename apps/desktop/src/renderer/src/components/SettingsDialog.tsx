@@ -13,6 +13,7 @@ import {
   IconSun,
   IconTerminal,
 } from "./Icons";
+import { UI_STORAGE_PREFIX } from "../data/uiStorage";
 import "../styles/settings.css";
 import { ConnectionSettings } from "./ConnectionSettings";
 
@@ -37,7 +38,7 @@ interface UIPreferences {
   motion: Motion;
 }
 
-const STORAGE_PREFIX = "boss-cli.ui.";
+const STORAGE_PREFIX = UI_STORAGE_PREFIX;
 const FONT_SIZES = [12, 13, 14, 15, 16] as const;
 const FOCUSABLE = "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
 
@@ -220,11 +221,11 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
       };
       // Workspace aliases and project names can contain private text, even if
       // other components store them under the UI prefix. Export this allowlist only.
-      const data = JSON.stringify({ version: 1, scope: "boss-cli.ui", preferences: exported }, null, 2);
+      const data = JSON.stringify({ version: 1, scope: "boss-harness.ui", preferences: exported }, null, 2);
       const url = URL.createObjectURL(new Blob([data], { type: "application/json" }));
       const link = document.createElement("a");
       link.href = url;
-      link.download = "boss-cli-ui-preferences.json";
+      link.download = "boss-harness-ui-preferences.json";
       document.body.appendChild(link);
       link.click();
       link.remove();
@@ -304,7 +305,7 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
               <>
                 <p className="settings-intro">管理这台设备上保存的界面偏好。</p>
                 <SettingRow title="导出界面偏好" description="将当前设备的显示偏好下载为 JSON 文件"><button type="button" className="settings-button" onClick={exportPreferences}>导出 JSON</button></SettingRow>
-                <div className="settings-note"><IconFolder size={17} /><div><h3>导出范围</h3><p>仅包含 <code>boss-cli.ui.*</code> 界面偏好，不包含聊天内容、候选人资料或模型凭据。</p><p>会话与真实业务数据由 Harness 管理。</p></div></div>
+                <div className="settings-note"><IconFolder size={17} /><div><h3>导出范围</h3><p>仅包含 <code>boss-harness.ui.*</code> 界面偏好，不包含聊天内容、候选人资料或模型凭据。</p><p>会话与真实业务数据由 Harness 管理。</p></div></div>
               </>
             )}
 
