@@ -352,9 +352,13 @@ export function toMessage(item: ThreadItem): MessageItem | null {
   }
 }
 
+/** 本机可用模型线路。读取失败不吞掉：调用方要保留旧选项并提示，而不是把失败显示成「没有可选模型」。 */
 export async function configuredModels(): Promise<ModelListResponse["models"]> {
-  try { return (await bridge()?.request<ModelListResponse>(ClientMethods.modelList))?.models ?? []; }
-  catch { return []; }
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  const response = await api.request<ModelListResponse>(ClientMethods.modelList);
+  if (!response || !Array.isArray(response.models)) throw new Error("模型列表响应无法识别");
+  return response.models;
 }
 
 export async function listSkills(): Promise<SkillDescriptor[]> {

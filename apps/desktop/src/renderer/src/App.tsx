@@ -257,9 +257,15 @@ export function App(): JSX.Element {
           }
           setConfiguredModelLabel(`${initial.provider} · ${initial.model}`);
         }
-        const modelCatalog = await configuredModels();
+        let modelCatalog: ModelDescriptor[] | null = null;
+        try {
+          modelCatalog = await configuredModels();
+        } catch (cause) {
+          if (!cancelled) setError(`模型列表读取失败：${harnessErrorText(cause)}。模型选项未更新，请稍后重试或重新连接。`);
+        }
         if (cancelled) return;
-        setModelOptions(modelCatalog.filter(model => model.configured && model.available));
+        // 读取失败时保留现有选项，避免把一次 RPC 失败显示成「没有可切换的模型」。
+        if (modelCatalog) setModelOptions(modelCatalog.filter(model => model?.configured === true && model?.available === true));
         const version = lifecycleVersion.current;
         let sessions: Awaited<ReturnType<typeof listThreads>>;
         try {
@@ -286,7 +292,7 @@ export function App(): JSX.Element {
             activeRef.current = summary; setActiveSession(summary);
             void readContinuationCheck(summary);
             const provider = summary.provider ?? processDefault?.provider ?? active.provider;
-            const model = summary.model ?? modelCatalog.find(candidate => candidate.provider === provider)?.id ?? processDefault?.model ?? active.model;
+            const model = summary.model ?? modelCatalog?.find(candidate => candidate.provider === provider)?.id ?? processDefault?.model ?? active.model;
             if (provider && model) {
               setActiveModelProvider(provider); setActiveModelId(model); setConfiguredModelLabel(`${provider} · ${model}`);
             }
