@@ -73,6 +73,17 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _valid_timestamp(value: Any) -> str | None:
+    """只接受可解析的 ISO 时间字符串；非法值不参与耗时统计。"""
+    if not isinstance(value, str) or not value or len(value) > 64:
+        return None
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return value
+
+
 def _new_id() -> str:
     return uuid.uuid4().hex[:8]
 
@@ -2368,9 +2379,22 @@ class SessionStore:
             active = {turn["turnId"] for turn in turns} if branch else None
             policies = {turn["turnId"]: turn.get("compactionPolicy") for turn in turns
                         if turn.get("compactionPolicy") is not None}
+            # 耗时取自同一快照的回合记录；用量记录只决定哪些回合出现，不改变时间事实。
+            timing = {turn["turnId"]: turn for turn in turns}
             leaf = self._leaf_state(thread_id, entries) if branch else None
         result = summarize_usage(entries, active, policies, active_summary_job_id)
         turns = result["turns"]
+        for turn in turns:
+            record = timing.get(turn["turnId"])
+            if record is None:
+                continue
+            for key in ("startedAt", "completedAt"):
+                value = _valid_timestamp(record.get(key))
+                if value is not None:
+                    turn[key] = value
+            status = record.get("status")
+            if isinstance(status, str) and status in _TERMINAL | {"running"}:
+                turn["status"] = status
         page = turns[offset:offset + limit]
         next_cursor = (_page_cursor("usage", scope, [offset + limit])
                        if offset + limit < len(turns) else None)
