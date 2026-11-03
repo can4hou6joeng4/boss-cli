@@ -22,3 +22,20 @@ export function nonArchivedSessions(sessions: SessionItem[], hidden: ReadonlySet
 export function archivedSessions(sessions: SessionItem[], hidden: ReadonlySet<string>, showHidden: boolean): SessionItem[] {
   return visibleSessions(sessions.filter(session => session.archived === true), hidden, showHidden);
 }
+
+/** 上一回合以 error / blocked 结束；运行中或等待预检的会话不计入，避免重复提示。 */
+export function sessionFailed(session: SessionItem): boolean {
+  return session.status !== "running" && session.status !== "interrupted"
+    && (session.lastTurnStatus === "error" || session.lastTurnStatus === "blocked");
+}
+
+/** 需要用户处理的会话：上一回合异常、等待预检，或有已暂停的队列项。 */
+export function sessionNeedsAttention(session: SessionItem): boolean {
+  return session.archived !== true
+    && (sessionFailed(session) || session.status === "interrupted" || (session.queueCounts?.paused ?? 0) > 0);
+}
+
+/** 「待你处理」分组的候选会话，遵守归档与本地隐藏规则。 */
+export function attentionSessions(sessions: SessionItem[], hidden: ReadonlySet<string>, showHidden: boolean): SessionItem[] {
+  return nonArchivedSessions(sessions, hidden, showHidden).filter(sessionNeedsAttention);
+}
