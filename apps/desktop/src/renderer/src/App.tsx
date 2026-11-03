@@ -433,15 +433,10 @@ export function App(): JSX.Element {
     try {
       // 压缩覆盖只作用于本会话下一条直接发送；入队、转向与续接不携带该覆盖。
       const accepted = await sendTurn(id, text, clientId, model, skillIds, autoCompaction.take(id));
-      if (accepted) turnIds.current.set(id, accepted.turnId);
-      else {
-        markRunning(id, false);
-        setError("提交结果尚未确认，正在读取会话状态。请核对记录后再决定下一步。");
-        await replicaRef.current?.resume(id);
-      }
-    } catch {
+      turnIds.current.set(id, accepted.turnId);
+    } catch (cause) {
       markRunning(id, false);
-      setError("提交结果尚未确认，正在读取会话状态。请核对记录后再决定下一步。");
+      setError(`提交结果尚未确认：${harnessErrorText(cause)}。正在读取会话状态，请核对记录后再决定下一步。`);
       await replicaRef.current?.resume(id).catch(() => undefined);
     }
     // 已交给会话并发起请求；回执未知仍不能作为可自动重发的草稿。
