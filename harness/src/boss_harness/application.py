@@ -514,6 +514,7 @@ class ApplicationService:
             "skills/read": self.on_skills_read,
             "skills/create": self.on_skills_create,
             "skills/write": self.on_skills_write,
+            "skills/delete": self.on_skills_delete,
             "context/read": self.on_context_read,
             "context/compact/plan": self.on_context_compact_plan,
             "context/compact/start": self.on_context_compact_start,
@@ -578,7 +579,8 @@ class ApplicationService:
                              "sessionBranchSnapshots": True, "sessionBranchSummaryRead": True,
                              "threadUsage": True, "sessionModelSelection": True, "threadExport": True,
                              "workspaceInstructionsEdit": True, "skillsRead": True,
-                             "skillsCreate": True, "skillsWrite": True},
+                             "skillsCreate": True, "skillsWrite": True,
+                             "skillsDelete": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -1894,6 +1896,19 @@ class ApplicationService:
         except OSError as exc:
             raise RpcError(-32004, f"技能写入失败：{exc}", {"code": "SKILL_WRITE_FAILED"}) from None
         return {"skill": skill, "root": self.skills_root}
+
+    def on_skills_delete(self, params: dict | None) -> dict:
+        """按读取摘要删除技能；只删仅含 SKILL.md 的目录，摘要变化时拒绝。"""
+        params = params or {}
+        if set(params) != {"id", "expectedDigest"}:
+            raise ValueError("skills/delete 只接受 id 与 expectedDigest")
+        try:
+            removed = self.skills.delete(params.get("id"), params.get("expectedDigest"))
+        except ValueError as exc:
+            raise RpcError(-32004, str(exc), {"code": "SKILL_DELETE_INVALID"}) from None
+        except OSError as exc:
+            raise RpcError(-32004, f"技能删除失败：{exc}", {"code": "SKILL_DELETE_FAILED"}) from None
+        return {"id": removed["id"], "root": self.skills_root}
 
     def on_context_edit_read(self, params: dict | None) -> dict:
         params = params or {}

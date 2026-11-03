@@ -254,6 +254,40 @@ class SkillCatalog:
                 "description": fields.get("description", ""),
                 "digest": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
 
+    def delete(self, skill_id: Any, expected_digest: Any) -> dict:
+        """按读取摘要删除技能；只删仅含普通 SKILL.md 的目录，避免连带删用户文件。"""
+        if not isinstance(skill_id, str) or not self.SKILL_ID.match(skill_id):
+            raise ValueError("技能 id 只能包含小写字母、数字、下划线与连字符，且不超过 64 字符")
+        if not isinstance(expected_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_digest):
+            raise ValueError("技能摘要格式无效")
+        self._require_directory(self.create_root.parent)
+        self._require_directory(self.create_root)
+        directory = self.create_root / skill_id
+        try:
+            observed = os.lstat(directory)
+        except FileNotFoundError:
+            raise ValueError("技能不存在或不可删除") from None
+        if not stat.S_ISDIR(observed.st_mode) or os.path.islink(directory):
+            raise ValueError("技能目录必须是普通目录")
+        loaded = self._read_bounded(directory / "SKILL.md")
+        if loaded is None:
+            raise ValueError("技能文件不可读取或超过大小限制")
+        if loaded[2] != expected_digest:
+            raise ValueError("技能内容已变化，请刷新后重试")
+        try:
+            with os.scandir(directory) as scan:
+                entries = list(scan)
+        except OSError as exc:
+            raise OSError(exc.strerror or str(exc) or "技能删除失败") from None
+        if [entry.name for entry in entries] != ["SKILL.md"]:
+            raise ValueError("技能目录还包含其他文件，请先手动清理后再删除")
+        try:
+            os.unlink(directory / "SKILL.md")
+            os.rmdir(directory)
+        except OSError as exc:
+            raise OSError(exc.strerror or str(exc) or "技能删除失败") from None
+        return {"id": skill_id, "digest": expected_digest}
+
     def load(self, ids: Any) -> tuple[str, list[dict]]:
         if ids is None:
             return "", []

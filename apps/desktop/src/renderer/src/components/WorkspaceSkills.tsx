@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { SkillDescriptor, SkillReadResponse } from "@boss-harness/protocol";
 import { harnessErrorText, readSkill, type SkillCatalogState } from "../data/harnessBridge";
 import { CreateSkillDialog } from "./CreateSkillDialog";
+import { DeleteSkillDialog } from "./DeleteSkillDialog";
 import { EditSkillDialog } from "./EditSkillDialog";
 import { IconChevronRight, IconSparkles } from "./Icons";
 
@@ -17,6 +18,8 @@ export interface WorkspaceSkillsProps {
   creatable: boolean;
   /** 内核声明 skillsWrite 时才显示编辑入口。 */
   writable: boolean;
+  /** 内核声明 skillsDelete 时才显示删除入口。 */
+  deletable: boolean;
   /** 把技能预选进新会话草稿；不会自动发送。 */
   onUseSkill: (skillId: string) => void;
   preview: boolean;
@@ -38,6 +41,7 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
   const [creating, setCreating] = useState(false);
   const [notice, setNotice] = useState("");
   const [editing, setEditing] = useState<SkillReadResponse | null>(null);
+  const [deleting, setDeleting] = useState<SkillReadResponse | null>(null);
   const selected = props.skills.find(skill => skill.id === selectedId) ?? null;
   useEffect(() => {
     // 目录刷新后选中项可能消失；正文只属于当前目录中的技能。
@@ -73,6 +77,7 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
     {notice && <p className="workspace-skill-source" role="status">{notice}</p>}
     {creating && <CreateSkillDialog root={props.root} onClose={() => setCreating(false)} onCreated={skill => { setCreating(false); setNotice(`已创建技能 ${skill.id}；目录刷新后可在列表中查看。`); props.onRefresh(); }} />}
     {editing && <EditSkillDialog skill={editing} root={props.root} onClose={() => setEditing(null)} onSaved={skill => { setEditing(null); setNotice(`已保存技能 ${skill.id}；正文已刷新，下一回合生效。`); setReload(previous => previous + 1); }} />}
+    {deleting && <DeleteSkillDialog skill={deleting} root={props.root} onClose={() => setDeleting(null)} onDeleted={id => { setDeleting(null); setSelectedId(null); setDetail(null); setNotice(`已删除技能 ${id}；目录刷新后将从列表移除。`); props.onRefresh(); }} />}
     {props.state === "loading" && <div className="page-tool-empty">正在读取工作区技能…</div>}
     {props.state === "error" && <div className="page-tool-empty">技能目录读取失败{props.error ? `：${props.error}` : ""}。这只表示读取没有完成，不代表工作区没有技能。</div>}
     {props.state === "unavailable" && <div className="page-tool-empty">{props.preview ? "浏览器预览未连接技能目录。启动桌面端后显示工作区技能。" : "连接本地 Harness 后可读取工作区技能。"}</div>}
