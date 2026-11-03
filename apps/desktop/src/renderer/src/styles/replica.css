@@ -67,7 +67,9 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .sidebar-session:hover { background: var(--btn-ghost-hover); }
 .sidebar-session.selected { background: var(--btn-ghost-hover); color: var(--text-main); }
 .session-select { flex: 1; min-width: 0; display: flex; align-items: center; gap: 7px; text-align: left; padding: 8px 2px 8px 9px; background: transparent; border: 0; color: var(--text-muted); font-size: 12px; cursor: pointer; }
-.session-select>span:last-child { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.session-title { white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.session-hidden-badge { flex: 0 0 auto; margin-left: 4px; padding: 0 4px; border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-faint); font-size: 10px; line-height: 15px; }
+.sidebar-session.is-hidden .session-title { color: var(--text-faint); }
 .sidebar-session.selected .session-select { color: var(--text-main); }
 .session-state { flex: 0 0 4px; width: 4px; height: 4px; border-radius: 50%; background: var(--text-faint); opacity: .5; }
 .session-state.running { background: var(--accent-cyan); opacity: 1; box-shadow: 0 0 5px #66a9ff40; }

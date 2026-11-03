@@ -1,13 +1,16 @@
 import { useEffect, useState, type MouseEvent } from "react";
-import { IconNewChat, IconSearch, IconFolder, IconChevronDown, IconChevronRight, IconMore, IconNotification, IconPlus, IconSettings, IconHistory, IconCopy, IconEdit, IconPin, IconCheck, IconSliders, IconClose } from "../components/Icons";
+import { IconNewChat, IconSearch, IconFolder, IconChevronDown, IconChevronRight, IconMore, IconNotification, IconPlus, IconSettings, IconHistory, IconCopy, IconEdit, IconPin, IconCheck, IconSliders, IconClose, IconLock } from "../components/Icons";
 import { Popover } from "../components/Popover";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
 import { UI_STORAGE_PREFIX } from "../data/uiStorage";
+import { hideActionLabel, visibleSessions } from "../data/sidebarVisibility";
 import "../styles/sidebar-menus.css";
 
-export interface SidebarPreferences { grouping: "project" | "list"; sort: "updated" | "name"; showRecent: boolean; }
+export interface SidebarPreferences { grouping: "project" | "list"; sort: "updated" | "name"; showRecent: boolean; showHidden: boolean; }
 interface Props {
   isOpen: boolean; folders: ProjectFolder[]; activeSessionId: string | null; isHomeView: boolean; pinned: string[];
+  /** 本地隐藏的会话；开启「显示已隐藏」后仍会列出，并可从右键菜单取消隐藏。 */
+  hiddenSessionIds?: string[]; onUnhideSession?: (id: string) => void;
   preferences: SidebarPreferences; onPreferencesChange: (value: SidebarPreferences) => void; localGroupIds: string[];
   onSelectSession: (session: SessionItem) => void; onNewTask: () => void; onSearch: () => void;
   onNewTaskInProject: (folder: ProjectFolder) => void;
@@ -24,7 +27,10 @@ export function ProjectSidebar(props: Props) {
   const [view, setView] = useState<"main" | "move" | "copy">("main");
   const [notice, setNotice] = useState("");
   const { preferences } = props;
-  const all = [...new Map(props.folders.flatMap(folder => folder.sessions).map(session => [session.id, session])).values()];
+  const hidden = new Set(props.hiddenSessionIds ?? []);
+  // 关闭「显示已隐藏」时隐藏会话从所有分组消失；开启后原样列出并带标记，便于取消隐藏。
+  const included = (sessions: SessionItem[]) => visibleSessions(sessions, hidden, preferences.showHidden);
+  const all = [...new Map(included(props.folders.flatMap(folder => folder.sessions)).map(session => [session.id, session])).values()];
   const pinnedSessions = all.filter(session => props.pinned.includes(session.id));
   const sort = (sessions: SessionItem[]) => [...sessions].sort((a, b) => preferences.sort === "name"
     ? a.title.localeCompare(b.title, "zh-CN", { numeric: true })
@@ -46,9 +52,10 @@ export function ProjectSidebar(props: Props) {
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(""), 2600); return () => clearTimeout(timer); }, [notice]);
   const sessionRow = (session: SessionItem, scope: string) => {
     const key = scope + session.id, selected = session.id === props.activeSessionId && !props.isHomeView;
+    const isHidden = hidden.has(session.id);
     const projectId = props.folders.find(folder => folder.sessions.some(item => item.id === session.id))?.id;
-    return <div className={"sidebar-session popover-anchor" + (selected ? " selected" : "")} key={session.id} onContextMenu={event => rightClick(key, event)}>
-      <button className="session-select" onClick={() => props.onSelectSession(session)} title={session.status === "interrupted" ? `${session.title} · 上回合中断，等待预检` : session.title} aria-current={selected ? "page" : undefined}><span className={"session-state" + (session.status === "running" ? " running" : session.status === "interrupted" ? " interrupted" : "")} /><span>{session.title}</span></button>
+    return <div className={"sidebar-session popover-anchor" + (selected ? " selected" : "") + (isHidden ? " is-hidden" : "")} key={session.id} onContextMenu={event => rightClick(key, event)}>
+      <button className="session-select" onClick={() => props.onSelectSession(session)} title={session.status === "interrupted" ? `${session.title} · 上回合中断，等待预检` : session.title} aria-current={selected ? "page" : undefined}><span className={"session-state" + (session.status === "running" ? " running" : session.status === "interrupted" ? " interrupted" : "")} /><span className="session-title">{session.title}</span>{isHidden && <span className="session-hidden-badge" title="已在侧栏隐藏；可在聊天选项中取消隐藏">已隐藏</span>}</button>
       <button className="session-overflow titlebar-btn" aria-label={"会话选项：" + session.title} aria-haspopup="menu" aria-expanded={context?.key === key} onClick={() => toggle(key)}><IconMore size={15} /></button>
       <Popover open={context?.key === key} onClose={close} align="right" anchorPoint={context?.key === key ? context.point : undefined} label="聊天选项" className="sidebar-context-menu">
         {view === "main" ? <>
@@ -58,7 +65,9 @@ export function ProjectSidebar(props: Props) {
           <button data-menu-keep-open aria-haspopup="menu" onClick={() => setView("move")}><IconFolder />移至项目<IconChevronRight className="menu-check" /></button>
           <button data-menu-keep-open aria-haspopup="menu" onClick={() => setView("copy")}><IconCopy />复制<IconChevronRight className="menu-check" /></button>
           <div className="menu-divider" />
-          <button onClick={() => { props.onHide(session.id); close(); }}><IconClose />在侧栏隐藏</button>
+          {isHidden
+            ? <button onClick={() => { props.onUnhideSession?.(session.id); close(); }}><IconCheck />{hideActionLabel(isHidden)}</button>
+            : <button onClick={() => { props.onHide(session.id); close(); }}><IconClose />{hideActionLabel(isHidden)}</button>}
         </> : view === "move" ? <>
           <button className="menu-back" data-menu-keep-open onClick={() => setView("main")}><IconChevronRight className="rotate-back" />移至项目</button>
           <div className="menu-divider" />
@@ -75,10 +84,11 @@ export function ProjectSidebar(props: Props) {
   };
   const projectRow = (folder: ProjectFolder) => {
     const key = "project-" + folder.id, isCollapsed = collapsed[folder.id] ?? false;
+    const sessions = included(folder.sessions);
     return <div className="sidebar-project" key={folder.id}>
       <div className="sidebar-project-row popover-anchor" onContextMenu={event => rightClick(key, event)}>
         <button className="sidebar-folder" onClick={() => setCollapsed(prev => ({ ...prev, [folder.id]: !isCollapsed }))} aria-expanded={!isCollapsed}>
-          <span className="folder-chevron">{isCollapsed ? <IconChevronRight size={11} /> : <IconChevronDown size={11} />}</span><IconFolder size={16} /><span>{folder.name}</span><span className="folder-count">{folder.sessions.length || ""}</span>
+          <span className="folder-chevron">{isCollapsed ? <IconChevronRight size={11} /> : <IconChevronDown size={11} />}</span><IconFolder size={16} /><span>{folder.name}</span><span className="folder-count">{sessions.length || ""}</span>
         </button>
         <button className="project-overflow titlebar-btn" aria-label={"项目选项：" + folder.name} aria-haspopup="menu" aria-expanded={context?.key === key} onClick={() => toggle(key)}><IconMore size={15} /></button>
         <Popover open={context?.key === key} onClose={close} align="right" anchorPoint={context?.key === key ? context.point : undefined} label="项目选项" className="sidebar-context-menu">
@@ -91,7 +101,7 @@ export function ProjectSidebar(props: Props) {
           {props.localGroupIds.includes(folder.id) && <><div className="menu-divider" /><button onClick={() => { props.onRemoveProject(folder); close(); }}><IconClose />移除本地分组</button></>}
         </Popover>
       </div>
-      {!isCollapsed && <div className="sidebar-session-list">{sort(folder.sessions).map(session => sessionRow(session, folder.id + "-"))}{!folder.sessions.length && <span className="empty-folder-note">暂无聊天</span>}</div>}
+      {!isCollapsed && <div className="sidebar-session-list">{sort(sessions).map(session => sessionRow(session, folder.id + "-"))}{!sessions.length && <span className="empty-folder-note">暂无聊天</span>}</div>}
     </div>;
   };
   return <aside className={"project-sidebar" + (props.isOpen ? "" : " is-collapsed")} aria-label="项目与聊天" aria-hidden={!props.isOpen} onContextMenu={event => rightClick("preferences", event)}>
@@ -125,6 +135,7 @@ export function ProjectSidebar(props: Props) {
               {(["updated", "name"] as const).map(sort => <button role="menuitemradio" aria-checked={preferences.sort === sort} key={sort} onClick={() => props.onPreferencesChange({ ...preferences, sort })}>{sort === "updated" ? <IconHistory /> : <IconEdit />}{sort === "updated" ? "最近更新" : "名称"}{preferences.sort === sort && <IconCheck className="menu-check" />}</button>)}
               <div className="menu-divider" />
               <button role="menuitemcheckbox" aria-checked={preferences.showRecent} onClick={() => props.onPreferencesChange({ ...preferences, showRecent: !preferences.showRecent })}><IconHistory />显示最近聊天{preferences.showRecent && <IconCheck className="menu-check" />}</button>
+              <button role="menuitemcheckbox" aria-checked={preferences.showHidden} onClick={() => props.onPreferencesChange({ ...preferences, showHidden: !preferences.showHidden })}><IconLock />显示已隐藏的聊天{hidden.size ? `（${hidden.size}）` : ""}{preferences.showHidden && <IconCheck className="menu-check" />}</button>
             </Popover>
           </div>
           <button className="titlebar-btn" onClick={props.onNewProject} aria-label="新建项目" title="新建项目分组"><IconPlus size={14} /></button>
