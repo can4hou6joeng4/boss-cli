@@ -501,6 +501,7 @@ class ApplicationService:
             "platform/login/complete": lambda p: self.connections.complete_login(p or {}),
             "platform/login/cancel": lambda p: self.connections.cancel_login(_text(p, "id")),
             "skills/list": lambda p: {"skills": self.skills.list()},
+            "skills/read": self.on_skills_read,
             "context/read": self.on_context_read,
             "context/compact/plan": self.on_context_compact_plan,
             "context/compact/start": self.on_context_compact_start,
@@ -564,7 +565,7 @@ class ApplicationService:
                              "sessionBranchTree": True, "sessionBranchSummary": True,
                              "sessionBranchSnapshots": True, "sessionBranchSummaryRead": True,
                              "threadUsage": True, "sessionModelSelection": True, "threadExport": True,
-                             "workspaceInstructionsEdit": True},
+                             "workspaceInstructionsEdit": True, "skillsRead": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -1843,6 +1844,16 @@ class ApplicationService:
         except OSError as exc:
             raise RpcError(-32004, f"工作区说明写入失败：{exc}",
                            {"code": "WORKSPACE_INSTRUCTIONS_WRITE_FAILED"}) from None
+
+    def on_skills_read(self, params: dict | None) -> dict:
+        """只读技能正文；id 必须来自当前目录，正文有界且不写入会话。"""
+        params = params or {}
+        if set(params) != {"id"}:
+            raise ValueError("skills/read 只接受 id")
+        try:
+            return self.skills.read(params.get("id"))
+        except ValueError as exc:
+            raise RpcError(-32004, str(exc), {"code": "SKILL_UNREADABLE"}) from None
 
     def on_context_edit_read(self, params: dict | None) -> dict:
         params = params or {}

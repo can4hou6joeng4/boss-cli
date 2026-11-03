@@ -33,6 +33,7 @@ import {
   type ModelListResponse,
   type SkillDescriptor,
   type SkillListResponse,
+  type SkillReadResponse,
   type ToolDescriptor,
   type ToolListResponse,
   type ConnectionReport,
@@ -453,6 +454,10 @@ export async function listSkills(): Promise<SkillDescriptor[]> {
   if (!response || !Array.isArray(response.skills)) throw new Error("技能目录响应无法识别");
   return response.skills;
 }
+
+/** 单个技能正文：仅在内核声明 skillsRead 后调用；只读，不写入会话。 */
+export const readSkill = (id: string): Promise<SkillReadResponse> =>
+  contextRequest(ClientMethods.skillsRead, { id });
 
 /** 内核声明的工具清单。读取失败不吞掉：调用方要区分「没有工具」与「读取失败」。 */
 export async function listTools(): Promise<ToolDescriptor[]> {

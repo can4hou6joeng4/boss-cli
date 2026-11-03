@@ -278,6 +278,24 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .skill-grid strong { font-size: 13px; font-weight: 500; }
 .skill-grid p { color: var(--text-faint); font-size: 11px; line-height: 1.8; margin: 7px 0 16px; }
 .skill-action { display: flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: 10px; }
+.page-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px; }
+.page-section-head .page-section-title { margin-bottom: 0; }
+.workspace-skill-layout { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin-bottom: 36px; }
+.workspace-skill-list { display: flex; flex-direction: column; gap: 8px; }
+.workspace-skill-row { display: flex; align-items: flex-start; gap: 10px; padding: 12px; border: 1px solid var(--border-color); border-radius: 10px; background: transparent; color: var(--text-main); text-align: left; cursor: pointer; }
+.workspace-skill-row:hover { background: var(--btn-ghost-hover); }
+.workspace-skill-row.is-selected { border-color: var(--border-active); background: var(--btn-ghost-hover); }
+.workspace-skill-row>span:nth-child(2) { flex: 1; min-width: 0; }
+.workspace-skill-row .skill-icon { width: 30px; height: 30px; margin-bottom: 0; }
+.workspace-skill-row strong { font-size: 12px; font-weight: 500; }
+.workspace-skill-row small { display: block; font: 10px var(--font-mono); color: var(--text-faint); margin-top: 3px; overflow-wrap: anywhere; }
+.workspace-skill-row p { font-size: 11px; color: var(--text-faint); line-height: 1.7; margin-top: 4px; }
+.workspace-skill-detail { border: 1px solid var(--border-color); border-radius: 10px; padding: 14px; min-height: 140px; }
+.workspace-skill-detail .page-section-head { margin-bottom: 6px; }
+.workspace-skill-meta { font: 10px var(--font-mono); color: var(--text-faint); overflow-wrap: anywhere; }
+.workspace-skill-description { font-size: 12px; line-height: 1.8; color: var(--text-muted); margin-top: 6px; }
+.workspace-skill-content { max-height: 360px; overflow: auto; margin: 10px 0; padding: 10px; border-radius: 8px; background: var(--panel-bg); font: 11px/1.7 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .workspace-skill-layout { grid-template-columns: minmax(0,1fr); } }
 .page-tool-empty, .page-empty-note { color: var(--text-faint); font-size: 12px; padding: 24px 0; line-height: 1.8; }
 .tool-list>div { padding: 13px 0; display: flex; align-items: flex-start; gap: 10px; border-bottom: 1px solid var(--border-color); }
 .tool-list>div>span { flex: 1; min-width: 0; }
