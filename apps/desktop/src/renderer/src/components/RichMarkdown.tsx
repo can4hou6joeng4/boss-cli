@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React from "react";
+import { useClipboardCopy } from "../data/clipboardCopy";
 import { IconCopy, IconCheck, IconExternalLink } from "./Icons";
 
 interface RichMarkdownProps {
@@ -19,14 +20,11 @@ function externalTarget(url: string): string | null {
 }
 
 export const RichMarkdown: React.FC<RichMarkdownProps> = ({ content }) => {
-  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const { feedback, copy } = useClipboardCopy();
 
   const handleCopyCode = (code: string, index: number) => {
-    navigator.clipboard?.writeText(code);
-    setCopiedIndex(index);
-    setTimeout(() => {
-      setCopiedIndex(null);
-    }, 1500);
+    // 只有写入成功才显示「已复制」；失败时给出原因，避免用户粘贴出旧内容才发现。
+    void copy(code, String(index));
   };
 
   // 拆分代码块与常规文本
@@ -160,12 +158,18 @@ export const RichMarkdown: React.FC<RichMarkdownProps> = ({ content }) => {
                 <button
                   type="button"
                   className="code-block-copy-btn"
+                  title={feedback?.key === String(pIdx) && !feedback.ok ? `复制失败：${feedback.reason}` : "复制代码到剪贴板"}
                   onClick={() => handleCopyCode(part.content, pIdx)}
                 >
-                  {copiedIndex === pIdx ? (
+                  {feedback?.key === String(pIdx) && feedback.ok ? (
                     <>
                       <IconCheck size={11} style={{ color: "var(--accent-green)" }} />
                       <span style={{ color: "var(--accent-green)" }}>已复制</span>
+                    </>
+                  ) : feedback?.key === String(pIdx) ? (
+                    <>
+                      <IconCopy size={11} style={{ color: "var(--text-muted)" }} />
+                      <span style={{ color: "var(--text-muted)" }}>复制失败</span>
                     </>
                   ) : (
                     <>
