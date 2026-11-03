@@ -29,7 +29,7 @@ export interface SessionBranchState {
   summaries: ContextBranchSummary[];
   /** 摘要标记（被放弃分支的摘要条目）未能读取的原因；分支端点与切换不受影响。 */
   summaryError: string;
-  /** 轮询摘要任务状态连续失败的原因；事件推送仍然有效，显示的状态可能已过期。 */
+  /** 摘要任务状态读取或轮询失败的原因；事件推送仍然有效，显示的任务状态可能缺失或已过期。 */
   summaryPollError: string;
   summaryJob?: ContextCompactJob;
   switching: boolean;
@@ -92,7 +92,7 @@ export function useSessionBranches(threadId: string | null, connected: boolean, 
       // 终态优先于迟到的 running 读取。
       if (known && known.jobId === job.jobId && known.status !== "running") return state;
       return { ...state, summaryJob: { ...(known?.jobId === job.jobId ? known : {}), ...job },
-        cancelInFlight: job.status === "running" ? state.cancelInFlight : false };
+        summaryPollError: "", cancelInFlight: job.status === "running" ? state.cancelInFlight : false };
     });
   }, [update]);
 
@@ -142,7 +142,10 @@ export function useSessionBranches(threadId: string | null, connected: boolean, 
         try {
           const job = await readContextCompaction(watch);
           if (valid() && isBranchJob(job, id)) applyJob(id, job);
-        } catch { /* 任务可能已淘汰；保留上次状态。 */ }
+        } catch (error) {
+          // 读不到任务详情时面板既没有进度也没有取消入口，不能让人误以为没有任务；之后的轮询或事件会补齐。
+          if (valid() && jobId) update(id, { summaryPollError: `摘要任务状态未能读取：${rpcDetail(error).text}。可能暂时无法显示进度或取消入口。` });
+        }
       }
     } catch (error) {
       if (valid()) update(id, { loading: false, error: `读取分支失败：${rpcDetail(error).text}` });
