@@ -84,6 +84,17 @@ def _valid_timestamp(value: Any) -> str | None:
     return value
 
 
+def _turn_skill_ids(value: Any) -> list[str]:
+    """回合实际注入的技能 id：有界、去重，旧记录或畸形值不产生伪技能。"""
+    if not isinstance(value, list):
+        return []
+    ids: list[str] = []
+    for item in value[:10]:
+        if isinstance(item, str) and 0 < len(item) <= 200 and item not in ids:
+            ids.append(item)
+    return ids
+
+
 def _new_id() -> str:
     return uuid.uuid4().hex[:8]
 
@@ -2395,6 +2406,9 @@ class SessionStore:
             status = record.get("status")
             if isinstance(status, str) and status in _TERMINAL | {"running"}:
                 turn["status"] = status
+            skill_ids = _turn_skill_ids(record.get("skillIds"))
+            if skill_ids:
+                turn["skillIds"] = skill_ids
         page = turns[offset:offset + limit]
         next_cursor = (_page_cursor("usage", scope, [offset + limit])
                        if offset + limit < len(turns) else None)
