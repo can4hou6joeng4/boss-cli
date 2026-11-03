@@ -10,7 +10,7 @@ import { ModelRetryNotice } from "../components/ModelRetryNotice";
 import { BranchSummaryJobNotice, BranchSummaryMarker } from "../components/BranchSummaryNotice";
 import type { ModelRetryStatus } from "../data/modelRetry";
 import type { ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-harness/protocol";
-import type { ContextBranchSummary, ContextCompactJob, ContextEditReadResponse, SkillDescriptor } from "@boss-harness/protocol";
+import type { ContextBranchSummary, ContextCompactJob, ContextEditReadResponse, SkillDescriptor, SkillProblem } from "@boss-harness/protocol";
 import { type MessageItem, type ConversationMode } from "../data/mockData";
 import type { SkillCatalogState, ApprovalDelivery, ApprovalOutcome } from "../data/harnessBridge";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
@@ -33,7 +33,7 @@ export interface ConversationAreaProps {
   draft?: ComposerDraft; onDraftChange?: UpdateComposerDraft; simulateLocal?: boolean; harnessUp?: boolean; running?: boolean; taskBlocked?: boolean;
   models?: ModelDescriptor[]; activeModelProvider?: string; activeModelId?: string;
   onSelectModel?: (provider: string, id: string) => void | boolean | Promise<void | boolean>; onOpenSettings?: () => void; onInterrupt?: () => void;
-  skills?: SkillDescriptor[]; skillCatalogState?: SkillCatalogState; skillCatalogError?: string; onRefreshSkills?: () => void;
+  skills?: SkillDescriptor[]; skillCatalogState?: SkillCatalogState; skillCatalogError?: string; onRefreshSkills?: () => void; skillProblems?: SkillProblem[];
   threadId?: string;
   configuredModelLabel?: string; readOnly?: boolean; /** 内核已归档：只读查看历史，恢复后才能继续对话。 */ archived?: boolean;
   continuationCheck?: { threadId: string; sourceTurnId: string; loading: boolean; submitting?: boolean;
@@ -50,7 +50,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   messages: initialMessages, readOnly = false, archived = false, currentMode, onModeChange, onSendMessage, onQueueMessage, onCheckQueueSubmission, queueItems = [], queueTotalItems, queueActiveItems, queueTruncated, onRemoveQueueItem, onRetryQueueItem, simulateLocal = true, harnessUp = false,
   running = false, taskBlocked = false, draft, onDraftChange, models, activeModelProvider, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, sessionReasoning,
   onInterrupt, onApprovalDecision, onReviewDiff, onRevertDiff, onOpenRewind, loginGuide, onLogin,
-  skills = [], skillCatalogState = "unavailable", skillCatalogError, onRefreshSkills,
+  skills = [], skillCatalogState = "unavailable", skillCatalogError, onRefreshSkills, skillProblems = [],
   threadId, continuationCheck, onContinueInterruptedTurn, modelRetry, onDismissModelRetry, sessionBranches,
 }) => {
   const [messages, setMessages] = useState<MessageItem[]>(initialMessages);
@@ -673,7 +673,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
           {archived && <div className="composer-notice archived-notice" role="status">此聊天已归档，可查看历史；在侧栏「已归档」中恢复后可继续对话。</div>}
           {loginGuide}
           {approvalError && <div className="composer-notice" role="alert">{approvalError}</div>}
-          <div className="thread-composer-input"><Composer ref={textareaRef} value={inputText} onChange={setInputText} onSend={onSendMessage} onQueue={simulateLocal ? undefined : onQueueMessage} onCheckQueueSubmission={simulateLocal ? undefined : onCheckQueueSubmission} draft={composerDraft} onDraftChange={updateDraft} skills={skills} skillCatalogState={skillCatalogState} skillCatalogError={skillCatalogError} onRefreshSkills={onRefreshSkills}
+          <div className="thread-composer-input"><Composer ref={textareaRef} value={inputText} onChange={setInputText} onSend={onSendMessage} onQueue={simulateLocal ? undefined : onQueueMessage} onCheckQueueSubmission={simulateLocal ? undefined : onCheckQueueSubmission} draft={composerDraft} onDraftChange={updateDraft} skills={skills} skillCatalogState={skillCatalogState} skillCatalogError={skillCatalogError} onRefreshSkills={onRefreshSkills} skillProblems={skillProblems}
             readOnly={readOnly} archived={archived} isRunning={running} blocked={taskBlocked} onInterrupt={onInterrupt} preview={simulateLocal}
             currentMode={currentMode} onModeChange={onModeChange} models={models} activeModelProvider={activeModelProvider} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel}
             onSelectModel={onSelectModel} sessionReasoning={sessionReasoning} onOpenSettings={onOpenSettings} onLogin={onLogin} /></div>

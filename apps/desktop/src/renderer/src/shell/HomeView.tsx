@@ -3,7 +3,7 @@ import { Composer } from "./Composer";
 import { IconFolder, IconChevronDown, IconSparkles, IconSearch, IconChat, IconCockpit, IconCheck, IconPlus } from "../components/Icons";
 import { Popover } from "../components/Popover";
 import type { ProjectFolder, ConversationMode } from "../data/mockData";
-import type { ModelDescriptor, SkillDescriptor } from "@boss-harness/protocol";
+import type { ModelDescriptor, SkillDescriptor, SkillProblem } from "@boss-harness/protocol";
 import type { SkillCatalogState } from "../data/harnessBridge";
 import { withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
 interface Props {
@@ -13,7 +13,7 @@ interface Props {
   configuredModelLabel?: string;
   selectedProjectId: string; onSelectProject: (id: string) => void; onNewProject: () => void;
   folders: ProjectFolder[]; preview: boolean; harnessUp: boolean; blocked?: boolean; onOpenSettings: () => void; draft: ComposerDraft; onDraftChange: UpdateComposerDraft;
-  skills: SkillDescriptor[]; skillCatalogState: SkillCatalogState; skillCatalogError?: string; onRefreshSkills: () => void;
+  skills: SkillDescriptor[]; skillCatalogState: SkillCatalogState; skillCatalogError?: string; onRefreshSkills: () => void; skillProblems?: SkillProblem[];
 }
 const suggestions = [
   { icon: IconSearch, title: "拆解岗位画像", detail: "把招聘需求转化为清晰的筛选依据", prompt: "请帮我拆解一个岗位的必备能力、加分项与待确认问题，并注明判断依据。" },
@@ -41,7 +41,7 @@ export function HomeView(props: Props) {
           <div className="menu-note">项目作为任务上下文随消息提供。</div>
         </Popover>
       </div>
-      <Composer ref={ref} value={value} onChange={setValue} draft={props.draft} onDraftChange={props.onDraftChange} home readOnly={!props.preview} preview={props.preview} blocked={props.blocked} models={props.models} activeModelProvider={props.activeModelProvider} activeModelId={props.activeModelId} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} currentMode={props.currentMode} onModeChange={props.onModeChange} onOpenSettings={props.onOpenSettings} skills={props.skills} skillCatalogState={props.skillCatalogState} skillCatalogError={props.skillCatalogError} onRefreshSkills={props.onRefreshSkills}
+      <Composer ref={ref} value={value} onChange={setValue} draft={props.draft} onDraftChange={props.onDraftChange} home readOnly={!props.preview} preview={props.preview} blocked={props.blocked} models={props.models} activeModelProvider={props.activeModelProvider} activeModelId={props.activeModelId} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} currentMode={props.currentMode} onModeChange={props.onModeChange} onOpenSettings={props.onOpenSettings} skills={props.skills} skillCatalogState={props.skillCatalogState} skillCatalogError={props.skillCatalogError} onRefreshSkills={props.onRefreshSkills} skillProblems={props.skillProblems}
         onSend={(text, skillIds) => props.onStartSessionWithPrompt(project ? `招聘项目：${props.folders.find(folder => folder.id === project)?.name}\n\n${text}` : text, "precision-match", props.activeModelProvider ?? "", props.activeModelId, skillIds)} />
       <div className="starter-prompts">
         {suggestions.map(item => <button key={item.title} onClick={() => { setValue(item.prompt); ref.current?.focus(); }}><item.icon size={18} /><strong>{item.title}</strong><span>{item.detail}</span></button>)}
