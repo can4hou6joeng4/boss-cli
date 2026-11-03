@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ContextBranchSummary, ContextCompactJob, InitializeResponse, QueueItem, ThreadBranchEndpoint, TurnSummary } from "@boss-harness/protocol";
-import { abortContextCompaction, listBranchTurns, listThreadBranches, readContext, readContextCompaction, setThreadLeaf } from "./harnessBridge";
+import { abortContextCompaction, harnessErrorText, listBranchTurns, listThreadBranches, readContext, readContextCompaction, setThreadLeaf } from "./harnessBridge";
 import { readPagedItems } from "./pagedRead";
 
 /**
@@ -29,6 +29,8 @@ export interface SessionBranchState {
   summaries: ContextBranchSummary[];
   /** 摘要标记（被放弃分支的摘要条目）未能读取的原因；分支端点与切换不受影响。 */
   summaryError: string;
+  /** 轮询摘要任务状态连续失败的原因；事件推送仍然有效，显示的状态可能已过期。 */
+  summaryPollError: string;
   summaryJob?: ContextCompactJob;
   switching: boolean;
   switchError: string;
@@ -36,20 +38,15 @@ export interface SessionBranchState {
 }
 
 const initial = (): SessionBranchState => ({ loading: false, loaded: false, error: "", branched: false, leafTurnId: null, turnCount: 0,
-  endpoints: [], endpointsTruncated: false, turns: [], turnsTruncated: false, summaries: [], summaryError: "", switching: false, switchError: "", cancelInFlight: false });
+  endpoints: [], endpointsTruncated: false, turns: [], turnsTruncated: false, summaries: [], summaryError: "", summaryPollError: "", switching: false, switchError: "", cancelInFlight: false });
 const MAX_PAGES = 10;
 const TERMINAL_TURN = new Set(["completed", "interrupted", "blocked", "error"]);
 export const isSettledTurn = (status: string | null | undefined): boolean => Boolean(status && TERMINAL_TURN.has(status));
 
 function rpcDetail(error: unknown): { rpc: boolean; text: string } {
-  const value = error && typeof error === "object" ? error as { rpcError?: unknown; code?: unknown; message?: unknown; data?: unknown } : null;
-  const data = value?.data && typeof value.data === "object" ? value.data as Record<string, unknown> : null;
-  const message = typeof value?.message === "string" ? value.message.slice(0, 300) : "无法读取本地内核响应";
-  if (value?.rpcError === true && typeof value.code === "number") {
-    const reason = typeof data?.code === "string" ? ` / ${data.code}` : "";
-    return { rpc: true, text: `${message}（内核 ${value.code}${reason}）` };
-  }
-  return { rpc: false, text: message };
+  const value = error && typeof error === "object" ? error as { rpcError?: unknown; code?: unknown } : null;
+  // 与界面其他位置一致：harnessErrorText 会剥掉 IPC 包装前缀并自行附上内核错误码。
+  return { rpc: value?.rpcError === true && typeof value.code === "number", text: harnessErrorText(error) };
 }
 
 function isBranchJob(value: unknown, threadId: string): value is ContextCompactJob {
@@ -78,6 +75,7 @@ export function useSessionBranches(threadId: string | null, connected: boolean, 
   const current = useRef({ threadId, connected, support, onSwitched });
   current.current = { threadId, connected, support, onSwitched };
   const versions = useRef(new Map<string, number>());
+  const pollFailures = useRef(new Map<string, number>());
   const epoch = useRef(0);
   const alive = useRef(true);
   const update = useCallback((id: string, change: Partial<SessionBranchState> | ((state: SessionBranchState) => SessionBranchState)) => {
@@ -134,9 +132,10 @@ export function useSessionBranches(threadId: string | null, connected: boolean, 
         // 摘要条目只用于标注，不影响分支列表与切换；但界面不能把「读不到」显示成「没有摘要」。
         summaryError = `摘要标记未能读取：${rpcDetail(error).text}。分支端点和切换不受影响。`;
       }
+      pollFailures.current.delete(id);
       update(id, state => ({ ...state, loading: false, loaded: true, error: "", branched: head?.branched ?? false,
         leafTurnId: head?.leafTurnId ?? null, turnCount: head?.turnCount ?? 0, endpoints: endpointPage.items,
-        endpointsTruncated: endpointPage.truncated, turns: turnPage.items, turnsTruncated: turnPage.truncated, summaries, summaryError }));
+        endpointsTruncated: endpointPage.truncated, turns: turnPage.items, turnsTruncated: turnPage.truncated, summaries, summaryError, summaryPollError: "" }));
       const known = stateRef.current[id]?.summaryJob;
       const watch = jobId ?? (known?.status === "running" ? known.jobId : undefined);
       if (watch) {
@@ -156,7 +155,8 @@ export function useSessionBranches(threadId: string | null, connected: boolean, 
       const params = event.params && typeof event.params === "object" ? event.params as Record<string, unknown> : {};
       if (event.method === "harness/disconnected" || (event.method === "harness/connectionStatus" && params.state !== "ready")) {
         epoch.current += 1;
-        for (const id of Object.keys(stateRef.current)) update(id, state => ({ ...state, loading: false, cancelInFlight: false }));
+        pollFailures.current.clear();
+        for (const id of Object.keys(stateRef.current)) update(id, state => ({ ...state, loading: false, cancelInFlight: false, summaryPollError: "" }));
         return;
       }
       const id = typeof params.threadId === "string" ? params.threadId : null;
@@ -174,7 +174,18 @@ export function useSessionBranches(threadId: string | null, connected: boolean, 
       if (!current.current.connected) return;
       for (const [id, state] of Object.entries(stateRef.current)) {
         const job = state.summaryJob;
-        if (job?.status === "running") void readContextCompaction(job.jobId).then(next => { if (isBranchJob(next, id)) { applyJob(id, next); if (next.status !== "running") void refresh(id); } }).catch(() => undefined);
+        if (job?.status === "running") void readContextCompaction(job.jobId).then(next => {
+          if (isBranchJob(next, id)) { applyJob(id, next); if (next.status !== "running") void refresh(id); }
+          pollFailures.current.delete(id);
+          if (stateRef.current[id]?.summaryPollError) update(id, { summaryPollError: "" });
+        }).catch(error => {
+          // 轮询只是补齐事件推送；连续失败时任务状态会停在旧值，不能一直静默。
+          const failures = (pollFailures.current.get(id) ?? 0) + 1;
+          pollFailures.current.set(id, failures);
+          if (failures < 3) return;
+          const text = `摘要任务状态未能刷新：${rpcDetail(error).text}。显示的任务状态可能已过期。`;
+          if (stateRef.current[id]?.summaryPollError !== text) update(id, { summaryPollError: text });
+        });
       }
     }, 2000);
     return () => { alive.current = false; unsubscribe?.(); clearInterval(timer); };
