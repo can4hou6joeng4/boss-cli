@@ -51,6 +51,8 @@ import {
   type ContextCompactAbortResponse,
   type ContextEditReadResponse,
   type ApprovalRespondResponse,
+  type ApprovalListResponse,
+  type PendingApproval,
   type ThreadBranchesListResponse,
   type ThreadBranchSummaryReadResponse,
   type ThreadLeafState,
@@ -64,6 +66,7 @@ import {
 } from "@boss-harness/protocol";
 import { formatRelativeTime } from "@boss-harness/shared";
 import { queuePageOf, type QueuePage } from "./queueMapping";
+import { mapPendingApprovals } from "./pendingApprovals";
 import { readPagedItems } from "./pagedRead";
 import type { MessageItem, SessionItem } from "./mockData";
 
@@ -396,6 +399,14 @@ export async function removeQueuedItem(threadId: string, queueId: string): Promi
 export type ApprovalDelivery = "accepted" | "rejected" | "unconfirmed";
 /** 送达结果与未确认时可展示的原因（已剥掉 IPC 前缀、附内核错误码）。 */
 export interface ApprovalOutcome { delivery: ApprovalDelivery; reason?: string }
+
+/** 读取跨会话待审批项（不传 threadId，取内核顺序前 limit 条）。 */
+export async function listPendingApprovals(limit = 100): Promise<PendingApproval[]> {
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  const response = await api.request<ApprovalListResponse>(ClientMethods.approvalList, { limit });
+  return mapPendingApprovals(response, limit);
+}
 
 /** 回答一次工具审批。区分「内核明确不受理」与「请求未送达」，调用方据此决定是否把审批卡放回界面。 */
 export async function respondApproval(approvalId: string, approved: boolean): Promise<ApprovalOutcome> {
