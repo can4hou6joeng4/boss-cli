@@ -79,6 +79,14 @@ def _skill_catalog_root(workspace: Path) -> Path:
     return legacy if legacy.is_dir() and not preferred.is_dir() else preferred
 
 
+def _relative_workspace_path(path: Path, workspace: Path) -> str:
+    """展示用的工作区相对路径；不在工作区内时只给目录名。"""
+    try:
+        return path.relative_to(workspace).as_posix()
+    except ValueError:
+        return path.name
+
+
 def _branch_view(params: dict | None) -> bool:
     """Optional read view: "log" (default, full rollout) or "branch" (current leaf projection)."""
     view = (params or {}).get("view", "log")
@@ -331,7 +339,9 @@ class ApplicationService:
             self._bridge_refs: list[Any] = []
             self.context = ContextService(self.sessions)
             self._restore_compaction_jobs()
-            self.skills = SkillCatalog(_skill_catalog_root(self.workspace))
+            skills_root = _skill_catalog_root(self.workspace)
+            self.skills = SkillCatalog(skills_root)
+            self.skills_root = _relative_workspace_path(skills_root, self.workspace)
             self.workspace_instructions = WorkspaceInstructions(self.workspace)
             self.attachments = AttachmentStore(self.sessions, state_dir / "attachments", self.workspace,
                                                limits=attachment_limits)
@@ -500,7 +510,7 @@ class ApplicationService:
             "platform/login/read": lambda p: self.connections.read_login(),
             "platform/login/complete": lambda p: self.connections.complete_login(p or {}),
             "platform/login/cancel": lambda p: self.connections.cancel_login(_text(p, "id")),
-            "skills/list": lambda p: {"skills": self.skills.list()},
+            "skills/list": lambda p: {"skills": self.skills.list(), "root": self.skills_root},
             "skills/read": self.on_skills_read,
             "context/read": self.on_context_read,
             "context/compact/plan": self.on_context_compact_plan,
@@ -1851,7 +1861,7 @@ class ApplicationService:
         if set(params) != {"id"}:
             raise ValueError("skills/read 只接受 id")
         try:
-            return self.skills.read(params.get("id"))
+            return {**self.skills.read(params.get("id")), "root": self.skills_root}
         except ValueError as exc:
             raise RpcError(-32004, str(exc), {"code": "SKILL_UNREADABLE"}) from None
 

@@ -107,6 +107,7 @@ export function AppShell(props: AppShellProps) {
   const [skills, setSkills] = useState<SkillDescriptor[]>([]);
   const [skillCatalogState, setSkillCatalogState] = useState<SkillCatalogState>("unavailable");
   const [skillCatalogError, setSkillCatalogError] = useState("");
+  const [skillRoot, setSkillRoot] = useState<string | null>(null);
   const [skillRefresh, setSkillRefresh] = useState(0);
   const [history, setHistory] = useState<Route[]>([{ page: "home" }]), [cursor, setCursor] = useState(0);
   const cursorRef = useRef(cursor); cursorRef.current = cursor;
@@ -215,17 +216,20 @@ export function AppShell(props: AppShellProps) {
   useEffect(() => {
     let current = true;
     setSkills([]);
+    setSkillRoot(null);
     setSkillCatalogError("");
     if (!props.harnessUp || !window.boss) { setSkillCatalogState("unavailable"); return () => { current = false; }; }
     setSkillCatalogState("loading");
     void listSkills().then(result => {
       if (!current) return;
-      setSkills(result);
-      setSkillCatalogState(result.length ? "ready" : "empty");
+      setSkills(result.skills);
+      setSkillRoot(result.root);
+      setSkillCatalogState(result.skills.length ? "ready" : "empty");
     }).catch(cause => {
       // 读取失败不能显示成「没有技能」：旧清单作废，但状态要如实标为失败并保留原因。
       if (!current) return;
       setSkills([]);
+      setSkillRoot(null);
       setSkillCatalogError(harnessErrorText(cause));
       setSkillCatalogState("error");
     });
@@ -264,7 +268,7 @@ export function AppShell(props: AppShellProps) {
             onArchive={session => { void props.onArchiveSession?.(session, true); }} onUnarchive={session => { void props.onArchiveSession?.(session, false); }}
             onMoveSession={(id, folderId) => setThreadGroups(prev => ({ ...prev, [id]: folderId }))} onRenameProject={folder => { setRenameProject(folder); setFolderName(folder.name); }} onRemoveProject={setRemoveProject} />
           <main className="main-canvas">
-            {page !== "home" ? <WorkspacePages page={page} folders={allFolders} messages={props.messages} onSelect={select} onNewTask={newTask} onDraft={text => { newTask(); setDraft(text); }} tools={tools} toolCatalogState={toolCatalogState} toolCatalogError={toolCatalogError} skills={skills} skillCatalogState={skillCatalogState} skillCatalogError={skillCatalogError} onRefreshSkills={() => setSkillRefresh(previous => previous + 1)} skillsReadable={props.skillsReadable === true} workspaceInstructionsEditable={props.workspaceInstructionsEditable === true} harnessUp={props.harnessUp === true} preview={props.simulateLocal ?? true} /> : props.isHomeView ? <HomeView key={draft.id} folders={allFolders} draft={draft} onDraftChange={updateHomeDraft} selectedProjectId={draftProjectId} onSelectProject={setDraftProjectId} onNewProject={() => setNewProject(true)} preview={!window.boss} harnessUp={props.harnessUp ?? false} blocked={props.taskBlocked} models={props.models} activeModelProvider={props.activeModelProvider} activeModelId={props.activeModelId ?? "deepseek-v4"} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} currentMode={props.currentMode} onModeChange={props.onModeChange} skills={skills} skillCatalogState={skillCatalogState} skillCatalogError={skillCatalogError} onRefreshSkills={() => setSkillRefresh(previous => previous + 1)} onStartSessionWithPrompt={startInProject} onOpenSettings={() => openSettings("connections")} /> : <>
+            {page !== "home" ? <WorkspacePages page={page} folders={allFolders} messages={props.messages} onSelect={select} onNewTask={newTask} onDraft={text => { newTask(); setDraft(text); }} tools={tools} toolCatalogState={toolCatalogState} toolCatalogError={toolCatalogError} skills={skills} skillCatalogState={skillCatalogState} skillCatalogError={skillCatalogError} onRefreshSkills={() => setSkillRefresh(previous => previous + 1)} skillsReadable={props.skillsReadable === true} skillRoot={skillRoot} onUseSkill={skillId => { newTask(); updateHomeDraft(previous => ({ ...previous, skillIds: [skillId] })); }} workspaceInstructionsEditable={props.workspaceInstructionsEditable === true} harnessUp={props.harnessUp === true} preview={props.simulateLocal ?? true} /> : props.isHomeView ? <HomeView key={draft.id} folders={allFolders} draft={draft} onDraftChange={updateHomeDraft} selectedProjectId={draftProjectId} onSelectProject={setDraftProjectId} onNewProject={() => setNewProject(true)} preview={!window.boss} harnessUp={props.harnessUp ?? false} blocked={props.taskBlocked} models={props.models} activeModelProvider={props.activeModelProvider} activeModelId={props.activeModelId ?? "deepseek-v4"} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} currentMode={props.currentMode} onModeChange={props.onModeChange} skills={skills} skillCatalogState={skillCatalogState} skillCatalogError={skillCatalogError} onRefreshSkills={() => setSkillRefresh(previous => previous + 1)} onStartSessionWithPrompt={startInProject} onOpenSettings={() => openSettings("connections")} /> : <>
               <div className="conversation-pane">
                 {props.simulateLocal && <div className="conversation-preview-badge">示例会话 · 交互预览</div>}
                 <ConversationArea readOnly={props.activeSession?.toolPolicy === "readOnly"} archived={props.activeSession?.archived === true} threadId={props.activeSession?.id} key={props.activeSession?.id ?? "conversation"} draft={sessionDraft} onDraftChange={updateSessionDraft} messages={props.messages} currentMode={props.currentMode} onModeChange={props.onModeChange} onSendMessage={props.onSendMessage} onQueueMessage={props.onQueueMessage} onCheckQueueSubmission={props.onCheckQueueSubmission} queueItems={props.queueItems} queueTotalItems={props.queueTotalItems} queueActiveItems={props.queueActiveItems} queueTruncated={props.queueTruncated} onRemoveQueueItem={props.onRemoveQueueItem} onRetryQueueItem={props.onRetryQueueItem} simulateLocal={props.simulateLocal} harnessUp={props.harnessUp} running={props.running} taskBlocked={props.taskBlocked} models={props.models} activeModelProvider={props.activeModelProvider} activeModelId={props.activeModelId} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} sessionReasoning={props.sessionReasoning} skills={skills} skillCatalogState={skillCatalogState} skillCatalogError={skillCatalogError} onRefreshSkills={() => setSkillRefresh(previous => previous + 1)} onOpenSettings={() => openSettings("connections")} onInterrupt={props.onInterrupt} onApprovalDecision={props.onApprovalDecision} onReviewDiff={props.onReviewDiff} onRevertDiff={props.onRevertDiff} onOpenRewind={props.onOpenRewind} onOpenCockpit={props.onOpenCockpit} continuationCheck={props.continuationCheck} onContinueInterruptedTurn={props.onContinueInterruptedTurn} modelRetry={props.modelRetry} onDismissModelRetry={props.onDismissModelRetry} sessionBranches={props.sessionBranches}

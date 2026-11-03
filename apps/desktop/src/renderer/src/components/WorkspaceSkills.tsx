@@ -9,6 +9,10 @@ export interface WorkspaceSkillsProps {
   error?: string;
   /** 内核声明 skillsRead 时才请求正文；否则只展示目录里的名称与描述。 */
   readable: boolean;
+  /** 当前生效的技能目录；旧内核不返回时为 null。 */
+  root: string | null;
+  /** 把技能预选进新会话草稿；不会自动发送。 */
+  onUseSkill: (skillId: string) => void;
   preview: boolean;
   onRefresh: () => void;
 }
@@ -58,6 +62,7 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
     {props.state === "error" && <div className="page-tool-empty">技能目录读取失败{props.error ? `：${props.error}` : ""}。这只表示读取没有完成，不代表工作区没有技能。</div>}
     {props.state === "unavailable" && <div className="page-tool-empty">{props.preview ? "浏览器预览未连接技能目录。启动桌面端后显示工作区技能。" : "连接本地 Harness 后可读取工作区技能。"}</div>}
     {props.state === "empty" && <div className="page-tool-empty">当前工作区没有技能。可在 <code>.boss-harness/skills/&lt;id&gt;/SKILL.md</code> 添加。</div>}
+    {props.root && (props.state === "ready" || props.state === "empty") && <p className="workspace-skill-source">技能目录：<code>{props.root}</code>{props.root === ".boss-cli/skills" ? "（旧目录；新建 .boss-harness/skills 后将改用新目录）" : ""}</p>}
     {props.skills.length > 0 && <div className="workspace-skill-layout">
       <div className="workspace-skill-list">
         {props.skills.map(skill => <button type="button" key={skill.id} aria-pressed={skill.id === selectedId} className={"workspace-skill-row" + (skill.id === selectedId ? " is-selected" : "")} onClick={() => { setSelectedId(skill.id); setReload(0); }}>
@@ -72,6 +77,7 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
         {selected && props.readable && <>
           <div className="page-section-head"><strong>{detail?.name ?? selected.name}</strong><button type="button" className="subtle-button" onClick={() => setReload(previous => previous + 1)} disabled={detailLoading}>{detailLoading ? "正在读取…" : "重新读取"}</button></div>
           <small className="workspace-skill-meta">{selected.id} · {byteText(detail?.bytes ?? selected.bytes)} · 摘要 {selected.digest.slice(0, 12)}…</small>
+          <div className="workspace-skill-actions"><button type="button" className="solid-button" onClick={() => props.onUseSkill(selected.id)}>在新聊天中使用该技能</button><span className="workspace-skill-hint">只预选到新会话草稿，不会自动发送。</span></div>
           {detailLoading && <p className="page-empty-note">正在读取技能正文…</p>}
           {detailError && <p className="page-empty-note" role="alert">{detailError}</p>}
           {detail && <pre className="workspace-skill-content">{detail.content}</pre>}
