@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ThreadReasoningReadResponse } from "@boss-harness/protocol";
-import { readThreadReasoning, setThreadReasoning } from "./harnessBridge";
+import { harnessErrorText, readThreadReasoning, setThreadReasoning } from "./harnessBridge";
 
 export interface SessionReasoningControl {
   data: ThreadReasoningReadResponse | null;
@@ -33,7 +33,10 @@ export function useSessionReasoning(threadId: string | null, connected: boolean)
     if (!id || !available) return;
     const version = epoch.current;
     try { await read(id, version); if (epoch.current === version) setError(""); }
-    catch { if (epoch.current === version) setError("无法读取会话推理设置，请重新加载。"); }
+    catch (cause) {
+      // 读不到档位时保留真实原因：内核错误码或断连原因都影响用户下一步该做什么。
+      if (epoch.current === version) setError(`无法读取会话推理设置：${harnessErrorText(cause)}。请重新连接或重新加载会话后再试。`);
+    }
   }, [read]);
 
   useEffect(() => {
@@ -63,12 +66,14 @@ export function useSessionReasoning(threadId: string | null, connected: boolean)
     try {
       await setThreadReasoning(id, effort);
       if (epoch.current === version) await read(id, version);
-    } catch {
+    } catch (cause) {
       if (epoch.current !== version) return;
       try {
         const actual = await read(id, version);
-        if (epoch.current === version && actual.effort !== effort) setError("设置未确认，请核对当前档位后再选择；没有自动重试。");
-      } catch { if (epoch.current === version) setError("设置结果待核对，重新连接后请读取当前档位；没有自动重试。"); }
+        if (epoch.current === version && actual.effort !== effort) setError(`设置未确认：${harnessErrorText(cause)}。请核对当前档位后再选择；没有自动重试。`);
+      } catch (verifyError) {
+        if (epoch.current === version) setError(`设置结果待核对：${harnessErrorText(cause)}；读取当前档位也失败（${harnessErrorText(verifyError)}）。重新连接后请核对；没有自动重试。`);
+      }
     } finally {
       if (epoch.current === version) { saving.current = false; setPending(false); }
     }
