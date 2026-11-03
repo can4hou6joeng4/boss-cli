@@ -218,8 +218,19 @@ export async function startThread(title: string, model?: string, provider?: stri
   };
 }
 
+/** 单条队列项响应：缺字段时给出可读原因，而不是让调用方读到 undefined。 */
+function requireQueueItem(response: QueueItemResponse | null | undefined): QueueItem {
+  if (!response || !response.queueItem || typeof response.queueItem.id !== "string" || !response.queueItem.id) {
+    throw new Error("队列项响应无法识别");
+  }
+  return response.queueItem;
+}
+
 export async function setThreadModel(threadId: string, provider: string, model: string): Promise<ThreadSummary> {
   const response = await contextRequest<ThreadModelSetResponse>(ClientMethods.threadModelSet, { threadId, provider, model });
+  if (!response?.thread || typeof response.thread.id !== "string" || !response.thread.id) {
+    throw new Error("模型设置响应无法识别");
+  }
   return response.thread;
 }
 
@@ -258,7 +269,8 @@ export async function setThreadReasoning(threadId: string, effort: string | null
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");
   const response = await api.request<ThreadReasoningSetResponse>(ClientMethods.threadReasoningSet, { threadId, effort });
-  const thread = response.thread;
+  const thread = response?.thread;
+  if (!thread || typeof thread.id !== "string" || !thread.id) throw new Error("推理设置响应无法识别");
   return { id: thread.id, title: thread.title, timeAgo: formatRelativeTime(thread.updatedAt),
     updatedAt: thread.updatedAt, status: thread.lastTurn?.status === "running" ? "running"
       : thread.lastTurn?.status === "interrupted" ? "interrupted" : "idle",
@@ -280,14 +292,14 @@ export async function steerTurn(params: TurnSteerParams): Promise<QueueItem> {
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");
   const response = await api.request<QueueItemResponse>(ClientMethods.turnSteer, params);
-  return response.queueItem;
+  return requireQueueItem(response);
 }
 
 export async function queueFollowUp(params: QueueAddParams): Promise<QueueItem> {
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");
   const response = await api.request<QueueItemResponse>(ClientMethods.queueAdd, params);
-  return response.queueItem;
+  return requireQueueItem(response);
 }
 
 /** 会话队列的当前投影。失败不吞掉：调用方要保留面板旧内容并明确提示，而不是当成「队列为空」。 */
@@ -303,14 +315,14 @@ export async function readQueueItem(threadId: string, queueId: string): Promise<
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");
   const response = await api.request<QueueItemResponse>(ClientMethods.queueGet, { threadId, queueId });
-  return response.queueItem;
+  return requireQueueItem(response);
 }
 
 export async function removeQueuedItem(threadId: string, queueId: string): Promise<QueueItem> {
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");
   const response = await api.request<QueueItemResponse>(ClientMethods.queueRemove, { threadId, queueId });
-  return response.queueItem;
+  return requireQueueItem(response);
 }
 
 /** 审批应答的送达结果：accepted 表示内核已受理；rejected 表示内核明确不受理；unconfirmed 表示请求没送到或回报不可读。 */
