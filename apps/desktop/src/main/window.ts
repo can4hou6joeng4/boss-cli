@@ -9,7 +9,7 @@ import { isAllowedExternalUrl, isTrustedRendererUrl } from "./security";
  */
 export function createMainWindow(): BrowserWindow {
   const window = new BrowserWindow({
-    title: "BOSS-CLI",
+    title: "BOSS Harness",
     icon: join(__dirname, "../../resources/icon.png"),
     width: 1440,
     height: 900,

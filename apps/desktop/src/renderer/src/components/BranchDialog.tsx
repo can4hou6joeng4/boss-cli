@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { ModalSurface } from "./ModalSurface";
 import type { MessageItem } from "../data/mockData";
 import { isSettledTurn, type BranchSupport, type SessionBranchState } from "../data/useSessionBranches";
-import type { ThreadBranchEndpoint } from "@boss-cli/protocol";
+import type { ThreadBranchEndpoint } from "@boss-harness/protocol";
 
 type Target = BranchTarget;
 

@@ -15,9 +15,9 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@boss-cli/protocol": ["./packages/protocol/src/index.ts"],
-      "@boss-cli/app-client": ["./packages/app-client/src/index.ts"],
-      "@boss-cli/shared": ["./packages/shared/src/index.ts"]
+      "@boss-harness/protocol": ["./packages/protocol/src/index.ts"],
+      "@boss-harness/app-client": ["./packages/app-client/src/index.ts"],
+      "@boss-harness/shared": ["./packages/shared/src/index.ts"]
     }
   }
 }

@@ -1,4 +1,4 @@
-# BOSS-CLI
+# BOSS Harness
 
 <p align="center">
   <strong>面向招聘任务的 Agent Harness</strong><br>
@@ -6,13 +6,13 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/can4hou6joeng4/boss-cli/actions/workflows/build.yml"><img src="https://github.com/can4hou6joeng4/boss-cli/actions/workflows/build.yml/badge.svg" alt="Build"></a>
-  <a href="https://github.com/can4hou6joeng4/boss-cli/issues"><img src="https://img.shields.io/github/issues/can4hou6joeng4/boss-cli" alt="Issues"></a>
-  <a href="https://github.com/can4hou6joeng4/boss-cli/pulls"><img src="https://img.shields.io/github/issues-pr/can4hou6joeng4/boss-cli" alt="Pull requests"></a>
-  <a href="https://github.com/can4hou6joeng4/boss-cli/stargazers"><img src="https://img.shields.io/github/stars/can4hou6joeng4/boss-cli" alt="Stars"></a>
+  <a href="https://github.com/can4hou6joeng4/boss-harness/actions/workflows/build.yml"><img src="https://github.com/can4hou6joeng4/boss-harness/actions/workflows/build.yml/badge.svg" alt="Build"></a>
+  <a href="https://github.com/can4hou6joeng4/boss-harness/issues"><img src="https://img.shields.io/github/issues/can4hou6joeng4/boss-harness" alt="Issues"></a>
+  <a href="https://github.com/can4hou6joeng4/boss-harness/pulls"><img src="https://img.shields.io/github/issues-pr/can4hou6joeng4/boss-harness" alt="Pull requests"></a>
+  <a href="https://github.com/can4hou6joeng4/boss-harness/stargazers"><img src="https://img.shields.io/github/stars/can4hou6joeng4/boss-harness" alt="Stars"></a>
 </p>
 
-> `boss-agent-cli` 负责招聘平台接入；BOSS-CLI 负责模型适配、执行循环、权限边界、会话状态和桌面交互。内核参考 Pi 的 Agent Harness / Durable 设计思想，但按本项目的招聘安全契约独立实现。
+> `boss-agent-cli` 负责招聘平台接入；BOSS Harness 负责模型适配、执行循环、权限边界、会话状态和桌面交互。内核参考 Pi 的 Agent Harness / Durable 设计思想，但按本项目的招聘安全契约独立实现。
 
 ## 先找到你要的入口
 
@@ -26,7 +26,7 @@
 
 ## 能力地图
 
-| 你想解决的问题 | BOSS-CLI 的做法 |
+| 你想解决的问题 | BOSS Harness 的做法 |
 | --- | --- |
 | 让模型帮我找职位 | 将自然语言转换为结构化条件，只查询明确的逻辑页，并保留来源和分页事实。 |
 | 让任务持续推进 | 用串行工具批次、`steering`、`follow-up` 和持久队列管理消息进入回合的时机。 |
@@ -121,7 +121,7 @@ flowchart LR
 - **会话用量**：内核支持时，可在聊天菜单「会话用量」查看本会话合计、摘要任务与每回合的 provider 上报 token（输入、缓存读写、输出、推理）；每回合标注该回合实际使用的自动压缩策略，摘要任务可按任务查看来源、关联回合、触发原因与用量，压缩摘要另标注记录中覆盖到的回合，当前分支上验证通过并生效的压缩摘要任务标注「当前生效」。未上报的字段显示为「—」，不做估算，费用不计价。导出会话时同样附上摘要任务明细；压缩摘要与分支摘要条目还会标注来源任务编号（压缩摘要另附触发原因）。
 - **会话内分支**：内核支持时，可在「会话分支」中查看分支端点、切换到其他分支或从已结束回合重新开始；原回合全部保留可切回，模型只看到当前分支。可选为被放弃分支生成摘要（会调用模型，默认关闭），摘要标注可展开查看模型生成的正文；运行、摘要或排队期间不可切换。
 - **长会话**：可读取预算、规划并生成摘要、查看冻结快照，或从已结束回合创建分支；原始历史不因摘要被删除。会话上下文面板还可为下一条发送设置自动压缩覆盖（开关、触发阈值、保留目标），直接发送与「排到后续回合」的队列消息都会携带，发送后恢复内核默认，不写入会话或启动配置；转向与续接消息不使用该覆盖。队列读取同样有界：会话读取与 `queue/list` 返回全部待处理项和最近的已终结项，长正文只给预览，`queue/get` 按单项读取完整内容。
-- **技能上下文**：从工作区 `.boss-cli/skills/<id>/SKILL.md` 选择技能，内容只作为该回合提示上下文，不执行目录脚本，也不扩大工具清单。
+- **技能上下文**：从工作区 `.boss-harness/skills/<id>/SKILL.md`（旧 `.boss-cli/skills` 仍兼容读取） 选择技能，内容只作为该回合提示上下文，不执行目录脚本，也不扩大工具清单。
 
 ## 安全边界
 
@@ -144,7 +144,7 @@ flowchart LR
 | Anthropic Messages | 使用 `ANTHROPIC_*` 环境变量；`BOSS_HARNESS_ANTHROPIC_MODEL` 可指定默认模型。 |
 | 单次模型传输 | 默认总时限 600 秒；`BOSS_HARNESS_MODEL_REQUEST_TIMEOUT_SECONDS` 可设为 1–3600 秒。 |
 | 招聘 CLI 可执行文件 | 按 `BOSS_CLI_BIN`、并排的 `boss-agent-cli/.venv/bin/boss`、PATH 顺序查找。 |
-| 两类本地状态 | `BOSS_CLI_DATA_DIR` 管理上游登录/平台状态；`BOSS_CLI_HARNESS_DIR` 管理本项目会话。 |
+| 两类本地状态 | `BOSS_CLI_DATA_DIR` 管理上游登录/平台状态；`BOSS_HARNESS_DIR` 管理本项目会话（旧 `BOSS_CLI_HARNESS_DIR` 仍兼容）。 |
 | steering 投递 | `BOSS_HARNESS_STEERING_MODE` 为 `all`（默认，每个投递点注入全部排队 steering）或 `one-at-a-time`（每次只注入最早一条）。 |
 | 持久附件存储 | 默认最多 512 MiB、4096 个对象；`BOSS_HARNESS_MAX_ATTACHMENT_STORAGE_BYTES` 和 `BOSS_HARNESS_MAX_ATTACHMENT_STORAGE_OBJECTS` 可分别设置正整数上限，实际生效值可由 `config/read` 查询。 |
 
@@ -181,6 +181,6 @@ CI 会执行 npm 依赖审计、TypeScript 检查、Electron 源码构建及 Pyt
 - [贡献与验证](CONTRIBUTING.md)：开发约定、提交格式、PR 与发布流程。
 - [上游吸收记录](UPSTREAM.md)：Pi 等参考项目的来源、取舍和适配差异。
 - [版本变化](CHANGELOG.md)：候选版本的功能、修复和验证范围。
-- [Issues](https://github.com/can4hou6joeng4/boss-cli/issues) · [Pull requests](https://github.com/can4hou6joeng4/boss-cli/pulls)
+- [Issues](https://github.com/can4hou6joeng4/boss-harness/issues) · [Pull requests](https://github.com/can4hou6joeng4/boss-harness/pulls)
 
 当前源码版本为 `0.2.0-rc.14`；发布状态和构建结果以 GitHub 页面为准。

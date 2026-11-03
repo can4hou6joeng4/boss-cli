@@ -1,4 +1,4 @@
-/* BOSS-CLI desktop reconstruction. Components are independently implemented. */
+/* BOSS Harness desktop reconstruction. Components are independently implemented. */
 button, input, textarea, select { font: inherit; }
 button { color: inherit; }
 button:disabled { cursor: default; }

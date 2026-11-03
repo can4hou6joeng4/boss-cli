@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { IconCheck, IconClock, IconClose } from "./Icons";
-import type { ContextBranchSummary, ContextCompactJob } from "@boss-cli/protocol";
+import type { ContextBranchSummary, ContextCompactJob } from "@boss-harness/protocol";
 import { readBranchSummary } from "../data/harnessBridge";
 
 function readError(error: unknown): string {

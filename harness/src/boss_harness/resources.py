@@ -301,7 +301,7 @@ class AttachmentStore:
             raise ValueError("path 必须是工作区内的文本文件")
         source = (self.allowed_root / path).resolve()
         if (not source.is_relative_to(self.allowed_root) or source.suffix.lower() not in self.EXTENSIONS
-                or any(p in {".git", "node_modules", ".venv", ".boss-cli"} or p.startswith(".env")
+                or any(p in {".git", "node_modules", ".venv", ".boss-cli", ".boss-harness"} or p.startswith(".env")
                        for p in source.relative_to(self.allowed_root).parts)):
             raise ValueError("附件必须是工作区内支持的文本文件")
         with source.open("rb") as handle:

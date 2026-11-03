@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 
-import type { JsonRpcNotification, PlatformLoginStatus, PlatformLoginAction, PlatformLoginContext, SessionExportSaveRequest, SessionExportSaveResult } from "@boss-cli/protocol";
-import type { HarnessConnectionStatus } from "@boss-cli/app-client";
+import type { JsonRpcNotification, PlatformLoginStatus, PlatformLoginAction, PlatformLoginContext, SessionExportSaveRequest, SessionExportSaveResult } from "@boss-harness/protocol";
+import type { HarnessConnectionStatus } from "@boss-harness/app-client";
 
 declare global {
   interface Window {

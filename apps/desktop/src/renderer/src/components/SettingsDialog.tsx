@@ -256,7 +256,7 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
               </button>
             ))}
           </nav>
-          <div className="settings-sidebar-footer"><img className="settings-brand-mark" src={appIcon} alt="" /><span>BOSS-CLI<span className="settings-sidebar-version">本机前端</span></span></div>
+          <div className="settings-sidebar-footer"><img className="settings-brand-mark" src={appIcon} alt="" /><span>BOSS Harness<span className="settings-sidebar-version">本机前端</span></span></div>
         </aside>
 
         <section className="settings-main">
@@ -318,10 +318,10 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
 
             {section === "about" && (
               <>
-                <div className="settings-about-brand"><img className="settings-about-logo" src={appIcon} alt="" /><h3>BOSS-CLI</h3><p>面向招聘任务的 Agent Harness 工作台</p></div>
-                <SettingRow title="应用界面"><span className="settings-static-value">BOSS-CLI 前端</span></SettingRow>
+                <div className="settings-about-brand"><img className="settings-about-logo" src={appIcon} alt="" /><h3>BOSS Harness</h3><p>面向招聘任务的 Agent Harness 工作台</p></div>
+                <SettingRow title="应用界面"><span className="settings-static-value">BOSS Harness 前端</span></SettingRow>
                 <SettingRow title="界面参考"><span className="settings-static-value">ChatGPT.app<br /><span className="settings-secondary-value">26.1013.40934 (20770)</span></span></SettingRow>
-                <p className="settings-about-description">这是 BOSS-CLI 的界面实现，参考本机应用的布局与交互。它不提供 OpenAI 服务，模型与招聘能力由本项目的 Harness 接入。</p>
+                <p className="settings-about-description">这是 BOSS Harness 的界面实现，参考本机应用的布局与交互。它不提供 OpenAI 服务，模型与招聘能力由本项目的 Harness 接入。</p>
               </>
             )}
           </div>

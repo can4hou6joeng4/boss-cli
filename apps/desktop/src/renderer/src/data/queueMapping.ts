@@ -1,4 +1,4 @@
-import type { QueueItem, QueueListResponse } from "@boss-cli/protocol";
+import type { QueueItem, QueueListResponse } from "@boss-harness/protocol";
 
 /**
  * 内核只返回有界投影：待处理与已结束条目各自封顶，并用 totalItems / truncated 说明总量。

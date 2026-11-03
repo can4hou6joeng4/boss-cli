@@ -96,7 +96,7 @@ export function ProjectSidebar(props: Props) {
   return <aside className={"project-sidebar" + (props.isOpen ? "" : " is-collapsed")} aria-label="项目与聊天" aria-hidden={!props.isOpen} onContextMenu={event => rightClick("preferences", event)}>
     <div className="project-sidebar-header">
       <div className="popover-anchor">
-        <button className="workspace-brand" onClick={() => toggle("brand")} aria-haspopup="menu" aria-expanded={context?.key === "brand"}>BOSS-CLI<IconChevronDown size={12} /></button>
+        <button className="workspace-brand" onClick={() => toggle("brand")} aria-haspopup="menu" aria-expanded={context?.key === "brand"}>BOSS Harness<IconChevronDown size={12} /></button>
         <Popover open={context?.key === "brand"} onClose={close} label="工作区选项">
           <div className="menu-label">招聘工作台</div>
           <button onClick={() => { props.onNewTask(); close(); }}><IconNewChat />新聊天<span className="menu-shortcut">⌘N</span></button>

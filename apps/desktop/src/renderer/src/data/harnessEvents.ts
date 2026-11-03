@@ -1,4 +1,4 @@
-import type { ApprovalState, ProviderFailureInfo, QueueItem, ThreadItem } from "@boss-cli/protocol";
+import type { ApprovalState, ProviderFailureInfo, QueueItem, ThreadItem } from "@boss-harness/protocol";
 import type { MessageItem } from "./mockData";
 import { toMessage, type ApprovalDelivery } from "./harnessBridge";
 

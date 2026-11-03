@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { BrowserWindow, WebContentsView, session, type Session } from "electron";
-import type { PlatformLoginStatus, PlatformLoginContext } from "@boss-cli/protocol";
+import type { PlatformLoginStatus, PlatformLoginContext } from "@boss-harness/protocol";
 import { isLoginVerificationUrl, isOfficialLoginUrl, loginCaptureReadiness, loginViewBounds } from "./security";
 
 type Attempt = PlatformLoginStatus & { id?: string };

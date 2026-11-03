@@ -787,7 +787,7 @@ def _render_markdown(meta: dict, units: list[tuple[str, dict]], counts: dict, to
     view_log = meta["view"] == "log"
     usage = meta["usage"]
     header = [
-        "# BOSS-CLI 会话导出", "",
+        "# BOSS Harness 会话导出", "",
         "> 用于复盘与问题报告。默认已脱敏：凭据、令牌、环境变量、本机绝对路径与附件内容不导出。"
         + ("**本文件包含工具参数与结果明文（未再做个人信息打码，可能含候选人姓名、联系方式、简历等），请勿外传或上传到公开问题报告。**"
            if meta["toolResults"] == "included"
@@ -1034,8 +1034,8 @@ def _render_html(meta: dict, units: list[tuple[str, dict]], counts: dict, total_
              '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; style-src \'unsafe-inline\'">',
              '<meta name="referrer" content="no-referrer">',
              '<meta name="viewport" content="width=device-width, initial-scale=1">',
-             '<title>BOSS-CLI 会话导出</title>', f"<style>{_HTML_STYLE}</style></head><body>",
-             "<header><h1>BOSS-CLI 会话导出</h1>",
+             '<title>BOSS Harness 会话导出</title>', f"<style>{_HTML_STYLE}</style></head><body>",
+             "<header><h1>BOSS Harness 会话导出</h1>",
              f'<p class="notice">{notice}</p>',
              '<ul class="meta">' + "".join(f"<li>{row}</li>" for row in rows) + "</ul>",
              "<p>内容来源：「用户输入」为操作者原文；「模型输出」与模型生成的摘要属于模型判断，需核对；"

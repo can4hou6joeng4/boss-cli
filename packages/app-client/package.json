@@ -1,5 +1,5 @@
 {
-  "name": "@boss-cli/app-client",
+  "name": "@boss-harness/app-client",
   "version": "0.2.0-rc.14",
   "private": true,
   "type": "module",
@@ -8,6 +8,6 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "@boss-cli/protocol": "*"
+    "@boss-harness/protocol": "*"
   }
 }

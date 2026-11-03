@@ -3,7 +3,7 @@ import { app, BrowserWindow } from "electron";
 import { createMainWindow } from "./window";
 import { attachHarness } from "./harness";
 
-app.setName("BOSS-CLI");
+app.setName("BOSS Harness");
 let mainWindow: BrowserWindow | null = null;
 
 function showMainWindow(): void {

@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import type { InitializeResponse, JsonRpcNotification, PlatformLoginStatus, PlatformLoginAction, PlatformLoginContext,
-  SessionExportSaveRequest, SessionExportSaveResult } from "@boss-cli/protocol";
+  SessionExportSaveRequest, SessionExportSaveResult } from "@boss-harness/protocol";
 
 interface HarnessStatus {
   running: boolean;

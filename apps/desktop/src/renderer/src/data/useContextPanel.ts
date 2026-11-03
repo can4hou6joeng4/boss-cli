@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ContextCompactJob, ContextCompactPlan, ContextReadResponse } from "@boss-cli/protocol";
+import type { ContextCompactJob, ContextCompactPlan, ContextReadResponse } from "@boss-harness/protocol";
 import { abortContextCompaction, harnessErrorText, planContextCompaction, readContext, readContextCompaction, startContextCompaction } from "./harnessBridge";
 
 interface StartAttempt {

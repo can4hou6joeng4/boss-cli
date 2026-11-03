@@ -1,4 +1,4 @@
-import { ClientMethods, type ToolResultReadResponse, type ToolResultReference } from "@boss-cli/protocol";
+import { ClientMethods, type ToolResultReadResponse, type ToolResultReference } from "@boss-harness/protocol";
 
 type Requester = <T>(method: string, params: unknown) => Promise<T>;
 const CHUNK_LIMIT = 16384;

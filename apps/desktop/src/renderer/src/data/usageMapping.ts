@@ -1,6 +1,6 @@
 import type {
   AutoCompactionPolicy, ThreadUsageBucket, ThreadUsageSummaryJob, ThreadUsageTurn,
-} from "@boss-cli/protocol";
+} from "@boss-harness/protocol";
 
 const COUNT_KEYS = ["requests", "verifiedRequests", "unverifiedRequests", "promptTokens",
   "uncachedInputTokens", "outputTokens"] as const;

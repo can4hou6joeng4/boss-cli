@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ThreadUsageBucket, ThreadUsageReadResponse, ThreadUsageSummaryJob, ThreadUsageTurn } from "@boss-cli/protocol";
+import type { ThreadUsageBucket, ThreadUsageReadResponse, ThreadUsageSummaryJob, ThreadUsageTurn } from "@boss-harness/protocol";
 import { harnessErrorText, readThreadUsage } from "./harnessBridge";
 import { readPagedItems } from "./pagedRead";
 import { bucketOf, isCount as count, summaryJobOf, turnOf } from "./usageMapping";

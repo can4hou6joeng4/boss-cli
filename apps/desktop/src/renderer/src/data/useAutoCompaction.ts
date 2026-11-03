@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AutoCompactionPolicy, TurnAutoCompactionOverride } from "@boss-cli/protocol";
+import type { AutoCompactionPolicy, TurnAutoCompactionOverride } from "@boss-harness/protocol";
 import { readConfig } from "./harnessBridge";
 
 export interface AutoCompactionDraft {

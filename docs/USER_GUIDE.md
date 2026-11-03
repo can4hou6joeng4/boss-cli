@@ -38,13 +38,13 @@ OpenAI Responses 与 Anthropic Messages 的单次传输默认最多运行 600 �
 
 ## 技能与队列
 
-把运行时技能放在工作区 `.boss-cli/skills/<id>/SKILL.md`，可用 frontmatter 的 `name` 与 `description` 提供菜单名称和说明。在输入区选择技能后，它会随一次直接发送或「排到后续回合」的队列消息进入该回合的提示上下文；技能不会执行目录脚本，也不会扩大工具清单或审批范围。目录最多发现 100 个普通技能文件，每个文件最多 64 KiB；每次最多选择 10 项。转向当前回合的消息不使用技能，已选技能时会提示清除或改为后续回合。
+把运行时技能放在工作区 `.boss-harness/skills/<id>/SKILL.md`（旧 `.boss-cli/skills` 仍兼容读取），可用 frontmatter 的 `name` 与 `description` 提供菜单名称和说明。在输入区选择技能后，它会随一次直接发送或「排到后续回合」的队列消息进入该回合的提示上下文；技能不会执行目录脚本，也不会扩大工具清单或审批范围。目录最多发现 100 个普通技能文件，每个文件最多 64 KiB；每次最多选择 10 项。转向当前回合的消息不使用技能，已选技能时会提示清除或改为后续回合。
 
 任务运行时，可将新消息转向当前回合，或排到当前回合结束后；停止任务是独立操作。队列状态会持久化，尚未投递的项目可以撤回。启动失败且确认输入尚未写入会话的后续回合项可直接「重新排队」：沿用原输入与技能创建新队列消息，并撤回旧项；其余失败、结果不确定或结算异常时，队列会暂停并要求先核对；不会自动重放工具、审批或招聘平台操作。相同 `clientUserMessageId` 会关联原请求，输入已接受不表示回合已成功。会话读取与 `queue/list` 只返回待处理项及最近 50 个已终结项（单次最多 200 项），正文预览最多 600 字符并标注截断；重新排队经 `queue/get` 读取该项完整正文与技能，不会复用预览。
 
 ## 上游 CLI 设置
 
-业务可执行文件依次从 `BOSS_CLI_BIN`、并排的 `boss-agent-cli/.venv/bin/boss`、PATH 查找。`BOSS_CLI_DATA_DIR` 管理上游登录和平台状态；`BOSS_CLI_HARNESS_DIR` 管理本项目会话，两者应分别配置。
+业务可执行文件依次从 `BOSS_CLI_BIN`、并排的 `boss-agent-cli/.venv/bin/boss`、PATH 查找。`BOSS_CLI_DATA_DIR` 管理上游登录和平台状态；`BOSS_HARNESS_DIR` 管理本项目会话（旧 `BOSS_CLI_HARNESS_DIR` 仍兼容），两者应分别配置。
 
 可在启动 Harness 或桌面应用前设置 `BOSS_HARNESS_BROWSER_SOURCE` 为 `auto`、`existing-browser` 或 `stored-cookie`。未设置时继承上游配置；显式设置需要上游支持 `--browser-source`，不支持时会明确失败，不会静默重试。该选项不会读取或改写共享上游配置，也不替代单独的请求和认证边界检查。
 

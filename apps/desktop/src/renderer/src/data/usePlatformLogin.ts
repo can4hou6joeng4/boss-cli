@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { PlatformLoginStatus } from "@boss-cli/protocol";
+import type { PlatformLoginStatus } from "@boss-harness/protocol";
 
 const active = (status: PlatformLoginStatus) => ["opening", "waiting", "saving"].includes(status.state);
 const focusComposer = () => requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".thread-composer-inner textarea")?.focus());

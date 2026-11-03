@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState } from "react";
-import type { PlatformLoginAction, PlatformLoginStatus } from "@boss-cli/protocol";
+import type { PlatformLoginAction, PlatformLoginStatus } from "@boss-harness/protocol";
 import { IconCheck, IconChevronRight, IconClose, IconLock } from "../components/Icons";
 
 export function LoginBrowserPanel({ status, threadId, expanded, onToggleExpanded, onClose, onRetry }: {

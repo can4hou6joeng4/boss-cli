@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { QueueItem } from "@boss-cli/protocol";
+import type { QueueItem } from "@boss-harness/protocol";
 import { IconClose } from "../components/Icons";
 import { compactionLabel, compactionTitle } from "./queueCompaction";
 
