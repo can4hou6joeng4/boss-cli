@@ -4,6 +4,7 @@ import { Popover } from "../components/Popover";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
 import { UI_STORAGE_PREFIX } from "../data/uiStorage";
 import { hideActionLabel, visibleSessions } from "../data/sidebarVisibility";
+import { booleanRecord } from "../data/preferenceShapes";
 import "../styles/sidebar-menus.css";
 
 export interface SidebarPreferences { grouping: "project" | "list"; sort: "updated" | "name"; showRecent: boolean; showHidden: boolean; }
@@ -23,7 +24,7 @@ interface Props {
 }
 export function ProjectSidebar(props: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
-    try { return JSON.parse(localStorage.getItem(UI_STORAGE_PREFIX + "collapsedProjects") ?? "{}"); } catch { return {}; }
+    try { return booleanRecord(JSON.parse(localStorage.getItem(UI_STORAGE_PREFIX + "collapsedProjects") ?? "null")); } catch { return {}; }
   });
   const [context, setContext] = useState<{ key: string; point?: { x: number; y: number } } | null>(null);
   const [view, setView] = useState<"main" | "move" | "copy">("main");
