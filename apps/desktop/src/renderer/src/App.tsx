@@ -14,6 +14,7 @@ import { BranchDialog, type BranchTarget } from "./components/BranchDialog";
 import { UsageDialog } from "./components/UsageDialog";
 import { ExportDialog } from "./components/ExportDialog";
 import { useThreadUsage } from "./data/useThreadUsage";
+import { UI_STORAGE_PREFIX } from "./data/uiStorage";
 import { branchSupport, branchSwitchBlock, useSessionBranches } from "./data/useSessionBranches";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
@@ -33,7 +34,7 @@ function legacyRouteMismatch(session: { provider?: string; model?: string }, def
 
 export function App(): JSX.Element {
   const [isDark, setIsDark] = useState(() => {
-    try { const saved = localStorage.getItem("boss-cli.ui.theme"); if (saved) return saved === "dark"; } catch {}
+    try { const saved = localStorage.getItem(UI_STORAGE_PREFIX + "theme"); if (saved) return saved === "dark"; } catch {}
     return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? true;
   });
   const [harnessUp, setHarnessUp] = useState(false);
@@ -166,7 +167,7 @@ export function App(): JSX.Element {
   }, [continuationSupported]);
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
-    try { localStorage.setItem("boss-cli.ui.theme", isDark ? "dark" : "light"); } catch {}
+    try { localStorage.setItem(UI_STORAGE_PREFIX + "theme", isDark ? "dark" : "light"); } catch {}
   }, [isDark]);
   useEffect(() => {
     if (!window.boss) return;

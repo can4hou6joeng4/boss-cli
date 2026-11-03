@@ -5,6 +5,7 @@ import { ProjectSidebar, type SidebarPreferences } from "./ProjectSidebar";
 import { HomeView } from "./HomeView";
 import { ConversationArea } from "./ConversationArea";
 import type { TurnContinuationReadResponse } from "@boss-harness/protocol";
+import { UI_STORAGE_PREFIX } from "../data/uiStorage";
 import { RightPanel } from "./RightPanel";
 import { LoginBrowserPanel } from "./LoginBrowserPanel";
 import { LoginChoice } from "../components/LoginChoice";
@@ -52,7 +53,7 @@ export interface AppShellProps {
   onCreateConnectionSession: () => Promise<SessionItem | null>;
 }
 function preference<T>(key: string, initial: T): T {
-  try { return JSON.parse(localStorage.getItem("boss-cli.ui." + key) ?? "null") as T ?? initial; } catch { return initial; }
+  try { return JSON.parse(localStorage.getItem(UI_STORAGE_PREFIX + key) ?? "null") as T ?? initial; } catch { return initial; }
 }
 interface Route { page: WorkspacePage; sessionId?: string; }
 export function AppShell(props: AppShellProps) {
@@ -163,7 +164,7 @@ export function AppShell(props: AppShellProps) {
   }, [props.activeSession?.id, props.isHomeView]);
   useEffect(() => {
     const entries: Record<string, unknown> = { summaryOpen, pinned, hidden, aliases, groups, projectAliases, threadGroups, sidebar: sidebarPreferences };
-    for (const [key, value] of Object.entries(entries)) { try { localStorage.setItem("boss-cli.ui." + key, JSON.stringify(value)); } catch { /* UI preferences are optional. */ } }
+    for (const [key, value] of Object.entries(entries)) { try { localStorage.setItem(UI_STORAGE_PREFIX + key, JSON.stringify(value)); } catch { /* UI preferences are optional. */ } }
   }, [summaryOpen, pinned, hidden, aliases, groups, projectAliases, threadGroups, sidebarPreferences]);
   useEffect(() => {
     let current = true;

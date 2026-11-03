@@ -2,6 +2,7 @@ import { useEffect, useState, type MouseEvent } from "react";
 import { IconNewChat, IconSearch, IconFolder, IconChevronDown, IconChevronRight, IconMore, IconNotification, IconPlus, IconSettings, IconHistory, IconCopy, IconEdit, IconPin, IconCheck, IconSliders, IconClose } from "../components/Icons";
 import { Popover } from "../components/Popover";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
+import { UI_STORAGE_PREFIX } from "../data/uiStorage";
 import "../styles/sidebar-menus.css";
 
 export interface SidebarPreferences { grouping: "project" | "list"; sort: "updated" | "name"; showRecent: boolean; }
@@ -17,7 +18,7 @@ interface Props {
 }
 export function ProjectSidebar(props: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() => {
-    try { return JSON.parse(localStorage.getItem("boss-cli.ui.collapsedProjects") ?? "{}"); } catch { return {}; }
+    try { return JSON.parse(localStorage.getItem(UI_STORAGE_PREFIX + "collapsedProjects") ?? "{}"); } catch { return {}; }
   });
   const [context, setContext] = useState<{ key: string; point?: { x: number; y: number } } | null>(null);
   const [view, setView] = useState<"main" | "move" | "copy">("main");
@@ -40,7 +41,7 @@ export function ProjectSidebar(props: Props) {
     catch { setNotice("复制失败，请检查系统剪贴板权限"); }
     close();
   };
-  useEffect(() => { try { localStorage.setItem("boss-cli.ui.collapsedProjects", JSON.stringify(collapsed)); } catch {} }, [collapsed]);
+  useEffect(() => { try { localStorage.setItem(UI_STORAGE_PREFIX + "collapsedProjects", JSON.stringify(collapsed)); } catch {} }, [collapsed]);
   useEffect(() => { if (!props.isOpen) close(); }, [props.isOpen]);
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(""), 2600); return () => clearTimeout(timer); }, [notice]);
   const sessionRow = (session: SessionItem, scope: string) => {
