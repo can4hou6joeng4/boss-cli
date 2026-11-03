@@ -21,7 +21,7 @@ import { type ModelDescriptor, type SkillDescriptor, type ToolDescriptor } from 
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
 import type { CheckQueueSubmission, ComposerQueue } from "../data/composerDraft";
 import type { QueueItem } from "@boss-harness/protocol";
-import { harnessErrorText, listSkills, listTools, type SkillCatalogState, type ToolCatalogState, type ApprovalDelivery, type ApprovalOutcome } from "../data/harnessBridge";
+import { harnessErrorText, listPendingApprovals, listSkills, listTools, type SkillCatalogState, type ToolCatalogState, type ApprovalDelivery, type ApprovalOutcome } from "../data/harnessBridge";
 import type { SkillProblem } from "@boss-harness/protocol";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import type { ModelRetryStatus } from "../data/modelRetry";
@@ -83,6 +83,27 @@ export function AppShell(props: AppShellProps) {
   const [skillFocus, setSkillFocus] = useState<string | null>(null);
   const [messageFocus, setMessageFocus] = useState<{ threadId: string; itemId: string } | null>(null);
   const [settings, setSettings] = useState(false), [search, setSearch] = useState(false), [notifications, setNotifications] = useState(false);
+  const [pendingApprovals, setPendingApprovals] = useState(0);
+  useEffect(() => {
+    // 示例模式与断开的内核不读取审批；读取失败保留上一次数量，不把失败显示成 0。
+    if (props.simulateLocal || props.harnessUp === false) { setPendingApprovals(0); return; }
+    let cancelled = false, inFlight = false;
+    const load = () => {
+      if (inFlight || document.visibilityState === "hidden") return;
+      inFlight = true;
+      void listPendingApprovals(100).then(
+        approvals => { if (!cancelled) setPendingApprovals(approvals.length); },
+        () => {},
+      ).finally(() => { inFlight = false; });
+    };
+    load();
+    const timer = window.setInterval(load, 30_000);
+    const onFocus = () => load();
+    const onVisibility = () => { if (document.visibilityState === "visible") load(); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onVisibility); };
+  }, [props.simulateLocal, props.harnessUp]);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [summaryAvailable, setSummaryAvailable] = useState(() => window.matchMedia("(min-width: 1200px)").matches);
   const [summaryOpen, setSummaryOpen] = useState(() => booleanPreference(preference("summaryOpen", true), true));
@@ -285,7 +306,7 @@ export function AppShell(props: AppShellProps) {
         <div className="workspace-surface">
           <ProjectSidebar isOpen={props.isSidebarOpen} folders={allFolders} activeSessionId={props.activeSession?.id ?? null} isHomeView={props.isHomeView || page !== "home"} pinned={pinned}
             hiddenSessionIds={hidden} onUnhideSession={id => setHidden(prev => prev.filter(item => item !== id))}
-            preferences={sidebarPreferences} onPreferencesChange={setSidebarPreferences} localGroupIds={groups.map(group => group.id)} onSelectSession={select} onNewTask={newTask} onNewTaskInProject={newTaskInProject} onSearch={() => setSearch(true)} onOpenSettings={() => openSettings()} onRecents={() => openRoute({ page: "recents" })} onNewProject={() => setNewProject(true)} onNotifications={() => setNotifications(true)}
+            preferences={sidebarPreferences} onPreferencesChange={setSidebarPreferences} localGroupIds={groups.map(group => group.id)} onSelectSession={select} onNewTask={newTask} onNewTaskInProject={newTaskInProject} onSearch={() => setSearch(true)} onOpenSettings={() => openSettings()} onRecents={() => openRoute({ page: "recents" })} onNewProject={() => setNewProject(true)} pendingApprovals={pendingApprovals} onNotifications={() => setNotifications(true)}
             onRename={session => { setRename(session); setName(session.title); }} onPin={id => setPinned(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id])} onHide={id => setHidden(prev => [...prev.filter(item => item !== id), id])} onDelete={setDeleteSession}
             onArchive={session => { void props.onArchiveSession?.(session, true); }} onUnarchive={session => { void props.onArchiveSession?.(session, false); }}
             onMoveSession={(id, folderId) => setThreadGroups(prev => ({ ...prev, [id]: folderId }))} onRenameProject={folder => { setRenameProject(folder); setFolderName(folder.name); }} onRemoveProject={setRemoveProject} />
@@ -306,7 +327,7 @@ export function AppShell(props: AppShellProps) {
     </div>
     <SettingsDialog isOpen={settings} initialSection={settingsSection} onClose={() => setSettings(false)} isDark={props.isDark} onToggleTheme={props.onToggleTheme} onOpenShortcuts={() => { setSettings(false); props.onOpenShortcuts(); }} harnessUp={props.harnessUp ?? false} onLogin={() => { void loginEntry(true); }} />
     {search && <SearchDialog folders={allFolders} onSelect={select} onOpenMessage={openMessage} onClose={() => setSearch(false)} searchMessages={props.threadSearchable === true} searchArchived={props.threadSearchArchived === true} />}
-    {notifications && <NotificationsDialog folders={allFolders} preview={props.simulateLocal === true} onSelect={select} onClose={() => setNotifications(false)} />}
+    {notifications && <NotificationsDialog folders={allFolders} preview={props.simulateLocal === true} onSelect={select} onLoaded={setPendingApprovals} onClose={() => setNotifications(false)} />}
     {newProject && <ModalSurface title="新建项目" onClose={() => setNewProject(false)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!projectName.trim()) return; const id = "group-" + crypto.randomUUID(); setGroups(prev => [...prev, { id, name: projectName.trim(), sessions: [] }]); setDraftProjectId(id); resetDraft(); openRoute({ page: "home" }); setProjectName(""); setNewProject(false); }}><label>项目名称<input autoFocus maxLength={60} value={projectName} onChange={event => setProjectName(event.target.value)} placeholder="例如：核心产研团队招聘" /></label><p>创建一个保存在此设备上的项目分组。</p><button className="solid-button" disabled={!projectName.trim()}>创建项目</button></form></ModalSurface>}
     {rename && <ModalSurface title="更改显示名称" onClose={() => setRename(null)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!name.trim()) return; setAliases(prev => ({ ...prev, [rename.id]: name.trim() })); setRename(null); }}><label>聊天名称<input autoFocus value={name} maxLength={100} onChange={event => setName(event.target.value)} /></label><p>只更新此工作区的显示名称。</p><button className="solid-button" disabled={!name.trim()}>保存</button></form></ModalSurface>}
     {renameProject && <ModalSurface title="更改项目显示名称" onClose={() => setRenameProject(null)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!folderName.trim()) return; setProjectAliases(prev => ({ ...prev, [renameProject.id]: folderName.trim() })); setRenameProject(null); }}><label>项目名称<input autoFocus maxLength={60} value={folderName} onChange={event => setFolderName(event.target.value)} /></label><p>显示名称保存在此设备上。</p><button className="solid-button" disabled={!folderName.trim()}>保存</button></form></ModalSurface>}

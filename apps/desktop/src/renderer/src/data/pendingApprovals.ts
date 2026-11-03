@@ -67,3 +67,9 @@ export function approvalRemainingText(deadline: number, now = Date.now()): strin
   if (remaining < HOUR) return `${Math.ceil(remaining / MINUTE)} 分钟后过期`;
   return `${Math.ceil(remaining / HOUR)} 小时后过期`;
 }
+
+/** 铃铛徽标文案：没有待审批（或计数不可读）时不显示，超过 9 条显示 9+。 */
+export function approvalBadgeText(count: number): string | null {
+  if (typeof count !== "number" || !Number.isFinite(count) || count <= 0) return null;
+  return count > 9 ? "9+" : String(Math.floor(count));
+}
