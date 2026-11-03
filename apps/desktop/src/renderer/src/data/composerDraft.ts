@@ -7,7 +7,8 @@ export type QueueSubmissionCheck =
   | { status: "found"; item: QueueItem }
   | { status: "cancelled"; item: QueueItem }
   | { status: "missing" }
-  | { status: "unavailable" };
+  /** reason 说明读取失败的原因；缺省表示本地内核未连接。 */
+  | { status: "unavailable"; reason?: string };
 export interface ComposerDraft {
   id: string;
   text: string;

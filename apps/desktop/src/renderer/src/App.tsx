@@ -178,7 +178,10 @@ export function App(): JSX.Element {
       if (!id) return;
       if (["queue/updated", "turn/steeringApplied", "turn/started", "turn/completed"].includes(event.method)) {
         void listQueue(id).then(page => {
-          if (page && activeRef.current?.id === id) applyQueuePage(page);
+          if (activeRef.current?.id === id) applyQueuePage(page);
+        }).catch(cause => {
+          // 内核报告队列变化但读取失败：保留面板旧内容，明确提示可能已过期；不自动重试。
+          if (activeRef.current?.id === id) setError(`队列更新读取失败：${harnessErrorText(cause)}。队列面板保留上一次内容，可能已过期。`);
         });
       }
       if (["thread/created", "thread/archived", "thread/unarchived", "thread/renamed", "thread/model/updated"].includes(event.method)) { void refresh(); return; }
@@ -536,8 +539,12 @@ export function App(): JSX.Element {
   const handleCheckQueueSubmission = useCallback(async (clientUserMessageId: string): Promise<QueueSubmissionCheck> => {
     const session = activeRef.current;
     if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp) return { status: "unavailable" };
-    const page = await listQueue(session.id);
-    if (!page) return { status: "unavailable" };
+    let page: QueuePage;
+    try {
+      page = await listQueue(session.id);
+    } catch (cause) {
+      return { status: "unavailable", reason: harnessErrorText(cause) };
+    }
     if (activeRef.current?.id === session.id) applyQueuePage(page);
     const item = page.items.find(candidate => candidate.clientUserMessageId === clientUserMessageId);
     if (!item) return { status: "missing" };
@@ -560,7 +567,13 @@ export function App(): JSX.Element {
     } catch {
       // 新请求已受理；旧项保持暂停，刷新后仍可手动撤回。
     }
-    const page = await listQueue(session.id);
+    let page: QueuePage | null = null;
+    try {
+      page = await listQueue(session.id);
+    } catch (cause) {
+      // 新请求已受理；刷新失败时按本地结果更新并说明其余条目可能过期，不回滚这次重新排队。
+      if (activeRef.current?.id === session.id) setError(`重新排队已受理，但队列刷新失败：${harnessErrorText(cause)}。界面按本地结果更新，其余条目可能已过期。`);
+    }
     if (activeRef.current?.id === session.id) {
       if (page) applyQueuePage(page);
       else setQueueItems(previous => [...previous.filter(existing => existing.id !== item.id && existing.id !== created.id), created]);
@@ -574,11 +587,16 @@ export function App(): JSX.Element {
       const item = await removeQueuedItem(session.id, queueId);
       if (activeRef.current?.id === session.id) setQueueItems(previous => previous.map(existing => existing.id === item.id ? item : existing));
       return true;
-    } catch {
+    } catch (cause) {
       if (activeRef.current?.id !== session.id) return false;
-      setError("撤回结果尚未确认，正在刷新队列状态；不会自动重复撤回。");
-      const page = await listQueue(session.id);
-      if (page && activeRef.current?.id === session.id) applyQueuePage(page);
+      // 撤回是否生效未知；能读到队列就按内核状态收敛，读不到则明确说明面板可能过期。
+      let page: QueuePage | null = null;
+      try { page = await listQueue(session.id); } catch {}
+      if (activeRef.current?.id !== session.id) return false;
+      if (page) applyQueuePage(page);
+      setError(page
+        ? `撤回结果尚未确认（${harnessErrorText(cause)}），已重新读取队列；不会自动重复撤回。`
+        : `撤回结果尚未确认（${harnessErrorText(cause)}），且无法重新读取队列；请稍后核对，不会自动重复撤回。`);
       return false;
     }
   }, [applyQueuePage, harnessUp]);

@@ -282,14 +282,13 @@ export async function queueFollowUp(params: QueueAddParams): Promise<QueueItem> 
   return response.queueItem;
 }
 
-export async function listQueue(threadId: string): Promise<QueuePage | null> {
+/** 会话队列的当前投影。失败不吞掉：调用方要保留面板旧内容并明确提示，而不是当成「队列为空」。 */
+export async function listQueue(threadId: string): Promise<QueuePage> {
   const api = bridge();
-  if (!api) return null;
-  try {
-    return queuePageOf(await api.request<QueueListResponse>(ClientMethods.queueList, { threadId }));
-  } catch {
-    return null;
-  }
+  if (!api) throw new Error("本地 Harness 未连接");
+  const page = queuePageOf(await api.request<QueueListResponse>(ClientMethods.queueList, { threadId }));
+  if (!page) throw new Error("队列列表响应无法识别");
+  return page;
 }
 
 export async function readQueueItem(threadId: string, queueId: string): Promise<QueueItem> {

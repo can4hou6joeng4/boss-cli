@@ -217,7 +217,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
       const result = await onCheckQueueSubmission(pending.id);
       if (!alive.current) return;
       if (result.status === "unavailable") {
-        setNotice("暂时无法读取内核队列；草稿和请求编号已保留，请连接恢复后再核对。");
+        setNotice(`暂时无法读取内核队列${result.reason ? `（${result.reason}）` : ""}；草稿和请求编号已保留，请稍后或恢复连接后再核对。`);
         return;
       }
       if (result.status === "found") {
