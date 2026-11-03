@@ -7,6 +7,7 @@ import { sessionRows } from "../data/sessionRows";
 import { buildSearchOptions, type SearchOption } from "../data/searchOptions";
 import { splitHighlight } from "../data/findHighlight";
 import { searchThreadMessages } from "../data/harnessBridge";
+import { clearRecentSearches, readRecentSearches, rememberRecentSearch, RECENT_SEARCH_MIN_LENGTH } from "../data/recentSearches";
 
 /** 用 `mark` 标出关键词；无命中时原样输出。 */
 function Highlighted({ text, query }: { text: string; query: string }) {
@@ -28,6 +29,7 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
   const [hits, setHits] = useState<ThreadSearchMatch[]>([]);
   const [hitsTruncated, setHitsTruncated] = useState(false);
   const [messageState, setMessageState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [recent, setRecent] = useState<string[]>(readRecentSearches);
   const rows = sessionRows(folders, query);
   const sessions = sessionRows(folders, "");
   const sessionById = new Map(sessions.map(row => [row.session.id, row.session]));
@@ -62,6 +64,7 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
   }, [query, searchMessages, folders]);
   const openOption = (option: SearchOption | undefined) => {
     if (!option) return;
+    if (query.trim().length >= RECENT_SEARCH_MIN_LENGTH) setRecent(rememberRecentSearch(query));
     if (option.kind === "session") { onSelect(option.row.session); onClose(); return; }
     if (onOpenMessage) { onOpenMessage(option.session, option.hit.itemId); onClose(); } else { onSelect(option.session); onClose(); }
   };
@@ -84,6 +87,11 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
     }} />{query && <button type="button" className="search-clear" aria-label="清除搜索" onClick={() => { setQuery(""); setIndex(0); inputRef.current?.focus(); }}><IconClose size={15} /></button>}</div>
     <div className="search-results" ref={resultsRef}>
       <p id={statusId} role="status">{query.trim() ? `找到 ${rows.length} 个聊天${messageState === "ready" ? `、${hits.length} 条消息` : ""}` : "最近聊天"}</p>
+      {!query.trim() && recent.length > 0 && <div className="search-recent" role="group" aria-label="最近搜索">
+        <span className="search-recent-label">最近搜索</span>
+        {recent.map(term => <button type="button" key={term} className="search-recent-chip" onClick={() => { setQuery(term); setIndex(0); inputRef.current?.focus(); }}>{term}</button>)}
+        <button type="button" className="search-recent-clear" onClick={() => { clearRecentSearches(); setRecent([]); }}>清除</button>
+      </div>}
       <div id={listId} role="listbox" aria-label="聊天与消息搜索结果">
         {query.trim().length >= 2 && searchMessages && <>
           <p className="search-message-heading" role="presentation">{messageState === "loading" ? "正在搜索消息…"
