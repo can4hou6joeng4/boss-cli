@@ -2,18 +2,23 @@ import { join } from "node:path";
 import { BrowserWindow, dialog, shell } from "electron";
 import { isAllowedExternalUrl, isTrustedRendererUrl } from "./security";
 import { rendererFailurePage } from "./rendererFailure";
+import type { WindowRestore } from "./windowState";
 
 /**
  * 主窗口配置照搬 Codex 实测值：
  * titleBarStyle=hiddenInset、红绿灯位置 {x:10}、vibrancy=menu、背景透明，
  * 最小尺寸 240/160。
  */
-export function createMainWindow(): BrowserWindow {
+export function createMainWindow(restored?: WindowRestore): BrowserWindow {
+  const position = restored ? {
+    width: restored.bounds.width, height: restored.bounds.height,
+    ...(restored.bounds.x !== undefined ? { x: restored.bounds.x } : {}),
+    ...(restored.bounds.y !== undefined ? { y: restored.bounds.y } : {}),
+  } : { width: 1440, height: 900 };
   const window = new BrowserWindow({
     title: "BOSS Harness",
     icon: join(__dirname, "../../resources/icon.png"),
-    width: 1440,
-    height: 900,
+    ...position,
     minWidth: 240,
     minHeight: 160,
     show: false,
@@ -34,7 +39,11 @@ export function createMainWindow(): BrowserWindow {
     },
   });
 
-  window.once("ready-to-show", () => window.show());
+  // 最大化要在窗口显示时恢复：先按还原后的位置创建，再最大化，取消最大化后回到保存的位置。
+  window.once("ready-to-show", () => {
+    if (restored?.maximized && !window.isDestroyed()) window.maximize();
+    window.show();
+  });
 
   // 系统没有可用处理程序或地址无法打开时不能静默：把完整地址交给用户手动复制。
   const openExternal = (url: string): void => {

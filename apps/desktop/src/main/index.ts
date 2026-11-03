@@ -1,8 +1,9 @@
 import { join } from "node:path";
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, screen } from "electron";
 import { createMainWindow } from "./window";
 import { attachHarness } from "./harness";
 import { adoptLegacyUserData } from "./profile";
+import { readWindowState, restoreWindowState, trackWindowState } from "./windowState";
 
 app.setName("BOSS Harness");
 // 旧产品名的 userData 里还有界面偏好与草稿；在读取任何本地状态之前接管，避免升级后丢数据。
@@ -17,7 +18,11 @@ function showMainWindow(): void {
     existing.focus();
     return;
   }
-  mainWindow = createMainWindow();
+  // 位置、尺寸与最大化状态保存在 userData；恢复前按当前显示器校验，避免窗口落在屏幕外。
+  const statePath = join(app.getPath("userData"), "window-state.json");
+  const restored = restoreWindowState(readWindowState(statePath), screen.getAllDisplays().map(display => display.workArea));
+  mainWindow = createMainWindow(restored);
+  trackWindowState(mainWindow, statePath);
   mainWindow.once("closed", () => { mainWindow = null; });
   attachHarness(mainWindow);
 }
