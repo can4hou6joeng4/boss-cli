@@ -253,6 +253,13 @@ export interface SessionErrorNotification {
 
 export type ItemKind = "userMessage" | "agentMessage" | "toolCall" | "system";
 
+/** 尚未形成回合的队列项分类计数；与 `queueActiveItems` 来自同一次状态归并。 */
+export interface QueueStatusCounts {
+  queued: number;
+  delivering: number;
+  paused: number;
+}
+
 export interface ThreadSummary {
   toolPolicy?: "readOnly" | "approval";
   id: string;
@@ -269,6 +276,8 @@ export interface ThreadSummary {
   archived?: boolean;
   /** 尚未形成回合的队列项数量（排队、投递中、暂停）；旧内核不返回。 */
   queueActiveItems?: number;
+  /** 同一批待处理项的分类数量；没有待处理项或旧内核不返回时缺省。 */
+  queueCounts?: QueueStatusCounts;
   forkedFromId?: string;
   forkedFromTurnId?: string;
 }

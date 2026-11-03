@@ -52,6 +52,7 @@ import {
   type ThreadLeafSetParams,
   type TurnListResponse,
   type ThreadUsageReadResponse,
+  type QueueStatusCounts,
 } from "@boss-harness/protocol";
 import { formatRelativeTime } from "@boss-harness/shared";
 import { queuePageOf, type QueuePage } from "./queueMapping";
@@ -109,6 +110,22 @@ export function harnessErrorText(error: unknown): string {
     return `${message}（内核 ${value.code}${typeof data?.code === "string" ? ` / ${data.code}` : ""}）`;
   }
   return message;
+}
+
+/** 校验内核的队列分类计数；任一项非法或与总数不一致时整体丢弃，按旧内核处理。 */
+function mapQueueCounts(value: unknown, activeItems: unknown): QueueStatusCounts | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const counts = value as Record<string, unknown>;
+  const read = (key: string): number | undefined => {
+    const count = counts[key];
+    return typeof count === "number" && Number.isSafeInteger(count) && count >= 0 ? count : undefined;
+  };
+  const queued = read("queued"), delivering = read("delivering"), paused = read("paused");
+  if (queued === undefined || delivering === undefined || paused === undefined) return undefined;
+  const total = queued + delivering + paused;
+  if (typeof activeItems === "number" && Number.isSafeInteger(activeItems) && activeItems >= 0
+    && total !== activeItems) return undefined;
+  return { queued, delivering, paused };
 }
 
 function contextRequest<T>(method: string, params: unknown): Promise<T> {
@@ -184,6 +201,7 @@ export async function listThreads(archived = false): Promise<SessionItem[]> {
     queueActiveItems: typeof thread.queueActiveItems === "number"
       && Number.isSafeInteger(thread.queueActiveItems) && thread.queueActiveItems >= 0
       ? thread.queueActiveItems : undefined,
+    queueCounts: mapQueueCounts(thread.queueCounts, thread.queueActiveItems),
     toolPolicy: thread.toolPolicy ?? "approval",
     provider: thread.provider,
     model: thread.model,
@@ -306,6 +324,7 @@ export async function setThreadReasoning(threadId: string, effort: string | null
     queueActiveItems: typeof thread.queueActiveItems === "number"
       && Number.isSafeInteger(thread.queueActiveItems) && thread.queueActiveItems >= 0
       ? thread.queueActiveItems : undefined,
+    queueCounts: mapQueueCounts(thread.queueCounts, thread.queueActiveItems),
     toolPolicy: thread.toolPolicy ?? "approval", model: thread.model,
     reasoningEffort: thread.reasoningEffort, projectId: HARNESS_PROJECT_ID };
 }

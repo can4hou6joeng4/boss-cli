@@ -1418,8 +1418,8 @@ class SessionStore:
                 if key not in {"firstOrdinal", "lastOrdinal", "boundaryOrdinal"}}
 
     @staticmethod
-    def _queue_active_count(entries: list[dict]) -> int:
-        """按队列项 id 归并最新状态，只统计尚未形成回合的待处理项。"""
+    def _queue_status_counts(entries: list[dict]) -> dict[str, int]:
+        """按队列项 id 归并最新状态，分别统计尚未形成回合的待处理项。"""
         statuses: dict[str, object] = {}
         for entry in entries:
             if entry.get("type") != "queue":
@@ -1428,7 +1428,11 @@ class SessionStore:
             item_id = payload.get("id") if isinstance(payload, dict) else None
             if isinstance(item_id, str) and item_id:
                 statuses[item_id] = payload.get("status")
-        return sum(1 for status in statuses.values() if status in ACTIVE_QUEUE_STATUSES)
+        counts = {"queued": 0, "delivering": 0, "paused": 0}
+        for status in statuses.values():
+            if isinstance(status, str) and status in ACTIVE_QUEUE_STATUSES:
+                counts[status] += 1
+        return counts
 
     def _index_thread(self, thread_id: str, connection: sqlite3.Connection) -> None:
         path = self.path_for(thread_id)
@@ -1453,7 +1457,10 @@ class SessionStore:
                         archived=bool(metadata.get("archived", False)))
         turns = self._turns(entries, thread_id)
         metadata["lastTurn"] = self._public_turn(turns[-1]) if turns else None
-        metadata["queueActiveItems"] = self._queue_active_count(entries)
+        queue_counts = self._queue_status_counts(entries)
+        metadata["queueActiveItems"] = sum(queue_counts.values())
+        if metadata["queueActiveItems"]:
+            metadata["queueCounts"] = queue_counts
         connection.execute("""INSERT INTO threads
             (id,session_id,rollout_path,title,project_id,archived,created_at,updated_at,
              last_turn_id,metadata_json,indexed_size,indexed_mtime_ns)
