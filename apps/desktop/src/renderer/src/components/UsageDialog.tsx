@@ -109,6 +109,7 @@ export function UsageDialog({ isOpen, onClose, state, messages, branchViews, con
               <td><span title={inputOf(turn.turnId)}>{turnLabel(turn)}</span><small>{clip(inputOf(turn.turnId), turn.turnId)}</small>
                 {timing && <small data-usage-field="turnTiming">{timing}</small>}
                 {turn.compactionPolicy && <small data-usage-field="compactionPolicy" title={compactionTitle(turn.compactionPolicy)}>{compactionLabel(turn.compactionPolicy)}</small>}
+                {turn.skillIds && turn.skillIds.length > 0 && <small data-usage-field="skillIds" title={turn.skillIds.join("、")}>技能：{turn.skillIds.join("、")}</small>}
               </td>
               <td><span>{turn.models.join("、") || DASH}</span><small>{turn.providers.join("、")}</small></td>
               <td data-usage-field="requests">{number(turn.requests)}{unreported(turn) > 0 && <small data-usage-unreported title="provider 未上报用量，不是 0">未上报 {number(unreported(turn))}</small>}{turn.unverifiedRequests > unreported(turn) && <small title={`未计入：${reasons(turn)}`}>不计入 {number(turn.unverifiedRequests - unreported(turn))}</small>}</td>

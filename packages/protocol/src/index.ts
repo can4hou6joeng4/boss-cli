@@ -1191,6 +1191,8 @@ export interface ThreadUsageTurn extends ThreadUsageBucket {
   status?: TurnStatus;
   /** 该回合记录的实际自动压缩策略；内核只返回通过校验的字段（历史记录可能只含部分字段），非法或旧内核不返回。 */
   compactionPolicy?: Partial<AutoCompactionPolicy>;
+  /** 该回合实际注入的技能 id（最多 10 项）；旧记录或旧内核不返回。 */
+  skillIds?: string[];
 }
 export interface ThreadUsageReadResponse {
   threadId: string;
