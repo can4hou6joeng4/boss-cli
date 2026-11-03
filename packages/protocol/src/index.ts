@@ -689,6 +689,8 @@ export interface TurnSummary {
   taskResumePolicy?: TurnTaskResumePolicy;
   /** 该回合实际使用的自动压缩策略；旧记录可能没有此字段。 */
   compactionPolicy?: AutoCompactionPolicy;
+  /** 该回合实际注入的技能 id（最多 10 项）；旧记录或旧内核可能没有此字段。 */
+  skillIds?: string[];
   /** 回合以 error / blocked 结束时记录的原因码；旧记录或中断回合可能没有。 */
   failureCode?: string;
 }
