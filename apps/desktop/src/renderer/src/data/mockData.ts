@@ -73,6 +73,8 @@ export interface SessionItem {
   /** 内核回报的当前/最近回合，用于界面重载后恢复停止控制。 */
   turnId?: string;
   lastTurnStatus?: TurnStatus;
+  /** 上一回合以 error / blocked 结束时的原因码；重启后仍可用于提示。 */
+  lastTurnErrorCode?: string;
   taskResumePolicy?: TurnTaskResumePolicy;
   id: string;
   title: string;

@@ -259,7 +259,7 @@ export interface ThreadSummary {
   title: string;
   createdAt: string;
   updatedAt: string;
-  lastTurn?: Pick<TurnSummary, "turnId" | "status" | "taskPhase" | "taskPhaseStatus" | "taskAttempt" | "taskRestartLimit" | "taskRecoveryReason" | "taskResumePolicy"> | null;
+  lastTurn?: Pick<TurnSummary, "turnId" | "status" | "taskPhase" | "taskPhaseStatus" | "taskAttempt" | "taskRestartLimit" | "taskRecoveryReason" | "taskResumePolicy" | "failureCode"> | null;
   sessionId?: string;
   projectId?: string | null;
   provider?: string;
@@ -662,6 +662,8 @@ export interface TurnSummary {
   taskResumePolicy?: TurnTaskResumePolicy;
   /** 该回合实际使用的自动压缩策略；旧记录可能没有此字段。 */
   compactionPolicy?: AutoCompactionPolicy;
+  /** 回合以 error / blocked 结束时记录的原因码；旧记录或中断回合可能没有。 */
+  failureCode?: string;
 }
 export interface TurnListResponse { turns: TurnSummary[]; nextCursor: string | null;
   view?: "branch"; branch?: ThreadLeafState }

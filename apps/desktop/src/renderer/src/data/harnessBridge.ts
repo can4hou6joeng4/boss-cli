@@ -179,6 +179,7 @@ export async function listThreads(archived = false): Promise<SessionItem[]> {
       : thread.lastTurn?.status === "interrupted" ? "interrupted" as const : "idle" as const,
     turnId: thread.lastTurn?.turnId,
     lastTurnStatus: thread.lastTurn?.status,
+    lastTurnErrorCode: thread.lastTurn?.failureCode,
     taskResumePolicy: thread.lastTurn?.taskResumePolicy,
     toolPolicy: thread.toolPolicy ?? "approval",
     provider: thread.provider,
@@ -297,6 +298,7 @@ export async function setThreadReasoning(threadId: string, effort: string | null
     updatedAt: thread.updatedAt, status: thread.lastTurn?.status === "running" ? "running"
       : thread.lastTurn?.status === "interrupted" ? "interrupted" : "idle",
     turnId: thread.lastTurn?.turnId, lastTurnStatus: thread.lastTurn?.status,
+    lastTurnErrorCode: thread.lastTurn?.failureCode,
     taskResumePolicy: thread.lastTurn?.taskResumePolicy,
     toolPolicy: thread.toolPolicy ?? "approval", model: thread.model,
     reasoningEffort: thread.reasoningEffort, projectId: HARNESS_PROJECT_ID };
