@@ -1111,6 +1111,11 @@ export interface ThreadUsageTurn extends ThreadUsageBucket {
   turnId: string;
   providers: string[];
   models: string[];
+  /** 回合开始与完成时间（ISO 字符串），来自同一快照的回合记录；不可解析或旧内核不返回。 */
+  startedAt?: string;
+  completedAt?: string;
+  /** 回合当前/最终状态；旧内核不返回。 */
+  status?: TurnStatus;
   /** 该回合记录的实际自动压缩策略；内核只返回通过校验的字段（历史记录可能只含部分字段），非法或旧内核不返回。 */
   compactionPolicy?: Partial<AutoCompactionPolicy>;
 }

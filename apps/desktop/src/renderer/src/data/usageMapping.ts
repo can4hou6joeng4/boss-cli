@@ -71,6 +71,11 @@ function compactionPolicyOf(value: unknown): Partial<AutoCompactionPolicy> | und
   return policy;
 }
 
+const TURN_STATUSES = new Set(["running", "completed", "interrupted", "blocked", "error"]);
+const timestampOf = (value: unknown): string | undefined =>
+  // 只接受可解析的 ISO 字符串；非法时间只影响耗时展示，不丢弃整行用量。
+  typeof value === "string" && value.length > 0 && value.length <= 64 && Number.isFinite(Date.parse(value)) ? value : undefined;
+
 export function turnOf(value: unknown): ThreadUsageTurn | null {
   const bucket = bucketOf(value);
   if (!bucket) return null;
@@ -78,7 +83,13 @@ export function turnOf(value: unknown): ThreadUsageTurn | null {
   const providers = strings(raw.providers, 8), models = strings(raw.models, 8);
   if (typeof raw.turnId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(raw.turnId) || !providers || !models) return null;
   const compactionPolicy = compactionPolicyOf(raw.compactionPolicy);
+  const timing: Partial<ThreadUsageTurn> = {};
+  const startedAt = timestampOf(raw.startedAt), completedAt = timestampOf(raw.completedAt);
+  if (startedAt) timing.startedAt = startedAt;
+  if (completedAt) timing.completedAt = completedAt;
+  if (typeof raw.status === "string" && TURN_STATUSES.has(raw.status)) timing.status = raw.status as ThreadUsageTurn["status"];
   return { ...bucket, turnId: raw.turnId, providers, models,
+    ...timing,
     ...(compactionPolicy ? { compactionPolicy } : {}) };
 }
 

@@ -3,6 +3,7 @@ import type { ThreadUsageBucket, ThreadUsageSummaryJob, ThreadUsageTurn } from "
 import type { MessageItem } from "../data/mockData";
 import type { ThreadUsageState, UsageView } from "../data/useThreadUsage";
 import { compactionLabel, compactionTitle } from "../shell/queueCompaction";
+import { turnTimingLabel } from "../data/turnTiming";
 import "../styles/context-panel.css";
 
 /** 内核 usage.verify_usage 的不计入原因；未知原因原样显示。 */
@@ -102,8 +103,11 @@ export function UsageDialog({ isOpen, onClose, state, messages, branchViews, con
           <h3>每回合用量<small className="usage-count"> {number(data.turnCount)} 个回合有记录{data.truncated ? `，仅显示前 ${number(data.turns.length)} 个` : ""}</small></h3>
           {data.turns.length ? <div className="usage-table-wrap"><table className="usage-table">
             <thead><tr><th>回合</th><th>模型</th><th>请求</th><th>输入</th><th>缓存读</th><th>缓存写</th><th>输出</th><th>推理</th></tr></thead>
-            <tbody>{data.turns.map(turn => <tr key={turn.turnId} data-usage-turn={turn.turnId}>
+            <tbody>{data.turns.map(turn => {
+              const timing = turnTimingLabel(turn);
+              return <tr key={turn.turnId} data-usage-turn={turn.turnId}>
               <td><span title={inputOf(turn.turnId)}>{turnLabel(turn)}</span><small>{clip(inputOf(turn.turnId), turn.turnId)}</small>
+                {timing && <small data-usage-field="turnTiming">{timing}</small>}
                 {turn.compactionPolicy && <small data-usage-field="compactionPolicy" title={compactionTitle(turn.compactionPolicy)}>{compactionLabel(turn.compactionPolicy)}</small>}
               </td>
               <td><span>{turn.models.join("、") || DASH}</span><small>{turn.providers.join("、")}</small></td>
@@ -113,7 +117,7 @@ export function UsageDialog({ isOpen, onClose, state, messages, branchViews, con
               <td data-usage-field="cacheWriteTokens">{amount(turn, turn.cacheWriteTokens)}</td>
               <td data-usage-field="outputTokens">{amount(turn, turn.outputTokens)}</td>
               <td data-usage-field="reasoningTokens">{amount(turn, turn.reasoningTokens)}</td>
-            </tr>)}</tbody>
+            </tr>; })}</tbody>
           </table></div> : <p className="context-panel-note">还没有模型用量记录。</p>}
           <p className="context-panel-note">“输入”含缓存读写（OpenAI 的输入本身已含缓存读取，Anthropic 由内核合并）；“推理”包含在“输出”内。不计入的记录不参与任何数值。回合下的压缩标记来自该回合开始时记录的自动压缩策略，悬停可看摘要线路。</p>
         </section>
