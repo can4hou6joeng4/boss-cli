@@ -10,6 +10,7 @@ import hashlib
 import os
 from pathlib import Path
 import stat
+from typing import Any
 
 MAX_INSTRUCTIONS_BYTES = 8 * 1024
 _PREFERRED = Path(".boss-harness") / "CONTEXT.md"
@@ -95,3 +96,24 @@ class WorkspaceInstructions:
         if not text:
             return None
         return WorkspaceInstruction(relative_path, text, len(data), hashlib.sha256(data).hexdigest())
+
+    def describe(self) -> dict[str, Any] | None:
+        """只读状态：与 load() 共用同一候选顺序与读取路径，供 context/read 展示。"""
+        candidate = self._candidate()
+        if candidate is None:
+            return None
+        relative_path, path = candidate
+        data = _read_regular(path)
+        if data is None:
+            status, byte_length = "unreadable", None
+        elif len(data) > MAX_INSTRUCTIONS_BYTES:
+            status, byte_length = "too_large", None
+        else:
+            try:
+                text = data.decode("utf-8-sig").strip()
+            except UnicodeDecodeError:
+                status, byte_length = "unreadable", None
+            else:
+                status, byte_length = ("loaded" if text else "empty"), len(data)
+        return {"path": relative_path, "status": status, "bytes": byte_length,
+                "limitBytes": MAX_INSTRUCTIONS_BYTES}

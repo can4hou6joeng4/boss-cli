@@ -1,6 +1,7 @@
 import { ModalSurface } from "./ModalSurface";
 import type { ContextPanelState } from "../data/useContextPanel";
 import type { AutoCompactionController } from "../data/useAutoCompaction";
+import type { WorkspaceInstructionsState } from "@boss-harness/protocol";
 import "../styles/context-panel.css";
 
 export interface ContextPanelProps {
@@ -22,6 +23,14 @@ const number = (value: number) => value.toLocaleString("zh-CN");
 const usage = (value: Record<string, unknown> | null | undefined) => value ? Object.entries(value)
   .filter(([key, amount]) => typeof amount === "number" && /token|request|cost/i.test(key))
   .map(([key, amount]) => `${key}: ${typeof amount === "number" ? number(amount) : amount}`).join(" · ") || "服务返回了用量记录，未提供可展示的 token 数" : "暂无用量记录";
+const workspaceInstructionsText = (value: WorkspaceInstructionsState) => {
+  switch (value.status) {
+    case "loaded": return `${value.path} · 已加载${value.bytes === null ? "" : `（${number(value.bytes)} 字节）`}`;
+    case "empty": return `${value.path} · 文件为空，未注入`;
+    case "too_large": return `${value.path} · 超过 ${number(value.limitBytes)} 字节上限，已忽略`;
+    case "unreadable": return `${value.path} · 无法读取（需普通 UTF-8 文件且不是符号链接），已忽略`;
+  }
+};
 export function ContextPanel(props: ContextPanelProps) {
   if (!props.isOpen) return null;
   const { state, connected, busy } = props, budget = state.budget, job = state.job, plan = state.plan, auto = props.autoCompaction;
@@ -42,6 +51,7 @@ export function ContextPanel(props: ContextPanelProps) {
         <div className="context-panel-section-heading"><h3 id="context-budget-heading">当前预算</h3><button type="button" className="secondary-button" onClick={props.onRefresh} disabled={!connected || state.reading}>{state.reading ? "正在读取…" : "刷新预算"}</button></div>
         {budget ? <>
           <p className="context-panel-source">{budget.requestSource === "active" ? "运行中已准备请求" : budget.requestSource === "preview" ? "请求预览" : "空闲会话的当前配置"} · {budget.provider} / {budget.model}</p>
+          {budget.workspaceInstructions && <p className={"context-panel-note context-panel-instructions" + (budget.workspaceInstructions.status === "loaded" || budget.workspaceInstructions.status === "empty" ? "" : " issue")}>工作区说明：{workspaceInstructionsText(budget.workspaceInstructions)}</p>}
           <div className="context-panel-budget"><strong>{budget.inputBudget > 0 ? <>{number(budget.estimatedInputTokens)}<small> / {number(budget.inputBudget)} 输入 token</small></> : "无可用输入预算"}</strong><span>{budget.withinBudget ? "预算内" : "预算不足"}</span></div>
           <div className="context-panel-meter" role="meter" aria-label="估算输入占预算比例" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage} aria-valuetext={budget.inputBudget > 0 ? `${Math.round(percentage)}%` : "没有可用输入预算"}><i style={{ width: `${percentage}%` }} /></div>
           <dl className="context-panel-facts"><div><dt>上下文容量</dt><dd>{number(budget.contextWindow)}</dd></div><div><dt>输出预留</dt><dd>{number(budget.outputReserve)}</dd></div><div><dt>消息数</dt><dd>{number(budget.messageCount)}</dd></div><div><dt>容量来源</dt><dd>{budget.capabilitySource}{budget.capacityIsEstimate ? "（估算）" : ""}</dd></div></dl>

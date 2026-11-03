@@ -1752,6 +1752,7 @@ class ApplicationService:
         params = params or {}
         thread_id = _text(params, "threadId")
         preview = any(key in params for key in ("input", "model", "skillIds", "attachmentIds"))
+        workspace_instructions = self.workspace_instructions.describe()
         with self.runtimes.lock:
             thread = self.sessions.get_thread(thread_id)
             job = self.runtimes.active.get(thread_id)
@@ -1766,7 +1767,8 @@ class ApplicationService:
                     summary_provider = policy.provider or runner.config.provider
                     return {**metadata, **runner.last_preparation[1], "requestSource": "active",
                             "summaryAvailable": self.provider_factory is not None and summary_provider != "none",
-                            "compactionJob": self._compaction_reference(thread_id)}
+                            "compactionJob": self._compaction_reference(thread_id),
+                            "workspaceInstructions": workspace_instructions}
                 config, prompt, tools = runner.config, runner.system_prompt, runner.tool_specs()
                 policy = job["compactionPolicy"]
             else:
@@ -1791,7 +1793,8 @@ class ApplicationService:
             summary_provider = policy.provider or config.provider
             return {**result, "provider": config.provider, "requestSource": "active" if job else "preview" if preview else "default",
                     "summaryAvailable": self.provider_factory is not None and summary_provider != "none",
-                    "compactionJob": self._compaction_reference(thread_id)}
+                    "compactionJob": self._compaction_reference(thread_id),
+                    "workspaceInstructions": workspace_instructions}
 
     def on_context_edit_read(self, params: dict | None) -> dict:
         params = params or {}
