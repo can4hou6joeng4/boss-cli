@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { QueueItem } from "@boss-harness/protocol";
 import { IconClose } from "../components/Icons";
+import { harnessErrorText } from "../data/harnessBridge";
 import { compactionLabel, compactionTitle } from "./queueCompaction";
 
 const LABELS: Record<QueueItem["status"], string> = {
@@ -32,8 +33,9 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
     setPending(item.id); setError("");
     try {
       if (!await onRetry!(item)) setError("重新排队未完成，请稍后重试。");
-    } catch {
-      setError("重新排队结果尚未确认，请刷新队列状态。");
+    } catch (cause) {
+      // 重新排队会先读取完整输入；读取失败、断连与内核拒绝要给出各自原因，否则只能盲目刷新。
+      setError(`重新排队结果尚未确认：${harnessErrorText(cause)}。请刷新队列状态。`);
     } finally {
       setPending(null);
     }
@@ -85,7 +87,7 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
         {(item.status === "queued" || item.status === "paused") && <button type="button" aria-label={`撤回排队消息：${item.input.slice(0, 80)}`} title={item.status === "paused" ? "取消暂停的队列消息" : "撤回排队消息"} disabled={pending !== null} onClick={async () => {
           setPending(item.id); setError("");
           try { if (!await onRemove(item.id)) setError("撤回结果尚未确认，请刷新队列状态。"); }
-          catch { setError("撤回结果尚未确认，请刷新队列状态。"); }
+          catch (cause) { setError(`撤回结果尚未确认：${harnessErrorText(cause)}。请刷新队列状态。`); }
           finally { setPending(null); }
         }}><IconClose size={14} /></button>}
       </li>)}
