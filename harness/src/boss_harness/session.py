@@ -2054,19 +2054,21 @@ class SessionStore:
             fragment = fragment[:_SEARCH_SNIPPET_BYTES].rstrip()
         return ("…" if left else "") + fragment + ("…" if right < len(text) else "")
 
-    def search_messages(self, query: str, *, limit: int = 30) -> dict:
-        """在未归档会话的用户 / 助手消息中做有界全文搜索；跳过损坏或过大的会话。"""
+    def search_messages(self, query: str, *, limit: int = 30, include_archived: bool = False) -> dict:
+        """在会话的用户 / 助手消息中做有界全文搜索；默认不含已归档，跳过损坏或过大的会话。"""
         if not isinstance(query, str) or not query.strip() or len(query) > 200:
             raise ValueError("query 必须是非空字符串（最多 200 字符）")
         if type(limit) is not int or not 1 <= limit <= 50:
             raise ValueError("limit 必须是 1–50 的整数")
+        if type(include_archived) is not bool:
+            raise ValueError("includeArchived 必须是布尔值")
         needle, _ = self._search_normalized(query.strip())
         if not needle:
             return {"query": query.strip(), "matches": [], "truncated": False}
         matches: list[dict] = []
         truncated = False
         scanned_threads = scanned_chars = 0
-        for thread in self.list_threads():
+        for thread in self.list_threads(include_archived=include_archived):
             if scanned_threads >= _SEARCH_THREADS or scanned_chars >= _SEARCH_TEXT_BUDGET:
                 truncated = True
                 break
