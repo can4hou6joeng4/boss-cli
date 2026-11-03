@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PendingApproval } from "@boss-harness/protocol";
 import { ModalSurface } from "./ModalSurface";
 import { IconNotification, IconCheck, IconClock } from "./Icons";
-import { approvalRemainingText } from "../data/pendingApprovals";
+import { approvalRemainingText, nextApprovalIndex } from "../data/pendingApprovals";
 import { harnessErrorText, listPendingApprovals } from "../data/harnessBridge";
 import { sessionRows } from "../data/sessionRows";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
@@ -52,6 +52,20 @@ export function NotificationsDialog({ folders, preview = false, onSelect, onOpen
   }, [reload, preview]);
 
   const retry = useCallback(() => setReload(previous => previous + 1), []);
+  const onListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || event.nativeEvent.isComposing || event.keyCode === 229) return;
+    const key = event.key;
+    if (key !== "ArrowDown" && key !== "ArrowUp" && key !== "Home" && key !== "End") return;
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+    const rows = [...event.currentTarget.querySelectorAll<HTMLButtonElement>(".notification-row:not(:disabled)")];
+    if (!rows.length) return;
+    const current = rows.indexOf(document.activeElement as HTMLButtonElement);
+    const next = key === "Home" ? 0 : key === "End" ? rows.length - 1 : nextApprovalIndex(current, rows.length, key === "ArrowDown" ? 1 : -1);
+    const target = rows[next];
+    if (!target) return;
+    event.preventDefault();
+    target.focus();
+  };
   const sessions = state.status === "ready"
     ? new Map(sessionRows(folders, "", { includeArchived: true }).map(row => [row.session.id, row.session]))
     : new Map<string, SessionItem>();
@@ -70,9 +84,9 @@ export function NotificationsDialog({ folders, preview = false, onSelect, onOpen
       {!preview && state.status === "ready" && state.approvals.length === 0 && <div className="notification-empty">
         <IconNotification size={32} /><h3>目前没有新通知</h3><p>需要你确认的操作会在聊天中显示。</p><span><IconCheck size={13} />当前工作区</span>
       </div>}
-      {!preview && state.status === "ready" && state.approvals.length > 0 && <>
+      {!preview && state.status === "ready" && state.approvals.length > 0 && <div onKeyDown={onListKeyDown}>
         <div className="notification-toolbar">
-          <span>{state.approvals.length} 项等待你确认</span>
+          <span>{state.approvals.length} 项等待你确认 · ↑ ↓ 选择</span>
           <button className="secondary-button" onClick={retry}>刷新</button>
         </div>
         <ul className="notification-list">
@@ -88,7 +102,7 @@ export function NotificationsDialog({ folders, preview = false, onSelect, onOpen
             </li>;
           })}
         </ul>
-      </>}
+      </div>}
     </ModalSurface>
   );
 }

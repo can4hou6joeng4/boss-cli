@@ -78,3 +78,10 @@ export function approvalBadgeText(count: number): string | null {
 export function isApprovalCountEvent(method: unknown): boolean {
   return method === "approval/requested" || method === "approval/decided";
 }
+
+/** 在可点击条目之间循环移动；current 为 -1（焦点不在列表内）时按方向从首/尾进入。 */
+export function nextApprovalIndex(current: number, count: number, delta: number): number {
+  if (count <= 0) return -1;
+  if (current < 0 || current >= count) return delta > 0 ? 0 : count - 1;
+  return (current + delta + count) % count;
+}
