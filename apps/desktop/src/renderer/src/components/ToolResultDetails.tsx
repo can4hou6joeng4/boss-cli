@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ToolResultReadResponse, ToolResultReference } from "@boss-cli/protocol";
 import { readToolResultChunk } from "../data/toolResultReads";
+import { harnessErrorText } from "../data/harnessBridge";
 
 export function ToolResultDetails({ output, resultRef }: { output?: string; resultRef?: ToolResultReference }) {
   if (resultRef) return <ChunkedResult key={`${resultRef.threadId}:${resultRef.itemId}:${resultRef.sha256}`} reference={resultRef} />;
@@ -28,7 +29,7 @@ function ChunkedResult({ reference }: { reference: ToolResultReference }) {
       setPosition(index);
       setCursors(previous => [...previous.slice(0, index), cursor]);
     } catch (problem) {
-      if (id === requestId.current) setError(problem instanceof Error ? problem.message.slice(0, 500) : "读取失败，请重试");
+      if (id === requestId.current) setError(harnessErrorText(problem));
     } finally {
       if (id === requestId.current) setLoading(false);
     }

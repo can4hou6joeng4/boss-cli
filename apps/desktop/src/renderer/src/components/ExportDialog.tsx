@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { SessionExportSaveRequest, SessionExportSaveResult } from "@boss-cli/protocol";
 import { ModalSurface } from "./ModalSurface";
+import { harnessErrorText } from "../data/harnessBridge";
 import "../styles/context-panel.css";
 
 type ExportView = SessionExportSaveRequest["view"];
@@ -68,7 +69,7 @@ export function ExportDialog({ isOpen, onClose, threadId, branchViews, connected
       setStatus(result.saved ? { kind: "saved", result } : { kind: "canceled" });
     } catch (error) {
       if (version.current !== mine) return;
-      const message = error instanceof Error && error.message ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "").slice(0, 300) : "导出失败";
+      const message = error instanceof Error && error.message ? harnessErrorText(error) : "导出失败";
       setStatus({ kind: "error", message });
     }
   };

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ThreadUsageBucket, ThreadUsageReadResponse, ThreadUsageSummaryJob, ThreadUsageTurn } from "@boss-cli/protocol";
-import { readThreadUsage } from "./harnessBridge";
+import { harnessErrorText, readThreadUsage } from "./harnessBridge";
 import { readPagedItems } from "./pagedRead";
 import { bucketOf, isCount as count, summaryJobOf, turnOf } from "./usageMapping";
 
@@ -66,12 +66,6 @@ async function readAll(threadId: string, view: UsageView, valid: () => boolean):
     summaryTasks: summaryTasks!, totals: totals!, ...(summaryMeta ?? {}) };
 }
 
-function errorText(error: unknown): string {
-  const value = error && typeof error === "object" ? error as { rpcError?: unknown; code?: unknown; message?: unknown } : null;
-  const message = typeof value?.message === "string" ? value.message.slice(0, 300) : "无法读取本地内核响应";
-  return value?.rpcError === true && typeof value.code === "number" ? `${message}（内核 ${value.code}）` : message;
-}
-
 export function useThreadUsage(threadId: string | null, connected: boolean, supported: boolean, branchViews: boolean, running: boolean) {
   const [isOpen, setIsOpen] = useState(false);
   const [state, setState] = useState<ThreadUsageState>({ loading: false, error: "", view: "log" });
@@ -88,7 +82,7 @@ export function useThreadUsage(threadId: string | null, connected: boolean, supp
       const data = await readAll(id, view, () => version.current === mine);
       if (version.current === mine) setState(previous => ({ ...previous, loading: false, error: "", data }));
     } catch (error) {
-      if (version.current === mine) setState(previous => ({ ...previous, loading: false, error: errorText(error), data: undefined }));
+      if (version.current === mine) setState(previous => ({ ...previous, loading: false, error: harnessErrorText(error), data: undefined }));
     }
   }, []);
   // 打开、切换会话或视图、回合开始 / 结束与重新连接时重新读取；关闭时作废未完成的读取。
