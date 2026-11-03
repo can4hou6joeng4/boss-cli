@@ -390,14 +390,17 @@ export async function reconnectHarness(): Promise<boolean> {
   catch { return false; }
 }
 
-export async function forkThread(threadId: string, turnId: string): Promise<SessionItem | null> {
-  try {
-    const response = await bridge()?.request<ThreadReadResponse>(ClientMethods.threadFork, { threadId, turnId });
-    if (!response) return null;
-    return { id: response.thread.id, title: response.thread.title, timeAgo: "刚刚", status: "idle", projectId: HARNESS_PROJECT_ID,
-      toolPolicy: response.thread.toolPolicy ?? "approval", provider: response.thread.provider,
-      model: response.thread.model, reasoningEffort: response.thread.reasoningEffort };
-  } catch { return null; }
+/** 从指定回合分叉新会话。失败不吞掉：调用方要用真实原因提示，而不是猜「回合未结束」。 */
+export async function forkThread(threadId: string, turnId: string): Promise<SessionItem> {
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  const response = await api.request<ThreadReadResponse>(ClientMethods.threadFork, { threadId, turnId });
+  if (!response || !response.thread || typeof response.thread.id !== "string" || !response.thread.id) {
+    throw new Error("分支响应无法识别");
+  }
+  return { id: response.thread.id, title: response.thread.title, timeAgo: "刚刚", status: "idle", projectId: HARNESS_PROJECT_ID,
+    toolPolicy: response.thread.toolPolicy ?? "approval", provider: response.thread.provider,
+    model: response.thread.model, reasoningEffort: response.thread.reasoningEffort };
 }
 
 function toApproval(state: ApprovalState): NonNullable<MessageItem["approval"]> {
