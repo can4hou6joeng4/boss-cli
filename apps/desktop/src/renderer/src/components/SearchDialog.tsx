@@ -31,9 +31,10 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
   const [messageState, setMessageState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [recent, setRecent] = useState<string[]>(readRecentSearches);
   const rows = sessionRows(folders, query);
-  const sessions = sessionRows(folders, "");
-  const sessionById = new Map(sessions.map(row => [row.session.id, row.session]));
-  const options = buildSearchOptions(rows, hits, sessionById);
+  const rowsById = new Map(sessionRows(folders, "").map(row => [row.session.id, row]));
+  const options = buildSearchOptions(rows, hits, rowsById);
+  const messageOptions = options.filter((option): option is Extract<SearchOption, { kind: "message" }> => option.kind === "message");
+  const sessionOptions = options.filter((option): option is Extract<SearchOption, { kind: "session" }> => option.kind === "session");
   const inputRef = useRef<HTMLInputElement>(null), resultsRef = useRef<HTMLDivElement>(null);
   const listId = useId(), statusId = useId();
   const selected = Math.min(index, Math.max(0, options.length - 1));
@@ -66,7 +67,7 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
     if (!option) return;
     if (query.trim().length >= RECENT_SEARCH_MIN_LENGTH) setRecent(rememberRecentSearch(query));
     if (option.kind === "session") { onSelect(option.row.session); onClose(); return; }
-    if (onOpenMessage) { onOpenMessage(option.session, option.hit.itemId); onClose(); } else { onSelect(option.session); onClose(); }
+    if (onOpenMessage) { onOpenMessage(option.row.session, option.hit.itemId); onClose(); } else { onSelect(option.row.session); onClose(); }
   };
   const move = (delta: number) => setIndex(options.length ? (selected + delta + options.length) % options.length : 0);
   const optionProps = (option: SearchOption) => {
@@ -86,7 +87,7 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
       if (event.key === "Enter" && options[selected]) { event.preventDefault(); event.stopPropagation(); openOption(options[selected]); }
     }} />{query && <button type="button" className="search-clear" aria-label="清除搜索" onClick={() => { setQuery(""); setIndex(0); inputRef.current?.focus(); }}><IconClose size={15} /></button>}</div>
     <div className="search-results" ref={resultsRef}>
-      <p id={statusId} role="status">{query.trim() ? `找到 ${rows.length} 个聊天${messageState === "ready" ? `、${hits.length} 条消息` : ""}` : "最近聊天"}</p>
+      <p id={statusId} role="status">{query.trim() ? `找到 ${rows.length} 个聊天${messageState === "ready" ? `、${messageOptions.length} 条消息` : ""}` : "最近聊天"}</p>
       {!query.trim() && recent.length > 0 && <div className="search-recent" role="group" aria-label="最近搜索">
         <span className="search-recent-label">最近搜索</span>
         {recent.map(term => <button type="button" key={term} className="search-recent-chip" onClick={() => { setQuery(term); setIndex(0); inputRef.current?.focus(); }}>{term}</button>)}
@@ -96,23 +97,21 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
         {query.trim().length >= 2 && searchMessages && <>
           <p className="search-message-heading" role="presentation">{messageState === "loading" ? "正在搜索消息…"
             : messageState === "error" ? "消息搜索失败，可继续按标题查找"
-            : hits.length ? <>{`消息命中`}{hitsTruncated && <span className="search-truncated" title="搜索有界：最多 100 个会话、50 条消息，较早或过多的命中不会全部返回">仅显示部分结果</span>}</>
+            : messageOptions.length ? <>{`消息命中`}{hitsTruncated && <span className="search-truncated" title="搜索有界：最多 100 个会话、50 条消息，较早或过多的命中不会全部返回">仅显示部分结果</span>}</>
             : "没有匹配的消息"}</p>
-          {hits.map(hit => {
-            const session = sessionById.get(hit.threadId);
-            if (!session) return null;
-            const option: SearchOption = { kind: "message", key: `message:${hit.threadId}:${hit.itemId}`, hit, session };
+          {messageOptions.map(option => {
+            const { hit, row } = option;
             return <button type="button" key={option.key} title={hit.snippet} {...optionProps(option)}>
-              <IconChat size={17} /><span><strong><Highlighted text={hit.threadTitle || session.title} query={query} /></strong><small>{hit.role === "user" ? "你" : "助手"} · <Highlighted text={hit.snippet} query={query} /></small></span><IconChevronRight size={13} />
+              <IconChat size={17} /><span><strong><Highlighted text={hit.threadTitle || row.session.title} query={query} /></strong><small>{row.project} · {hit.role === "user" ? "你" : "助手"} · <Highlighted text={hit.snippet} query={query} /></small></span><IconChevronRight size={13} />
             </button>;
           })}
         </>}
-        {rows.map(row => {
-          const option: SearchOption = { kind: "session", key: `session:${row.session.id}`, row };
+        {sessionOptions.map(option => {
+          const { row } = option;
           return <button type="button" key={option.key} {...optionProps(option)}><IconChat size={17} /><span><strong><Highlighted text={row.session.title} query={query} /></strong><small>{row.project} · {row.session.timeAgo}</small></span><IconChevronRight size={13} /></button>;
         })}
       </div>
-      {!rows.length && !hits.length && messageState !== "loading" && <div className="search-empty"><IconSearch size={28} /><strong>{query.trim() ? "没有找到相关聊天或消息" : "还没有聊天"}</strong><span>{query.trim() ? "试试其他关键词、项目名称或消息内容" : "创建聊天后，可以在这里快速找到它"}</span></div>}
+      {!sessionOptions.length && !messageOptions.length && messageState !== "loading" && <div className="search-empty"><IconSearch size={28} /><strong>{query.trim() ? "没有找到相关聊天或消息" : "还没有聊天"}</strong><span>{query.trim() ? "试试其他关键词、项目名称或消息内容" : "创建聊天后，可以在这里快速找到它"}</span></div>}
     </div><div className="search-footer"><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>↵</kbd> 打开</span><span><kbd>esc</kbd> 关闭</span></div>
   </ModalSurface>;
 }
