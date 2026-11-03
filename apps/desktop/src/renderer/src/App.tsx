@@ -705,9 +705,8 @@ export function App(): JSX.Element {
       const turnId = [...messages.slice(0, messageCount)].reverse().find(message => message.turnId)?.turnId;
       if (!turnId) { setError("所选消息没有完整回合信息，请刷新会话后再试。"); return; }
       void forkThread(id, turnId).then(session => {
-        if (!session) { setError("创建分支失败；请选择已结束且工具已收尾的回合。"); return; }
         insertSession(session); handleSelectSession(session);
-      });
+      }).catch(cause => setError(`创建分支失败：${harnessErrorText(cause)}`));
     }} />
     <UnifiedDiffModal messages={messages} preview={preview} isOpen={isDiffModalOpen} onClose={() => setIsDiffModalOpen(false)} onRevertChanges={() => { setIsDiffModalOpen(false); setIsRevertModalOpen(true); }} />
     <RevertConfirmModal isOpen={isRevertModalOpen} onClose={() => setIsRevertModalOpen(false)} fileCount={[...messages].reverse().find(message => message.diffSummary)?.diffSummary?.fileCount ?? 0} onConfirm={() => {
