@@ -285,7 +285,8 @@ export async function interruptTurn(threadId: string): Promise<boolean> {
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");
   const response = await api.request<TurnInterruptResponse>(ClientMethods.turnInterrupt, { threadId });
-  return response.interrupted === true;
+  if (!response || typeof response.interrupted !== "boolean") throw new Error("中断响应无法识别");
+  return response.interrupted;
 }
 
 export async function steerTurn(params: TurnSteerParams): Promise<QueueItem> {
@@ -334,7 +335,9 @@ export async function respondApproval(approvalId: string, approved: boolean): Pr
   if (!api) return "unconfirmed";
   try {
     const response = await api.request<ApprovalRespondResponse>(ClientMethods.approvalRespond, { approvalId, approved });
-    return response?.accepted === true ? "accepted" : "rejected";
+    // 回报不可读不等于内核拒绝：只有布尔值才代表明确受理或不受理。
+    if (!response || typeof response.accepted !== "boolean") return "unconfirmed";
+    return response.accepted ? "accepted" : "rejected";
   } catch {
     return "unconfirmed";
   }
