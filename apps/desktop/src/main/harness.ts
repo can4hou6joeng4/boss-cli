@@ -8,6 +8,7 @@ import { isTrustedRendererUrl, sessionExportFileName, validateHarnessRequest, va
   validateSessionExportRequest, validateThreadExportResponse } from "./security";
 import { PlatformLogin } from "./platformLogin";
 import { preservesRpcError } from "./rpcErrors";
+import { sessionExportWriteError } from "./exportErrors";
 
 function findRepoRoot(start: string): string {
   let current = resolve(start);
@@ -144,9 +145,11 @@ function registerIPC(): void {
         await writeFile(choice.filePath, exported.content, { encoding: "utf8", mode: 0o600 });
         // `mode` only applies to new files; an overwritten file keeps its old permissions without this.
         await chmod(choice.filePath, 0o600);
-      } catch {
-        console.error("session export write failed");
-        throw new Error("无法写入所选文件，请换一个位置重试");
+      } catch (error) {
+        // 提示只带 errno，不带系统路径；日志同样避免写入选中路径。
+        const message = sessionExportWriteError(error);
+        console.error("session export write failed", message);
+        throw new Error(message);
       }
       return { saved: true, fileName: basename(choice.filePath), bytes: Buffer.byteLength(exported.content, "utf8"),
         truncated: exported.truncated, turnCount: exported.turnCount, exportedTurnCount: exported.exportedTurnCount,
