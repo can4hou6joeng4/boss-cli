@@ -150,17 +150,6 @@ export const readThreadUsage = (threadId: string, view: "log" | "branch", cursor
 export const listBranchTurns = (threadId: string, cursor?: string | null): Promise<TurnListResponse> =>
   contextRequest(ClientMethods.threadTurnsList, cursor ? { threadId, view: "branch", cursor, limit: 200 } : { threadId, view: "branch", limit: 200 });
 
-/** 内核是否已连接（preload 未注入或进程未起时返回 false）。 */
-export async function isHarnessUp(): Promise<boolean> {
-  const api = bridge();
-  if (!api) return false;
-  try {
-    return (await api.status()).running;
-  } catch {
-    return false;
-  }
-}
-
 /** 内核里的会话列表，映射成侧栏用的条目。读取失败时抛出，避免把空列表误当成「没有会话」。 */
 export async function listThreads(): Promise<SessionItem[]> {
   if (!bridge()) return [];
@@ -436,18 +425,4 @@ function toApproval(state: ApprovalState): NonNullable<MessageItem["approval"]> 
     consequential: state.consequential,
     decision: state.decision,
   } as NonNullable<MessageItem["approval"]>;
-}
-
-/** 读回一个线程的全部条目，映射成会话区的消息模型。 */
-export async function readThreadMessages(threadId: string): Promise<MessageItem[] | null> {
-  const api = bridge();
-  if (!api) return null;
-  try {
-    const response = await api.request<ThreadReadResponse>(ClientMethods.threadRead, { threadId });
-    return response.items
-      .map(toMessage)
-      .filter((message): message is MessageItem => message !== null);
-  } catch {
-    return null;
-  }
 }
