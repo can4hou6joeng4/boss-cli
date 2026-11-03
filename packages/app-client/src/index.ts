@@ -44,6 +44,15 @@ function validId(value: unknown): value is JsonRpcId {
   return typeof value === "string" || (typeof value === "number" && Number.isSafeInteger(value));
 }
 
+/** 进程启动失败的诊断文本：保留 errno（如 ENOENT、EACCES），而不是把所有原因都写成同一句。 */
+function spawnErrorDetail(error: unknown): string {
+  const value = error && typeof error === "object" ? error as { code?: unknown; message?: unknown } : null;
+  const code = typeof value?.code === "string" ? value.code : "";
+  const message = typeof value?.message === "string" ? value.message.trim() : "";
+  if (code && message && !message.includes(code)) return `${code}: ${message}`;
+  return code || message || "unknown error";
+}
+
 export class HarnessClient {
   #child: ChildProcessWithoutNullStreams | null = null;
   #pending = new Map<JsonRpcId, Pending>();
@@ -73,8 +82,9 @@ export class HarnessClient {
     // Split bytes only on LF: U+2028 and U+2029 remain valid string content.
     child.stdout.on("data", (chunk: Buffer) => this.#read(chunk));
     child.stderr.on("data", () => this.#diagnostic("backend diagnostic received"));
-    child.on("error", () => this.#fail(new Error("harness failed to start; check Python and dependencies")));
-    child.stdin.on("error", () => this.#fail(new Error("harness input pipe closed")));
+    // 启动失败常见于可执行文件缺失或不可执行；errno 决定用户该装 Python、修权限还是改路径。
+    child.on("error", (error) => this.#fail(new Error(`harness failed to start (${spawnErrorDetail(error)}); check Python and dependencies`)));
+    child.stdin.on("error", (error) => this.#fail(new Error(`harness input pipe closed (${spawnErrorDetail(error)})`)));
     child.stdin.on("drain", () => { this.#waitingForDrain = false; this.#flush(); });
     child.on("exit", (code, signal) => this.#fail(new Error(`harness exited (code=${code}, signal=${signal})`)));
     child.on("close", (code, signal) => {
@@ -188,7 +198,7 @@ export class HarnessClient {
       this.#queuedBytes -= record.bytes;
       try {
         if (!child.stdin.write(record.frame)) { this.#waitingForDrain = true; return; }
-      } catch { this.#fail(new Error("harness input pipe closed")); return; }
+      } catch (error) { this.#fail(new Error(`harness input pipe closed (${spawnErrorDetail(error)})`)); return; }
     }
   }
 
