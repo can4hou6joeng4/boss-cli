@@ -329,5 +329,5 @@ export function validateThreadExportResponse(value: unknown, request: SessionExp
 /** Save-dialog default name: fixed prefix, thread id, view and extension only. */
 export function sessionExportFileName(request: SessionExportSaveRequest): string {
   const extension = request.format === "markdown" ? "md" : request.format;
-  return `boss-cli-session-${request.threadId}-${request.view}.${extension}`;
+  return `boss-harness-session-${request.threadId}-${request.view}.${extension}`;
 }
