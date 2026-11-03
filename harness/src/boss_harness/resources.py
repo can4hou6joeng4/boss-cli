@@ -120,6 +120,24 @@ class SkillCatalog:
                 return skills[:self.MAX_SKILL_DESCRIPTORS]
             limit *= 2
 
+    def read(self, skill_id: Any) -> dict:
+        """读取单个技能正文；与 list() 共用目录枚举与安全读取，拒绝越界 id。"""
+        if not isinstance(skill_id, str):
+            raise ValueError("技能 id 必须是字符串")
+        catalog = {skill["id"]: skill for skill in self.list()}
+        skill = catalog.get(skill_id)
+        if skill is None:
+            raise ValueError("技能不存在或不可读取")
+        loaded = self._read_bounded(self.root / skill_id / "SKILL.md")
+        if loaded is None:
+            raise ValueError("技能文件不可读取或超过大小限制")
+        source, byte_length, digest = loaded
+        if digest != skill["digest"]:
+            raise ValueError("技能文件已变化，请刷新技能目录")
+        return {"id": skill_id, "name": skill["name"], "description": skill["description"],
+                "digest": digest, "bytes": byte_length, "content": source,
+                "limitBytes": self.MAX_SKILL_BYTES}
+
     def load(self, ids: Any) -> tuple[str, list[dict]]:
         if ids is None:
             return "", []

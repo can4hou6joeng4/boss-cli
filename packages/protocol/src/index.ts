@@ -81,7 +81,9 @@ export interface InitializeResponse {
     /** 可用只读 `thread/export` 导出脱敏后的会话文本（Markdown / JSON / 自包含 HTML）。 */
     threadExport?: boolean;
     /** 可用 `context/instructions/read` / `context/instructions/write` 查看并保存工作区常驻说明。 */
-    workspaceInstructionsEdit?: boolean };
+    workspaceInstructionsEdit?: boolean;
+    /** 可用只读 `skills/read` 查看单个工作区技能的 SKILL.md 正文（有界，不写入会话）。 */
+    skillsRead?: boolean };
   eventCursor?: string;
 }
 
@@ -133,6 +135,7 @@ export const ClientMethods = {
   connectionRead: "connection/read",
   connectionCheck: "connection/check",
   skillsList: "skills/list",
+  skillsRead: "skills/read",
   attachmentAdd: "attachment/add",
   attachmentRead: "attachment/read",
   contextRead: "context/read",
@@ -1046,6 +1049,10 @@ export interface PlatformLoginContext {
 }
 export interface SkillDescriptor { id: string; name: string; description: string; digest: string; bytes: number }
 export interface SkillListResponse { skills: SkillDescriptor[] }
+/** `skills/read` 参数；仅在 `capabilities.skillsRead` 为真时可用，只读且不写入会话。 */
+export interface SkillReadParams { id: string }
+/** `skills/read` 结果：正文来自普通 UTF-8 文件，最多 `limitBytes` 字节。 */
+export interface SkillReadResponse extends SkillDescriptor { content: string; limitBytes: number }
 export interface AttachmentDescriptor { id: string; name: string; digest: string; bytes: number; mediaType: string }
 
 /**
