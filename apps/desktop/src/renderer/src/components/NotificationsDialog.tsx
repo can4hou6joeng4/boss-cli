@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { PendingApproval } from "@boss-harness/protocol";
 import { ModalSurface } from "./ModalSurface";
 import { IconNotification, IconCheck, IconClock } from "./Icons";
-import { approvalRemainingText, nextApprovalIndex } from "../data/pendingApprovals";
+import { approvalRemainingText, groupPendingApprovals, nextApprovalIndex } from "../data/pendingApprovals";
 import { harnessErrorText, listPendingApprovals } from "../data/harnessBridge";
 import { sessionRows } from "../data/sessionRows";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
@@ -90,15 +90,22 @@ export function NotificationsDialog({ folders, preview = false, onSelect, onOpen
           <button className="secondary-button" onClick={retry}>刷新</button>
         </div>
         <ul className="notification-list">
-          {state.approvals.map(approval => {
-            const session = sessions.get(approval.threadId);
-            const label = session?.title ?? `会话 ${approval.threadId.slice(0, 8)}`;
-            return <li key={approval.approvalId}>
-              <button className="notification-row" disabled={!session} title={session ? `打开「${label}」并定位到审批卡` : "该会话不在当前列表中"} onClick={() => { if (!session) return; if (onOpenMessage) onOpenMessage(session, approval.itemId); else onSelect(session); onClose(); }}>
-                <span className="notification-row-heading"><strong>{approval.toolName}</strong><span className="notification-remaining"><IconClock size={12} />{approvalRemainingText(approval.deadline, state.now)}</span></span>
-                <span className="notification-row-thread">{label}{session?.archived === true ? " · 已归档" : ""}</span>
-                {approval.summary && <span className="notification-row-summary">{approval.summary}</span>}
-              </button>
+          {groupPendingApprovals(state.approvals).map(group => {
+            const session = sessions.get(group.threadId);
+            const label = session?.title ?? `会话 ${group.threadId.slice(0, 8)}`;
+            return <li key={group.threadId} className="notification-group">
+              <div className="notification-group-heading">
+                <span className="notification-group-thread">{label}{session?.archived === true ? " · 已归档" : ""}</span>
+                <span>{group.approvals.length} 项</span>
+              </div>
+              <ul className="notification-group-list">
+                {group.approvals.map(approval => <li key={approval.approvalId}>
+                  <button className="notification-row" disabled={!session} title={session ? `打开「${label}」并定位到审批卡` : "该会话不在当前列表中"} onClick={() => { if (!session) return; if (onOpenMessage) onOpenMessage(session, approval.itemId); else onSelect(session); onClose(); }}>
+                    <span className="notification-row-heading"><strong>{approval.toolName}</strong><span className="notification-remaining"><IconClock size={12} />{approvalRemainingText(approval.deadline, state.now)}</span></span>
+                    {approval.summary && <span className="notification-row-summary">{approval.summary}</span>}
+                  </button>
+                </li>)}
+              </ul>
             </li>;
           })}
         </ul>
