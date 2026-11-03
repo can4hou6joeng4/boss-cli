@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import { IconPanel, IconPanelRight, IconMore, IconFolder, IconPlus, IconChevronRight, IconCopy, IconHistory, IconSettings, IconEdit, IconPin, IconBranch, IconSliders } from "../components/Icons";
+import { IconPanel, IconPanelRight, IconMore, IconFolder, IconPlus, IconChevronRight, IconCopy, IconHistory, IconSettings, IconEdit, IconPin, IconBranch, IconSliders, IconTrash } from "../components/Icons";
 import { Popover } from "../components/Popover";
 interface Props {
   title: string; hasConversation: boolean; summaryAvailable: boolean; isSidebarOpen: boolean; isSummaryOpen: boolean; canGoBack: boolean; canGoForward: boolean;
   onBack: () => void; onForward: () => void; onToggleSidebar: () => void; onToggleSummary: () => void;
   onNewTask: () => void; onOpenSettings: () => void; onOpenRewind: () => void; onExport: () => void;
   onRename: () => void; onPin: () => void; isPinned: boolean;
+  /** 打开当前聊天的删除确认；无会话时菜单项禁用。 */
+  onDelete: () => void;
   onOpenBrowser?: () => void; browserOpen?: boolean;
   onOpenContext?: () => void;
   /** 仅在内核声明会话内分支能力时提供。 */
@@ -46,6 +48,8 @@ export function TitleBar(props: Props) {
         <Popover open={menu} onClose={() => setMenu(false)} align="right" label="当前聊天选项">
           <button disabled={!props.hasConversation} onClick={() => { props.onRename(); setMenu(false); }}><IconEdit />重命名</button>
           <button disabled={!props.hasConversation} onClick={() => { props.onPin(); setMenu(false); }}><IconPin />{props.isPinned ? "取消置顶" : "置顶聊天"}</button>
+          <div className="menu-divider" />
+          <button className="menu-danger" disabled={!props.hasConversation} onClick={() => { props.onDelete(); setMenu(false); }}><IconTrash />删除聊天…</button>
           <div className="menu-divider" />
           {props.onOpenExport
             ? <button disabled={!props.hasConversation} onClick={() => { props.onOpenExport?.(); setMenu(false); }}><IconCopy />导出会话…</button>
