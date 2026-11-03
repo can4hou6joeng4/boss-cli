@@ -56,7 +56,7 @@ function createHost(): HarnessHostConnection {
   const python = process.env.BOSS_HARNESS_PYTHON ?? (existsSync(venvPython) ? venvPython : "python3");
   const connection = manager.add({
     hostId: "local",
-    clientInfo: { name: "boss-cli-desktop", version: app.getVersion() },
+    clientInfo: { name: "boss-harness-desktop", version: app.getVersion() },
     supportsReconnect: true,
     // Explicit user recovery is also exposed; this small retry budget covers process crashes.
     autoReconnect: { maxAttempts: 3, initialDelayMs: 500, maxDelayMs: 5_000 },
