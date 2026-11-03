@@ -153,6 +153,34 @@ class SkillCatalog:
         if not stat.S_ISDIR(observed.st_mode) or os.path.islink(path):
             raise OSError("技能目录必须是普通目录")
 
+    @staticmethod
+    def _require_directory(path: Path) -> None:
+        """确认路径是已存在的普通目录；不存在、符号链接或普通文件都拒绝。"""
+        try:
+            observed = os.lstat(path)
+        except FileNotFoundError:
+            raise ValueError("技能目录不存在") from None
+        if not stat.S_ISDIR(observed.st_mode) or os.path.islink(path):
+            raise ValueError("技能目录必须是普通目录")
+
+    @staticmethod
+    def _write_atomic(directory: Path, data: bytes) -> None:
+        """在技能目录内写临时文件并原子替换 SKILL.md，失败时清理临时文件。"""
+        descriptor, temporary = tempfile.mkstemp(prefix=".SKILL-", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, 0o644)
+            os.replace(temporary, directory / "SKILL.md")
+        except BaseException:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
+
     def create(self, skill_id: Any, content: Any) -> dict:
         """新建技能文件：只创建不覆盖，写入当前生效目录。
 
@@ -175,19 +203,9 @@ class SkillCatalog:
                 os.mkdir(target, 0o755)
             except FileExistsError:
                 raise ValueError("同名技能已存在，不会覆盖") from None
-            descriptor, temporary = tempfile.mkstemp(prefix=".SKILL-", suffix=".tmp", dir=target)
             try:
-                with os.fdopen(descriptor, "wb") as handle:
-                    handle.write(data)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                os.chmod(temporary, 0o644)
-                os.replace(temporary, target / "SKILL.md")
+                self._write_atomic(target, data)
             except BaseException:
-                try:
-                    os.unlink(temporary)
-                except OSError:
-                    pass
                 try:
                     os.rmdir(target)
                 except OSError:
@@ -195,6 +213,42 @@ class SkillCatalog:
                 raise
         except OSError as exc:
             raise OSError(exc.strerror or str(exc) or "技能创建失败") from None
+        fields = self._fields(content)
+        return {"id": skill_id, "name": fields.get("name", skill_id),
+                "description": fields.get("description", ""),
+                "digest": hashlib.sha256(data).hexdigest(), "bytes": len(data)}
+
+    def replace(self, skill_id: Any, content: Any, expected_digest: Any) -> dict:
+        """按读取时的摘要修改已存在技能；摘要不一致即拒绝，避免覆盖外部修改。"""
+        if not isinstance(skill_id, str) or not self.SKILL_ID.match(skill_id):
+            raise ValueError("技能 id 只能包含小写字母、数字、下划线与连字符，且不超过 64 字符")
+        if not isinstance(content, str):
+            raise ValueError("技能正文必须是字符串")
+        data = content.encode("utf-8")
+        if len(data) > self.MAX_SKILL_BYTES:
+            raise ValueError(f"技能正文不得超过 {self.MAX_SKILL_BYTES} 字节")
+        if not data.strip():
+            raise ValueError("技能正文不能为空")
+        if not isinstance(expected_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_digest):
+            raise ValueError("技能摘要格式无效")
+        self._require_directory(self.create_root.parent)
+        self._require_directory(self.create_root)
+        directory = self.create_root / skill_id
+        try:
+            observed = os.lstat(directory)
+        except FileNotFoundError:
+            raise ValueError("技能不存在或不可编辑") from None
+        if not stat.S_ISDIR(observed.st_mode) or os.path.islink(directory):
+            raise ValueError("技能目录必须是普通目录")
+        loaded = self._read_bounded(directory / "SKILL.md")
+        if loaded is None:
+            raise ValueError("技能文件不可读取或超过大小限制")
+        if loaded[2] != expected_digest:
+            raise ValueError("技能内容已变化，请刷新后重试")
+        try:
+            self._write_atomic(directory, data)
+        except OSError as exc:
+            raise OSError(exc.strerror or str(exc) or "技能写入失败") from None
         fields = self._fields(content)
         return {"id": skill_id, "name": fields.get("name", skill_id),
                 "description": fields.get("description", ""),

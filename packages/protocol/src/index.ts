@@ -85,7 +85,9 @@ export interface InitializeResponse {
     /** 可用只读 `skills/read` 查看单个工作区技能的 SKILL.md 正文（有界，不写入会话）。 */
     skillsRead?: boolean;
     /** 可用 `skills/create` 在当前生效技能目录新建 SKILL.md；只创建不覆盖。 */
-    skillsCreate?: boolean };
+    skillsCreate?: boolean;
+    /** 可用 `skills/write` 按读取摘要修改已有技能；摘要变化时拒绝写入。 */
+    skillsWrite?: boolean };
   eventCursor?: string;
 }
 
@@ -139,6 +141,7 @@ export const ClientMethods = {
   skillsList: "skills/list",
   skillsRead: "skills/read",
   skillsCreate: "skills/create",
+  skillsWrite: "skills/write",
   attachmentAdd: "attachment/add",
   attachmentRead: "attachment/read",
   contextRead: "context/read",
@@ -1066,6 +1069,13 @@ export interface SkillReadResponse extends SkillDescriptor { content: string; li
 export interface SkillCreateParams { id: string; content: string }
 /** `skills/create` 结果：新建成功的技能描述与写入的生效目录。 */
 export interface SkillCreateResponse { skill: SkillDescriptor; root?: string }
+/**
+ * `skills/write` 参数；仅在 `capabilities.skillsWrite` 为真时可用。
+ * `expectedDigest` 必须来自最近一次读取，技能被外部修改后内核拒绝写入。
+ */
+export interface SkillWriteParams { id: string; content: string; expectedDigest: string }
+/** `skills/write` 结果：写入后的技能描述与生效目录。 */
+export interface SkillWriteResponse { skill: SkillDescriptor; root?: string }
 export interface AttachmentDescriptor { id: string; name: string; digest: string; bytes: number; mediaType: string }
 
 /**

@@ -740,7 +740,7 @@ export function App(): JSX.Element {
         },
         onCancelSummary: () => { void sessionBranches.cancelSummary(); }, onDismissSummary: sessionBranches.dismissSummaryJob } : undefined}
       onInterrupt={handleInterrupt} onApprovalDecision={handleApproval} onStartSessionWithPrompt={handleStartSessionWithPrompt} models={modelOptions} activeModelProvider={activeModelProvider} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel} onSelectModel={handleSelectModel}
-      skillsReadable={capabilities?.skillsRead === true} skillsCreatable={capabilities?.skillsCreate === true} workspaceInstructionsEditable={capabilities?.workspaceInstructionsEdit === true} onOpenCockpit={() => setIsCockpitOpen(true)} onOpenSideChat={() => setIsSideChatOpen(previous => !previous)} onOpenRewind={openRewind} onOpenContext={contextThreadId ? contextPanel.open : undefined}
+      skillsReadable={capabilities?.skillsRead === true} skillsCreatable={capabilities?.skillsCreate === true} skillsWritable={capabilities?.skillsWrite === true} workspaceInstructionsEditable={capabilities?.workspaceInstructionsEdit === true} onOpenCockpit={() => setIsCockpitOpen(true)} onOpenSideChat={() => setIsSideChatOpen(previous => !previous)} onOpenRewind={openRewind} onOpenContext={contextThreadId ? contextPanel.open : undefined}
       onOpenUsage={usageSupported && contextThreadId && !preview ? threadUsage.open : undefined}
       onOpenExport={exportSupported && contextThreadId && !preview ? () => setIsExportOpen(true) : undefined}
       onOpenShortcuts={() => setIsShortcutsOpen(true)} onReviewDiff={() => setIsDiffModalOpen(true)} onRevertDiff={() => setIsRevertModalOpen(true)} />

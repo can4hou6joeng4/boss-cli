@@ -2,7 +2,7 @@ import { useState } from "react";
 import type { SkillDescriptor } from "@boss-harness/protocol";
 import { createSkill, harnessErrorText } from "../data/harnessBridge";
 import { ModalSurface } from "./ModalSurface";
-import "../styles/skill-create.css";
+import "../styles/skill-editor.css";
 
 interface Props {
   /** 当前生效的技能目录；旧内核不返回时按首选目录预览。 */
@@ -63,13 +63,13 @@ export function CreateSkillDialog(props: Props) {
   };
 
   return <ModalSurface title="新建工作区技能" onClose={props.onClose} className="compact-dialog">
-    <div className="dialog-form skill-create-form">
+    <div className="dialog-form skill-editor-form">
       <p className="dialog-note">只会新建，不会覆盖已有技能。创建后仍需在输入区选择，才会作为上下文注入。</p>
-      <p className="skill-create-path">写入：<code>{root}/{id.trim() || "<id>"}/SKILL.md</code></p>
+      <p className="skill-editor-path">写入：<code>{root}/{id.trim() || "<id>"}/SKILL.md</code></p>
       <label>技能 id
         <input value={id} onChange={event => setId(event.target.value)} placeholder="例如 candidate-screen" spellCheck={false} autoComplete="off" />
       </label>
-      <p className="skill-create-hint">{id && !idValid ? "id 只能包含小写字母、数字、下划线与连字符，且不超过 64 字符。" : "小写字母、数字、下划线与连字符；创建后目录名即为此 id。"}</p>
+      <p className="skill-editor-hint">{id && !idValid ? "id 只能包含小写字母、数字、下划线与连字符，且不超过 64 字符。" : "小写字母、数字、下划线与连字符；创建后目录名即为此 id。"}</p>
       <label>名称（可选）
         <input value={name} onChange={event => setName(event.target.value)} placeholder="默认与 id 相同" />
       </label>
@@ -79,8 +79,8 @@ export function CreateSkillDialog(props: Props) {
       <label>技能正文
         <textarea value={body} onChange={event => setBody(event.target.value)} placeholder="说明这个技能在什么情况下使用、需要遵循哪些步骤。" spellCheck={false} />
       </label>
-      <p className={"skill-create-count" + (overLimit ? " is-over" : "")}>{bytes.toLocaleString("zh-CN")} / {LIMIT_BYTES.toLocaleString("zh-CN")} 字节{overLimit ? "，已超过上限" : ""}</p>
-      {error && <p className="skill-create-error" role="alert">{error}</p>}
+      <p className={"skill-editor-count" + (overLimit ? " is-over" : "")}>{bytes.toLocaleString("zh-CN")} / {LIMIT_BYTES.toLocaleString("zh-CN")} 字节{overLimit ? "，已超过上限" : ""}</p>
+      {error && <p className="skill-editor-error" role="alert">{error}</p>}
       <div className="dialog-actions">
         <button type="button" className="secondary-button" onClick={props.onClose} disabled={saving}>取消</button>
         <button type="button" className="solid-button" onClick={() => { void submit(); }} disabled={!canSave}>{saving ? "正在创建…" : "创建技能"}</button>

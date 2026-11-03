@@ -1,4 +1,4 @@
-.skill-create-form textarea {
+.skill-editor-form textarea {
   width: 100%;
   box-sizing: border-box;
   min-height: 140px;
@@ -14,36 +14,36 @@
   line-height: 1.6;
 }
 
-.skill-create-form textarea:focus-visible {
+.skill-editor-form textarea:focus-visible {
   outline: 2px solid var(--accent-cyan);
   outline-offset: 2px;
 }
 
-.skill-create-form .skill-create-path {
+.skill-editor-form .skill-editor-path {
   color: var(--text-muted);
   font-size: 12px;
   overflow-wrap: anywhere;
 }
 
-.skill-create-form .skill-create-hint {
+.skill-editor-form .skill-editor-hint {
   margin-top: -8px;
   color: var(--text-faint);
   font-size: 11px;
   line-height: 1.6;
 }
 
-.skill-create-form .skill-create-count {
+.skill-editor-form .skill-editor-count {
   align-self: flex-end;
   color: var(--text-faint);
   font-size: 11px;
 }
 
-.skill-create-form .skill-create-count.is-over,
-.skill-create-form .skill-create-error {
+.skill-editor-form .skill-editor-count.is-over,
+.skill-editor-form .skill-editor-error {
   color: var(--accent-error);
 }
 
-.skill-create-form .skill-create-error {
+.skill-editor-form .skill-editor-error {
   font-size: 12px;
   line-height: 1.6;
   overflow-wrap: anywhere;
