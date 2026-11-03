@@ -254,7 +254,9 @@ export function App(): JSX.Element {
         branchSnapshotsRef.current = branchViewsRef.current && status?.capabilities?.sessionBranchSnapshots === true;
         setCapabilities(status?.running ? status.capabilities : undefined);
         if (!status?.running) {
-          if (status?.state === "disconnected" || status?.state === "stopped") setError(status?.error ?? "本地内核未连接，可重新连接后恢复会话。");
+          // 状态查询失败（没有 state，error 带原因）与内核明确断开都要提示，不能静默停在未连接状态。
+          if (status?.error) setError(status.error);
+          else if (status?.state === "disconnected" || status?.state === "stopped") setError("本地内核未连接，可重新连接后恢复会话。");
           return;
         }
         const processDefault = status.modelBridge

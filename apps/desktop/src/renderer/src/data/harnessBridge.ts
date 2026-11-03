@@ -80,9 +80,12 @@ export type SkillCatalogState = "unavailable" | "loading" | "ready" | "empty" | 
 /** 工具目录状态：把「还没读到」「读取失败」和「确实没有工具」分开，界面不能把它们混为一谈。 */
 export type ToolCatalogState = "unavailable" | "loading" | "ready" | "empty" | "error";
 
+/** 内核状态。读取失败保留真实原因，调用方要据此提示，而不是把查询失败静默当成「未运行」。 */
 export async function harnessStatus(): Promise<HarnessStatus | null> {
-  try { return await bridge()?.status() ?? null; }
-  catch { return { running: false, repoRoot: "", error: "无法连接本地内核" }; }
+  const api = bridge();
+  if (!api) return null;
+  try { return await api.status(); }
+  catch (cause) { return { running: false, repoRoot: "", error: `内核状态读取失败：${harnessErrorText(cause)}。请稍后重试或重新连接。` }; }
 }
 
 function bridge(): HarnessBridge | null {
