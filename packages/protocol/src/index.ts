@@ -981,6 +981,8 @@ export interface WorkspaceInstructionsText {
   content: string;
   status: WorkspaceInstructionsState["status"];
   limitBytes: number;
+  /** 文件实际字节数；空文件、超限或不可读时为 `null`。 */
+  bytes: number | null;
 }
 export interface WorkspaceInstructionsWriteParams { content: string }
 /** `context/instructions/write` 的结果：只描述保存后的文件，不返回正文。 */
