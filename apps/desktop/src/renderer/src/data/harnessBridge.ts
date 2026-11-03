@@ -15,6 +15,7 @@ import {
   type ThreadSummary,
   type ThreadStartResponse,
   type ThreadModelSetResponse,
+  type ThreadArchiveResponse,
   type ThreadReasoningReadResponse,
   type ThreadReasoningSetResponse,
   type TurnInterruptResponse,
@@ -152,12 +153,12 @@ export const listBranchTurns = (threadId: string, cursor?: string | null): Promi
   contextRequest(ClientMethods.threadTurnsList, cursor ? { threadId, view: "branch", cursor, limit: 200 } : { threadId, view: "branch", limit: 200 });
 
 /** 内核里的会话列表，映射成侧栏用的条目。读取失败时抛出，避免把空列表误当成「没有会话」。 */
-export async function listThreads(): Promise<SessionItem[]> {
+export async function listThreads(archived = false): Promise<SessionItem[]> {
   if (!bridge()) return [];
   const threads: ThreadListResponse["threads"] = [];
   let cursor: string | null = null;
   do {
-    const response: ThreadListResponse = await contextRequest<ThreadListResponse>(ClientMethods.threadList, { cursor, limit: 200 });
+    const response: ThreadListResponse = await contextRequest<ThreadListResponse>(ClientMethods.threadList, { archived, cursor, limit: 200 });
     if (!response || !Array.isArray(response.threads)) throw new Error("会话列表响应格式无法识别");
     const next: string | null = response.nextCursor ?? null;
     if (next !== null && typeof next !== "string") throw new Error("会话列表分页游标无法识别");
@@ -180,7 +181,28 @@ export async function listThreads(): Promise<SessionItem[]> {
     model: thread.model,
     reasoningEffort: thread.reasoningEffort,
     projectId: HARNESS_PROJECT_ID,
+    archived: thread.archived === true,
   }));
+}
+
+/** 归档会话：内核会同时暂停队列并让待审批项失效。回执不可读时保留内核错误码。 */
+export async function archiveThread(threadId: string): Promise<void> {
+  await setThreadArchived(threadId, true);
+}
+
+/** 恢复已归档会话；恢复后仍需重新发起回合，旧审批不会复活。 */
+export async function unarchiveThread(threadId: string): Promise<void> {
+  await setThreadArchived(threadId, false);
+}
+
+async function setThreadArchived(threadId: string, archived: boolean): Promise<void> {
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  const method = archived ? ClientMethods.threadArchive : ClientMethods.threadUnarchive;
+  const response = await api.request<ThreadArchiveResponse>(method, { threadId });
+  if (!response?.thread || response.thread.id !== threadId || response.thread.archived !== archived) {
+    throw new Error(archived ? "归档会话响应无法识别" : "恢复会话响应无法识别");
+  }
 }
 
 /** 创建会话。失败不吞掉：调用方要用内核的真实原因提示，而不是把失败显示成无事发生。 */

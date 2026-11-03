@@ -80,6 +80,8 @@ export interface SessionItem {
   updatedAt?: string;
   status: "idle" | "running" | "completed" | "interrupted";
   projectId: string;
+  /** 内核已归档：从常规侧栏移入「已归档」，恢复后才能继续对话。 */
+  archived?: boolean;
 }
 
 export interface ProjectFolder {

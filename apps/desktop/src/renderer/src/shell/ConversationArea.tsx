@@ -35,7 +35,7 @@ export interface ConversationAreaProps {
   onSelectModel?: (provider: string, id: string) => void | boolean | Promise<void | boolean>; onOpenSettings?: () => void; onInterrupt?: () => void;
   skills?: SkillDescriptor[]; skillCatalogState?: SkillCatalogState; skillCatalogError?: string; onRefreshSkills?: () => void;
   threadId?: string;
-  configuredModelLabel?: string; readOnly?: boolean;
+  configuredModelLabel?: string; readOnly?: boolean; /** 内核已归档：只读查看历史，恢复后才能继续对话。 */ archived?: boolean;
   continuationCheck?: { threadId: string; sourceTurnId: string; loading: boolean; submitting?: boolean;
     uncertain?: boolean; response?: TurnContinuationReadResponse; error?: string } | null;
   onContinueInterruptedTurn?: () => void;
@@ -47,7 +47,7 @@ export interface ConversationAreaProps {
   onReviewDiff?: () => void; onRevertDiff?: () => void; onOpenRewind?: () => void; onOpenCockpit?: () => void;
 }
 export const ConversationArea: React.FC<ConversationAreaProps> = ({
-  messages: initialMessages, readOnly = false, currentMode, onModeChange, onSendMessage, onQueueMessage, onCheckQueueSubmission, queueItems = [], queueTotalItems, queueActiveItems, queueTruncated, onRemoveQueueItem, onRetryQueueItem, simulateLocal = true, harnessUp = false,
+  messages: initialMessages, readOnly = false, archived = false, currentMode, onModeChange, onSendMessage, onQueueMessage, onCheckQueueSubmission, queueItems = [], queueTotalItems, queueActiveItems, queueTruncated, onRemoveQueueItem, onRetryQueueItem, simulateLocal = true, harnessUp = false,
   running = false, taskBlocked = false, draft, onDraftChange, models, activeModelProvider, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, sessionReasoning,
   onInterrupt, onApprovalDecision, onReviewDiff, onRevertDiff, onOpenRewind, loginGuide, onLogin,
   skills = [], skillCatalogState = "unavailable", skillCatalogError, onRefreshSkills,
@@ -669,11 +669,12 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
 
       <div className="thread-composer-wrapper">
         <div className="thread-composer-inner">
-          {!simulateLocal && <QueuePanel items={queueItems} totalItems={queueTotalItems} activeItems={queueActiveItems} truncated={queueTruncated} onRemove={onRemoveQueueItem ?? (async () => false)} onRetry={onRetryQueueItem} />}
+          {!simulateLocal && !archived && <QueuePanel items={queueItems} totalItems={queueTotalItems} activeItems={queueActiveItems} truncated={queueTruncated} onRemove={onRemoveQueueItem ?? (async () => false)} onRetry={onRetryQueueItem} />}
+          {archived && <div className="composer-notice archived-notice" role="status">此聊天已归档，可查看历史；在侧栏「已归档」中恢复后可继续对话。</div>}
           {loginGuide}
           {approvalError && <div className="composer-notice" role="alert">{approvalError}</div>}
           <div className="thread-composer-input"><Composer ref={textareaRef} value={inputText} onChange={setInputText} onSend={onSendMessage} onQueue={simulateLocal ? undefined : onQueueMessage} onCheckQueueSubmission={simulateLocal ? undefined : onCheckQueueSubmission} draft={composerDraft} onDraftChange={updateDraft} skills={skills} skillCatalogState={skillCatalogState} skillCatalogError={skillCatalogError} onRefreshSkills={onRefreshSkills}
-            readOnly={readOnly} isRunning={running} blocked={taskBlocked} onInterrupt={onInterrupt} preview={simulateLocal}
+            readOnly={readOnly} archived={archived} isRunning={running} blocked={taskBlocked} onInterrupt={onInterrupt} preview={simulateLocal}
             currentMode={currentMode} onModeChange={onModeChange} models={models} activeModelProvider={activeModelProvider} activeModelId={activeModelId} configuredModelLabel={configuredModelLabel}
             onSelectModel={onSelectModel} sessionReasoning={sessionReasoning} onOpenSettings={onOpenSettings} onLogin={onLogin} /></div>
         </div>

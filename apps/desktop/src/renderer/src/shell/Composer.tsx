@@ -14,7 +14,7 @@ import { queueSkillNotice } from "../data/queueSkillNotice";
 import "../styles/composer-menus.css";
 
 export interface ComposerProps {
-  readOnly?: boolean;
+  readOnly?: boolean; /** 会话已归档：可查看草稿但不能发送，恢复后才继续对话。 */ archived?: boolean;
   value: string; onChange: (text: string) => void; onSend: ComposerSend;
   onQueue?: ComposerQueue;
   onCheckQueueSubmission?: CheckQueueSubmission;
@@ -37,7 +37,7 @@ const MAX_ATTACHMENTS = 4;
 const MAX_ATTACHMENT_BYTES = 200000;
 
 export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function Composer({
-  value, onChange, onSend, draft, onDraftChange, isRunning = false, blocked = false, onInterrupt, preview = true, readOnly = false,
+  value, onChange, onSend, draft, onDraftChange, isRunning = false, blocked = false, onInterrupt, preview = true, readOnly = false, archived = false,
   onQueue, onCheckQueueSubmission,
   currentMode = "agent", onModeChange, models = [], activeModelProvider, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, home = false, onLogin,
   skills = [], skillCatalogState = "unavailable", skillCatalogError, onRefreshSkills,
@@ -142,6 +142,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     }
   };
   const submit = async () => {
+    if (archived) return;
     const submitted = draftRef.current;
     const priorQueueSubmission = submitted.queueSubmission;
     const queueing = Boolean(onQueue && (isRunning || (priorQueueSubmission?.uncertain && priorQueueSubmission.intent === "followUp")));
@@ -278,7 +279,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     <SlashCommandList isOpen={slashOpen} onClose={() => setSlashOpen(false)} onSelect={selectSlash} search={slashQuery} selectedIndex={selectedIndex} />
     <AtMentionList isOpen={mentionOpen} onClose={() => setMentionOpen(false)} onSelect={selectMention} search={mentionQuery} selectedIndex={selectedIndex} />
     <textarea aria-label="消息输入" ref={element => { inputRef.current = element; if (typeof forwardedRef === "function") forwardedRef(element); else if (forwardedRef) forwardedRef.current = element; }} rows={2}
-      placeholder={isRunning ? queueIntent === "steering" ? "补充当前任务要求…" : "安排当前任务结束后的下一步…" : blocked ? "另一个任务正在运行，请等待完成" : "和 BOSS Harness 一起工作"}
+      placeholder={archived ? "已归档，恢复后可继续对话" : isRunning ? queueIntent === "steering" ? "补充当前任务要求…" : "安排当前任务结束后的下一步…" : blocked ? "另一个任务正在运行，请等待完成" : "和 BOSS Harness 一起工作"}
       value={value} onChange={event => change(event.target.value)}
       onPaste={event => {
         const files = [...event.clipboardData.files];
@@ -397,7 +398,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
             <div className="menu-divider" /><button type="button" disabled={!onOpenSettings} onClick={() => { setMenu(null); onOpenSettings?.(); }}><IconSettings /><span>模型与连接设置</span></button>
           </Popover>
         </div>
-        <button type="button" className="composer-submit" aria-label={queueModeActive ? queueIntent === "steering" ? "转向当前回合" : "排入后续回合" : "发送消息"} title={queueModeActive ? queueIntent === "steering" ? "转向当前回合 · Enter" : "排入后续回合 · Enter" : submitting ? "正在转交消息" : "发送 · Enter"} disabled={(blocked && !isRunning) || readingAttachments || submitting || (!value.trim() && !attachments.length)} onClick={() => { void submit(); }}><IconSend size={18} /></button>
+        <button type="button" className="composer-submit" aria-label={queueModeActive ? queueIntent === "steering" ? "转向当前回合" : "排入后续回合" : "发送消息"} title={queueModeActive ? queueIntent === "steering" ? "转向当前回合 · Enter" : "排入后续回合 · Enter" : submitting ? "正在转交消息" : "发送 · Enter"} disabled={archived || (blocked && !isRunning) || readingAttachments || submitting || (!value.trim() && !attachments.length)} onClick={() => { void submit(); }}><IconSend size={18} /></button>
         {isRunning && onInterrupt && <button type="button" className="composer-stop" aria-label="停止任务" title="停止当前任务" onClick={onInterrupt}><IconStop size={15} /></button>}
       </div>
     </div>

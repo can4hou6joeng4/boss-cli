@@ -409,6 +409,8 @@ export interface ThreadModelSetParams {
   model: string;
 }
 export interface ThreadModelSetResponse { thread: ThreadSummary }
+/** 归档/恢复都返回内核当前线程摘要，`thread.archived` 即操作后的状态。 */
+export interface ThreadArchiveResponse { thread: ThreadSummary }
 export interface ThreadReasoningReadResponse {
   threadId: string;
   model: string;

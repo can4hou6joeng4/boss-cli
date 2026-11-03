@@ -18,7 +18,7 @@ import { UI_STORAGE_PREFIX } from "./data/uiStorage";
 import { branchSupport, branchSwitchBlock, useSessionBranches } from "./data/useSessionBranches";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
-import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, deleteThread, harnessErrorText, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn } from "./data/harnessBridge";
+import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, archiveThread, configuredModels, deleteThread, harnessErrorText, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn, unarchiveThread } from "./data/harnessBridge";
 import { deleteThreadFailure } from "./data/deleteThreadError";
 import { reduceHarnessEvent, autoApprovalFallback, type HarnessEvent } from "./data/harnessEvents";
 import { unconfirmedFailure } from "./data/confirmationFailure";
@@ -140,7 +140,7 @@ export function App(): JSX.Element {
   const readContinuationCheck = useCallback(async (session: SessionItem, explicitRejection?: string) => {
     const sourceTurnId = session.lastTurnStatus === "interrupted" ? session.turnId : undefined;
     const generation = ++continuationReadGeneration.current;
-    if (!window.boss || !continuationSupported || !sourceTurnId || session.projectId !== HARNESS_PROJECT_ID) {
+    if (!window.boss || !continuationSupported || !sourceTurnId || session.projectId !== HARNESS_PROJECT_ID || session.archived === true) {
       setContinuationCheck(null);
       return;
     }
@@ -295,8 +295,10 @@ export function App(): JSX.Element {
         if (modelCatalog) setModelOptions(modelCatalog.filter(model => model?.configured === true && model?.available === true));
         const version = lifecycleVersion.current;
         let sessions: Awaited<ReturnType<typeof listThreads>>;
+        let archived: Awaited<ReturnType<typeof listThreads>>;
         try {
-          sessions = await listThreads();
+          // 已归档会话单独取回；侧栏按 archived 标记分区，未开启「显示已归档」时不会混入常规列表。
+          [sessions, archived] = await Promise.all([listThreads(), listThreads(true)]);
         } catch (cause) {
           if (cancelled) return;
           // 读取失败时保留当前列表，避免把一次 RPC 失败显示成「没有会话」。
@@ -304,17 +306,18 @@ export function App(): JSX.Element {
           return;
         }
         if (cancelled) return;
+        const allSessions = [...sessions, ...archived];
         if (version === lifecycleVersion.current) {
-          const next = new Set(sessions.filter(session => session.status === "running").map(session => session.id));
+          const next = new Set(allSessions.filter(session => session.status === "running").map(session => session.id));
           runningRef.current = next; setRunningThreadIds(next);
-          for (const session of sessions) if (session.turnId) turnIds.current.set(session.id, session.turnId);
+          for (const session of allSessions) if (session.turnId) turnIds.current.set(session.id, session.turnId);
         }
-        for (const session of sessions) session.status = runningRef.current.has(session.id) ? "running"
+        for (const session of allSessions) session.status = runningRef.current.has(session.id) ? "running"
           : session.lastTurnStatus === "interrupted" ? "interrupted" : "idle";
-        setFolders([{ id: HARNESS_PROJECT_ID, name: HARNESS_PROJECT_NAME, sessions }]);
+        setFolders([{ id: HARNESS_PROJECT_ID, name: HARNESS_PROJECT_NAME, sessions: allSessions }]);
         const active = activeRef.current;
         if (active?.projectId === HARNESS_PROJECT_ID) {
-          const summary = sessions.find(session => session.id === active.id);
+          const summary = allSessions.find(session => session.id === active.id);
           if (summary) {
             activeRef.current = summary; setActiveSession(summary);
             void readContinuationCheck(summary);
@@ -416,6 +419,17 @@ export function App(): JSX.Element {
     if (warning) setError(warning);
     return true;
   }, [clearActiveConversation]);
+  /** 归档/恢复会话：成功由内核事件触发列表刷新；失败保留原状态并给出真实原因。 */
+  const handleArchiveSession = useCallback(async (session: SessionItem, archived: boolean): Promise<boolean> => {
+    try {
+      if (archived) await archiveThread(session.id);
+      else await unarchiveThread(session.id);
+      return true;
+    } catch (cause) {
+      setError(`${archived ? "归档" : "恢复"}聊天失败：${harnessErrorText(cause)}。${archived ? "聊天未归档" : "聊天仍未恢复"}，列表保持不变。`);
+      return false;
+    }
+  }, []);
   const createConnectionSession = async (): Promise<SessionItem | null> => {
     if (!window.boss || !harnessUp || startingRef.current) return null;
     startingRef.current = true; setStartingSession(true);
@@ -707,7 +721,7 @@ export function App(): JSX.Element {
   return <>
     <AppShell isDark={isDark} onToggleTheme={() => setIsDark(previous => !previous)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => setIsSidebarOpen(previous => !previous)}
       folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} currentMode={currentMode} onModeChange={setCurrentMode}
-      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onDeleteSession={handleDeleteSession} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueActiveItems={queueMeta.activeItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} simulateLocal={preview} harnessUp={harnessUp}
+      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onDeleteSession={handleDeleteSession} onArchiveSession={handleArchiveSession} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueActiveItems={queueMeta.activeItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} simulateLocal={preview} harnessUp={harnessUp}
       onCreateConnectionSession={createConnectionSession}
       sessionReasoning={contextThreadId ? sessionReasoning : undefined}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession || branchSummaryRunning}
