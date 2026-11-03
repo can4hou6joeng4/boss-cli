@@ -36,6 +36,8 @@ export interface ConversationAreaProps {
   skills?: SkillDescriptor[]; skillCatalogState?: SkillCatalogState; skillCatalogError?: string; onRefreshSkills?: () => void; skillProblems?: SkillProblem[];
   /** turnId → 该回合实际注入的技能 id；用于在用户消息下方回显本回合用到的技能。 */
   turnSkillIds?: Record<string, string[]>;
+  /** 点击回合技能标签时打开「技能与工具」并选中该技能；缺省时标签只读。 */
+  onInspectSkill?: (skillId: string) => void;
   threadId?: string;
   configuredModelLabel?: string; readOnly?: boolean; /** 内核已归档：只读查看历史，恢复后才能继续对话。 */ archived?: boolean;
   continuationCheck?: { threadId: string; sourceTurnId: string; loading: boolean; submitting?: boolean;
@@ -53,7 +55,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   running = false, taskBlocked = false, draft, onDraftChange, models, activeModelProvider, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, sessionReasoning,
   onInterrupt, onApprovalDecision, onReviewDiff, onRevertDiff, onOpenRewind, loginGuide, onLogin,
   skills = [], skillCatalogState = "unavailable", skillCatalogError, onRefreshSkills, skillProblems = [],
-  turnSkillIds = {},
+  turnSkillIds = {}, onInspectSkill,
   threadId, continuationCheck, onContinueInterruptedTurn, modelRetry, onDismissModelRetry, sessionBranches,
 }) => {
   const [messages, setMessages] = useState<MessageItem[]>(initialMessages);
@@ -253,7 +255,9 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                     return (
                       <div className="user-skill-chips" aria-label={`本回合技能：${names.join("、")}`}>
                         <span className="user-skill-chips-label">本回合技能</span>
-                        {ids.map((id, index) => <span className="user-skill-chip" key={id} title={id}>{names[index]}</span>)}
+                        {ids.map((id, index) => onInspectSkill
+                          ? <button type="button" className="user-skill-chip" key={id} title={`查看技能：${id}`} onClick={() => onInspectSkill(id)}>{names[index]}</button>
+                          : <span className="user-skill-chip" key={id} title={id}>{names[index]}</span>)}
                       </div>
                     );
                   })()}

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { SkillDescriptor, SkillProblem, SkillReadResponse } from "@boss-harness/protocol";
 import { harnessErrorText, readSkill, type SkillCatalogState } from "../data/harnessBridge";
 import { CreateSkillDialog } from "./CreateSkillDialog";
@@ -6,6 +6,7 @@ import { DeleteSkillDialog } from "./DeleteSkillDialog";
 import { EditSkillDialog } from "./EditSkillDialog";
 import { IconChevronRight, IconClose, IconSearch, IconSparkles } from "./Icons";
 import { filterSkillProblems, filterSkills } from "../data/skillFilter";
+import { resolveSkillFocus } from "../data/skillFocus";
 
 export interface WorkspaceSkillsProps {
   skills: SkillDescriptor[];
@@ -27,6 +28,10 @@ export interface WorkspaceSkillsProps {
   onUseSkill: (skillId: string) => void;
   preview: boolean;
   onRefresh: () => void;
+  /** 从对话里的回合技能标签跳转进来时，目录就绪后选中该技能。 */
+  focusSkillId?: string | null;
+  /** 聚焦已完成或确认无法完成；上层据此清除一次性跳转意图。 */
+  onFocusSkill?: () => void;
 }
 
 const byteText = (value: number) => `${value.toLocaleString("zh-CN")} 字节`;
@@ -56,6 +61,20 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
       setSelectedId(null); setDetail(null); setDetailError("");
     }
   }, [props.skills, selectedId]);
+  const appliedFocus = useRef<string | null>(null);
+  useEffect(() => {
+    if (!props.focusSkillId) { appliedFocus.current = null; return; }
+    if (appliedFocus.current === props.focusSkillId) return;
+    const focus = resolveSkillFocus(props.focusSkillId, props.skills, props.state);
+    if (!focus.done) return;
+    appliedFocus.current = props.focusSkillId;
+    if (focus.selectedId) {
+      setSelectedId(focus.selectedId); setReload(0); setQuery(""); setNotice("");
+    } else {
+      setNotice(`技能 ${props.focusSkillId} 已不在当前技能目录；可能已被删除或重命名。`);
+    }
+    props.onFocusSkill?.();
+  }, [props.focusSkillId, props.skills, props.state, props.onFocusSkill]);
   useEffect(() => {
     setDetail(null); setDetailError("");
     if (!selectedId || !props.readable) return;
