@@ -53,6 +53,8 @@ import {
   type TurnListResponse,
   type ThreadUsageReadResponse,
   type QueueStatusCounts,
+  type WorkspaceInstructionsText,
+  type WorkspaceInstructionsWriteResponse,
 } from "@boss-harness/protocol";
 import { formatRelativeTime } from "@boss-harness/shared";
 import { queuePageOf, type QueuePage } from "./queueMapping";
@@ -156,6 +158,12 @@ export const readContextEdit = (threadId: string, itemId: string): Promise<Conte
   contextRequest(ClientMethods.contextEditRead, { threadId, itemId });
 export const writeContextEdit = (params: { threadId: string; itemId: string; sourceDigest: string; replacementText: string | null }): Promise<ContextEditReadResponse> =>
   contextRequest(ClientMethods.contextEdit, params);
+
+/** 工作区常驻说明：仅在内核声明 workspaceInstructionsEdit 后调用；保存固定写入首选路径。 */
+export const readWorkspaceInstructions = (): Promise<WorkspaceInstructionsText> =>
+  contextRequest(ClientMethods.contextInstructionsRead, {});
+export const writeWorkspaceInstructions = (content: string): Promise<WorkspaceInstructionsWriteResponse> =>
+  contextRequest(ClientMethods.contextInstructionsWrite, { content });
 
 /** 会话内分支：仅在内核声明 sessionLeaf / sessionBranchTree / sessionBranchViews 后调用；错误保留内核错误码。 */
 export const listThreadBranches = (threadId: string, cursor?: string | null): Promise<ThreadBranchesListResponse> =>

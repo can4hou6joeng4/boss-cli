@@ -10,6 +10,7 @@ import hashlib
 import os
 from pathlib import Path
 import stat
+import tempfile
 from typing import Any
 
 MAX_INSTRUCTIONS_BYTES = 8 * 1024
@@ -116,4 +117,73 @@ class WorkspaceInstructions:
             else:
                 status, byte_length = ("loaded" if text else "empty"), len(data)
         return {"path": relative_path, "status": status, "bytes": byte_length,
+                "limitBytes": MAX_INSTRUCTIONS_BYTES}
+
+    def read_text(self) -> dict[str, Any]:
+        """编辑器读取：只返回当前生效候选的有界正文，不跟随符号链接。
+
+        文件超限或无法解码时正文为空，但保留状态与路径，便于就地覆盖修复。
+        """
+        candidate = self._candidate()
+        described = self.describe()
+        status = described["status"] if described is not None else "empty"
+        text = ""
+        if candidate is not None and status == "loaded":
+            data = _read_regular(candidate[1])
+            if data is not None:
+                try:
+                    text = data.decode("utf-8-sig").strip()
+                except UnicodeDecodeError:
+                    text = ""
+        return {"path": candidate[0] if candidate is not None else _PREFERRED.as_posix(),
+                "pathPreferred": _PREFERRED.as_posix(),
+                "content": text, "status": status, "limitBytes": MAX_INSTRUCTIONS_BYTES}
+
+    def write_text(self, text: str) -> dict[str, Any]:
+        """把正文原子写入首选路径；拒绝符号链接与非普通文件。
+
+        只写首选路径：旧 ``.boss-cli/CONTEXT.md`` 仍可读取，但保存后新文件优先，
+        界面需要说明旧文件不再生效。
+        """
+        if not isinstance(text, str):
+            raise ValueError("工作区说明必须是字符串")
+        data = text.encode("utf-8")
+        if len(data) > MAX_INSTRUCTIONS_BYTES:
+            raise ValueError(f"工作区说明超过 {MAX_INSTRUCTIONS_BYTES} 字节上限")
+        target = self.workspace / _PREFERRED
+        directory = target.parent
+        try:
+            if not self.workspace.is_dir():
+                raise OSError("工作区目录不存在")
+            try:
+                existing_dir = os.lstat(directory)
+            except FileNotFoundError:
+                os.mkdir(directory, 0o755)
+            else:
+                if not stat.S_ISDIR(existing_dir.st_mode) or os.path.islink(directory):
+                    raise OSError("目标目录不是普通目录")
+            try:
+                existing_file = os.lstat(target)
+            except FileNotFoundError:
+                existing_file = None
+            if existing_file is not None and not stat.S_ISREG(existing_file.st_mode):
+                raise OSError("目标不是普通文件（拒绝符号链接）")
+            descriptor, temporary = tempfile.mkstemp(prefix=".CONTEXT-", suffix=".tmp", dir=directory)
+            try:
+                with os.fdopen(descriptor, "wb") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.chmod(temporary, stat.S_IMODE(existing_file.st_mode) if existing_file is not None else 0o644)
+                os.replace(temporary, target)
+            except BaseException:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
+                raise
+        except OSError as exc:
+            raise OSError(exc.strerror or "写入失败") from None
+        return {"path": _PREFERRED.as_posix(), "bytes": len(data),
+                "status": "loaded" if data.strip() else "empty",
                 "limitBytes": MAX_INSTRUCTIONS_BYTES}

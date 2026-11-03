@@ -79,7 +79,9 @@ export interface InitializeResponse {
     /** 可用 `thread/branchSummary/read` 读取被放弃分支摘要正文。 */
     sessionBranchSummaryRead?: boolean;
     /** 可用只读 `thread/export` 导出脱敏后的会话文本（Markdown / JSON / 自包含 HTML）。 */
-    threadExport?: boolean };
+    threadExport?: boolean;
+    /** 可用 `context/instructions/read` / `context/instructions/write` 查看并保存工作区常驻说明。 */
+    workspaceInstructionsEdit?: boolean };
   eventCursor?: string;
 }
 
@@ -141,6 +143,8 @@ export const ClientMethods = {
   contextCompact: "context/compact",
   contextEditRead: "context/edit/read",
   contextEdit: "context/edit",
+  contextInstructionsRead: "context/instructions/read",
+  contextInstructionsWrite: "context/instructions/write",
 } as const;
 
 export type ClientMethod = (typeof ClientMethods)[keyof typeof ClientMethods];
@@ -961,6 +965,26 @@ export interface WorkspaceInstructionsState {
   status: "loaded" | "empty" | "too_large" | "unreadable";
   /** 实际字节数；超限或不可读时未知为 null。 */
   bytes: number | null;
+  limitBytes: number;
+}
+/**
+ * `context/instructions/read`：当前生效候选的有界正文。
+ * 超限或无法解码时正文为空，状态与路径仍返回，便于就地覆盖修复。
+ */
+export interface WorkspaceInstructionsText {
+  path: string;
+  /** 保存时固定写入的首选路径；与 `path` 不同说明当前读取的是旧位置。 */
+  pathPreferred: string;
+  content: string;
+  status: WorkspaceInstructionsState["status"];
+  limitBytes: number;
+}
+export interface WorkspaceInstructionsWriteParams { content: string }
+/** `context/instructions/write` 的结果：只描述保存后的文件，不返回正文。 */
+export interface WorkspaceInstructionsWriteResponse {
+  path: string;
+  bytes: number;
+  status: "loaded" | "empty";
   limitBytes: number;
 }
 export interface ContextBranchSummary {

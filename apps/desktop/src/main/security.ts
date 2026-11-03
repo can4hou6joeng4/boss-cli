@@ -84,7 +84,7 @@ const RENDERER_METHODS = new Set([
   "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
   "turn/start", "turn/interrupt", "turn/steer", "turn/read", "turn/continuation/read", "turn/continue", "task/read", "queue/list", "queue/get", "queue/add", "queue/remove",
   "event/list", "model/list", "config/read", "skills/list", "tool/list", "attachment/add", "attachment/read",
-  "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "context/edit/read", "context/edit", "approval/list", "approval/respond",
+  "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "context/edit/read", "context/edit", "context/instructions/read", "context/instructions/write", "approval/list", "approval/respond",
   "connection/read", "connection/check",
   "runtime/resources/read",
 ]);
@@ -247,6 +247,15 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
             Buffer.byteLength(params.replacementText, "utf8") > 128 * 1024))))) {
       throw new Error("invalid context edit request");
     }
+  }
+  if (payload.method === "context/instructions/read" &&
+    params !== undefined && params !== null && Reflect.ownKeys(params).length > 0) {
+    throw new Error("workspace instructions read does not accept params");
+  }
+  if (payload.method === "context/instructions/write" && (!params ||
+    Reflect.ownKeys(params).length !== 1 || typeof params.content !== "string" ||
+    Buffer.byteLength(params.content, "utf8") > 8 * 1024)) {
+    throw new Error("invalid workspace instructions write");
   }
   if (payload.method === "context/compact/plan" || payload.method === "context/compact/start") {
     if ((params?.throughTurnId !== undefined && (typeof params.throughTurnId !== "string" || !params.throughTurnId.trim())) ||

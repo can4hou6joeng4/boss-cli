@@ -509,6 +509,8 @@ class ApplicationService:
             "context/compact": self.on_context_compact,
             "context/edit/read": self.on_context_edit_read,
             "context/edit": self.on_context_edit,
+            "context/instructions/read": self.on_context_instructions_read,
+            "context/instructions/write": self.on_context_instructions_write,
             "attachment/add": self.on_attachment_add, "attachment/read": self.on_attachment_read,
             "shutdown": self.on_shutdown,
         }
@@ -561,7 +563,8 @@ class ApplicationService:
                              "sessionLeaf": True, "sessionBranchViews": True,
                              "sessionBranchTree": True, "sessionBranchSummary": True,
                              "sessionBranchSnapshots": True, "sessionBranchSummaryRead": True,
-                             "threadUsage": True, "sessionModelSelection": True, "threadExport": True},
+                             "threadUsage": True, "sessionModelSelection": True, "threadExport": True,
+                             "workspaceInstructionsEdit": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -1820,6 +1823,26 @@ class ApplicationService:
                     "compactionJob": self._compaction_reference(thread_id),
                     "systemPromptInfo": prompt_info,
                     "workspaceInstructions": workspace_instructions}
+
+    def on_context_instructions_read(self, params: dict | None) -> dict:
+        """编辑器读取当前生效的工作区说明；只返回有界正文，不写文件。"""
+        params = params or {}
+        if params:
+            raise ValueError("context/instructions/read 不接受参数")
+        return self.workspace_instructions.read_text()
+
+    def on_context_instructions_write(self, params: dict | None) -> dict:
+        """原子写入首选路径；路径、上限与符号链接约束都在内核执行。"""
+        params = params or {}
+        if set(params) != {"content"}:
+            raise ValueError("context/instructions/write 只接受 content")
+        try:
+            return self.workspace_instructions.write_text(params.get("content"))
+        except ValueError as exc:
+            raise RpcError(-32004, str(exc), {"code": "WORKSPACE_INSTRUCTIONS_INVALID"}) from None
+        except OSError as exc:
+            raise RpcError(-32004, f"工作区说明写入失败：{exc}",
+                           {"code": "WORKSPACE_INSTRUCTIONS_WRITE_FAILED"}) from None
 
     def on_context_edit_read(self, params: dict | None) -> dict:
         params = params or {}
