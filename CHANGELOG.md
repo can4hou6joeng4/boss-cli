@@ -55,6 +55,8 @@
 
 ### 修复
 
+- 上下文编辑、工具结果分段读取与会话用量读取的错误文案此前各自拼接 `error.message`：这些方法不在主进程保留内核错误形状的清单里，失败时会显示 Electron 拼接的 `Error invoking remote method 'harness:request': Error: …` 前缀。现在统一使用 `harnessErrorText`，上下文编辑与工具结果保留各自的场景说明，导出失败提示也改用同一入口。内核与协议不变（仍为 `0.2.0`）。
+
 - 桌面启动读取模型列表失败时此前会静默吞掉错误，并用空列表覆盖模型选项，界面看起来像「没有可切换的模型」。现在失败时保留现有选项并提示「模型列表读取失败」，结构无法识别的响应（缺少 `models`）同样按失败处理；活动会话的模型回退仍使用默认线路。内核与协议不变（仍为 `0.2.0`）。
 
 - 上下文面板的错误文案此前直接使用 `error.message`：`context/read`、`context/compact/plan` 与 `context/compact/abort` 不在主进程保留内核错误形状的方法清单里，界面会显示 Electron 拼接的 `Error invoking remote method 'harness:request': Error: …` 前缀。现在与 App 侧共用 `harnessErrorText`，去掉包装前缀并保留内核错误码与原因码；开始压缩被拒的文案同时去掉了重复的错误码。内核与协议不变（仍为 `0.2.0`）。

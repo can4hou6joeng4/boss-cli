@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ContextEditReadResponse } from "@boss-cli/protocol";
-import { readContextEdit, writeContextEdit } from "../data/harnessBridge";
+import { harnessErrorText, readContextEdit, writeContextEdit } from "../data/harnessBridge";
 import { ModalSurface } from "./ModalSurface";
 import "../styles/context-edit.css";
 
@@ -39,7 +39,7 @@ export function ContextEditDialog({ threadId, itemId, title, onClose, onChanged 
       setUncertain(false);
       onChanged(next);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "读取会话上下文失败。");
+      setError(`读取会话上下文失败：${harnessErrorText(cause)}`);
     } finally {
       setLoading(false);
     }
@@ -79,7 +79,7 @@ export function ContextEditDialog({ threadId, itemId, title, onClose, onChanged 
     } catch (cause) {
       setError(writeError
         ? "提交结果和当前状态都无法确认。请先刷新并核对，不要重复提交。"
-        : cause instanceof Error ? cause.message : "提交后无法读取最新上下文，请稍后核对。");
+        : `提交后无法读取最新上下文（${harnessErrorText(cause)}），请稍后核对。`);
       setUncertain(true);
     } finally {
       setSaving(false);
