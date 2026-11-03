@@ -10,6 +10,12 @@ export const IconPin: React.FC<IconProps> = ({ size = 16, ...props }) => (
   </svg>
 );
 
+export const IconArchive: React.FC<IconProps> = ({ size = 16, ...props }) => (
+  <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>
+    <rect x="3" y="3.5" width="14" height="3.5" rx="1" /><path d="M4.5 7v8a1.5 1.5 0 0 0 1.5 1.5h8a1.5 1.5 0 0 0 1.5-1.5V7" /><path d="M8 10.5h4" />
+  </svg>
+);
+
 export const IconSliders: React.FC<IconProps> = ({ size = 16, ...props }) => (
   <svg width={size} height={size} viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" aria-hidden="true" {...props}>
     <path d="M3 5h3m4 0h7M3 10h8m4 0h2M3 15h3m4 0h7" /><path d="M6 3v4m5 1v4m-5 1v4" />

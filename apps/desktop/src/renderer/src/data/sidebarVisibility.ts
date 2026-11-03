@@ -12,3 +12,13 @@ export function visibleSessions(sessions: SessionItem[], hidden: ReadonlySet<str
 export function hideActionLabel(hidden: boolean): string {
   return hidden ? "取消隐藏" : "在侧栏隐藏";
 }
+
+/** 常规侧栏只列未归档会话；已归档会话由「已归档」分组单独呈现，避免混进项目列表。 */
+export function nonArchivedSessions(sessions: SessionItem[], hidden: ReadonlySet<string>, showHidden: boolean): SessionItem[] {
+  return visibleSessions(sessions.filter(session => session.archived !== true), hidden, showHidden);
+}
+
+/** 「已归档」分组；同样遵守本地隐藏开关。 */
+export function archivedSessions(sessions: SessionItem[], hidden: ReadonlySet<string>, showHidden: boolean): SessionItem[] {
+  return visibleSessions(sessions.filter(session => session.archived === true), hidden, showHidden);
+}

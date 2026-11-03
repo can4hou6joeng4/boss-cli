@@ -12,6 +12,8 @@ export function sessionRows(folders: ProjectFolder[], query = ""): SessionRow[] 
   };
   return folders.flatMap(folder => folder.sessions.map(session => ({ session, project: folder.name })))
     .filter(row => {
+      // 已归档聊天只在侧栏「已归档」分组出现；最近页与全局搜索不混入。
+      if (row.session.archived === true) return false;
       if (seen.has(row.session.id)) return false;
       seen.add(row.session.id);
       const text = normalize(`${row.session.title} ${row.project}`);
