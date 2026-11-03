@@ -21,7 +21,7 @@ export interface ComposerProps {
   models?: ModelDescriptor[]; activeModelProvider?: string; activeModelId?: string; configuredModelLabel?: string;
   onSelectModel?: (provider: string, id: string) => void | boolean | Promise<void | boolean>; onOpenSettings?: () => void;
   sessionReasoning?: SessionReasoningControl;
-  skills?: SkillDescriptor[]; skillCatalogState?: SkillCatalogState; onRefreshSkills?: () => void;
+  skills?: SkillDescriptor[]; skillCatalogState?: SkillCatalogState; skillCatalogError?: string; onRefreshSkills?: () => void;
   home?: boolean;
   onLogin?: () => void;
 }
@@ -37,7 +37,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   value, onChange, onSend, draft, onDraftChange, isRunning = false, blocked = false, onInterrupt, preview = true, readOnly = false,
   onQueue, onCheckQueueSubmission,
   currentMode = "agent", onModeChange, models = [], activeModelProvider, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, home = false, onLogin,
-  skills = [], skillCatalogState = "unavailable", onRefreshSkills,
+  skills = [], skillCatalogState = "unavailable", skillCatalogError, onRefreshSkills,
   sessionReasoning,
 }, forwardedRef) {
   const [menu, setMenu] = useState<"add" | "permissions" | "mode" | "model" | "skills" | null>(null);
@@ -309,7 +309,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
             <div className="composer-menu-heading">运行时技能</div>
             {skillCatalogState === "loading" && <div className="composer-menu-empty">正在加载可用技能…</div>}
             {skillCatalogState === "unavailable" && <div className="composer-menu-empty">{preview ? "运行时技能仅在连接桌面 Harness 后可用。" : "连接本地 Harness 后可加载技能。"}</div>}
-            {skillCatalogState === "error" && <div className="composer-menu-empty">无法加载技能目录，请重试。</div>}
+            {skillCatalogState === "error" && <div className="composer-menu-empty">技能目录读取失败{skillCatalogError ? `：${skillCatalogError}` : ""}。这只表示读取没有完成，不代表工作区没有技能；请重试。</div>}
             {skillCatalogState === "empty" && <div className="composer-menu-empty">当前工作区没有可用技能。</div>}
             {skillCatalogState === "ready" && skills.map(skill => <button type="button" role="menuitemcheckbox" aria-checked={selectedSkillIds.includes(skill.id)} key={skill.id} disabled={submitting || (selectedSkillIds.length >= 10 && !selectedSkillIds.includes(skill.id))} onClick={() => toggleSkill(skill.id)}><IconSparkles /><span>{skill.name}<small>{skill.description || "无描述"}</small></span>{selectedSkillIds.includes(skill.id) && <IconCheck className="menu-check" />}</button>)}
             {skillCatalogState === "ready" && selectedSkillIds.length >= 10 && <div className="composer-menu-footer">每回合最多选择 10 项技能。</div>}
