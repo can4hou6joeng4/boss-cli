@@ -19,6 +19,18 @@
 .context-panel-budget > span { color: var(--text-muted); font-size: 12px; flex: none; }
 .context-panel-meter { height: 5px; border-radius: 3px; background: var(--border-color); overflow: hidden; margin: 10px 0 14px; }
 .context-panel-meter > i { display: block; height: 100%; background: var(--text-muted); }
+.context-panel-breakdown { margin: 0 0 14px; }
+.context-panel-breakdown-bar { display: flex; height: 5px; border-radius: 3px; overflow: hidden; background: var(--border-color); }
+.context-panel-breakdown-bar > i { display: block; height: 100%; }
+.context-panel-breakdown-list { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 8px 0 0; font-size: 12px; }
+.context-panel-breakdown-list > div { display: flex; align-items: center; gap: 6px; }
+.context-panel-breakdown-list dt { display: flex; align-items: center; gap: 5px; }
+.context-panel-breakdown-list dd { font-variant-numeric: tabular-nums; }
+.context-panel-breakdown-list dt > i { width: 7px; height: 7px; border-radius: 2px; flex: none; }
+.context-panel .breakdown-system, .context-panel .breakdown-usageBaseline { background: var(--accent-color); }
+.context-panel .breakdown-messages { background: var(--accent-cyan); }
+.context-panel .breakdown-tools { background: var(--accent-green); }
+.context-panel .breakdown-options { background: var(--text-faint); }
 .context-panel-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; margin: 0; }
 .context-panel-facts > div { display: flex; justify-content: space-between; gap: 8px; }
 .context-panel dt { color: var(--text-muted); }

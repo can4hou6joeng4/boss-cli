@@ -907,7 +907,8 @@ export interface ContextBudget {
   outputReserve: number;
   inputBudget: number;
   messageCount: number;
-  breakdown: { system: number; messages: number; tools: number; options: number; usageBaseline?: number };
+  /** 输入构成估算；没有请求时的历史投影不返回该字段，应用用量校准时附 `usageBaseline`。 */
+  breakdown?: { system: number; messages: number; tools: number; options: number; usageBaseline?: number };
   requestedOutputTokens: number;
   modelMaxOutputTokens: number;
   /** Effective provider effort at this request's preparation boundary. */

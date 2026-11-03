@@ -2,6 +2,7 @@ import { ModalSurface } from "./ModalSurface";
 import type { ContextPanelState } from "../data/useContextPanel";
 import type { AutoCompactionController } from "../data/useAutoCompaction";
 import type { WorkspaceInstructionsState } from "@boss-harness/protocol";
+import { contextBreakdown } from "../data/contextBreakdown";
 import "../styles/context-panel.css";
 
 export interface ContextPanelProps {
@@ -42,6 +43,7 @@ export function ContextPanel(props: ContextPanelProps) {
   const keep = Number(state.keepRecentTokens), keepValid = Number.isSafeInteger(keep) && keep > 0;
   const status = job ? job.status === "running" && state.lifecycleActive === false ? "内核已不再保留此任务，状态已过期" : { running: state.cancelRequested ? "已请求取消，等待收尾" : "正在压缩", completed: "压缩已完成", failed: "压缩失败", cancelled: "压缩已取消" }[job.status] : "";
   const percentage = budget && budget.inputBudget > 0 ? Math.max(0, Math.min(100, budget.estimatedInputTokens / budget.inputBudget * 100)) : 0;
+  const composition = budget ? contextBreakdown(budget.breakdown) : null;
   return <ModalSurface title="会话上下文" onClose={props.onClose} className="context-panel">
     <div className="context-panel-body">
       <div className="context-panel-owner"><strong>{props.title || "当前会话"}</strong><code>{props.threadId ?? "请选择本机内核会话"}</code></div>
@@ -55,6 +57,11 @@ export function ContextPanel(props: ContextPanelProps) {
           {budget.systemPromptInfo && <p className="context-panel-note">系统提示：{number(budget.systemPromptInfo.bytes)} 字节{budget.systemPromptInfo.sections?.length ? ` · ${budget.systemPromptInfo.sections.map(section => `${section.title} ${number(section.bytes)}`).join(" · ")}` : ""}</p>}
           <div className="context-panel-budget"><strong>{budget.inputBudget > 0 ? <>{number(budget.estimatedInputTokens)}<small> / {number(budget.inputBudget)} 输入 token</small></> : "无可用输入预算"}</strong><span>{budget.withinBudget ? "预算内" : "预算不足"}</span></div>
           <div className="context-panel-meter" role="meter" aria-label="估算输入占预算比例" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage} aria-valuetext={budget.inputBudget > 0 ? `${Math.round(percentage)}%` : "没有可用输入预算"}><i style={{ width: `${percentage}%` }} /></div>
+          {composition && <div className="context-panel-breakdown" aria-label="输入构成（估算）">
+            <div className="context-panel-breakdown-bar" role="img" aria-label={composition.parts.map(part => `${part.label} ${Math.round(part.tokens / composition.total * 100)}%`).join("，")}>{composition.parts.map(part => part.tokens > 0 && <i key={part.key} className={"breakdown-" + part.key} style={{ width: `${part.tokens / composition.total * 100}%` }} />)}</div>
+            <dl className="context-panel-breakdown-list">{composition.parts.map(part => <div key={part.key}><dt><i className={"breakdown-" + part.key} aria-hidden="true" />{part.label}</dt><dd>{number(part.tokens)}</dd></div>)}</dl>
+            <p className="context-panel-note">{composition.calibrated ? "构成来自历史用量校准：基线是 provider 上报的输入 token，已包含系统提示、工具定义与历史消息，无法再拆分。" : ""}各项为估算 token，合计 {number(composition.total)}，不是账单。</p>
+          </div>}
           <dl className="context-panel-facts"><div><dt>上下文容量</dt><dd>{number(budget.contextWindow)}</dd></div><div><dt>输出预留</dt><dd>{number(budget.outputReserve)}</dd></div><div><dt>消息数</dt><dd>{number(budget.messageCount)}</dd></div><div><dt>容量来源</dt><dd>{budget.capabilitySource}{budget.capacityIsEstimate ? "（估算）" : ""}</dd></div></dl>
           <p className="context-panel-note">输入为估算值，不是账单。估算方式：{budget.estimateMethod}；{budget.usageApplied ? "使用历史用量基线校准" : "未应用历史用量校准"}。</p>
           <details><summary>模型用量与检查点</summary><dl className="context-panel-detail"><dt>最近业务用量</dt><dd>{usage(budget.usage)}</dd><dt>最近摘要用量</dt><dd>{usage(budget.summaryUsage)}</dd><dt>摘要检查点</dt><dd>{budget.checkpoint ? `已保留 · 截止回合 ${String(budget.checkpoint.throughTurnId ?? "未知")}` : "尚无摘要检查点"}</dd>{budget.checkpoint?.summaryProvider && <><dt>检查点模型</dt><dd>{String(budget.checkpoint.summaryProvider)} / {String(budget.checkpoint.summaryModel ?? "未知")}</dd><dt>检查点推理档位</dt><dd>{String(budget.checkpoint.summaryEffort ?? "服务默认")}</dd></>}</dl><p className="context-panel-note">历史用量不等于压缩后的精确输入用量。原始历史保留；摘要用于后续模型上下文。</p></details>
