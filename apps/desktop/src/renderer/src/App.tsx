@@ -390,25 +390,32 @@ export function App(): JSX.Element {
       }
     });
   }, [activeModelId, activeModelProvider, defaultModel, modelOptions, readContinuationCheck]);
-  const handleNewTask = useCallback(() => {
+  /** 清空当前会话视图；不碰错误提示，供「删除后仍需提示」等调用方复用。 */
+  const clearActiveConversation = useCallback(() => {
     ++selectionVersion.current; ++continuationReadGeneration.current;
-    activeRef.current = null; setActiveSession(null); setMessages([]); setIsHomeView(true); setError(""); setContinuationCheck(null);
+    activeRef.current = null; setActiveSession(null); setMessages([]); setIsHomeView(true); setContinuationCheck(null);
     if (defaultModel) { setActiveModelProvider(defaultModel.provider); setActiveModelId(defaultModel.model); setConfiguredModelLabel(`${defaultModel.provider} · ${defaultModel.model}`); }
   }, [defaultModel]);
+  const handleNewTask = useCallback(() => {
+    clearActiveConversation(); setError("");
+  }, [clearActiveConversation]);
   /** 删除会话：失败时保留列表并提示原因；已移除（含内核稍后继续清理）时同步清掉本地状态。 */
   const handleDeleteSession = useCallback(async (session: SessionItem): Promise<boolean> => {
+    let warning = "";
     try {
       await deleteThread(session.id);
     } catch (cause) {
       const failure = deleteThreadFailure(cause);
-      setError(failure.message);
-      if (failure.status === "failed") return false;
+      if (failure.status === "failed") { setError(failure.message); return false; }
+      warning = failure.message;
     }
     cache.current.delete(session.id);
     setFolders(previous => previous.map(folder => ({ ...folder, sessions: folder.sessions.filter(item => item.id !== session.id) })));
-    if (activeRef.current?.id === session.id) handleNewTask();
+    // 只清空会话视图，不调用 handleNewTask，避免连删除结果提示一起清掉。
+    if (activeRef.current?.id === session.id) clearActiveConversation();
+    if (warning) setError(warning);
     return true;
-  }, [handleNewTask]);
+  }, [clearActiveConversation]);
   const createConnectionSession = async (): Promise<SessionItem | null> => {
     if (!window.boss || !harnessUp || startingRef.current) return null;
     startingRef.current = true; setStartingSession(true);
