@@ -184,6 +184,8 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .thread-find-bar { display: flex; align-items: center; gap: 8px; padding: 8px 35px; border-bottom: 1px solid var(--border-color); color: var(--text-muted); }
 .thread-find-bar input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text-main); font-size: 13px; }
 .thread-find-count { font-size: 11px; white-space: nowrap; }
+.thread-find-details { display: flex; align-items: center; gap: 4px; font-size: 11px; white-space: nowrap; cursor: pointer; }
+.thread-find-details input { flex: 0 0 auto; margin: 0; accent-color: var(--accent-cyan); cursor: pointer; }
 .thread-find-bar button { border: 0; border-radius: 5px; padding: 2px 6px; background: transparent; color: var(--text-muted); font-size: 11px; cursor: pointer; }
 .thread-find-bar button:hover:not(:disabled) { background: var(--btn-ghost-hover); color: var(--text-main); }
 .thread-find-bar button:disabled { opacity: .4; cursor: default; }
