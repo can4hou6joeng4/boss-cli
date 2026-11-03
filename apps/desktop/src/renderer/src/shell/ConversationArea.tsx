@@ -16,6 +16,7 @@ import type { SkillCatalogState, ApprovalDelivery, ApprovalOutcome } from "../da
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type CheckQueueSubmission } from "../data/composerDraft";
 import { useClipboardCopy } from "../data/clipboardCopy";
+import { toolOutcomeBadge } from "../data/toolOutcome";
 
 /** 会话内分支入口与摘要标注；内核未声明分支能力时不传，界面完全不显示。 */
 export interface SessionBranchesView {
@@ -237,6 +238,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
         <div className="messages-inner">
           {leadingSummaries.map(summary => <BranchSummaryMarker key={summary.entryId} summary={summary} threadId={threadId} canRead={sessionBranches?.summaryRead === true} />)}
           {messages.map((item, messageIndex) => <React.Fragment key={item.id}>{(() => {
+            const toolBadge = item.toolUse ? toolOutcomeBadge(item.toolUse.executionState, item.toolUse.status, item.toolUse.errorCode) : null;
             if (item.role === "user") {
               return (
                 <div className="msg-row-user" id={"message-" + item.id}>
@@ -320,9 +322,12 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                     <summary className="tool-summary">
                       <IconTerminal size={12} />
                       <span>调用工具: <strong>{item.toolUse.name}</strong></span>
+                      {toolBadge && <span className={`tool-outcome-badge ${toolBadge.tone}`}>{toolBadge.label}</span>}
                     </summary>
                     <div className="tool-code-preview">{item.toolUse.input}</div>
                     {item.toolUse.source && <div className="tool-source-reference"><span>来源编号</span><code>{item.toolUse.source.ref}</code><span>查询于 {new Date(item.toolUse.source.queriedAt).toLocaleString()}</span></div>}
+                    {item.toolUse.errorCode && <div className="tool-outcome-meta"><span>错误码</span><code>{item.toolUse.errorCode}</code></div>}
+                    {item.toolUse.recoveryAction && <div className="tool-outcome-meta"><span>恢复建议</span><span>{item.toolUse.recoveryAction}</span></div>}
                     {item.toolUse.result && (
                       <div
                         style={{

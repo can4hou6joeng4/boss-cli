@@ -1042,6 +1042,21 @@ html, body, #root {
   align-items: center;
   gap: 6px;
 }
+.tool-outcome-badge {
+  margin-left: auto;
+  padding: 1px 7px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.tool-outcome-badge.uncertain { color: var(--accent-warning); border-color: color-mix(in srgb, var(--accent-warning) 45%, transparent); }
+.tool-outcome-badge.failed { color: var(--accent-error); border-color: color-mix(in srgb, var(--accent-error) 45%, transparent); }
+.tool-outcome-meta { display: flex; gap: 6px; margin-top: 6px; color: var(--text-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.tool-outcome-meta > span:first-child { flex: none; }
+.tool-outcome-meta code { color: var(--text-main); font-family: var(--font-mono); }
 .tool-code-preview {
   margin-top: 6px;
   background: rgba(0, 0, 0, 0.25);
