@@ -589,7 +589,16 @@ export function App(): JSX.Element {
       clearTimeout(timer); timers.current.delete(id); markRunning(id, false);
       updateThread(id, previous => [...previous, { id: "stopped-" + Date.now(), role: "agent", paragraphs: ["已停止界面演示。"] }]); return;
     }
-    void interruptTurn(id).then(interrupted => { if (!interrupted && runningRef.current.has(id)) setError("未找到可停止的任务，正在等待内核状态同步。"); });
+    void interruptTurn(id).then(interrupted => {
+      if (!interrupted && runningRef.current.has(id)) {
+        setError("未找到可停止的任务，正在重新读取会话状态。");
+        void replicaRef.current?.resume(id);
+      }
+    }).catch(cause => {
+      if (!runningRef.current.has(id)) return;
+      setError(`停止请求未确认：${harnessErrorText(cause)}。正在重新读取会话状态；不会自动重复停止。`);
+      void replicaRef.current?.resume(id);
+    });
   }, [markRunning, updateThread]);
   const handleApproval = useCallback(async (approvalId: string, approved: boolean, toolName: string, remember: boolean) => {
     const session = activeRef.current; if (!session) return false;
