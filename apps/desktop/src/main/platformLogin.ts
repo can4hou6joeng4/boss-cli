@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { BrowserWindow, WebContentsView, session, type Session } from "electron";
 import type { PlatformLoginStatus, PlatformLoginContext } from "@boss-harness/protocol";
 import { isLoginVerificationUrl, isOfficialLoginUrl, loginCaptureReadiness, loginViewBounds } from "./security";
+import { loginFailureDetail } from "./loginFailure";
 
 type Attempt = PlatformLoginStatus & { id?: string };
 type Request = <T>(method: string, params?: unknown) => Promise<T>;
@@ -66,10 +67,12 @@ export class PlatformLogin {
       this.attempt = attempt.id;
       this.update(attempt);
       this.createBrowser(parent, generation);
-    } catch {
+    } catch (error) {
       if (generation === this.generation) {
         if (this.attempt) void this.request("platform/login/cancel", { id: this.attempt }).catch(() => {});
-        this.update({ state: "failed", code: "LOGIN_OPEN_FAILED", summary: "无法打开官方页面，请确认本机连接后重试" });
+        const failure = loginFailureDetail(error);
+        this.update({ state: "failed", code: failure.code ?? "LOGIN_OPEN_FAILED",
+          summary: `无法打开官方页面${failure.message ? `：${failure.message}` : ""}，请确认本机连接后重试` });
         this.closeBrowser();
       }
     }
@@ -195,9 +198,11 @@ export class PlatformLogin {
       if (generation !== this.generation) return;
       this.update(result);
       this.poll(generation);
-    } catch {
+    } catch (error) {
       if (generation === this.generation) {
-        this.update({ state: "failed", code: "LOGIN_SAVE_FAILED", summary: "未能完成登录保存，请检查本机连接后重新打开官方页面" });
+        const failure = loginFailureDetail(error);
+        this.update({ state: "failed", code: failure.code ?? "LOGIN_SAVE_FAILED",
+          summary: `未能完成登录保存${failure.message ? `：${failure.message}` : ""}，请检查本机连接后重新打开官方页面` });
         void this.request("platform/login/cancel", { id: this.attempt }).catch(() => {});
         this.closeBrowser();
       }
