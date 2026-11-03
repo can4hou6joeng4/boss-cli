@@ -18,6 +18,7 @@ export function ConnectionSettings({ harnessUp, onLogin }: { harnessUp: boolean;
   const [error, setError] = useState("");
   const [requesting, setRequesting] = useState(false);
   const [login, setLogin] = useState<PlatformLoginStatus | null>(null);
+  const [loginError, setLoginError] = useState("");
   const version = useRef(0);
   const fetchReport = async (target?: ConnectionTarget): Promise<void> => {
     const current = ++version.current;
@@ -43,10 +44,14 @@ export function ConnectionSettings({ harnessUp, onLogin }: { harnessUp: boolean;
     const unsubscribe = window.boss.onPlatformLogin(next => {
       updated = true;
       if (!alive) return;
-      setLogin(next);
+      setLogin(next); setLoginError("");
       if (["succeeded", "blocked", "failed", "cancelled"].includes(next.state) && harnessUp) void fetchReport();
     });
-    void window.boss.platformLogin("status").then(next => { if (alive && !updated) setLogin(next); }).catch(() => {});
+    // 读不到登录状态时不能当成「尚未开始」：账号行会显示成可重新登录，而实际可能仍在等待扫码。
+    void window.boss.platformLogin("status").then(next => { if (alive && !updated) setLogin(next); })
+      .catch(cause => {
+        if (alive && !updated) setLoginError(`无法读取登录状态：${harnessErrorText(cause)}。请在会话中核对当前登录。`);
+      });
     return () => { alive = false; unsubscribe(); };
   }, [harnessUp]);
   const checking = report && Object.values(report).some(check => check.state === "checking");
@@ -75,6 +80,7 @@ export function ConnectionSettings({ harnessUp, onLogin }: { harnessUp: boolean;
             {login?.identity && login.identity !== "unknown" && <p>官方页面身份：{login.identity === "jobSeeker" ? "求职者" : "招聘者"}；功能权限以实际工具结果为准。</p>}
           </div>
           {login && login.state !== "idle" && login.summary !== row.check?.summary && <p className="connection-login-status" role="status">{login.summary}{login.code ? `（${login.code}）` : ""}</p>}
+          {loginError && <p className="connection-login-status" role="alert">{loginError}</p>}
         </>}
       </div>
       <div className="connection-check-controls"><span className={`settings-badge${row.check?.state === "ready" ? " is-connected" : ""}`}>{row.target === "platform" && row.check?.state === "ready" ? "账号已验证" : row.check ? LABELS[row.check.state] : "尚未检测"}</span>
