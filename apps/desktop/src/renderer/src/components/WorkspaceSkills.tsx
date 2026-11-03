@@ -4,7 +4,8 @@ import { harnessErrorText, readSkill, type SkillCatalogState } from "../data/har
 import { CreateSkillDialog } from "./CreateSkillDialog";
 import { DeleteSkillDialog } from "./DeleteSkillDialog";
 import { EditSkillDialog } from "./EditSkillDialog";
-import { IconChevronRight, IconSparkles } from "./Icons";
+import { IconChevronRight, IconClose, IconSearch, IconSparkles } from "./Icons";
+import { filterSkillProblems, filterSkills } from "../data/skillFilter";
 
 export interface WorkspaceSkillsProps {
   skills: SkillDescriptor[];
@@ -44,7 +45,11 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
   const [notice, setNotice] = useState("");
   const [editing, setEditing] = useState<SkillReadResponse | null>(null);
   const [deleting, setDeleting] = useState<SkillReadResponse | null>(null);
-  const selected = props.skills.find(skill => skill.id === selectedId) ?? null;
+  const [query, setQuery] = useState("");
+  const filtering = query.trim().length > 0;
+  const filteredSkills = filterSkills(props.skills, query);
+  const filteredProblems = filterSkillProblems(props.problems, query);
+  const selected = filteredSkills.find(skill => skill.id === selectedId) ?? null;
   useEffect(() => {
     // 目录刷新后选中项可能消失；正文只属于当前目录中的技能。
     if (selectedId && !props.skills.some(skill => skill.id === selectedId)) {
@@ -85,15 +90,18 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
     {props.state === "unavailable" && <div className="page-tool-empty">{props.preview ? "浏览器预览未连接技能目录。启动桌面端后显示工作区技能。" : "连接本地 Harness 后可读取工作区技能。"}</div>}
     {props.state === "empty" && props.problems.length === 0 && <div className="page-tool-empty">当前工作区没有技能。可在 <code>.boss-harness/skills/&lt;id&gt;/SKILL.md</code> 添加。</div>}
     {props.root && (props.state === "ready" || props.state === "empty") && <p className="workspace-skill-source">技能目录：<code>{props.root}</code>{props.root === ".boss-cli/skills" ? "（旧目录；新建 .boss-harness/skills 后将改用新目录）" : ""}</p>}
-    {props.problems.length > 0 && (props.state === "ready" || props.state === "empty") && <div className="workspace-skill-problems" role="status">
-      <strong>{props.problems.length} 个技能未能加载</strong>
-      <ul>{props.problems.slice(0, 5).map(problem => <li key={problem.id}><code>{problem.id}</code>：{problem.reason}</li>)}</ul>
-      {props.problems.length > 5 && <p>另有 {props.problems.length - 5} 个未列出；修复后刷新目录即可。</p>}
+    {(props.state === "ready" || props.state === "empty") && (props.skills.length > 0 || props.problems.length > 0) && <div className="page-search workspace-skill-search"><IconSearch size={16} /><input aria-label="筛选工作区技能" placeholder="搜索技能名称、描述或未加载原因…" value={query} onChange={event => setQuery(event.target.value)} />{query && <button type="button" className="search-clear" aria-label="清除技能筛选" onClick={() => setQuery("")}><IconClose size={14} /></button>}</div>}
+    {filtering && (props.state === "ready" || props.state === "empty") && <p className="workspace-skill-source" role="status">匹配 {filteredSkills.length} / {props.skills.length} 个可加载技能{props.problems.length > 0 ? `，${filteredProblems.length} / ${props.problems.length} 个未加载项` : ""}。</p>}
+    {filteredProblems.length > 0 && (props.state === "ready" || props.state === "empty") && <div className="workspace-skill-problems" role="status">
+      <strong>{filtering ? `${filteredProblems.length} 个未加载项匹配筛选` : `${props.problems.length} 个技能未能加载`}</strong>
+      <ul>{filteredProblems.slice(0, 5).map(problem => <li key={problem.id}><code>{problem.id}</code>：{problem.reason}</li>)}</ul>
+      {filteredProblems.length > 5 && <p>另有 {filteredProblems.length - 5} 个未列出；修复后刷新目录即可。</p>}
       <p>这些技能不会出现在列表，也不会被注入。常见原因：文件缺失、改为符号链接、超过 64 KiB 或不是 UTF-8。</p>
     </div>}
-    {props.skills.length > 0 && <div className="workspace-skill-layout">
+    {filtering && filteredSkills.length === 0 && (props.state === "ready" || props.state === "empty") && <div className="page-tool-empty">没有匹配的可加载技能{filteredProblems.length > 0 ? "；匹配的未加载项见上方。" : "。"}</div>}
+    {filteredSkills.length > 0 && <div className="workspace-skill-layout">
       <div className="workspace-skill-list">
-        {props.skills.map(skill => <button type="button" key={skill.id} aria-pressed={skill.id === selectedId} className={"workspace-skill-row" + (skill.id === selectedId ? " is-selected" : "")} onClick={() => { setSelectedId(skill.id); setReload(0); }}>
+        {filteredSkills.map(skill => <button type="button" key={skill.id} aria-pressed={skill.id === selectedId} className={"workspace-skill-row" + (skill.id === selectedId ? " is-selected" : "")} onClick={() => { setSelectedId(skill.id); setReload(0); }}>
           <span className="skill-icon"><IconSparkles size={18} /></span>
           <span><strong>{skill.name}</strong><small>{skill.id} · {byteText(skill.bytes)}</small><p>{skill.description || "无描述"}</p></span>
           <IconChevronRight size={14} />
