@@ -85,3 +85,21 @@ export function nextApprovalIndex(current: number, count: number, delta: number)
   if (current < 0 || current >= count) return delta > 0 ? 0 : count - 1;
   return (current + delta + count) % count;
 }
+
+export interface PendingApprovalGroup { threadId: string; approvals: PendingApproval[] }
+
+/** 按线程分组并保留首次出现顺序；内核已按线程排序，这里只做稳定聚合。 */
+export function groupPendingApprovals(approvals: PendingApproval[]): PendingApprovalGroup[] {
+  const groups = new Map<string, PendingApprovalGroup>();
+  const ordered: PendingApprovalGroup[] = [];
+  for (const approval of approvals) {
+    let group = groups.get(approval.threadId);
+    if (!group) {
+      group = { threadId: approval.threadId, approvals: [] };
+      groups.set(approval.threadId, group);
+      ordered.push(group);
+    }
+    group.approvals.push(approval);
+  }
+  return ordered;
+}
