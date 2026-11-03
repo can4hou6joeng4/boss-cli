@@ -40,6 +40,9 @@ export interface ConversationAreaProps {
   turnSkillIds?: Record<string, string[]>;
   /** 点击回合技能标签时打开「技能与工具」并选中该技能；缺省时标签只读。 */
   onInspectSkill?: (skillId: string) => void;
+  /** 从跨会话搜索打开时定位的消息 id；滚动后由 onFocusMessage 清除。 */
+  focusMessageId?: string | null;
+  onFocusMessage?: () => void;
   threadId?: string;
   configuredModelLabel?: string; readOnly?: boolean; /** 内核已归档：只读查看历史，恢复后才能继续对话。 */ archived?: boolean;
   continuationCheck?: { threadId: string; sourceTurnId: string; loading: boolean; submitting?: boolean;
@@ -58,6 +61,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   onInterrupt, onApprovalDecision, onReviewDiff, onRevertDiff, onOpenRewind, loginGuide, onLogin,
   skills = [], skillCatalogState = "unavailable", skillCatalogError, onRefreshSkills, skillProblems = [],
   turnSkillIds = {}, onInspectSkill,
+  focusMessageId, onFocusMessage,
   threadId, continuationCheck, onContinueInterruptedTurn, modelRetry, onDismissModelRetry, sessionBranches,
 }) => {
   const [messages, setMessages] = useState<MessageItem[]>(initialMessages);
@@ -85,6 +89,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const [findQuery, setFindQuery] = useState("");
   const [findIndex, setFindIndex] = useState(0);
   const [findDetails, setFindDetails] = useState(false);
+  const [focusFlash, setFocusFlash] = useState<string | null>(null);
   const findMatches = useMemo(
     () => findMessageMatches(messages, findQuery, { includeDetails: findDetails }),
     [messages, findQuery, findDetails],
@@ -126,6 +131,23 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
       registry.delete("find-current");
     };
   }, [findOpen, findQuery, findMatches, currentFindId]);
+  useEffect(() => {
+    if (!focusMessageId) return;
+    const target = document.getElementById("message-" + focusMessageId);
+    if (!target) {
+      // 消息可能还在载入；等下一次 messages 变化再试，列表已就绪仍找不到则放弃定位。
+      if (messages.length) onFocusMessage?.();
+      return;
+    }
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    setFocusFlash(focusMessageId);
+    onFocusMessage?.();
+  }, [focusMessageId, messages, onFocusMessage]);
+  useEffect(() => {
+    if (!focusFlash) return;
+    const timer = window.setTimeout(() => setFocusFlash(null), 1800);
+    return () => window.clearTimeout(timer);
+  }, [focusFlash]);
   useEffect(() => {
     const handle = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
@@ -324,7 +346,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
             const findMatch = findOpen && findMatchSet.has(item.id);
             if (item.role === "user") {
               return (
-                <div className={"msg-row-user" + (findMatch ? " is-find-match" : "") + (currentFindId === item.id ? " is-find-current" : "")} id={"message-" + item.id}>
+                <div className={"msg-row-user" + (findMatch ? " is-find-match" : "") + (currentFindId === item.id ? " is-find-current" : "") + (focusFlash === item.id ? " is-focus-target" : "")} id={"message-" + item.id}>
                   <div className="user-bubble">{item.content}</div>
                   {(() => {
                     const ids = item.turnId ? turnSkillIds[item.turnId] ?? [] : [];
@@ -378,7 +400,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
             }
 
             return (
-              <div className={"msg-row-agent" + (findMatch ? " is-find-match" : "") + (currentFindId === item.id ? " is-find-current" : "")} id={"message-" + item.id}>
+              <div className={"msg-row-agent" + (findMatch ? " is-find-match" : "") + (currentFindId === item.id ? " is-find-current" : "") + (focusFlash === item.id ? " is-focus-target" : "")} id={"message-" + item.id}>
                 {/* 思考过程计时器 */}
                 {item.thinkingTime && (
                   <details className="thinking-block">
