@@ -1,5 +1,5 @@
 import { ModalSurface } from "./ModalSurface";
-import type { ThreadUsageBucket, ThreadUsageSummaryJob, ThreadUsageTurn } from "@boss-cli/protocol";
+import type { ThreadUsageBucket, ThreadUsageSummaryJob, ThreadUsageTurn } from "@boss-harness/protocol";
 import type { MessageItem } from "../data/mockData";
 import type { ThreadUsageState, UsageView } from "../data/useThreadUsage";
 import { compactionLabel, compactionTitle } from "../shell/queueCompaction";

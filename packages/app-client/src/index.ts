@@ -3,7 +3,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type {
   JsonRpcError, JsonRpcId, JsonRpcMessage, JsonRpcNotification, JsonRpcRequest,
   JsonRpcResponse, ServerNotification,
-} from "@boss-cli/protocol";
+} from "@boss-harness/protocol";
 
 export interface HarnessClientOptions {
   command: string;

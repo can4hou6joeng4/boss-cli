@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import type { PlatformLoginStatus } from "@boss-cli/protocol";
+import type { PlatformLoginStatus } from "@boss-harness/protocol";
 import { IconCheck, IconClose, IconLock, IconPanelRight } from "./Icons";
 
 type Choice = "open" | "later" | "cancel";

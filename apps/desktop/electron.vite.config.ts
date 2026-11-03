@@ -3,10 +3,10 @@ import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
 
 /** workspace 包：入口是 TS 源码，必须打包进产物，不能被外部化为 require()。 */
-const WORKSPACE_PACKAGES = ["@boss-cli/protocol", "@boss-cli/app-client", "@boss-cli/shared"];
+const WORKSPACE_PACKAGES = ["@boss-harness/protocol", "@boss-harness/app-client", "@boss-harness/shared"];
 
 const aliases = Object.fromEntries(
-  WORKSPACE_PACKAGES.map((name) => [name, resolve(__dirname, `../../packages/${name.slice("@boss-cli/".length)}/src/index.ts`)]),
+  WORKSPACE_PACKAGES.map((name) => [name, resolve(__dirname, `../../packages/${name.slice("@boss-harness/".length)}/src/index.ts`)]),
 );
 
 export default defineConfig({

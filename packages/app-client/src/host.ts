@@ -1,4 +1,4 @@
-import type { InitializeResponse, JsonRpcId, JsonRpcNotification, JsonRpcRequest } from "@boss-cli/protocol";
+import type { InitializeResponse, JsonRpcId, JsonRpcNotification, JsonRpcRequest } from "@boss-harness/protocol";
 import { HarnessClient, type HarnessClientOptions } from "./index";
 
 export type HarnessConnectionState = "cold" | "starting" | "initializing" | "ready" | "disconnected" | "stopped";

@@ -1,4 +1,4 @@
-import type { AutoCompactionPolicy } from "@boss-cli/protocol";
+import type { AutoCompactionPolicy } from "@boss-harness/protocol";
 
 /** 队列覆盖只有前三个字段；回合策略还可能带摘要线路。 */
 type CompactionFacts = Partial<AutoCompactionPolicy>;

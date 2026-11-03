@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ThreadReasoningReadResponse } from "@boss-cli/protocol";
+import type { ThreadReasoningReadResponse } from "@boss-harness/protocol";
 import { readThreadReasoning, setThreadReasoning } from "./harnessBridge";
 
 export interface SessionReasoningControl {

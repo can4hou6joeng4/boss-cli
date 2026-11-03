@@ -3,7 +3,7 @@ import { IconHistory, IconFolder, IconSearch, IconPlus, IconSparkles, IconChevro
 import { ModalSurface } from "../components/ModalSurface";
 import { STRATEGY_DOMAINS, type ProjectFolder, type SessionItem, type MessageItem } from "../data/mockData";
 import { sessionRows } from "../data/sessionRows";
-import type { ToolDescriptor } from "@boss-cli/protocol";
+import type { ToolDescriptor } from "@boss-harness/protocol";
 import type { ToolCatalogState } from "../data/harnessBridge";
 import type { WorkspacePage } from "./NavigationRail";
 interface Props { page: WorkspacePage; folders: ProjectFolder[]; messages: MessageItem[]; onSelect: (session: SessionItem) => void; onNewTask: () => void; onDraft: (text: string) => void; tools: ToolDescriptor[]; toolCatalogState: ToolCatalogState; toolCatalogError: string; preview: boolean; }

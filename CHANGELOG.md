@@ -2,6 +2,10 @@
 
 ## 未发布
 
+### 兼容变化
+
+- 项目命名统一为 `boss-harness`：GitHub 仓库改名为 `can4hou6joeng4/boss-harness`（旧链接由 GitHub 重定向），npm 根包改为 `boss-harness`、桌面包改为 `boss-harness-desktop`，TypeScript 工作区 scope 改为 `@boss-harness/*`；桌面展示名由 BOSS-CLI 改为 BOSS Harness。内核状态目录新增 `BOSS_HARNESS_DIR` 与默认 `~/.boss-harness/harness`，旧 `BOSS_CLI_HARNESS_DIR` 与 `~/.boss-cli/harness` 仍兼容读取（新目录一旦存在即优先）；工作区技能目录改为 `.boss-harness/skills`，旧 `.boss-cli/skills` 在新目录不存在时继续加载。上游相关 `BOSS_CLI_BIN`、`BOSS_CLI_DATA_DIR`、`boss-agent-cli` 与 `boss_hr_*` 工具名保持不变，协议仍为 `0.2.0`。
+
 ### 新增
 
 - `thread/usage/read` 的摘要任务明细新增 `throughTurnId`：压缩摘要记录覆盖到的回合（取同一来源记录，缺失或非法值为 `null`；分支摘要为 `null`），手动压缩这类没有触发回合的任务也能看到摘要范围。桌面在回合列显示「摘要至 …」，`thread/export` 的任务明细同步输出该字段；旧内核不返回此字段，协议仍为 `0.2.0`。

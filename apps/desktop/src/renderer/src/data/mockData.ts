@@ -2,7 +2,7 @@
  * BOSS Agent (招聘垂直领域 Agent Harness) 仿真数据
  */
 
-import type { ToolResultReference, TurnStatus, TurnTaskResumePolicy } from "@boss-cli/protocol";
+import type { ToolResultReference, TurnStatus, TurnTaskResumePolicy } from "@boss-harness/protocol";
 
 export type ConversationMode = "plan" | "ask" | "agent";
 export type EffortLevel = "Auto" | "Max" | "High" | "Medium" | "Low" | "Off";

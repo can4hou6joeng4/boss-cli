@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { SessionExportSaveRequest, SessionExportSaveResult } from "@boss-cli/protocol";
+import type { SessionExportSaveRequest, SessionExportSaveResult } from "@boss-harness/protocol";
 import { ModalSurface } from "./ModalSurface";
 import { harnessErrorText } from "../data/harnessBridge";
 import "../styles/context-panel.css";

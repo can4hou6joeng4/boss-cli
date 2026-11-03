@@ -1,4 +1,4 @@
-import type { EventListResponse, ItemContentReference, ItemContentReadResponse, ItemListResponse, ThreadItem, ThreadReadResponse } from "@boss-cli/protocol";
+import type { EventListResponse, ItemContentReference, ItemContentReadResponse, ItemListResponse, ThreadItem, ThreadReadResponse } from "@boss-harness/protocol";
 import type { HarnessEvent } from "./harnessEvents";
 
 interface Api { request<T>(method: string, params?: unknown): Promise<T> }

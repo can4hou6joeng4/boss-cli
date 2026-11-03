@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { ContextBranchSummary, ContextCompactJob, InitializeResponse, QueueItem, ThreadBranchEndpoint, TurnSummary } from "@boss-cli/protocol";
+import type { ContextBranchSummary, ContextCompactJob, InitializeResponse, QueueItem, ThreadBranchEndpoint, TurnSummary } from "@boss-harness/protocol";
 import { abortContextCompaction, listBranchTurns, listThreadBranches, readContext, readContextCompaction, setThreadLeaf } from "./harnessBridge";
 import { readPagedItems } from "./pagedRead";
 

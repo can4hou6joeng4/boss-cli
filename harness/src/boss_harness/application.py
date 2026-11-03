@@ -71,6 +71,13 @@ CONTINUATION_WARNING = ("续接会发起新的模型请求，可能重复调用�
                         "不会再次执行旧工具，新写操作仍需逐次审批。")
 
 
+def _skill_catalog_root(workspace: Path) -> Path:
+    """工作区技能目录：旧目录存在而新目录没有时回退，避免升级后技能凭空消失。"""
+    legacy = workspace / ".boss-cli" / "skills"
+    preferred = workspace / ".boss-harness" / "skills"
+    return legacy if legacy.is_dir() and not preferred.is_dir() else preferred
+
+
 def _branch_view(params: dict | None) -> bool:
     """Optional read view: "log" (default, full rollout) or "branch" (current leaf projection)."""
     view = (params or {}).get("view", "log")
@@ -323,7 +330,7 @@ class ApplicationService:
             self._bridge_refs: list[Any] = []
             self.context = ContextService(self.sessions)
             self._restore_compaction_jobs()
-            self.skills = SkillCatalog(self.workspace / ".boss-cli" / "skills")
+            self.skills = SkillCatalog(_skill_catalog_root(self.workspace))
             self.attachments = AttachmentStore(self.sessions, state_dir / "attachments", self.workspace,
                                                limits=attachment_limits)
             self.tools = self._new_bridge()

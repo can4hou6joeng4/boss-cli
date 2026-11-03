@@ -12,7 +12,18 @@ from boss_harness.application import ApplicationService as Harness, _approval_ti
 from boss_harness.models import DEFAULT_MODEL, ModelConfig, build_provider, resolve_config
 from boss_harness.rpc import JsonRpcServer
 
-DEFAULT_STATE_DIR = Path(os.environ.get("BOSS_CLI_HARNESS_DIR", Path.home() / ".boss-cli" / "harness"))
+def _default_state_dir() -> Path:
+    """内核状态目录：新变量优先，旧变量其次，最后按目录存在性选择默认位置。"""
+    configured = os.environ.get("BOSS_HARNESS_DIR") or os.environ.get("BOSS_CLI_HARNESS_DIR")
+    if configured:
+        return Path(configured)
+    preferred = Path.home() / ".boss-harness" / "harness"
+    legacy = Path.home() / ".boss-cli" / "harness"
+    # 升级后不丢历史会话：新目录尚未建立、而旧目录已存在时沿用旧目录；否则用新路径。
+    return legacy if legacy.exists() and not preferred.exists() else preferred
+
+
+DEFAULT_STATE_DIR = _default_state_dir()
 
 
 def _build_config(args: argparse.Namespace) -> ModelConfig:
@@ -31,7 +42,7 @@ def _build_config(args: argparse.Namespace) -> ModelConfig:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="boss-harness", description="BOSS-CLI Agent Harness 内核")
+    parser = argparse.ArgumentParser(prog="boss-harness", description="BOSS Harness Agent Harness 内核")
     parser.add_argument("--listen", default="stdio://", help="传输端点，当前仅支持 stdio://")
     parser.add_argument("--state-dir", default=str(DEFAULT_STATE_DIR), help="内核状态目录")
     parser.add_argument("--repair-state", action="store_true", help="独占状态目录，备份 SQLite 索引后从原始日志重建")

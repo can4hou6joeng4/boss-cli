@@ -1,5 +1,5 @@
 /** 仅保存在当前应用内存；附件原文不写入 UI 偏好或浏览器持久存储。 */
-import type { QueueItem } from "@boss-cli/protocol";
+import type { QueueItem } from "@boss-harness/protocol";
 
 export interface DraftAttachment { id: string; name: string; text: string; size: number; }
 export interface QueueSubmission { text: string; intent: QueueIntent; id: string; skillIds: string[]; uncertain: boolean; }

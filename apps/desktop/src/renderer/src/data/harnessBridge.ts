@@ -50,8 +50,8 @@ import {
   type ThreadLeafSetParams,
   type TurnListResponse,
   type ThreadUsageReadResponse,
-} from "@boss-cli/protocol";
-import { formatRelativeTime } from "@boss-cli/shared";
+} from "@boss-harness/protocol";
+import { formatRelativeTime } from "@boss-harness/shared";
 import { queuePageOf, type QueuePage } from "./queueMapping";
 import type { MessageItem, SessionItem } from "./mockData";
 

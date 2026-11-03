@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ConnectionCheck, ConnectionReport, ConnectionTarget, PlatformLoginStatus } from "@boss-cli/protocol";
+import type { ConnectionCheck, ConnectionReport, ConnectionTarget, PlatformLoginStatus } from "@boss-harness/protocol";
 import { connectionReport } from "../data/harnessBridge";
 
 const LABELS: Record<ConnectionCheck["state"], string> = {

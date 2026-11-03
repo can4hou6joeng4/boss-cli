@@ -1,5 +1,5 @@
 {
-  "name": "@boss-cli/protocol",
+  "name": "@boss-harness/protocol",
   "version": "0.2.0-rc.14",
   "private": true,
   "type": "module",

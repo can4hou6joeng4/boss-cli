@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { PlatformLoginContext, SessionExportSaveRequest, ThreadExportResponse } from "@boss-cli/protocol";
+import type { PlatformLoginContext, SessionExportSaveRequest, ThreadExportResponse } from "@boss-harness/protocol";
 
 /** A native child view must stay inside the renderer's measured content slot. */
 export function loginViewBounds(value: unknown, content: { width: number; height: number }): PlatformLoginContext["bounds"] | null {

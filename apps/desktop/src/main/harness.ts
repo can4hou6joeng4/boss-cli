@@ -2,8 +2,8 @@ import { existsSync } from "node:fs";
 import { writeFile, chmod, lstat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { app, dialog, ipcMain, BrowserWindow, type IpcMainInvokeEvent } from "electron";
-import { HarnessHostManager, HarnessRpcError, type HarnessHostConnection } from "@boss-cli/app-client";
-import type { JsonRpcNotification, SessionExportSaveResult } from "@boss-cli/protocol";
+import { HarnessHostManager, HarnessRpcError, type HarnessHostConnection } from "@boss-harness/app-client";
+import type { JsonRpcNotification, SessionExportSaveResult } from "@boss-harness/protocol";
 import { isTrustedRendererUrl, sessionExportFileName, validateHarnessRequest, validateLoginContext,
   validateSessionExportRequest, validateThreadExportResponse } from "./security";
 import { PlatformLogin } from "./platformLogin";

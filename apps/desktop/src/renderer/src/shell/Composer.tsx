@@ -4,7 +4,7 @@ import { Popover } from "../components/Popover";
 import { SlashCommandList, SLASH_COMMANDS, type SlashCommandItem } from "../components/SlashCommandList";
 import { AtMentionList, filterMentions, type MentionItem } from "../components/AtMentionList";
 import { MODEL_OPTIONS, type ConversationMode } from "../data/mockData";
-import type { ModelDescriptor, SkillDescriptor } from "@boss-cli/protocol";
+import type { ModelDescriptor, SkillDescriptor } from "@boss-harness/protocol";
 import type { SkillCatalogState } from "../data/harnessBridge";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import { createComposerDraft, clearTransferredDraft, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type QueueIntent, type CheckQueueSubmission } from "../data/composerDraft";
@@ -271,7 +271,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     <SlashCommandList isOpen={slashOpen} onClose={() => setSlashOpen(false)} onSelect={selectSlash} search={slashQuery} selectedIndex={selectedIndex} />
     <AtMentionList isOpen={mentionOpen} onClose={() => setMentionOpen(false)} onSelect={selectMention} search={mentionQuery} selectedIndex={selectedIndex} />
     <textarea aria-label="消息输入" ref={element => { inputRef.current = element; if (typeof forwardedRef === "function") forwardedRef(element); else if (forwardedRef) forwardedRef.current = element; }} rows={2}
-      placeholder={isRunning ? queueIntent === "steering" ? "补充当前任务要求…" : "安排当前任务结束后的下一步…" : blocked ? "另一个任务正在运行，请等待完成" : "和 BOSS-CLI 一起工作"}
+      placeholder={isRunning ? queueIntent === "steering" ? "补充当前任务要求…" : "安排当前任务结束后的下一步…" : blocked ? "另一个任务正在运行，请等待完成" : "和 BOSS Harness 一起工作"}
       value={value} onChange={event => change(event.target.value)}
       onPaste={event => {
         const files = [...event.clipboardData.files];
@@ -335,7 +335,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
         <div className="popover-anchor">
           <button type="button" className={`permission-button ${menu === "permissions" ? "is-open" : ""}`} aria-label="执行权限" title="查看执行权限" aria-haspopup="menu" aria-expanded={menu === "permissions"} onClick={() => toggleMenu("permissions")}><IconShield size={15} /><span>{readOnly ? "只读会话" : "请求批准"}</span><IconChevronDown size={10} /></button>
           <Popover open={menu === "permissions"} onClose={() => setMenu(null)} above label="执行权限" className="composer-action-menu composer-permission-menu">
-            <div className="composer-menu-heading">{readOnly ? "本会话允许哪些操作？" : "如何批准 BOSS-CLI 的操作？"}</div>
+            <div className="composer-menu-heading">{readOnly ? "本会话允许哪些操作？" : "如何批准 BOSS Harness 的操作？"}</div>
             <button type="button" role="menuitemradio" aria-checked="true" onClick={() => { setMenu(null); focusInput(); }}><IconShield /><span>{readOnly ? "只读会话" : "请求批准"}<small>{readOnly ? "可读取职位与履历，服务端禁止对外写操作" : "对外沟通、投递等操作前由你确认"}</small></span><IconCheck className="menu-check" /></button>
             <button type="button" role="menuitemradio" aria-checked="false" disabled title="当前连接暂不支持自动审批"><IconSparkles /><span>代我批准<small>当前连接暂不支持自动审批</small></span></button>
             <button type="button" role="menuitemradio" aria-checked="false" disabled title="当前运行配置不提供完全访问"><IconLock /><span>完全访问<small>当前运行配置不提供完全访问</small></span></button>

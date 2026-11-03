@@ -13,6 +13,7 @@ build/
 
 # 本地状态与日志
 .boss-cli/
+.boss-harness/
 .smoke-state/
 *.log
 .DS_Store

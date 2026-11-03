@@ -4,7 +4,7 @@ import { NavigationRail, type WorkspacePage } from "./NavigationRail";
 import { ProjectSidebar, type SidebarPreferences } from "./ProjectSidebar";
 import { HomeView } from "./HomeView";
 import { ConversationArea } from "./ConversationArea";
-import type { TurnContinuationReadResponse } from "@boss-cli/protocol";
+import type { TurnContinuationReadResponse } from "@boss-harness/protocol";
 import { RightPanel } from "./RightPanel";
 import { LoginBrowserPanel } from "./LoginBrowserPanel";
 import { LoginChoice } from "../components/LoginChoice";
@@ -15,10 +15,10 @@ import { SearchDialog } from "../components/SearchDialog";
 import { ModalSurface } from "../components/ModalSurface";
 import { IconNotification, IconCheck } from "../components/Icons";
 import { type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "../data/mockData";
-import { type ModelDescriptor, type SkillDescriptor, type ToolDescriptor } from "@boss-cli/protocol";
+import { type ModelDescriptor, type SkillDescriptor, type ToolDescriptor } from "@boss-harness/protocol";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
 import type { CheckQueueSubmission, ComposerQueue } from "../data/composerDraft";
-import type { QueueItem } from "@boss-cli/protocol";
+import type { QueueItem } from "@boss-harness/protocol";
 import { harnessErrorText, listSkills, listTools, type SkillCatalogState, type ToolCatalogState, type ApprovalDelivery } from "../data/harnessBridge";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import type { ModelRetryStatus } from "../data/modelRetry";
@@ -111,7 +111,7 @@ export function AppShell(props: AppShellProps) {
   }));
   const visibleFolders = allFolders.map(folder => ({ ...folder, sessions: folder.sessions.filter(session => !hidden.includes(session.id)) }));
   const currentProject = allFolders.find(folder => folder.sessions.some(session => session.id === props.activeSession?.id));
-  const title = page === "home" ? props.isHomeView ? "BOSS-CLI" : aliases[props.activeSession?.id ?? ""] || props.activeSession?.title || "新聊天" : { recents: "最近聊天", library: "资料库", skills: "技能与工具" }[page];
+  const title = page === "home" ? props.isHomeView ? "BOSS Harness" : aliases[props.activeSession?.id ?? ""] || props.activeSession?.title || "新聊天" : { recents: "最近聊天", library: "资料库", skills: "技能与工具" }[page];
   const pushRoute = (route: Route) => {
     const previous = historyRef.current, current = previous[cursorRef.current];
     if (current?.page === route.page && current.sessionId === route.sessionId) return;
@@ -219,7 +219,7 @@ export function AppShell(props: AppShellProps) {
   });
   const exportChat = () => {
     if (!hasConversation) return;
-    const markdown = "# " + title + "\n\n" + props.messages.map(message => "## " + (message.role === "user" ? "你" : "BOSS-CLI") + "\n\n" + [message.content, ...(message.paragraphs ?? []), ...(message.bullets ?? []).map(line => "- " + line), message.toolUse ? `工具：${message.toolUse.name}\n\n${message.toolUse.result ?? ""}` : ""].filter(Boolean).join("\n\n")).join("\n\n");
+    const markdown = "# " + title + "\n\n" + props.messages.map(message => "## " + (message.role === "user" ? "你" : "BOSS Harness") + "\n\n" + [message.content, ...(message.paragraphs ?? []), ...(message.bullets ?? []).map(line => "- " + line), message.toolUse ? `工具：${message.toolUse.name}\n\n${message.toolUse.result ?? ""}` : ""].filter(Boolean).join("\n\n")).join("\n\n");
     const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown;charset=utf-8" }));
     const link = document.createElement("a"); link.href = url; link.download = title.replace(/[\\/:*?"<>|]/g, "_") + ".md"; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   };

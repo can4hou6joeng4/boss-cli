@@ -1,4 +1,4 @@
-import type { ModelRetryEndedNotification, ModelRetryStartedNotification } from "@boss-cli/protocol";
+import type { ModelRetryEndedNotification, ModelRetryStartedNotification } from "@boss-harness/protocol";
 
 /**
  * 模型自动重试的会话区观测状态（仅展示；不参与重试判定、不触发任何请求）。

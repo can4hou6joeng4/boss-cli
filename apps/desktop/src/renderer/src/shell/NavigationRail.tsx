@@ -223,7 +223,7 @@ export function NavigationRail(props: Props) {
         <button className="rail-avatar" onClick={() => { setProfileView("main"); setMenu(menu === "profile" ? null : "profile"); }} aria-label="打开个人菜单" aria-haspopup="menu" aria-expanded={menu === "profile"} title="本地工作区">BO</button>
         <Popover open={menu === "profile"} onClose={() => setMenu(null)} side="right" align="right" label="个人菜单" className="profile-menu">
           {profileView === "main" ? <>
-            <div className="profile-menu-identity"><span className="profile-avatar">BO</span><span><strong>本地工作区</strong><small>{props.harnessUp ? "已连接招聘 Harness" : "BOSS-CLI"}</small></span></div>
+            <div className="profile-menu-identity"><span className="profile-avatar">BO</span><span><strong>本地工作区</strong><small>{props.harnessUp ? "已连接招聘 Harness" : "BOSS Harness"}</small></span></div>
             <div className="menu-divider" />
             <button onClick={() => openSettings()}><IconSettings />设置<span className="menu-shortcut">⌘,</span></button>
             <button onClick={() => { setMenu(null); props.onOpenShortcuts(); }}><span className="menu-text-icon">⌘</span>键盘快捷键<span className="menu-shortcut">⌘/</span></button>
@@ -231,7 +231,7 @@ export function NavigationRail(props: Props) {
             <button onClick={openCustomize}><IconSliders />自定导航栏</button>
             <div className="menu-divider" />
             <button data-menu-keep-open aria-haspopup="menu" onClick={() => setProfileView("help")}><IconHelp />帮助<IconChevronRight className="menu-check" /></button>
-            <button onClick={() => openSettings("about")}><span className="menu-text-icon">ⓘ</span>关于 BOSS-CLI</button>
+            <button onClick={() => openSettings("about")}><span className="menu-text-icon">ⓘ</span>关于 BOSS Harness</button>
           </> : profileView === "appearance" ? <>
             <button className="menu-back" data-menu-keep-open onClick={() => setProfileView("main")}><IconChevronRight className="rotate-back" />外观</button><div className="menu-divider" />
             <button role="menuitemradio" aria-checked={!props.isDark} onClick={() => { if (props.isDark) props.onToggleTheme(); setMenu(null); }}><IconSun />浅色{!props.isDark && <IconCheck className="menu-check" />}</button>
@@ -271,7 +271,7 @@ export function NavigationRail(props: Props) {
         </div>)}</section>)}
       </div><div className="navigation-reorder-status" role="status" aria-live="polite" aria-atomic="true">{reorderStatus}</div><div className="navigation-customize-footer"><button className="subtle-button" onClick={() => { finishReorder(); setLayout({ order: DEFAULT_ORDER, pinned: DEFAULT_ORDER }); setReorderStatus("已恢复默认导航。"); }}>恢复默认</button><button className="solid-button" onClick={closeCustomize}>完成</button></div>
     </ModalSurface>}
-    {help && <ModalSurface title="使用 BOSS-CLI" onClose={() => setHelp(false)} className="workspace-help-dialog"><div className="workspace-help-content">
+    {help && <ModalSurface title="使用 BOSS Harness" onClose={() => setHelp(false)} className="workspace-help-dialog"><div className="workspace-help-content">
       <h3>从一个招聘任务开始</h3><p>在新聊天中描述岗位需求、候选人筛选目标或沟通草稿。选择项目后，该项目名称会作为上下文随消息提供。</p>
       <h3>按你的习惯组织工作区</h3><p>右键点击导航栏可自定入口。项目和聊天右侧的更多菜单支持命名、置顶和本地分组。</p>
       <h3>随时查看与控制任务</h3><p>运行中可使用输入框旁的停止按钮。需要对外沟通或投递时，在聊天中的确认卡片核对内容并作出决定。</p>

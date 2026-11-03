@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { ContextEditReadResponse } from "@boss-cli/protocol";
+import type { ContextEditReadResponse } from "@boss-harness/protocol";
 import { harnessErrorText, readContextEdit, writeContextEdit } from "../data/harnessBridge";
 import { ModalSurface } from "./ModalSurface";
 import "../styles/context-edit.css";

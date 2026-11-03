@@ -1,8 +1,8 @@
 {
-  "name": "boss-cli",
+  "name": "boss-harness",
   "private": true,
   "version": "0.2.0-rc.14",
-  "description": "BOSS-CLI：面向招聘任务的 Agent Harness（桌面端）",
+  "description": "BOSS Harness：面向招聘任务的 Agent Harness（桌面端）",
   "engines": {
     "node": ">=24"
   },
@@ -11,8 +11,8 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "npm run dev --workspace boss-cli-desktop",
-    "build": "npm run build --workspace boss-cli-desktop",
+    "dev": "npm run dev --workspace boss-harness-desktop",
+    "build": "npm run build --workspace boss-harness-desktop",
     "typecheck": "tsc --noEmit -p apps/desktop/tsconfig.json"
   },
   "devDependencies": {

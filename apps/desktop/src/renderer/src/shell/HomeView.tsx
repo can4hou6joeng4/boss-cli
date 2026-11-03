@@ -3,7 +3,7 @@ import { Composer } from "./Composer";
 import { IconFolder, IconChevronDown, IconSparkles, IconSearch, IconChat, IconCockpit, IconCheck, IconPlus } from "../components/Icons";
 import { Popover } from "../components/Popover";
 import type { ProjectFolder, ConversationMode } from "../data/mockData";
-import type { ModelDescriptor, SkillDescriptor } from "@boss-cli/protocol";
+import type { ModelDescriptor, SkillDescriptor } from "@boss-harness/protocol";
 import type { SkillCatalogState } from "../data/harnessBridge";
 import { withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
 interface Props {

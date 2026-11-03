@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { ToolResultReadResponse, ToolResultReference } from "@boss-cli/protocol";
+import type { ToolResultReadResponse, ToolResultReference } from "@boss-harness/protocol";
 import { readToolResultChunk } from "../data/toolResultReads";
 import { harnessErrorText } from "../data/harnessBridge";
 

@@ -1,5 +1,5 @@
 /**
- * BOSS-CLI 桌面端与 Harness 内核之间的协议定义。
+ * BOSS Harness 桌面端与 Harness 内核之间的协议定义。
  *
  * 形状参照 Codex 的 app-server 协议：JSON-RPC 2.0 帧 + 方法名用斜杠分层
  * （thread/start、turn/start、item/started 等），请求/响应按 id 关联，

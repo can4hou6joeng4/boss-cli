@@ -23,7 +23,7 @@ import { HarnessReplica } from "./data/harnessReplica";
 import type { QueuePage } from "./data/queueMapping";
 import { reduceModelRetry, settleModelRetryOnTurnEnd, type ModelRetryStatus } from "./data/modelRetry";
 import { toMessage } from "./data/harnessBridge";
-import type { InitializeResponse, ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-cli/protocol";
+import type { InitializeResponse, ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-harness/protocol";
 import type { QueueIntent, QueueSubmissionCheck } from "./data/composerDraft";
 
 const LEGACY_ROUTE_HINT = "该旧会话记录的模型不属于默认线路，请先在模型菜单中选择线路后再发送。";
@@ -393,7 +393,7 @@ export function App(): JSX.Element {
   const simulate = useCallback((id: string) => {
     markRunning(id, true);
     timers.current.set(id, setTimeout(() => {
-      updateThread(id, previous => [...previous, { id: "preview-agent-" + Date.now(), role: "agent", thinkingTime: "界面演示", paragraphs: ["已记录这条示例任务。正式执行时，BOSS-CLI 会依据岗位需求、履历事实和你的偏好逐步推进，并在需要对外操作时请你确认。", "当前为界面预览，未调用模型或招聘平台。"] }]);
+      updateThread(id, previous => [...previous, { id: "preview-agent-" + Date.now(), role: "agent", thinkingTime: "界面演示", paragraphs: ["已记录这条示例任务。正式执行时，BOSS Harness 会依据岗位需求、履历事实和你的偏好逐步推进，并在需要对外操作时请你确认。", "当前为界面预览，未调用模型或招聘平台。"] }]);
       markRunning(id, false); timers.current.delete(id);
     }, 1300));
   }, [markRunning, updateThread]);

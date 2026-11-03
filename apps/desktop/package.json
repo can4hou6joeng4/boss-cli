@@ -1,9 +1,9 @@
 {
-  "name": "boss-cli-desktop",
-  "productName": "BOSS-CLI",
+  "name": "boss-harness-desktop",
+  "productName": "BOSS Harness",
   "version": "0.2.0-rc.14",
   "private": true,
-  "description": "BOSS-CLI 桌面端外壳（Electron + React）",
+  "description": "BOSS Harness 桌面端外壳（Electron + React）",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -11,9 +11,9 @@
     "preview": "electron-vite preview"
   },
   "dependencies": {
-    "@boss-cli/app-client": "*",
-    "@boss-cli/protocol": "*",
-    "@boss-cli/shared": "*"
+    "@boss-harness/app-client": "*",
+    "@boss-harness/protocol": "*",
+    "@boss-harness/shared": "*"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",
