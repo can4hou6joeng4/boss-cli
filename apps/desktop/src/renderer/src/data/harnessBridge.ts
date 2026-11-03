@@ -317,18 +317,20 @@ export async function removeQueuedItem(threadId: string, queueId: string): Promi
 
 /** 审批应答的送达结果：accepted 表示内核已受理；rejected 表示内核明确不受理；unconfirmed 表示请求没送到或回报不可读。 */
 export type ApprovalDelivery = "accepted" | "rejected" | "unconfirmed";
+/** 送达结果与未确认时可展示的原因（已剥掉 IPC 前缀、附内核错误码）。 */
+export interface ApprovalOutcome { delivery: ApprovalDelivery; reason?: string }
 
 /** 回答一次工具审批。区分「内核明确不受理」与「请求未送达」，调用方据此决定是否把审批卡放回界面。 */
-export async function respondApproval(approvalId: string, approved: boolean): Promise<ApprovalDelivery> {
+export async function respondApproval(approvalId: string, approved: boolean): Promise<ApprovalOutcome> {
   const api = bridge();
-  if (!api) return "unconfirmed";
+  if (!api) return { delivery: "unconfirmed", reason: "本地 Harness 未连接" };
   try {
     const response = await api.request<ApprovalRespondResponse>(ClientMethods.approvalRespond, { approvalId, approved });
     // 回报不可读不等于内核拒绝：只有布尔值才代表明确受理或不受理。
-    if (!response || typeof response.accepted !== "boolean") return "unconfirmed";
-    return response.accepted ? "accepted" : "rejected";
-  } catch {
-    return "unconfirmed";
+    if (!response || typeof response.accepted !== "boolean") return { delivery: "unconfirmed", reason: "内核审批回执无法识别" };
+    return { delivery: response.accepted ? "accepted" : "rejected" };
+  } catch (cause) {
+    return { delivery: "unconfirmed", reason: harnessErrorText(cause) };
   }
 }
 

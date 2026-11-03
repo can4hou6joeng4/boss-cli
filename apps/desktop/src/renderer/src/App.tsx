@@ -197,13 +197,14 @@ export function App(): JSX.Element {
       }
       if (params.kind !== "userMessage" && params.turnId && turnIds.current.has(id) && turnIds.current.get(id) !== params.turnId) return;
       if (event.method === "approval/requested" && params.approvalId && !params.consequential && params.toolName && rememberedApprovals.current.get(id)?.has(params.toolName)) {
-        void respondApproval(params.approvalId, true).then(delivery => {
-          if (delivery === "accepted") return;
+        void respondApproval(params.approvalId, true).then(outcome => {
+          if (outcome.delivery === "accepted") return;
           // 自动批准没被受理：把审批卡放回界面，否则回合会停在运行态等一个看不见的决定。
-          updateThread(id, previous => autoApprovalFallback(previous, event, delivery));
-          setError(delivery === "unconfirmed"
-            ? "自动批准请求未送达，已显示本次审批；请检查连接后手动确认。"
-            : "自动批准未被内核受理（可能已过期），已显示本次审批；请手动确认。");
+          updateThread(id, previous => autoApprovalFallback(previous, event, outcome.delivery));
+          const reason = outcome.reason ? `（${outcome.reason}）` : "";
+          setError(outcome.delivery === "unconfirmed"
+            ? `自动批准请求未送达${reason}，已显示本次审批；请检查连接后手动确认。`
+            : `自动批准未被内核受理（可能已过期）${reason}，已显示本次审批；请手动确认。`);
         });
         return;
       }
@@ -630,14 +631,14 @@ export function App(): JSX.Element {
     });
   }, [markRunning, updateThread]);
   const handleApproval = useCallback(async (approvalId: string, approved: boolean, toolName: string, remember: boolean) => {
-    const session = activeRef.current; if (!session) return "rejected" as const;
-    const delivery = await respondApproval(approvalId, approved);
-    if (delivery !== "accepted") return delivery;
+    const session = activeRef.current; if (!session) return { delivery: "rejected" as const, reason: "没有当前会话" };
+    const outcome = await respondApproval(approvalId, approved);
+    if (outcome.delivery !== "accepted") return outcome;
     const approval = cache.current.get(session.id)?.find(message => message.approval?.approvalId === approvalId)?.approval;
     if (remember && approved && approval && !approval.consequential) {
       const tools = rememberedApprovals.current.get(session.id) ?? new Set<string>(); tools.add(toolName); rememberedApprovals.current.set(session.id, tools);
     }
-    return "accepted" as const;
+    return { delivery: "accepted" as const };
   }, [updateThread]);
   const openRewind = useCallback(() => {
     if (!activeRef.current) { setError("请先打开一段聊天。"); return; }
