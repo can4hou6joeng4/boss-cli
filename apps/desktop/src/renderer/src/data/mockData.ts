@@ -75,6 +75,8 @@ export interface SessionItem {
   lastTurnStatus?: TurnStatus;
   /** 上一回合以 error / blocked 结束时的原因码；重启后仍可用于提示。 */
   lastTurnErrorCode?: string;
+  /** 尚未形成回合的队列项数量（排队、投递中、暂停）。 */
+  queueActiveItems?: number;
   taskResumePolicy?: TurnTaskResumePolicy;
   id: string;
   title: string;
