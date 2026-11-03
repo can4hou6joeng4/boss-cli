@@ -190,29 +190,29 @@ export async function listThreads(): Promise<SessionItem[]> {
   }));
 }
 
-export async function startThread(title: string, model?: string, provider?: string): Promise<SessionItem | null> {
+/** 创建会话。失败不吞掉：调用方要用内核的真实原因提示，而不是把失败显示成无事发生。 */
+export async function startThread(title: string, model?: string, provider?: string): Promise<SessionItem> {
   const api = bridge();
-  if (!api) return null;
-  try {
-    const response = await api.request<ThreadStartResponse>(
-      ClientMethods.threadStart,
-      { title, provider, model, toolPolicy: "readOnly" },
-    );
-    return {
-      id: response.thread.id,
-      title: response.thread.title,
-      timeAgo: formatRelativeTime(response.thread.updatedAt),
-      updatedAt: response.thread.updatedAt,
-      toolPolicy: response.thread.toolPolicy,
-      provider: response.thread.provider,
-      model: response.thread.model,
-      reasoningEffort: response.thread.reasoningEffort,
-      status: "idle",
-      projectId: HARNESS_PROJECT_ID,
-    };
-  } catch {
-    return null;
+  if (!api) throw new Error("本地 Harness 未连接");
+  const response = await api.request<ThreadStartResponse>(
+    ClientMethods.threadStart,
+    { title, provider, model, toolPolicy: "readOnly" },
+  );
+  if (!response || !response.thread || typeof response.thread.id !== "string" || !response.thread.id) {
+    throw new Error("会话创建响应无法识别");
   }
+  return {
+    id: response.thread.id,
+    title: response.thread.title,
+    timeAgo: formatRelativeTime(response.thread.updatedAt),
+    updatedAt: response.thread.updatedAt,
+    toolPolicy: response.thread.toolPolicy,
+    provider: response.thread.provider,
+    model: response.thread.model,
+    reasoningEffort: response.thread.reasoningEffort,
+    status: "idle",
+    projectId: HARNESS_PROJECT_ID,
+  };
 }
 
 export async function setThreadModel(threadId: string, provider: string, model: string): Promise<ThreadSummary> {

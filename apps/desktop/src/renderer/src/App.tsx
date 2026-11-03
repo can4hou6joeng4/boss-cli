@@ -383,9 +383,9 @@ export function App(): JSX.Element {
     startingRef.current = true; setStartingSession(true);
     try {
       const session = await startThread("BOSS 直聘账号连接", activeModelId, activeModelProvider);
-      if (session) { insertSession(session); handleSelectSession(session); }
+      insertSession(session); handleSelectSession(session);
       return session;
-    } catch { setError("连接会话尚未创建，请检查本机连接后重试。"); return null; }
+    } catch (cause) { setError(`连接会话创建失败：${harnessErrorText(cause)}`); return null; }
     finally { startingRef.current = false; setStartingSession(false); }
   };
   const simulate = useCallback((id: string) => {
@@ -457,7 +457,6 @@ export function App(): JSX.Element {
         setActiveModelId(modelId);
         setActiveModelProvider(provider);
         const started = harnessUp ? await startThread(prompt.slice(0, 32), modelId, provider) : { id: "preview-" + Date.now(), title: prompt.slice(0, 32), timeAgo: "刚刚", status: "idle" as const, projectId: MOCK_PROJECT_FOLDERS[0]?.id ?? "preview", provider, model: modelId };
-        if (!started) { setError("创建会话失败，请检查本地内核连接后重试。"); return null; }
         insertSession(started);
         const transferred = await send(started.id, prompt, started.projectId === HARNESS_PROJECT_ID, started.model ?? modelId, skillIds);
         if (!transferred) return null;
@@ -466,8 +465,8 @@ export function App(): JSX.Element {
           setMessages(cache.current.get(started.id) ?? []);
         }
         return started;
-      } catch {
-        setError("创建会话失败，请检查本地内核连接后重试。"); return null;
+      } catch (cause) {
+        setError(`创建会话失败：${harnessErrorText(cause)}`); return null;
       } finally { startingRef.current = false; setStartingSession(false); }
     })();
   }, [harnessUp, insertSession, send]);
