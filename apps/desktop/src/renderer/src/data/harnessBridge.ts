@@ -31,6 +31,8 @@ import {
   type ModelListResponse,
   type SkillDescriptor,
   type SkillListResponse,
+  type ToolDescriptor,
+  type ToolListResponse,
   type ConnectionReport,
   type ConnectionTarget,
   type ConfigReadResponse,
@@ -73,6 +75,9 @@ export interface HarnessStatus {
 }
 
 export type SkillCatalogState = "unavailable" | "loading" | "ready" | "empty" | "error";
+
+/** 工具目录状态：把「还没读到」「读取失败」和「确实没有工具」分开，界面不能把它们混为一谈。 */
+export type ToolCatalogState = "unavailable" | "loading" | "ready" | "empty" | "error";
 
 export async function harnessStatus(): Promise<HarnessStatus | null> {
   try { return await bridge()?.status() ?? null; }
@@ -363,6 +368,15 @@ export async function listSkills(): Promise<SkillDescriptor[]> {
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");
   return (await api.request<SkillListResponse>(ClientMethods.skillsList)).skills;
+}
+
+/** 内核声明的工具清单。读取失败不吞掉：调用方要区分「没有工具」与「读取失败」。 */
+export async function listTools(): Promise<ToolDescriptor[]> {
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  const response = await api.request<ToolListResponse>(ClientMethods.toolList);
+  if (!response || !Array.isArray(response.tools)) throw new Error("工具清单响应无法识别");
+  return response.tools;
 }
 
 export async function connectionReport(target?: ConnectionTarget): Promise<ConnectionReport> {
