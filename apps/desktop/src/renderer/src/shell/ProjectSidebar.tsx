@@ -1,4 +1,5 @@
 import { useEffect, useState, type MouseEvent } from "react";
+import { approvalBadgeText } from "../data/pendingApprovals";
 import { IconNewChat, IconSearch, IconFolder, IconChevronDown, IconChevronRight, IconMore, IconNotification, IconPlus, IconSettings, IconHistory, IconCopy, IconEdit, IconPin, IconCheck, IconSliders, IconClose, IconLock, IconTrash, IconArchive } from "../components/Icons";
 import { Popover } from "../components/Popover";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
@@ -15,7 +16,7 @@ interface Props {
   preferences: SidebarPreferences; onPreferencesChange: (value: SidebarPreferences) => void; localGroupIds: string[];
   onSelectSession: (session: SessionItem) => void; onNewTask: () => void; onSearch: () => void;
   onNewTaskInProject: (folder: ProjectFolder) => void;
-  onOpenSettings: () => void; onRecents: () => void; onNewProject: () => void; onNotifications: () => void;
+  onOpenSettings: () => void; onRecents: () => void; onNewProject: () => void; onNotifications: () => void; /** 跨会话待审批数量，0 或未知时不显示徽标。 */ pendingApprovals?: number;
   onRename: (session: SessionItem) => void; onPin: (id: string) => void; onHide: (id: string) => void;
   /** 打开删除确认；真正的删除与结果提示由外层负责。 */
   onDelete: (session: SessionItem) => void;
@@ -141,7 +142,7 @@ export function ProjectSidebar(props: Props) {
         </Popover>
       </div>
       <div className="sidebar-header-actions">
-        <button className="titlebar-btn" onClick={props.onNotifications} aria-label="通知" title="通知"><IconNotification size={16} /></button>
+        <button className={"titlebar-btn" + (props.pendingApprovals ? " has-badge" : "")} onClick={props.onNotifications} aria-label={props.pendingApprovals ? `通知（${props.pendingApprovals} 项待审批）` : "通知"} title={props.pendingApprovals ? `通知 · ${props.pendingApprovals} 项待审批` : "通知"}><IconNotification size={16} />{props.pendingApprovals && <span className="notification-badge" aria-hidden="true">{approvalBadgeText(props.pendingApprovals)}</span>}</button>
         <button className="titlebar-btn" onClick={props.onSearch} aria-label="搜索聊天" title="搜索聊天 · ⌘K"><IconSearch size={16} /></button>
       </div>
     </div>

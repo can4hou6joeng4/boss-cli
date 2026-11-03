@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { PendingApproval } from "@boss-harness/protocol";
 import { ModalSurface } from "./ModalSurface";
 import { IconNotification, IconCheck, IconClock } from "./Icons";
@@ -12,22 +12,25 @@ type PendingState =
   | { status: "ready"; approvals: PendingApproval[]; now: number }
   | { status: "error"; message: string };
 
-export function NotificationsDialog({ folders, preview = false, onSelect, onClose }: {
+export function NotificationsDialog({ folders, preview = false, onSelect, onLoaded, onClose }: {
   folders: ProjectFolder[];
   /** 示例模式不连接内核，不发起审批读取。 */
   preview?: boolean;
   onSelect: (session: SessionItem) => void;
+  /** 成功读取后回报数量，供侧栏徽标同步；失败不调用。 */
+  onLoaded?: (count: number) => void;
   onClose: () => void;
 }) {
   const [state, setState] = useState<PendingState>({ status: "loading" });
   const [reload, setReload] = useState(0);
+  const loaded = useRef(onLoaded); loaded.current = onLoaded;
 
   useEffect(() => {
     if (preview) return;
     let cancelled = false;
     setState({ status: "loading" });
     void listPendingApprovals(100).then(
-      approvals => { if (!cancelled) setState({ status: "ready", approvals, now: Date.now() }); },
+      approvals => { if (cancelled) return; setState({ status: "ready", approvals, now: Date.now() }); loaded.current?.(approvals.length); },
       cause => { if (!cancelled) setState({ status: "error", message: harnessErrorText(cause) }); },
     );
     return () => { cancelled = true; };

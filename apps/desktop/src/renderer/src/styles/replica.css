@@ -20,6 +20,8 @@ kbd { font: 10px var(--font-sans); color: var(--text-faint); }
 .titlebar-btn { width: 28px; height: 28px; border-radius: 7px; flex: none; padding: 0; }
 .titlebar-btn:disabled { opacity: .28; }
 .titlebar-btn:disabled:hover { background: transparent; }
+.titlebar-btn.has-badge { position: relative; }
+.notification-badge { position: absolute; top: 1px; right: 1px; min-width: 13px; height: 13px; padding: 0 3px; border-radius: 999px; background: var(--accent-error); color: #fff; font-size: 8px; font-weight: 600; line-height: 13px; text-align: center; pointer-events: none; }
 .titlebar-btn:active { transform: none; }
 .titlebar-navigation { width: calc(var(--sidebar-width) + var(--rail-width) - 104px); flex-shrink: 0; }
 .titlebar-thread { flex: 1; display: flex; align-items: center; gap: 12px; min-width: 0; color: var(--text-main); -webkit-app-region: drag; font-size: 13px; font-weight: 500; }
