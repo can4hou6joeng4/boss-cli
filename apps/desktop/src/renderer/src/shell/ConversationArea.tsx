@@ -12,7 +12,7 @@ import type { ModelRetryStatus } from "../data/modelRetry";
 import type { ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-harness/protocol";
 import type { ContextBranchSummary, ContextCompactJob, ContextEditReadResponse, SkillDescriptor } from "@boss-harness/protocol";
 import { type MessageItem, type ConversationMode } from "../data/mockData";
-import type { SkillCatalogState, ApprovalDelivery } from "../data/harnessBridge";
+import type { SkillCatalogState, ApprovalDelivery, ApprovalOutcome } from "../data/harnessBridge";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type CheckQueueSubmission } from "../data/composerDraft";
 
@@ -41,7 +41,7 @@ export interface ConversationAreaProps {
   sessionBranches?: SessionBranchesView;
   sessionReasoning?: SessionReasoningControl;
   loginGuide?: React.ReactNode; onLogin?: () => void;
-  onApprovalDecision?: (approvalId: string, approved: boolean, toolName: string, remember: boolean) => void | ApprovalDelivery | Promise<void | ApprovalDelivery>;
+  onApprovalDecision?: (approvalId: string, approved: boolean, toolName: string, remember: boolean) => void | ApprovalDelivery | ApprovalOutcome | Promise<void | ApprovalDelivery | ApprovalOutcome>;
   onReviewDiff?: () => void; onRevertDiff?: () => void; onOpenRewind?: () => void; onOpenCockpit?: () => void;
 }
 export const ConversationArea: React.FC<ConversationAreaProps> = ({
@@ -101,11 +101,13 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
     const remember = !approval.consequential && (rememberChoices[msgId] || false);
     if (approval.approvalId) {
       setPendingApproval(msgId); setApprovalError("");
-      const delivery = await onApprovalDecision?.(approval.approvalId, decision === "approve", approval.toolName, remember);
+      const outcome = await onApprovalDecision?.(approval.approvalId, decision === "approve", approval.toolName, remember);
       setPendingApproval(null);
+      const delivery = outcome && typeof outcome === "object" ? outcome.delivery : outcome;
+      const reason = outcome && typeof outcome === "object" && outcome.reason ? `：${outcome.reason}` : "";
       if (delivery !== "accepted") {
         setApprovalError(delivery === "unconfirmed"
-          ? "审批请求未送达，请检查连接后重试；这张审批卡仍可再次提交。"
+          ? `审批请求未送达${reason}，请检查连接后重试；这张审批卡仍可再次提交。`
           : "审批未被受理（可能已过期或状态已刷新），请等待状态刷新后再试。");
         return;
       }
