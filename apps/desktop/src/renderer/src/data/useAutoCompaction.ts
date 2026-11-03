@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AutoCompactionPolicy, TurnAutoCompactionOverride } from "@boss-harness/protocol";
-import { readConfig } from "./harnessBridge";
+import { harnessErrorText, readConfig } from "./harnessBridge";
 
 export interface AutoCompactionDraft {
   enabled: boolean;
@@ -70,8 +70,9 @@ export function useAutoCompaction(threadId: string | null, open: boolean, connec
         setDraft(pending && pending.threadId === threadId ? draftFrom(pending.policy) : draftFrom(policy));
         seededFor.current = threadId;
       }
-    }).catch(() => {
-      if (!cancelled) setError("读取自动压缩默认值失败；仍可显式设置本回合覆盖。");
+    }).catch(cause => {
+      // 默认值读取失败时用户仍可手动设置；保留断连、超时或内核错误码，才知道是重连还是改配置。
+      if (!cancelled) setError(`读取自动压缩默认值失败：${harnessErrorText(cause)}；仍可显式设置本回合覆盖。`);
     }).finally(() => {
       if (!cancelled) setReading(false);
     });
