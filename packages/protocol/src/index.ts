@@ -925,6 +925,16 @@ export interface ContextReadResponse extends ContextBudget {
   compactionJob?: { jobId: string; status: ContextCompactionJobStatus; active: boolean } | null;
   /** 当前分支上已注入模型上下文的被放弃分支摘要；无则缺省。 */
   branchSummaries?: ContextBranchSummary[];
+  /** 工作区常驻说明的加载状态；旧内核不返回，文件不存在时为 null。 */
+  workspaceInstructions?: WorkspaceInstructionsState | null;
+}
+/** `context/read.workspaceInstructions`：只描述读取结果，不返回文件正文。 */
+export interface WorkspaceInstructionsState {
+  path: string;
+  status: "loaded" | "empty" | "too_large" | "unreadable";
+  /** 实际字节数；超限或不可读时未知为 null。 */
+  bytes: number | null;
+  limitBytes: number;
 }
 export interface ContextBranchSummary {
   entryId: string;

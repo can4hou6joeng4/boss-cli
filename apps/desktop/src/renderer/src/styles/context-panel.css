@@ -11,6 +11,8 @@
 .context-panel-section-heading h3 { margin: 0; }
 .context-panel .secondary-button, .context-panel .solid-button { min-height: 34px; padding: 6px 12px; font-size: 12px; flex: none; }
 .context-panel-note, .context-panel-source { color: var(--text-muted); margin: 8px 0; font-size: 12px; }
+.context-panel-instructions { overflow-wrap: anywhere; }
+.context-panel-instructions.issue { color: var(--accent-warning); }
 .context-panel-budget { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
 .context-panel-budget strong { font-size: 24px; font-weight: 550; }
 .context-panel-budget small { font-size: 12px; font-weight: normal; color: var(--text-muted); }
