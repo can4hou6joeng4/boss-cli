@@ -260,16 +260,12 @@ export async function setThreadReasoning(threadId: string, effort: string | null
     reasoningEffort: thread.reasoningEffort, projectId: HARNESS_PROJECT_ID };
 }
 
-/** 中断当前回合。返回内核的如实回报：没有在跑的回合时为 false。 */
+/** 中断当前回合。返回内核的如实回报：没有在跑的回合时为 false；请求失败由调用方重新读取状态。 */
 export async function interruptTurn(threadId: string): Promise<boolean> {
   const api = bridge();
-  if (!api) return false;
-  try {
-    const response = await api.request<TurnInterruptResponse>(ClientMethods.turnInterrupt, { threadId });
-    return response.interrupted;
-  } catch {
-    return false;
-  }
+  if (!api) throw new Error("本地 Harness 未连接");
+  const response = await api.request<TurnInterruptResponse>(ClientMethods.turnInterrupt, { threadId });
+  return response.interrupted === true;
 }
 
 export async function steerTurn(params: TurnSteerParams): Promise<QueueItem> {
