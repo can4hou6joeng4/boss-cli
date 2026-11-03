@@ -11,6 +11,7 @@ import {
   type ThreadItem,
   type ThreadListResponse,
   type ThreadReadResponse,
+  type ThreadDeleteResponse,
   type ThreadSummary,
   type ThreadStartResponse,
   type ThreadModelSetResponse,
@@ -221,6 +222,12 @@ export async function setThreadModel(threadId: string, provider: string, model: 
     throw new Error("模型设置响应无法识别");
   }
   return response.thread;
+}
+
+/** 删除会话。失败不吞掉：调用方按内核错误码区分「运行中被拒绝」「删除未完成」「已不存在」。 */
+export async function deleteThread(threadId: string): Promise<void> {
+  const response = await contextRequest<ThreadDeleteResponse>(ClientMethods.threadDelete, { threadId });
+  if (!response || response.deleted !== true || response.threadId !== threadId) throw new Error("删除会话响应无法识别");
 }
 
 /** 发起回合。失败不吞掉：调用方要用真实原因提示，同时保留「回执未知」的谨慎处理。 */

@@ -11,5 +11,6 @@
 .ui-popover.sidebar-context-menu { min-width: 226px; max-width: min(300px, calc(100vw - 20px)); }
 .ui-popover.sidebar-context-menu .menu-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ui-popover.sidebar-context-menu > button > span:not(.menu-shortcut) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-popover.sidebar-context-menu > button.menu-danger { color: var(--accent-error); }
 .sidebar-recent-section .sidebar-recents { margin: 3px 8px 6px; }
 .sidebar-feedback { position: absolute; bottom: 15px; margin: 0 8px; padding: 8px 12px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--panel-glass); box-shadow: var(--shadow-popup); color: var(--text-main); font-size: 11px; z-index: 300; }

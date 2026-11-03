@@ -248,6 +248,15 @@ export const IconClose: React.FC<IconProps> = ({ size = 16, ...props }) => (
   </svg>
 );
 
+export const IconTrash: React.FC<IconProps> = ({ size = 16, ...props }) => (
+  <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <path d="M2.5 4.5h11" />
+    <path d="M6 4.5V3h4v1.5" />
+    <path d="M4 4.5l.6 8.2a.8.8 0 0 0 .8.8h5.2a.8.8 0 0 0 .8-.8l.6-8.2" />
+    <path d="M6.8 7v4M9.2 7v4" />
+  </svg>
+);
+
 export const IconPause: React.FC<IconProps> = ({ size = 16, ...props }) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" {...props}>
     <rect x="4" y="3.5" width="2.5" height="9" rx="1" />
