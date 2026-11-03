@@ -4,9 +4,10 @@ import { Popover } from "../components/Popover";
 import { SlashCommandList, SLASH_COMMANDS, type SlashCommandItem } from "../components/SlashCommandList";
 import { AtMentionList, filterMentions, type MentionItem } from "../components/AtMentionList";
 import { MODEL_OPTIONS, type ConversationMode } from "../data/mockData";
-import type { ModelDescriptor, SkillDescriptor } from "@boss-harness/protocol";
+import type { ModelDescriptor, SkillDescriptor, SkillProblem } from "@boss-harness/protocol";
 import type { SkillCatalogState } from "../data/harnessBridge";
 import { harnessErrorText } from "../data/harnessBridge";
+import { filterSkills } from "../data/skillFilter";
 import { attachmentFailureNotice, readTextAttachments } from "../data/attachmentRead";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import { createComposerDraft, clearTransferredDraft, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type QueueIntent, type CheckQueueSubmission } from "../data/composerDraft";
@@ -24,7 +25,7 @@ export interface ComposerProps {
   models?: ModelDescriptor[]; activeModelProvider?: string; activeModelId?: string; configuredModelLabel?: string;
   onSelectModel?: (provider: string, id: string) => void | boolean | Promise<void | boolean>; onOpenSettings?: () => void;
   sessionReasoning?: SessionReasoningControl;
-  skills?: SkillDescriptor[]; skillCatalogState?: SkillCatalogState; skillCatalogError?: string; onRefreshSkills?: () => void;
+  skills?: SkillDescriptor[]; skillCatalogState?: SkillCatalogState; skillCatalogError?: string; onRefreshSkills?: () => void; skillProblems?: SkillProblem[];
   home?: boolean;
   onLogin?: () => void;
 }
@@ -40,11 +41,12 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   value, onChange, onSend, draft, onDraftChange, isRunning = false, blocked = false, onInterrupt, preview = true, readOnly = false, archived = false,
   onQueue, onCheckQueueSubmission,
   currentMode = "agent", onModeChange, models = [], activeModelProvider, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, home = false, onLogin,
-  skills = [], skillCatalogState = "unavailable", skillCatalogError, onRefreshSkills,
+  skills = [], skillCatalogState = "unavailable", skillCatalogError, onRefreshSkills, skillProblems = [],
   sessionReasoning,
 }, forwardedRef) {
   const [menu, setMenu] = useState<"add" | "permissions" | "mode" | "model" | "skills" | null>(null);
   const [modelQuery, setModelQuery] = useState("");
+  const [skillQuery, setSkillQuery] = useState("");
   const [modelPending, setModelPending] = useState(false);
   const [modelError, setModelError] = useState("");
   const [slashOpen, setSlashOpen] = useState(false), [mentionOpen, setMentionOpen] = useState(false);
@@ -56,6 +58,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const modelInputRef = useRef<HTMLInputElement>(null);
+  const skillInputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
   const readingRef = useRef(false);
   const sendingRef = useRef(false);
@@ -68,6 +71,11 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const attachments = composerDraft.attachments;
   const selectedSkillIds = composerDraft.skillIds ?? [];
   const staleSkillIds = selectedSkillIds.filter(id => !skills.some(skill => skill.id === id));
+  // 筛选只影响菜单展示，不改变已选技能；被筛掉但已选中的技能仍会随消息应用。
+  const filteredSkills = filterSkills(skills, skillQuery);
+  const hiddenSelectedSkills = skillQuery.trim()
+    ? selectedSkillIds.filter(id => skills.some(skill => skill.id === id) && !filteredSkills.some(skill => skill.id === id)).length
+    : 0;
   const readingAttachments = composerDraft.pendingReads > 0;
   const submitting = composerDraft.submitting;
   const uncertainQueue = composerDraft.queueSubmission?.uncertain ? composerDraft.queueSubmission : null;
@@ -100,7 +108,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const focusInput = () => requestAnimationFrame(() => inputRef.current?.focus());
   const toggleMenu = (next: typeof menu) => {
     setMenu(previous => previous === next ? null : next);
-    setModelQuery(""); setSlashOpen(false); setMentionOpen(false);
+    setModelQuery(""); setSkillQuery(""); setSlashOpen(false); setMentionOpen(false);
   };
   const change = (text: string) => {
     onChange(text); setNotice(""); setSelectedIndex(0);
@@ -315,15 +323,27 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
           <button type="button" className={`composer-mode composer-skills-trigger ${menu === "skills" ? "is-open" : ""}`} aria-label={`选择运行时技能${selectedSkillIds.length ? `，已选 ${selectedSkillIds.length} 项` : ""}`} data-count={selectedSkillIds.length || undefined} title={submitting ? "正在转交消息，暂不能更改技能" : queueModeActive ? "所选技能应用于排到后续回合的消息；转向消息不使用技能" : "选择应用于消息的运行时技能"} aria-haspopup="menu" aria-expanded={menu === "skills"} disabled={submitting} onClick={() => toggleMenu("skills")}><IconSparkles size={14} /><span>技能{selectedSkillIds.length ? ` ${selectedSkillIds.length}` : ""}</span><IconChevronDown size={10} /></button>
           <Popover open={menu === "skills"} onClose={() => setMenu(null)} above label="选择运行时技能" className="composer-action-menu composer-skills-menu">
             <div className="composer-menu-heading">运行时技能</div>
+            {skillCatalogState === "ready" && skills.length > 0 && <div className="composer-menu-search"><IconSearch size={15} /><input ref={skillInputRef} data-menu-autofocus aria-label="筛选技能" placeholder="搜索技能名称或描述…" value={skillQuery} onChange={event => setSkillQuery(event.target.value)} onKeyDown={event => {
+              if (event.nativeEvent.isComposing) return;
+              const options = event.currentTarget.closest(".composer-action-menu")?.querySelectorAll<HTMLButtonElement>(":scope > button[role='menuitemcheckbox']:not(:disabled)");
+              if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                const option = event.key === "ArrowDown" ? options?.[0] : options?.[(options?.length ?? 0) - 1];
+                if (option) { event.preventDefault(); event.stopPropagation(); option.focus(); }
+              }
+              if (event.key === "Enter" && options?.length) { event.preventDefault(); event.stopPropagation(); options[0]?.click(); }
+            }} />{skillQuery && <button type="button" data-menu-keep-open aria-label="清除技能筛选" onClick={() => { setSkillQuery(""); skillInputRef.current?.focus(); }}><IconClose size={12} /></button>}</div>}
             {skillCatalogState === "loading" && <div className="composer-menu-empty">正在加载可用技能…</div>}
             {skillCatalogState === "unavailable" && <div className="composer-menu-empty">{preview ? "运行时技能仅在连接桌面 Harness 后可用。" : "连接本地 Harness 后可加载技能。"}</div>}
             {skillCatalogState === "error" && <div className="composer-menu-empty">技能目录读取失败{skillCatalogError ? `：${skillCatalogError}` : ""}。这只表示读取没有完成，不代表工作区没有技能；请重试。</div>}
             {skillCatalogState === "empty" && <div className="composer-menu-empty">当前工作区没有可用技能。</div>}
-            {skillCatalogState === "ready" && skills.map(skill => <button type="button" role="menuitemcheckbox" aria-checked={selectedSkillIds.includes(skill.id)} key={skill.id} disabled={submitting || (selectedSkillIds.length >= 10 && !selectedSkillIds.includes(skill.id))} onClick={() => toggleSkill(skill.id)}><IconSparkles /><span>{skill.name}<small>{skill.description || "无描述"}</small></span>{selectedSkillIds.includes(skill.id) && <IconCheck className="menu-check" />}</button>)}
+            {skillCatalogState === "ready" && filteredSkills.map(skill => <button type="button" role="menuitemcheckbox" aria-checked={selectedSkillIds.includes(skill.id)} key={skill.id} disabled={submitting || (selectedSkillIds.length >= 10 && !selectedSkillIds.includes(skill.id))} onClick={() => toggleSkill(skill.id)}><IconSparkles /><span>{skill.name}<small>{skill.description || "无描述"}</small></span>{selectedSkillIds.includes(skill.id) && <IconCheck className="menu-check" />}</button>)}
+            {skillCatalogState === "ready" && skills.length > 0 && filteredSkills.length === 0 && <div className="composer-menu-empty">没有匹配的技能。</div>}
             {skillCatalogState === "ready" && selectedSkillIds.length >= 10 && <div className="composer-menu-footer">每回合最多选择 10 项技能。</div>}
+            {hiddenSelectedSkills > 0 && <div className="composer-menu-footer">已选技能中有 {hiddenSelectedSkills} 项不在当前筛选结果中，仍会随消息应用。</div>}
             {staleSkillIds.length > 0 && skillCatalogState === "ready" && <div className="composer-menu-empty">{staleSkillIds.length} 项已选技能已不在当前目录中。</div>}
             {staleSkillIds.length > 0 && skillCatalogState === "ready" && <button type="button" disabled={submitting} onClick={() => updateDraft(previous => ({ ...previous, skillIds: previous.skillIds.filter(id => !staleSkillIds.includes(id)) }))}>清除不可用技能</button>}
             {selectedSkillIds.length > 0 && skillCatalogState !== "ready" && <button type="button" disabled={submitting} onClick={() => updateDraft(previous => ({ ...previous, skillIds: [] }))}>清除已选技能</button>}
+            {skillProblems.length > 0 && <div className="composer-menu-footer" role="status">{skillProblems.length} 个技能未能加载；到「技能与工具」页查看原因。</div>}
             {skillCatalogState !== "unavailable" && onRefreshSkills && <button type="button" disabled={submitting || skillCatalogState === "loading"} onClick={onRefreshSkills}>{skillCatalogState === "error" ? "重试加载技能" : "刷新技能目录"}</button>}
             <div className="composer-menu-footer">所选技能应用于本次发送或排到后续回合的消息；转交成功后清空。</div>
           </Popover>
