@@ -10,6 +10,7 @@ import { harnessErrorText } from "../data/harnessBridge";
 import { attachmentFailureNotice, readTextAttachments } from "../data/attachmentRead";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import { createComposerDraft, clearTransferredDraft, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type QueueIntent, type CheckQueueSubmission } from "../data/composerDraft";
+import { queueSkillNotice } from "../data/queueSkillNotice";
 import "../styles/composer-menus.css";
 
 export interface ComposerProps {
@@ -71,6 +72,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const submitting = composerDraft.submitting;
   const uncertainQueue = composerDraft.queueSubmission?.uncertain ? composerDraft.queueSubmission : null;
   const queueModeActive = isRunning || Boolean(uncertainQueue?.intent === "followUp");
+  const skillQueueNotice = queueSkillNotice(queueModeActive, queueIntent, selectedSkillIds.length);
   const updateDraft: UpdateComposerDraft = change => {
     if (draft && onDraftChange) onDraftChange(change);
     else if (alive.current) setLocalDraft(previous => change({ ...previous, text: lastValue.current, textVersion: valueVersion.current }));
@@ -399,7 +401,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
         {isRunning && onInterrupt && <button type="button" className="composer-stop" aria-label="停止任务" title="停止当前任务" onClick={onInterrupt}><IconStop size={15} /></button>}
       </div>
     </div>
-    {queueModeActive && selectedSkillIds.length > 0 && <div className="composer-notice" role="status">队列消息暂不支持技能。清除选择后可排队，或等当前回合结束后直接发送。<button type="button" className="composer-menu-retry" disabled={submitting} onClick={() => updateDraft(previous => ({ ...previous, skillIds: [] }))}>清除已选技能</button></div>}
+    {skillQueueNotice && <div className="composer-notice" role="status">{skillQueueNotice}<button type="button" className="composer-menu-retry" disabled={submitting} onClick={() => updateDraft(previous => ({ ...previous, skillIds: [] }))}>清除已选技能</button></div>}
     {(notice || readingAttachments || submitting) && <div className="composer-notice" role="status">{notice || (readingAttachments ? "正在读取附件…" : "正在转交消息…")}</div>}
     {uncertainQueue && <div className="composer-notice-actions">
       <button type="button" onClick={restoreQueueSubmission}>恢复待确认消息</button>
