@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { ModalSurface } from "./ModalSurface";
+import { WorkspaceInstructionsEditor } from "./WorkspaceInstructionsEditor";
 import type { ContextPanelState } from "../data/useContextPanel";
 import type { AutoCompactionController } from "../data/useAutoCompaction";
 import type { WorkspaceInstructionsState } from "@boss-harness/protocol";
@@ -19,6 +21,8 @@ export interface ContextPanelProps {
   onStart: () => void;
   onCancel: () => void;
   autoCompaction: AutoCompactionController;
+  /** 内核声明 workspaceInstructionsEdit 时显示查看/保存入口。 */
+  workspaceEditor?: boolean;
 }
 const number = (value: number) => value.toLocaleString("zh-CN");
 const usage = (value: Record<string, unknown> | null | undefined) => value ? Object.entries(value)
@@ -33,6 +37,9 @@ const workspaceInstructionsText = (value: WorkspaceInstructionsState) => {
   }
 };
 export function ContextPanel(props: ContextPanelProps) {
+  // Hooks 必须在提前返回之前执行；关闭面板时收起编辑器，避免下次打开直接进入编辑态。
+  const [editingInstructions, setEditingInstructions] = useState(false);
+  useEffect(() => { if (!props.isOpen) setEditingInstructions(false); }, [props.isOpen]);
   if (!props.isOpen) return null;
   const { state, connected, busy } = props, budget = state.budget, job = state.job, plan = state.plan, auto = props.autoCompaction;
   const activeJob = job?.status === "running" && state.lifecycleActive !== false;
@@ -54,6 +61,7 @@ export function ContextPanel(props: ContextPanelProps) {
         {budget ? <>
           <p className="context-panel-source">{budget.requestSource === "active" ? "运行中已准备请求" : budget.requestSource === "preview" ? "请求预览" : "空闲会话的当前配置"} · {budget.provider} / {budget.model}</p>
           {budget.workspaceInstructions && <p className={"context-panel-note context-panel-instructions" + (budget.workspaceInstructions.status === "loaded" || budget.workspaceInstructions.status === "empty" ? "" : " issue")}>工作区说明：{workspaceInstructionsText(budget.workspaceInstructions)}</p>}
+          {props.workspaceEditor && !editingInstructions && <p className="context-panel-note"><button type="button" className="secondary-button" onClick={() => setEditingInstructions(true)} disabled={!connected}>{budget.workspaceInstructions ? "编辑工作区说明…" : "添加工作区说明…"}</button></p>}
           {budget.systemPromptInfo && <p className="context-panel-note">系统提示：{number(budget.systemPromptInfo.bytes)} 字节{budget.systemPromptInfo.sections?.length ? ` · ${budget.systemPromptInfo.sections.map(section => `${section.title} ${number(section.bytes)}`).join(" · ")}` : ""}</p>}
           <div className="context-panel-budget"><strong>{budget.inputBudget > 0 ? <>{number(budget.estimatedInputTokens)}<small> / {number(budget.inputBudget)} 输入 token</small></> : "无可用输入预算"}</strong><span>{budget.withinBudget ? "预算内" : "预算不足"}</span></div>
           <div className="context-panel-meter" role="meter" aria-label="估算输入占预算比例" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percentage} aria-valuetext={budget.inputBudget > 0 ? `${Math.round(percentage)}%` : "没有可用输入预算"}><i style={{ width: `${percentage}%` }} /></div>
@@ -66,6 +74,7 @@ export function ContextPanel(props: ContextPanelProps) {
           <p className="context-panel-note">输入为估算值，不是账单。估算方式：{budget.estimateMethod}；{budget.usageApplied ? "使用历史用量基线校准" : "未应用历史用量校准"}。</p>
           <details><summary>模型用量与检查点</summary><dl className="context-panel-detail"><dt>最近业务用量</dt><dd>{usage(budget.usage)}</dd><dt>最近摘要用量</dt><dd>{usage(budget.summaryUsage)}</dd><dt>摘要检查点</dt><dd>{budget.checkpoint ? `已保留 · 截止回合 ${String(budget.checkpoint.throughTurnId ?? "未知")}` : "尚无摘要检查点"}</dd>{budget.checkpoint?.summaryProvider && <><dt>检查点模型</dt><dd>{String(budget.checkpoint.summaryProvider)} / {String(budget.checkpoint.summaryModel ?? "未知")}</dd><dt>检查点推理档位</dt><dd>{String(budget.checkpoint.summaryEffort ?? "服务默认")}</dd></>}</dl><p className="context-panel-note">历史用量不等于压缩后的精确输入用量。原始历史保留；摘要用于后续模型上下文。</p></details>
         </> : <p className="context-panel-note">{state.reading ? "正在读取当前会话预算…" : "尚未读取预算，可连接内核后刷新。"}</p>}
+        {props.workspaceEditor && <WorkspaceInstructionsEditor open={editingInstructions} connected={connected} onClose={() => setEditingInstructions(false)} onSaved={props.onRefresh} />}
       </section>
       <section className="context-panel-section" aria-labelledby="context-auto-heading">
         <h3 id="context-auto-heading">下一回合自动压缩</h3>
