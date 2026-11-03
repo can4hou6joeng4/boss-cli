@@ -72,7 +72,7 @@ export function AppShell(props: AppShellProps) {
   const [threadGroups, setThreadGroups] = useState<Record<string, string>>(() => preference("threadGroups", {}));
   const [sidebarPreferences, setSidebarPreferences] = useState<SidebarPreferences>(() => {
     const saved = preference<Partial<SidebarPreferences>>("sidebar", {});
-    return { grouping: saved.grouping === "list" ? "list" : "project", sort: saved.sort === "name" ? "name" : "updated", showRecent: saved.showRecent ?? false };
+    return { grouping: saved.grouping === "list" ? "list" : "project", sort: saved.sort === "name" ? "name" : "updated", showRecent: saved.showRecent ?? false, showHidden: saved.showHidden ?? false };
   });
   const [newProject, setNewProject] = useState(false), [projectName, setProjectName] = useState("");
   const [rename, setRename] = useState<SessionItem | null>(null), [name, setName] = useState("");
@@ -110,7 +110,6 @@ export function AppShell(props: AppShellProps) {
     sessions: sessions.filter(session => (baseFolders.some(item => item.id === threadGroups[session.id]) ? threadGroups[session.id] : session.projectId) === folder.id)
       .map(session => ({ ...session, title: aliases[session.id] || session.title })),
   }));
-  const visibleFolders = allFolders.map(folder => ({ ...folder, sessions: folder.sessions.filter(session => !hidden.includes(session.id)) }));
   const currentProject = allFolders.find(folder => folder.sessions.some(session => session.id === props.activeSession?.id));
   const title = page === "home" ? props.isHomeView ? "BOSS Harness" : aliases[props.activeSession?.id ?? ""] || props.activeSession?.title || "新聊天" : { recents: "最近聊天", library: "资料库", skills: "技能与工具" }[page];
   const pushRoute = (route: Route) => {
@@ -230,7 +229,8 @@ export function AppShell(props: AppShellProps) {
       <div className="workspace-layout">
         <NavigationRail page={page} isDark={props.isDark} harnessUp={props.harnessUp ?? false} onToggleTheme={props.onToggleTheme} onOpenShortcuts={props.onOpenShortcuts} onNavigate={next => next === "home" ? newTask() : openRoute({ page: next })} onOpenSettings={openSettings} onOpenCockpit={props.onOpenCockpit} onOpenSideChat={props.onOpenSideChat} />
         <div className="workspace-surface">
-          <ProjectSidebar isOpen={props.isSidebarOpen} folders={visibleFolders} activeSessionId={props.activeSession?.id ?? null} isHomeView={props.isHomeView || page !== "home"} pinned={pinned}
+          <ProjectSidebar isOpen={props.isSidebarOpen} folders={allFolders} activeSessionId={props.activeSession?.id ?? null} isHomeView={props.isHomeView || page !== "home"} pinned={pinned}
+            hiddenSessionIds={hidden} onUnhideSession={id => setHidden(prev => prev.filter(item => item !== id))}
             preferences={sidebarPreferences} onPreferencesChange={setSidebarPreferences} localGroupIds={groups.map(group => group.id)} onSelectSession={select} onNewTask={newTask} onNewTaskInProject={newTaskInProject} onSearch={() => setSearch(true)} onOpenSettings={() => openSettings()} onRecents={() => openRoute({ page: "recents" })} onNewProject={() => setNewProject(true)} onNotifications={() => setNotifications(true)}
             onRename={session => { setRename(session); setName(session.title); }} onPin={id => setPinned(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id])} onHide={id => setHidden(prev => [...prev.filter(item => item !== id), id])}
             onMoveSession={(id, folderId) => setThreadGroups(prev => ({ ...prev, [id]: folderId }))} onRenameProject={folder => { setRenameProject(folder); setFolderName(folder.name); }} onRemoveProject={setRemoveProject} />
