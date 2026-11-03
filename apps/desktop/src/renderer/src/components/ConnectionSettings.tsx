@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ConnectionCheck, ConnectionReport, ConnectionTarget, PlatformLoginStatus } from "@boss-harness/protocol";
-import { connectionReport } from "../data/harnessBridge";
+import { harnessErrorText, connectionReport } from "../data/harnessBridge";
 
 const LABELS: Record<ConnectionCheck["state"], string> = {
   unchecked: "尚未检测", checking: "检测中", ready: "检查通过", failed: "检查失败", blocked: "需要处理", disabled: "离线配置",
@@ -25,8 +25,9 @@ export function ConnectionSettings({ harnessUp, onLogin }: { harnessUp: boolean;
     try {
       const next = await connectionReport(target);
       if (current === version.current) { setReport(next); setError(""); }
-    } catch {
-      if (current === version.current) setError("无法读取连接检查结果，请确认 Harness 连接后重试。");
+    } catch (cause) {
+      // 连接检查本身就是诊断入口：内核拒绝、超时与响应非法要给出各自原因，不能都写成「连不上」。
+      if (current === version.current) setError(`无法读取连接检查结果：${harnessErrorText(cause)}。请确认 Harness 连接后重试。`);
     } finally {
       if (current === version.current) setRequesting(false);
     }
