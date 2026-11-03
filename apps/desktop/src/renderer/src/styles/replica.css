@@ -259,8 +259,8 @@ button.user-skill-chip:hover { border-color: var(--text-muted); color: var(--tex
 .search-result>span { flex: 1; min-width: 0; }
 .search-result strong { display: block; font-size: 12px; font-weight: 500; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .search-result small { display: block; font-size: 10px; color: var(--text-faint); margin-top: 4px; }
-.search-message-hits { margin-bottom: 6px; }
-.search-message-hits>p { color: var(--text-faint); font-size: 10px; padding: 5px 12px 6px; }
+.search-message-heading { display: flex; align-items: center; gap: 8px; color: var(--text-faint); font-size: 10px; padding: 7px 12px 6px; }
+.search-truncated { color: var(--accent-warning, var(--text-muted)); border: 1px solid var(--border-color); border-radius: 999px; padding: 0 6px; font-size: 9px; line-height: 15px; }
 .search-message-hit small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .search-message-hit:hover { background: var(--btn-ghost-hover); color: var(--text-main); }
 .search-footer { padding: 12px 20px; border-top: 1px solid var(--border-color); color: var(--text-faint); font-size: 10px; display: flex; gap: 18px; }
