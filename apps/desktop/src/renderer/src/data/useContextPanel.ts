@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ContextCompactJob, ContextCompactPlan, ContextReadResponse } from "@boss-cli/protocol";
-import { abortContextCompaction, planContextCompaction, readContext, readContextCompaction, startContextCompaction } from "./harnessBridge";
+import { abortContextCompaction, harnessErrorText, planContextCompaction, readContext, readContextCompaction, startContextCompaction } from "./harnessBridge";
 
 interface StartAttempt {
   sourceDigest: string;
@@ -27,7 +27,6 @@ export interface ContextPanelState {
 }
 const initial = (): ContextPanelState => ({ keepRecentTokens: "20000", lifecycleActive: null, reading: false, planning: false, starting: false, cancelRequested: false, cancelInFlight: false, turnActive: false, error: "" });
 const terminal = (job: ContextCompactJob) => job.status !== "running";
-const errorText = (error: unknown) => error instanceof Error ? error.message : "无法读取本地内核响应";
 const rpcResponseError = (error: unknown): error is Error & { rpcError: true; code: number } => Boolean(error && typeof error === "object"
   && (error as { rpcError?: unknown }).rpcError === true && typeof (error as { code?: unknown }).code === "number");
 function isJob(value: unknown): value is ContextCompactJob {
@@ -141,10 +140,10 @@ export function useContextPanel(threadId: string | null, connected: boolean, run
         } catch (error) {
           if (valid() && rpcResponseError(error) && error.code === -32011) {
             update(id, { unavailableJob: jobId, error: "本地内核已不再保留这个摘要任务；可能由进程重启或记录淘汰造成。不会重放该任务，可基于当前会话重新规划。" });
-          } else if (valid()) update(id, { error: `暂时无法核对摘要任务：${errorText(error)}。原任务编号已保留，可稍后重试。` });
+          } else if (valid()) update(id, { error: `暂时无法核对摘要任务：${harnessErrorText(error)}。原任务编号已保留，可稍后重试。` });
         }
       } catch (error) {
-        if (valid()) update(id, { error: `读取上下文失败：${errorText(error)}` });
+        if (valid()) update(id, { error: `读取上下文失败：${harnessErrorText(error)}` });
       } finally {
         if (valid()) update(id, { reading: false });
       }
@@ -184,7 +183,7 @@ export function useContextPanel(threadId: string | null, connected: boolean, run
         try {
           applyJob(id, params, event.method === "context/compactionStarted");
           if (terminal(params)) void refresh(id);
-        } catch (error) { update(id, { error: errorText(error) }); }
+        } catch (error) { update(id, { error: harnessErrorText(error) }); }
       }
       if (["turn/started", "turn/completed", "thread/updated", "context/compacted"].includes(event.method)) {
         revisions.current.set(id, (revisions.current.get(id) ?? 0) + 1);
@@ -235,7 +234,7 @@ export function useContextPanel(threadId: string | null, connected: boolean, run
       if (result.threadId !== id || result.keepRecentTokens !== keepRecentTokens || result.selection !== "keepRecentTokens") throw new Error("整理计划响应归属或保留目标不一致");
       if (!/^[0-9a-f]{64}$/.test(result.sourceDigest) || !result.throughTurnId) throw new Error("整理计划缺少有效来源校验或完整回合边界");
       update(id, { plan: result });
-    } catch (error) { if (valid()) update(id, { error: `无法生成整理计划：${errorText(error)}` }); }
+    } catch (error) { if (valid()) update(id, { error: `无法生成整理计划：${harnessErrorText(error)}` }); }
     finally { if (valid()) update(id, { planning: false }); }
   }, [get, update]);
   const start = useCallback(async () => {
@@ -262,10 +261,10 @@ export function useContextPanel(threadId: string | null, connected: boolean, run
             && currentState.job.throughTurnId === attempt.throughTurnId;
           return { ...currentState, starting: false, unknownStart: undefined,
             plan: undefined, discoveryStopped: false,
-            startRejection: observedStart ? undefined : `内核拒绝了本次开始请求（${error.code}）：${errorText(error)}。请刷新预算并生成新计划；没有自动重试。` };
+            startRejection: observedStart ? undefined : `内核拒绝了本次开始请求：${harnessErrorText(error)}。请刷新预算并生成新计划；没有自动重试。` };
         });
       } else update(id, currentState => ({ ...currentState, starting: false,
-        error: currentState.unknownStart ? `开始压缩回执未知：${errorText(error)}。计划可能过期；先核对原任务，不会剥除来源校验或重复开始。` : currentState.error }));
+        error: currentState.unknownStart ? `开始压缩回执未知：${harnessErrorText(error)}。计划可能过期；先核对原任务，不会剥除来源校验或重复开始。` : currentState.error }));
       void refresh(id);
     }
   }, [applyJob, get, refresh, update]);
@@ -284,7 +283,7 @@ export function useContextPanel(threadId: string | null, connected: boolean, run
       if (!isJob(result) || result.reason || result.jobId !== job.jobId || result.threadId !== id || result.sourceDigest !== job.sourceDigest) throw new Error("取消回执不属于手动摘要任务");
       applyJob(id, result);
       void refresh(id);
-    } catch (error) { if (alive.current && epoch.current === connectionEpoch) update(id, { cancelRequested: false, error: `取消回执未知：${errorText(error)}。请核对原任务，尚未确认收尾。` }); }
+    } catch (error) { if (alive.current && epoch.current === connectionEpoch) update(id, { cancelRequested: false, error: `取消回执未知：${harnessErrorText(error)}。请核对原任务，尚未确认收尾。` }); }
     finally {
       cancelFlights.current.delete(job.jobId);
       if (alive.current && epoch.current === connectionEpoch) update(id, { cancelInFlight: false });
