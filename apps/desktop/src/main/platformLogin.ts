@@ -233,10 +233,16 @@ export class PlatformLogin {
 
   cancel(): PlatformLoginStatus {
     const wasSaving = this.status.state === "saving";
+    const base = wasSaving ? "保存已停止，登录态可能已更新，请手动检查" : "已取消扫码登录";
     const active = ["opening", "waiting", "saving"].includes(this.status.state);
     ++this.generation;
-    if (this.attempt && this.status.state !== "succeeded") void this.request("platform/login/cancel", { id: this.attempt }).catch(() => {});
-    if (active) this.update({ state: "cancelled", summary: wasSaving ? "保存已停止，登录态可能已更新，请手动检查" : "已取消扫码登录" });
+    if (this.attempt && this.status.state !== "succeeded") void this.request("platform/login/cancel", { id: this.attempt }).catch(error => {
+      // 取消请求没送达时内核可能仍持有这次登录：界面若只说「已取消」，再次打开会莫名撞上「登录已被占用」。
+      if (this.status.state !== "cancelled" || this.status.summary !== base) return;
+      const detail = loginFailureDetail(error).message;
+      this.update({ state: "cancelled", summary: `${base}${detail ? `，但取消请求未能送达本机内核：${detail}` : "，但取消请求未能送达本机内核"}` });
+    });
+    if (active) this.update({ state: "cancelled", summary: base });
     this.closeBrowser();
     return this.read();
   }
