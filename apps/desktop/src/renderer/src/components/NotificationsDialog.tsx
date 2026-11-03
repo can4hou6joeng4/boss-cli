@@ -27,13 +27,26 @@ export function NotificationsDialog({ folders, preview = false, onSelect, onLoad
 
   useEffect(() => {
     if (preview) return;
-    let cancelled = false;
-    setState({ status: "loading" });
-    void listPendingApprovals(100).then(
-      approvals => { if (cancelled) return; setState({ status: "ready", approvals, now: Date.now() }); loaded.current?.(approvals.length); },
-      cause => { if (!cancelled) setState({ status: "error", message: harnessErrorText(cause) }); },
-    );
-    return () => { cancelled = true; };
+    let cancelled = false, inFlight = false;
+    const load = (silent: boolean) => {
+      if (inFlight) return;
+      inFlight = true;
+      if (!silent) setState({ status: "loading" });
+      void listPendingApprovals(100).then(
+        approvals => { if (cancelled) return; setState({ status: "ready", approvals, now: Date.now() }); loaded.current?.(approvals.length); },
+        cause => {
+          if (cancelled) return;
+          // 后台刷新失败保留已有列表；首次读取失败才展示错误与重试。
+          setState(previous => silent && previous.status === "ready" ? previous : { status: "error", message: harnessErrorText(cause) });
+        },
+      ).finally(() => { inFlight = false; });
+    };
+    load(false);
+    // 打开期间每 15 秒静默重读，让新审批、已处理项与到期提示保持新鲜。
+    const timer = window.setInterval(() => { if (document.visibilityState !== "hidden") load(true); }, 15_000);
+    const onFocus = () => load(true);
+    window.addEventListener("focus", onFocus);
+    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", onFocus); };
   }, [reload, preview]);
 
   const retry = useCallback(() => setReload(previous => previous + 1), []);
