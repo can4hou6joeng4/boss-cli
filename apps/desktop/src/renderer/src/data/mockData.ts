@@ -2,7 +2,7 @@
  * BOSS Agent (招聘垂直领域 Agent Harness) 仿真数据
  */
 
-import type { ThreadItem, ToolResultReference, TurnStatus, TurnTaskResumePolicy } from "@boss-harness/protocol";
+import type { QueueStatusCounts, ThreadItem, ToolResultReference, TurnStatus, TurnTaskResumePolicy } from "@boss-harness/protocol";
 
 export type ConversationMode = "plan" | "ask" | "agent";
 export type EffortLevel = "Auto" | "Max" | "High" | "Medium" | "Low" | "Off";
@@ -77,6 +77,8 @@ export interface SessionItem {
   lastTurnErrorCode?: string;
   /** 尚未形成回合的队列项数量（排队、投递中、暂停）。 */
   queueActiveItems?: number;
+  /** 同一批待处理项的分类数量；旧内核或没有待处理项时缺省。 */
+  queueCounts?: QueueStatusCounts;
   taskResumePolicy?: TurnTaskResumePolicy;
   id: string;
   title: string;
