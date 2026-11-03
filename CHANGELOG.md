@@ -5,6 +5,7 @@
 ### 兼容变化
 
 - 项目命名统一为 `boss-harness`：GitHub 仓库改名为 `can4hou6joeng4/boss-harness`（旧链接由 GitHub 重定向），npm 根包改为 `boss-harness`、桌面包改为 `boss-harness-desktop`，TypeScript 工作区 scope 改为 `@boss-harness/*`；桌面展示名由 BOSS-CLI 改为 BOSS Harness。内核状态目录新增 `BOSS_HARNESS_DIR` 与默认 `~/.boss-harness/harness`，旧 `BOSS_CLI_HARNESS_DIR` 与 `~/.boss-cli/harness` 仍兼容读取（新目录一旦存在即优先）；工作区技能目录改为 `.boss-harness/skills`，旧 `.boss-cli/skills` 在新目录不存在时继续加载。上游相关 `BOSS_CLI_BIN`、`BOSS_CLI_DATA_DIR`、`boss-agent-cli` 与 `boss_hr_*` 工具名保持不变，协议仍为 `0.2.0`。
+- 桌面首次以新展示名启动时接管旧 `userData` 目录（`appData/BOSS-CLI`）：新目录尚不存在且旧目录存在时整体迁移，保留界面偏好与本地草稿；新目录已存在则保持不动，迁移失败（跨卷、权限、占用）只使用新目录，不影响启动。协议仍为 `0.2.0`。
 
 ### 新增
 
