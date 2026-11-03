@@ -266,6 +266,8 @@ button.user-skill-chip:hover { border-color: var(--text-muted); color: var(--tex
 .search-recent-clear { border: 0; background: transparent; color: var(--text-faint); font-size: 10px; padding: 3px 4px; cursor: pointer; }
 .search-recent-clear:hover { color: var(--text-main); }
 .search-message-heading { display: flex; align-items: center; gap: 8px; color: var(--text-faint); font-size: 10px; padding: 7px 12px 6px; }
+.search-archived-toggle { display: inline-flex; align-items: center; gap: 4px; margin-right: auto; color: var(--text-faint); font-size: 10px; cursor: pointer; }
+.search-archived-toggle input { margin: 0; accent-color: var(--accent-cyan); }
 .search-truncated { color: var(--accent-warning, var(--text-muted)); border: 1px solid var(--border-color); border-radius: 999px; padding: 0 6px; font-size: 9px; line-height: 15px; }
 .search-message-hit small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .search-match { background: rgba(255, 214, 102, .28); color: inherit; border-radius: 3px; padding: 0 1px; }

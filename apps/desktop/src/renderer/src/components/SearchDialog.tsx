@@ -16,12 +16,14 @@ function Highlighted({ text, query }: { text: string; query: string }) {
     : segment.text)}</>;
 }
 
-export function SearchDialog({ folders, onSelect, onClose, searchMessages = false, onOpenMessage }: {
+export function SearchDialog({ folders, onSelect, onClose, searchMessages = false, searchArchived = false, onOpenMessage }: {
   folders: ProjectFolder[];
   onSelect: (session: SessionItem) => void;
   onClose: () => void;
   /** 内核声明 threadSearch 能力时为真；否则只按标题与项目搜索。 */
   searchMessages?: boolean;
+  /** 内核声明 threadSearchArchived 能力时为真；为假时不发送 includeArchived。 */
+  searchArchived?: boolean;
   /** 打开会话并定位到命中的消息；缺省时退回只打开会话。 */
   onOpenMessage?: (session: SessionItem, itemId: string) => void;
 }) {
@@ -30,8 +32,9 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
   const [hitsTruncated, setHitsTruncated] = useState(false);
   const [messageState, setMessageState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [recent, setRecent] = useState<string[]>(readRecentSearches);
-  const rows = sessionRows(folders, query);
-  const rowsById = new Map(sessionRows(folders, "").map(row => [row.session.id, row]));
+  const [includeArchived, setIncludeArchived] = useState(false);
+  const rows = sessionRows(folders, query, { includeArchived });
+  const rowsById = new Map(sessionRows(folders, "", { includeArchived }).map(row => [row.session.id, row]));
   const options = buildSearchOptions(rows, hits, rowsById);
   const messageOptions = options.filter((option): option is Extract<SearchOption, { kind: "message" }> => option.kind === "message");
   const sessionOptions = options.filter((option): option is Extract<SearchOption, { kind: "session" }> => option.kind === "session");
@@ -50,9 +53,9 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
     let cancelled = false;
     setMessageState("loading");
     const timer = window.setTimeout(() => {
-      void searchThreadMessages(needle, 20).then(result => {
+      void searchThreadMessages(needle, 20, includeArchived).then(result => {
         if (cancelled) return;
-        const available = new Set(sessionRows(folders, "").map(row => row.session.id));
+        const available = new Set(sessionRows(folders, "", { includeArchived }).map(row => row.session.id));
         setHits(result.matches.filter(match => available.has(match.threadId)));
         setHitsTruncated(result.truncated === true);
         setMessageState("ready");
@@ -62,7 +65,7 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
       });
     }, 250);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [query, searchMessages, folders]);
+  }, [query, searchMessages, includeArchived, folders]);
   const openOption = (option: SearchOption | undefined) => {
     if (!option) return;
     if (query.trim().length >= RECENT_SEARCH_MIN_LENGTH) setRecent(rememberRecentSearch(query));
@@ -102,16 +105,16 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
           {messageOptions.map(option => {
             const { hit, row } = option;
             return <button type="button" key={option.key} title={hit.snippet} {...optionProps(option)}>
-              <IconChat size={17} /><span><strong><Highlighted text={hit.threadTitle || row.session.title} query={query} /></strong><small>{row.project} · {hit.role === "user" ? "你" : "助手"} · <Highlighted text={hit.snippet} query={query} /></small></span><IconChevronRight size={13} />
+              <IconChat size={17} /><span><strong><Highlighted text={hit.threadTitle || row.session.title} query={query} /></strong><small>{row.session.archived === true ? "已归档 · " : ""}{row.project} · {hit.role === "user" ? "你" : "助手"} · <Highlighted text={hit.snippet} query={query} /></small></span><IconChevronRight size={13} />
             </button>;
           })}
         </>}
         {sessionOptions.map(option => {
           const { row } = option;
-          return <button type="button" key={option.key} {...optionProps(option)}><IconChat size={17} /><span><strong><Highlighted text={row.session.title} query={query} /></strong><small>{row.project} · {row.session.timeAgo}</small></span><IconChevronRight size={13} /></button>;
+          return <button type="button" key={option.key} {...optionProps(option)}><IconChat size={17} /><span><strong><Highlighted text={row.session.title} query={query} /></strong><small>{row.session.archived === true ? "已归档 · " : ""}{row.project} · {row.session.timeAgo}</small></span><IconChevronRight size={13} /></button>;
         })}
       </div>
       {!sessionOptions.length && !messageOptions.length && messageState !== "loading" && <div className="search-empty"><IconSearch size={28} /><strong>{query.trim() ? "没有找到相关聊天或消息" : "还没有聊天"}</strong><span>{query.trim() ? "试试其他关键词、项目名称或消息内容" : "创建聊天后，可以在这里快速找到它"}</span></div>}
-    </div><div className="search-footer"><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>↵</kbd> 打开</span><span><kbd>esc</kbd> 关闭</span></div>
+    </div><div className="search-footer">{searchArchived && <label className="search-archived-toggle" title="同时搜索已归档会话；归档不会删除消息"><input type="checkbox" checked={includeArchived} onChange={event => { setIncludeArchived(event.target.checked); setIndex(0); }} />含已归档</label>}<span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>↵</kbd> 打开</span><span><kbd>esc</kbd> 关闭</span></div>
   </ModalSurface>;
 }

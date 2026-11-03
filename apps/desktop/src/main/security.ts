@@ -319,11 +319,12 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
     return { method: payload.method, params };
   }
   if (payload.method === "thread/search") {
-    const allowed = new Set(["query", "limit"]);
+    const allowed = new Set(["query", "limit", "includeArchived"]);
     if (!params || Object.keys(params).some(key => !allowed.has(key)) ||
       typeof params.query !== "string" || !params.query.trim() || params.query.length > 200 ||
       (params.limit !== undefined && (typeof params.limit !== "number" ||
-        !Number.isSafeInteger(params.limit) || params.limit < 1 || params.limit > 50))) {
+        !Number.isSafeInteger(params.limit) || params.limit < 1 || params.limit > 50)) ||
+      (params.includeArchived !== undefined && typeof params.includeArchived !== "boolean")) {
       throw new Error("invalid thread search");
     }
     return { method: payload.method, params };

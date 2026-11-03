@@ -1,8 +1,9 @@
 import type { ProjectFolder, SessionItem } from "./mockData";
 
 export interface SessionRow { session: SessionItem; project: string; }
+export interface SessionRowOptions { includeArchived?: boolean }
 
-export function sessionRows(folders: ProjectFolder[], query = ""): SessionRow[] {
+export function sessionRows(folders: ProjectFolder[], query = "", options: SessionRowOptions = {}): SessionRow[] {
   const normalize = (value: string) => value.normalize("NFKC").toLocaleLowerCase("zh-CN");
   const keywords = normalize(query).trim().split(/\s+/).filter(Boolean);
   const seen = new Set<string>();
@@ -12,8 +13,8 @@ export function sessionRows(folders: ProjectFolder[], query = ""): SessionRow[] 
   };
   return folders.flatMap(folder => folder.sessions.map(session => ({ session, project: folder.name })))
     .filter(row => {
-      // 已归档聊天只在侧栏「已归档」分组出现；最近页与全局搜索不混入。
-      if (row.session.archived === true) return false;
+      // 已归档聊天默认只在侧栏「已归档」分组出现；只有显式要求时才纳入全局搜索。
+      if (row.session.archived === true && options.includeArchived !== true) return false;
       if (seen.has(row.session.id)) return false;
       seen.add(row.session.id);
       const text = normalize(`${row.session.title} ${row.project}`);

@@ -579,7 +579,7 @@ class ApplicationService:
                              "sessionBranchTree": True, "sessionBranchSummary": True,
                              "sessionBranchSnapshots": True, "sessionBranchSummaryRead": True,
                              "threadUsage": True, "sessionModelSelection": True, "threadExport": True,
-                             "threadSearch": True,
+                             "threadSearch": True, "threadSearchArchived": True,
                              "workspaceInstructionsEdit": True, "skillsRead": True,
                              "skillsCreate": True, "skillsWrite": True,
                              "skillsDelete": True},
@@ -1508,10 +1508,14 @@ class ApplicationService:
     def on_thread_search(self, params: dict | None) -> dict:
         """只读、有界的跨会话消息搜索；不返回工具结果与思考内容。"""
         params = params or {}
-        if not set(params) <= {"query", "limit"}:
-            raise ValueError("thread/search 只接受 query 与 limit")
+        if not set(params) <= {"query", "limit", "includeArchived"}:
+            raise ValueError("thread/search 只接受 query、limit 与 includeArchived")
+        include_archived = params.get("includeArchived", False)
+        if type(include_archived) is not bool:
+            raise ValueError("includeArchived 必须是布尔值")
         result = self.sessions.search_messages(_text(params, "query", maximum=200),
-                                               limit=params.get("limit", 30))
+                                               limit=params.get("limit", 30),
+                                               include_archived=include_archived)
         self._check_response_budget(result)
         return result
 

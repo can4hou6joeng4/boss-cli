@@ -80,8 +80,10 @@ export interface InitializeResponse {
     sessionBranchSummaryRead?: boolean;
     /** 可用只读 `thread/export` 导出脱敏后的会话文本（Markdown / JSON / 自包含 HTML）。 */
     threadExport?: boolean;
-    /** 可用只读 `thread/search` 在未归档会话的消息正文中做有界搜索。 */
+    /** 可用只读 `thread/search` 在会话的消息正文中做有界搜索。 */
     threadSearch?: boolean;
+    /** `thread/search` 接受 `includeArchived`，可把已归档会话纳入搜索。 */
+    threadSearchArchived?: boolean;
     /** 可用 `context/instructions/read` / `context/instructions/write` 查看并保存工作区常驻说明。 */
     workspaceInstructionsEdit?: boolean;
     /** 可用只读 `skills/read` 查看单个工作区技能的 SKILL.md 正文（有界，不写入会话）。 */
@@ -715,7 +717,12 @@ export interface ThreadSearchMatch {
   /** 命中位置前后约 40 字符的片段，已折叠空白并截断。 */
   snippet: string;
 }
-export interface ThreadSearchParams { query: string; limit?: number }
+export interface ThreadSearchParams {
+  query: string;
+  limit?: number;
+  /** 为真时同时搜索已归档会话；旧内核不声明 `threadSearchArchived` 时应省略。 */
+  includeArchived?: boolean;
+}
 export interface ThreadSearchResponse {
   query: string;
   matches: ThreadSearchMatch[];
