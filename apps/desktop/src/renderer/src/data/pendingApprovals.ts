@@ -73,3 +73,8 @@ export function approvalBadgeText(count: number): string | null {
   if (typeof count !== "number" || !Number.isFinite(count) || count <= 0) return null;
   return count > 9 ? "9+" : String(Math.floor(count));
 }
+
+/** 只有审批请求与裁决会改变待审批数量；其它通知不触发重新读取。 */
+export function isApprovalCountEvent(method: unknown): boolean {
+  return method === "approval/requested" || method === "approval/decided";
+}

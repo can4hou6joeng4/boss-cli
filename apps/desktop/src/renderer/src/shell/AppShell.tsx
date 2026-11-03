@@ -16,6 +16,7 @@ import { SearchDialog } from "../components/SearchDialog";
 import { NotificationsDialog } from "../components/NotificationsDialog";
 import { ModalSurface } from "../components/ModalSurface";
 import { type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "../data/mockData";
+import { isApprovalCountEvent } from "../data/pendingApprovals";
 import { booleanPreference, projectFolders, stringList, stringRecord } from "../data/preferenceShapes";
 import { type ModelDescriptor, type SkillDescriptor, type ToolDescriptor } from "@boss-harness/protocol";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
@@ -84,6 +85,7 @@ export function AppShell(props: AppShellProps) {
   const [messageFocus, setMessageFocus] = useState<{ threadId: string; itemId: string } | null>(null);
   const [settings, setSettings] = useState(false), [search, setSearch] = useState(false), [notifications, setNotifications] = useState(false);
   const [pendingApprovals, setPendingApprovals] = useState(0);
+  const pendingReload = useRef<() => void>(() => {});
   useEffect(() => {
     // 示例模式与断开的内核不读取审批；读取失败保留上一次数量，不把失败显示成 0。
     if (props.simulateLocal || props.harnessUp === false) { setPendingApprovals(0); return; }
@@ -96,13 +98,30 @@ export function AppShell(props: AppShellProps) {
         () => {},
       ).finally(() => { inFlight = false; });
     };
+    pendingReload.current = load;
     load();
     const timer = window.setInterval(load, 30_000);
     const onFocus = () => load();
     const onVisibility = () => { if (document.visibilityState === "visible") load(); };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibility);
-    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onVisibility); };
+    return () => {
+      cancelled = true; pendingReload.current = () => {};
+      window.clearInterval(timer); window.removeEventListener("focus", onFocus); document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [props.simulateLocal, props.harnessUp]);
+  useEffect(() => {
+    // 内核主动推送审批变化时尽快刷新徽标；连续事件防抖合并为一次读取。
+    if (props.simulateLocal || props.harnessUp === false) return;
+    const api = window.boss;
+    if (!api?.onNotification) return;
+    let timer: number | undefined;
+    const unsubscribe = api.onNotification(raw => {
+      if (!isApprovalCountEvent((raw as { method?: unknown }).method)) return;
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(() => { timer = undefined; pendingReload.current(); }, 250);
+    });
+    return () => { unsubscribe(); if (timer !== undefined) window.clearTimeout(timer); };
   }, [props.simulateLocal, props.harnessUp]);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [summaryAvailable, setSummaryAvailable] = useState(() => window.matchMedia("(min-width: 1200px)").matches);
