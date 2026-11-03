@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { BrowserWindow, shell } from "electron";
 import { isAllowedExternalUrl, isTrustedRendererUrl } from "./security";
+import { rendererFailurePage } from "./rendererFailure";
 
 /**
  * 主窗口配置照搬 Codex 实测值：
@@ -49,10 +50,25 @@ export function createMainWindow(): BrowserWindow {
     if (!event.isMainFrame || !isTrustedRendererUrl(event.url, entryFile, devUrl)) event.preventDefault();
   });
   window.webContents.on("will-attach-webview", (event) => event.preventDefault());
+  // 加载失败时 ready-to-show 不会触发，窗口会一直隐藏；这里显式显示窗口并留下原因。
+  let failureReported = false;
+  const reportFailure = (cause: string): void => {
+    if (failureReported || window.isDestroyed() || window.webContents.isDestroyed()) return;
+    failureReported = true;
+    console.error("renderer load failed", cause);
+    void window.loadURL(rendererFailurePage(cause)).catch(() => { /* 兜底页也失败时至少保留可见窗口。 */ });
+    if (!window.isVisible()) window.show();
+  };
+  window.webContents.on("did-fail-load", (_event, errorCode, description, validatedUrl, mainFrame) => {
+    // -3 是 ABORTED：多来自被替换的上一次导航（如开发模式首次重载），不算界面加载失败。
+    if (!mainFrame || errorCode === -3) return;
+    reportFailure(`${description || `error ${errorCode}`}${validatedUrl ? `（${validatedUrl}）` : ""}`);
+  });
+  const reason = (error: unknown): string => error instanceof Error ? error.message : String(error);
   if (devUrl) {
-    void window.loadURL(devUrl);
+    void window.loadURL(devUrl).catch((error: unknown) => reportFailure(`${devUrl}：${reason(error)}`));
   } else {
-    void window.loadFile(entryFile);
+    void window.loadFile(entryFile).catch((error: unknown) => reportFailure(`${entryFile}：${reason(error)}`));
   }
 
   return window;
