@@ -55,6 +55,7 @@ import {
 } from "@boss-harness/protocol";
 import { formatRelativeTime } from "@boss-harness/shared";
 import { queuePageOf, type QueuePage } from "./queueMapping";
+import { readPagedItems } from "./pagedRead";
 import type { MessageItem, SessionItem } from "./mockData";
 
 export const HARNESS_PROJECT_ID = "proj-harness";
@@ -155,17 +156,20 @@ export const listBranchTurns = (threadId: string, cursor?: string | null): Promi
 /** 内核里的会话列表，映射成侧栏用的条目。读取失败时抛出，避免把空列表误当成「没有会话」。 */
 export async function listThreads(archived = false): Promise<SessionItem[]> {
   if (!bridge()) return [];
-  const threads: ThreadListResponse["threads"] = [];
-  let cursor: string | null = null;
-  do {
-    const response: ThreadListResponse = await contextRequest<ThreadListResponse>(ClientMethods.threadList, { archived, cursor, limit: 200 });
-    if (!response || !Array.isArray(response.threads)) throw new Error("会话列表响应格式无法识别");
-    const next: string | null = response.nextCursor ?? null;
-    if (next !== null && typeof next !== "string") throw new Error("会话列表分页游标无法识别");
-    if (next === cursor) throw new Error("会话列表分页未前进");
-    threads.push(...response.threads);
-    cursor = next;
-  } while (cursor);
+  // 每页 200 条；上限 100 页（2 万条会话）。超过时明确失败，不返回可能缺项的侧栏列表。
+  const { items: threads, truncated } = await readPagedItems<ThreadSummary>(
+    "会话列表",
+    async (cursor) => {
+      const response = await contextRequest<ThreadListResponse>(
+        ClientMethods.threadList,
+        { archived, cursor, limit: 200 },
+      );
+      if (!response || !Array.isArray(response.threads)) throw new Error("会话列表响应格式无法识别");
+      return { items: response.threads, nextCursor: response.nextCursor ?? null };
+    },
+    100,
+  );
+  if (truncated) throw new Error("会话列表分页过多，未能完整读取");
   return threads.map((thread) => ({
     id: thread.id,
     title: thread.title,
