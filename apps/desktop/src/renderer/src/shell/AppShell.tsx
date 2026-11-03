@@ -13,8 +13,8 @@ import { usePlatformLogin } from "../data/usePlatformLogin";
 import { WorkspacePages } from "./WorkspacePages";
 import { SettingsDialog, type SettingsSection } from "../components/SettingsDialog";
 import { SearchDialog } from "../components/SearchDialog";
+import { NotificationsDialog } from "../components/NotificationsDialog";
 import { ModalSurface } from "../components/ModalSurface";
-import { IconNotification, IconCheck } from "../components/Icons";
 import { type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "../data/mockData";
 import { booleanPreference, projectFolders, stringList, stringRecord } from "../data/preferenceShapes";
 import { type ModelDescriptor, type SkillDescriptor, type ToolDescriptor } from "@boss-harness/protocol";
@@ -306,7 +306,7 @@ export function AppShell(props: AppShellProps) {
     </div>
     <SettingsDialog isOpen={settings} initialSection={settingsSection} onClose={() => setSettings(false)} isDark={props.isDark} onToggleTheme={props.onToggleTheme} onOpenShortcuts={() => { setSettings(false); props.onOpenShortcuts(); }} harnessUp={props.harnessUp ?? false} onLogin={() => { void loginEntry(true); }} />
     {search && <SearchDialog folders={allFolders} onSelect={select} onOpenMessage={openMessage} onClose={() => setSearch(false)} searchMessages={props.threadSearchable === true} searchArchived={props.threadSearchArchived === true} />}
-    {notifications && <ModalSurface title="通知" onClose={() => setNotifications(false)}><div className="notification-empty"><IconNotification size={32} /><h3>目前没有新通知</h3><p>需要你确认的操作会在聊天中显示。</p><span><IconCheck size={13} />当前工作区</span></div></ModalSurface>}
+    {notifications && <NotificationsDialog folders={allFolders} preview={props.simulateLocal === true} onSelect={select} onClose={() => setNotifications(false)} />}
     {newProject && <ModalSurface title="新建项目" onClose={() => setNewProject(false)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!projectName.trim()) return; const id = "group-" + crypto.randomUUID(); setGroups(prev => [...prev, { id, name: projectName.trim(), sessions: [] }]); setDraftProjectId(id); resetDraft(); openRoute({ page: "home" }); setProjectName(""); setNewProject(false); }}><label>项目名称<input autoFocus maxLength={60} value={projectName} onChange={event => setProjectName(event.target.value)} placeholder="例如：核心产研团队招聘" /></label><p>创建一个保存在此设备上的项目分组。</p><button className="solid-button" disabled={!projectName.trim()}>创建项目</button></form></ModalSurface>}
     {rename && <ModalSurface title="更改显示名称" onClose={() => setRename(null)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!name.trim()) return; setAliases(prev => ({ ...prev, [rename.id]: name.trim() })); setRename(null); }}><label>聊天名称<input autoFocus value={name} maxLength={100} onChange={event => setName(event.target.value)} /></label><p>只更新此工作区的显示名称。</p><button className="solid-button" disabled={!name.trim()}>保存</button></form></ModalSurface>}
     {renameProject && <ModalSurface title="更改项目显示名称" onClose={() => setRenameProject(null)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!folderName.trim()) return; setProjectAliases(prev => ({ ...prev, [renameProject.id]: folderName.trim() })); setRenameProject(null); }}><label>项目名称<input autoFocus maxLength={60} value={folderName} onChange={event => setFolderName(event.target.value)} /></label><p>显示名称保存在此设备上。</p><button className="solid-button" disabled={!folderName.trim()}>保存</button></form></ModalSurface>}
