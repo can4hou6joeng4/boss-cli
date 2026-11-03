@@ -19,7 +19,8 @@ export function BranchSummaryMarker({ summary, threadId, canRead = false }: { su
   const [open, setOpen] = useState(false);
   const [body, setBody] = useState<{ loading: boolean; text?: string; error?: string }>({ loading: false });
   const alive = useRef(true);
-  useEffect(() => () => { alive.current = false; }, []);
+  // StrictMode 在开发模式下会先执行一次清理再重新挂载；必须在挂载时复位，否则之后的异步读取都会被丢弃。
+  useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const readable = canRead && Boolean(threadId);
   const toggle = () => {
     const next = !open;
