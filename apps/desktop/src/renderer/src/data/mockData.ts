@@ -2,7 +2,7 @@
  * BOSS Agent (招聘垂直领域 Agent Harness) 仿真数据
  */
 
-import type { ToolResultReference, TurnStatus, TurnTaskResumePolicy } from "@boss-harness/protocol";
+import type { ThreadItem, ToolResultReference, TurnStatus, TurnTaskResumePolicy } from "@boss-harness/protocol";
 
 export type ConversationMode = "plan" | "ask" | "agent";
 export type EffortLevel = "Auto" | "Max" | "High" | "Medium" | "Low" | "Off";
@@ -170,6 +170,11 @@ export interface MessageItem {
     source?: { ref: string; tool: string; queriedAt: string };
     output?: string;
     resultRef?: ToolResultReference;
+    /** 内核持久化的执行结果分类；缺省表示旧条目或尚未回报。 */
+    executionState?: ThreadItem["executionState"];
+    status?: ThreadItem["status"];
+    errorCode?: string;
+    recoveryAction?: string;
   };
   approval?: ApprovalData;
   plan?: PlanData;
