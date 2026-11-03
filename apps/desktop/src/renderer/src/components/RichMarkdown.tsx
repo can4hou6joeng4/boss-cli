@@ -5,6 +5,19 @@ interface RichMarkdownProps {
   content: string;
 }
 
+/**
+ * 与主进程 isAllowedExternalUrl 保持同一协议集合：只有这些链接交给系统打开。
+ * 其余协议（javascript:、file: 等）既不导航也不交给系统，避免静默失败造成的误判。
+ */
+const EXTERNAL_SCHEMES = ["http:", "https:", "mailto:"];
+function externalTarget(url: string): string | null {
+  try {
+    return EXTERNAL_SCHEMES.includes(new URL(url).protocol) ? url : null;
+  } catch {
+    return null;
+  }
+}
+
 export const RichMarkdown: React.FC<RichMarkdownProps> = ({ content }) => {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
@@ -65,6 +78,7 @@ export const RichMarkdown: React.FC<RichMarkdownProps> = ({ content }) => {
       if (inlineMatch[1]?.startsWith("[")) {
         const linkText = inlineMatch[2] ?? "";
         const linkUrl = inlineMatch[3] ?? "";
+        const target = externalTarget(linkUrl);
         const isCitation = linkText.startsWith("来源") || /^\d+$/.test(linkText) || linkText.includes("↗") || linkText.includes("GitHub");
 
         if (isCitation) {
@@ -75,10 +89,10 @@ export const RichMarkdown: React.FC<RichMarkdownProps> = ({ content }) => {
               target="_blank"
               rel="noreferrer"
               className="chat-citation-pill"
-              title={`打开链接: ${linkUrl}`}
+              title={target ? `打开链接: ${target}` : `${linkUrl}（该链接协议不会打开）`}
               onClick={(e) => {
                 e.preventDefault();
-                window.open(linkUrl, "_blank");
+                if (target) window.open(target, "_blank");
               }}
             >
               <span>{linkText}</span>
@@ -91,12 +105,11 @@ export const RichMarkdown: React.FC<RichMarkdownProps> = ({ content }) => {
               key={inlineMatch.index}
               href={linkUrl}
               className="chat-inline-link"
-              title={linkUrl}
+              title={target ? target : `${linkUrl}（该链接协议不会打开）`}
               onClick={(e) => {
-                if (linkUrl.startsWith("http")) {
-                  e.preventDefault();
-                  window.open(linkUrl, "_blank");
-                }
+                // 一律拦截默认导航：外部协议交给主进程，其余协议（javascript: 等）不在渲染进程里执行。
+                e.preventDefault();
+                if (target) window.open(target, "_blank");
               }}
             >
               {linkText}

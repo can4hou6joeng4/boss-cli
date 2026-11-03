@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { BrowserWindow, shell } from "electron";
+import { BrowserWindow, dialog, shell } from "electron";
 import { isAllowedExternalUrl, isTrustedRendererUrl } from "./security";
 import { rendererFailurePage } from "./rendererFailure";
 
@@ -36,8 +36,18 @@ export function createMainWindow(): BrowserWindow {
 
   window.once("ready-to-show", () => window.show());
 
+  // 系统没有可用处理程序或地址无法打开时不能静默：把完整地址交给用户手动复制。
+  const openExternal = (url: string): void => {
+    if (!isAllowedExternalUrl(url)) return;
+    void shell.openExternal(url).catch((error: unknown) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      const options = { type: "warning" as const, message: "无法打开链接", detail: `${url}\n\n${detail}`, buttons: ["好"] };
+      void (window.isDestroyed() ? dialog.showMessageBox(options) : dialog.showMessageBox(window, options));
+    });
+  };
+
   window.webContents.setWindowOpenHandler(({ url }) => {
-    if (isAllowedExternalUrl(url)) void shell.openExternal(url).catch(() => {});
+    openExternal(url);
     return { action: "deny" };
   });
 
