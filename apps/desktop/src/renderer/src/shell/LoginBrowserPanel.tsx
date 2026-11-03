@@ -9,12 +9,14 @@ export function LoginBrowserPanel({ status, threadId, expanded, onToggleExpanded
   const slot = useRef<HTMLDivElement>(null);
   const [covered, setCovered] = useState(false);
   const [controlError, setControlError] = useState("");
+  const [layoutError, setLayoutError] = useState("");
   const browserId = status?.browserId;
   const available = Boolean(status?.browser?.available && ["waiting", "saving"].includes(status.state));
   // The native page sits above HTML. Never leave it over a modal, menu, or another thread.
   useLayoutEffect(() => {
     if (!window.boss || !browserId || !available) return;
-    let frame = 0, previous = "";
+    let alive = true, frame = 0, previous = "";
+    setLayoutError("");
     const update = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
@@ -26,7 +28,12 @@ export function LoginBrowserPanel({ status, threadId, expanded, onToggleExpanded
         const signature = JSON.stringify({ visible, bounds });
         if (signature === previous) return;
         previous = signature;
-        void window.boss.platformLogin("layout", { threadId, browserId, visible, bounds }).catch(() => {});
+        // 位置同步失败时原生页面会留在上一次的位置，可能盖住分栏或别的界面；不能静默。
+        void window.boss.platformLogin("layout", { threadId, browserId, visible, bounds }).then(() => {
+          if (alive) setLayoutError("");
+        }).catch(cause => {
+          if (alive) setLayoutError(`浏览器位置未能同步：${harnessErrorText(cause)}。官方页面可能与分栏不对齐。`);
+        });
       });
     };
     const resize = () => { previous = ""; update(); };
@@ -39,6 +46,7 @@ export function LoginBrowserPanel({ status, threadId, expanded, onToggleExpanded
     document.addEventListener("visibilitychange", resize);
     update();
     return () => {
+      alive = false;
       cancelAnimationFrame(frame); size.disconnect(); mutations.disconnect();
       window.removeEventListener("resize", resize); document.removeEventListener("visibilitychange", resize);
       window.removeEventListener("focus", resize);
@@ -64,6 +72,7 @@ export function LoginBrowserPanel({ status, threadId, expanded, onToggleExpanded
       <button type="button" className="titlebar-btn login-browser-reload" aria-label="重新加载官方页面" disabled={!available || status?.state !== "waiting"} onClick={() => control("reload")}><svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden="true"><path d="M16 7a6.5 6.5 0 1 0 .2 5M16 3v4h-4" /></svg></button>
       <div className="login-browser-address"><IconLock size={12} /><span>www.zhipin.com</span><small>官方页面</small></div>
     </div>
+    {layoutError && <p className="login-browser-control-error" role="status">{layoutError}</p>}
     {controlError && <p className="login-browser-control-error" role="alert">{controlError}</p>}
     <div className="login-browser-viewport" ref={slot}>
       {(!available || failed || covered) && <div className="login-browser-placeholder"><span className="login-browser-placeholder-icon">{connected ? <IconCheck size={28} /> : <IconLock size={26} />}</span><h3>{covered ? "浏览器已暂时隐藏" : connected ? "账号已连接" : failed ? "登录还未完成" : cancelled ? "本次登录已取消" : "正在打开官方页面"}</h3><p>{covered ? "关闭当前菜单或弹窗后，官方页面会在这里恢复。" : connected ? "登录态已保存。返回会话后，可按账号身份继续使用工具。" : failed || cancelled ? status?.summary : "登录页面在隔离的浏览器中打开。"}</p>{(failed || cancelled) && <button type="button" className="solid-button" onClick={onRetry}>重新打开</button>}{connected && <button type="button" className="solid-button" onClick={onClose}>返回当前会话</button>}</div>}
