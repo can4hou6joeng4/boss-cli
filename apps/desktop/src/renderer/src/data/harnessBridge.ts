@@ -61,6 +61,7 @@ export const HARNESS_PROJECT_NAME = "本机会话（内核）";
 interface HarnessBridge {
   request<T>(method: string, params?: unknown): Promise<T>;
   status(): Promise<HarnessStatus>;
+  reconnect(): Promise<HarnessStatus>;
   onNotification(listener: (notification: unknown) => void): () => void;
 }
 
@@ -385,9 +386,12 @@ export async function connectionReport(target?: ConnectionTarget): Promise<Conne
   return api.request(target ? ClientMethods.connectionCheck : ClientMethods.connectionRead, target ? { target } : {});
 }
 
-export async function reconnectHarness(): Promise<boolean> {
-  try { return (await window.boss.reconnect()).running; }
-  catch { return false; }
+/** 重连本地内核。返回真实状态与原因：调用方要据此提示，而不是把失败当作无事发生。 */
+export async function reconnectHarness(): Promise<HarnessStatus> {
+  const api = bridge();
+  if (!api) return { running: false, repoRoot: "", error: "本地 Harness 未连接" };
+  try { return await api.reconnect(); }
+  catch (cause) { return { running: false, repoRoot: "", error: harnessErrorText(cause) }; }
 }
 
 /** 从指定回合分叉新会话。失败不吞掉：调用方要用真实原因提示，而不是猜「回合未结束」。 */
