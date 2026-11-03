@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { IconCopy, IconThumbsUp, IconThumbsDown, IconRewind, IconSparkles, IconCheck, IconQuote, IconEdit, IconChevronDown, IconTerminal, IconHelp, IconClose, IconPanel, IconShield, IconBranch, IconSearch } from "../components/Icons";
 import { DiffCard } from "./DiffCard";
 import { Composer } from "./Composer";
@@ -18,6 +18,7 @@ import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComp
 import { useClipboardCopy } from "../data/clipboardCopy";
 import { toolOutcomeBadge } from "../data/toolOutcome";
 import { findMessageMatches } from "../data/messageSearch";
+import { collectTextRanges } from "../data/findHighlight";
 
 /** 会话内分支入口与摘要标注；内核未声明分支能力时不传，界面完全不显示。 */
 export interface SessionBranchesView {
@@ -84,7 +85,10 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const [findQuery, setFindQuery] = useState("");
   const [findIndex, setFindIndex] = useState(0);
   const [findDetails, setFindDetails] = useState(false);
-  const findMatches = findMessageMatches(messages, findQuery, { includeDetails: findDetails });
+  const findMatches = useMemo(
+    () => findMessageMatches(messages, findQuery, { includeDetails: findDetails }),
+    [messages, findQuery, findDetails],
+  );
   const findPosition = findMatches.length ? Math.min(findIndex, findMatches.length - 1) : 0;
   const currentFindId = findOpen && findMatches.length ? findMatches[findPosition] : null;
   const findMatchSet = new Set(findMatches);
@@ -97,6 +101,31 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
     if (!findOpen || !currentFindId) return;
     document.getElementById("message-" + currentFindId)?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [findOpen, currentFindId]);
+  useEffect(() => {
+    type HighlightRegistry = { set(name: string, highlight: unknown): void; delete(name: string): boolean };
+    const registry = typeof CSS !== "undefined"
+      ? (CSS as unknown as { highlights?: HighlightRegistry }).highlights : undefined;
+    const HighlightCtor = (globalThis as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
+    registry?.delete("find-match");
+    registry?.delete("find-current");
+    if (!findOpen || !findQuery.trim() || !registry || !HighlightCtor) return;
+    const all: Range[] = [];
+    const current: Range[] = [];
+    for (const id of findMatches) {
+      const root = document.getElementById("message-" + id);
+      if (!root) continue;
+      const ranges = collectTextRanges(root, findQuery, 200 - all.length);
+      all.push(...ranges);
+      if (id === currentFindId) current.push(...ranges);
+      if (all.length >= 200) break;
+    }
+    if (all.length) registry.set("find-match", new HighlightCtor(...all));
+    if (current.length) registry.set("find-current", new HighlightCtor(...current));
+    return () => {
+      registry.delete("find-match");
+      registry.delete("find-current");
+    };
+  }, [findOpen, findQuery, findMatches, currentFindId]);
   useEffect(() => {
     const handle = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;

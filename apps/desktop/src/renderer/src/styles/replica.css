@@ -191,6 +191,8 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .thread-find-bar button:disabled { opacity: .4; cursor: default; }
 .thread-find-close { display: flex; align-items: center; }
 .msg-row-agent.is-find-current { outline: 2px solid var(--accent-cyan); outline-offset: 4px; border-radius: 8px; }
+::highlight(find-match) { background-color: rgba(255, 214, 102, .45); color: inherit; }
+::highlight(find-current) { background-color: var(--accent-cyan); color: #04121a; }
 .msg-row-user.is-find-current .user-bubble { outline: 2px solid var(--accent-cyan); outline-offset: 3px; }
 @media (max-width:699px) { .thread-find-bar { padding: 8px 20px; } }
 .thread-header-bar { display: none; }
