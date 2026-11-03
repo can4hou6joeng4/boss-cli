@@ -411,7 +411,7 @@ export function App(): JSX.Element {
           const data = (error as { data?: { code?: unknown } } | null)?.data;
           setError(data?.code === "MODEL_SWITCH_QUEUE_PENDING"
             ? "会话仍有排队消息，请先处理或移除队列后再切换模型线路；当前会话选择保持不变。"
-            : "模型设置失败；当前会话选择保持不变。");
+            : `模型设置失败：${harnessErrorText(error)}；当前会话选择保持不变。`);
         }
         return false;
       }
@@ -515,7 +515,7 @@ export function App(): JSX.Element {
       }
       setContinuationCheck(previous => previous && previous.threadId === check.threadId && previous.sourceTurnId === check.sourceTurnId
         ? { ...previous, submitting: false, uncertain: true,
-            error: "续接请求的回执尚未确认。请先刷新状态；本次不会自动重发。" } : previous);
+            error: `续接请求的回执尚未确认：${harnessErrorText(error)}。请先刷新状态；本次不会自动重发。` } : previous);
       void replicaRef.current?.resume(check.threadId);
     } finally {
       if (continuationSubmitting.current === key) continuationSubmitting.current = null;

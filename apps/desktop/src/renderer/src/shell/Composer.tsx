@@ -6,6 +6,7 @@ import { AtMentionList, filterMentions, type MentionItem } from "../components/A
 import { MODEL_OPTIONS, type ConversationMode } from "../data/mockData";
 import type { ModelDescriptor, SkillDescriptor } from "@boss-harness/protocol";
 import type { SkillCatalogState } from "../data/harnessBridge";
+import { harnessErrorText } from "../data/harnessBridge";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import { createComposerDraft, clearTransferredDraft, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type QueueIntent, type CheckQueueSubmission } from "../data/composerDraft";
 import "../styles/composer-menus.css";
@@ -234,8 +235,9 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
       }
       updateDraft(previous => previous.id === draftRef.current.id ? { ...previous, submitting: false, queueSubmission: undefined } : previous);
       setNotice(result.status === "cancelled" ? "已核对：原消息已撤回；当前输入可作为新请求提交。" : "已核对：队列中没有原消息；当前输入可作为新请求提交。");
-    } catch {
-      if (alive.current) setNotice("核对内核队列失败；草稿和请求编号已保留，请稍后重试。");
+    } catch (cause) {
+      // 核对失败也要给出真实原因（如断连、超时），否则用户不知道该重连还是继续等待。
+      if (alive.current) setNotice(`核对内核队列失败：${harnessErrorText(cause)}；草稿和请求编号已保留，请稍后重试。`);
     } finally {
       if (alive.current) setCheckingQueue(false);
     }
@@ -247,8 +249,8 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
       const changed = await onSelectModel(provider, id);
       if (changed !== false) { setMenu(null); focusInput(); }
       else setModelError("模型设置未确认；当前选择保持不变。");
-    } catch {
-      setModelError("模型设置失败；当前选择保持不变。");
+    } catch (cause) {
+      setModelError(`模型设置失败：${harnessErrorText(cause)}；当前选择保持不变。`);
     } finally { setModelPending(false); }
   };
   const selectReasoning = async (effort: string | null) => {
