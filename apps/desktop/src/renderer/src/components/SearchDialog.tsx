@@ -6,12 +6,14 @@ import type { ProjectFolder, SessionItem } from "../data/mockData";
 import { sessionRows } from "../data/sessionRows";
 import { searchThreadMessages } from "../data/harnessBridge";
 
-export function SearchDialog({ folders, onSelect, onClose, searchMessages = false }: {
+export function SearchDialog({ folders, onSelect, onClose, searchMessages = false, onOpenMessage }: {
   folders: ProjectFolder[];
   onSelect: (session: SessionItem) => void;
   onClose: () => void;
   /** 内核声明 threadSearch 能力时为真；否则只按标题与项目搜索。 */
   searchMessages?: boolean;
+  /** 打开会话并定位到命中的消息；缺省时退回只打开会话。 */
+  onOpenMessage?: (session: SessionItem, itemId: string) => void;
 }) {
   const [query, setQuery] = useState(""), [index, setIndex] = useState(0);
   const [hits, setHits] = useState<ThreadSearchMatch[]>([]);
@@ -60,7 +62,9 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
         {hits.map(hit => {
           const session = sessionById.get(hit.threadId);
           if (!session) return null;
-          return <button type="button" className="search-result search-message-hit" key={`${hit.threadId}-${hit.itemId}`} title={hit.snippet} onClick={() => open(session)}>
+          return <button type="button" className="search-result search-message-hit" key={`${hit.threadId}-${hit.itemId}`} title={hit.snippet} onClick={() => {
+            if (onOpenMessage) { onOpenMessage(session, hit.itemId); onClose(); } else open(session);
+          }}>
             <IconChat size={17} /><span><strong>{hit.threadTitle || session.title}</strong><small>{hit.role === "user" ? "你" : "助手"} · {hit.snippet}</small></span><IconChevronRight size={13} />
           </button>;
         })}
