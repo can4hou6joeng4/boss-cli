@@ -26,6 +26,7 @@ import { HarnessReplica } from "./data/harnessReplica";
 import type { QueuePage } from "./data/queueMapping";
 import { reduceModelRetry, settleModelRetryOnTurnEnd, type ModelRetryStatus } from "./data/modelRetry";
 import { toMessage } from "./data/harnessBridge";
+import { collectTurnSkillIds } from "./data/turnSkills";
 import type { InitializeResponse, ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-harness/protocol";
 import type { QueueIntent, QueueSubmissionCheck } from "./data/composerDraft";
 
@@ -57,6 +58,8 @@ export function App(): JSX.Element {
   const [defaultModel, setDefaultModel] = useState<{ provider: string; model: string } | null>(null);
   const [configuredModelLabel, setConfiguredModelLabel] = useState<string>();
   const [messages, setMessages] = useState<MessageItem[]>([]);
+  // 回合实际注入的技能；旧内核不返回 turns[].skillIds 时为空，界面不显示。
+  const [turnSkillIds, setTurnSkillIds] = useState<Record<string, string[]>>({});
   const [runningThreadIds, setRunningThreadIds] = useState(new Set<string>());
   const [continuationCheck, setContinuationCheck] = useState<{
     threadId: string; sourceTurnId: string; loading: boolean; submitting?: boolean;
@@ -252,6 +255,7 @@ export function App(): JSX.Element {
         });
       }
       const real = snapshot.items.map(toMessage).filter((item): item is MessageItem => item !== null);
+      setTurnSkillIds(collectTurnSkillIds(snapshot.turns));
       updateThread(id, () => real);
       if (snapshot.activeTurnId) turnIds.current.set(id, snapshot.activeTurnId);
       else clearModelRetry(id, status => status.phase !== "waiting");
@@ -720,7 +724,7 @@ export function App(): JSX.Element {
     && (branchState.turnCount > 0 || messages.some(message => message.turnId)));
   return <>
     <AppShell isDark={isDark} onToggleTheme={() => setIsDark(previous => !previous)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => setIsSidebarOpen(previous => !previous)}
-      folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} currentMode={currentMode} onModeChange={setCurrentMode}
+      folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} turnSkillIds={turnSkillIds} currentMode={currentMode} onModeChange={setCurrentMode}
       onSelectSession={handleSelectSession} onNewTask={handleNewTask} onDeleteSession={handleDeleteSession} onArchiveSession={handleArchiveSession} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueActiveItems={queueMeta.activeItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} simulateLocal={preview} harnessUp={harnessUp}
       onCreateConnectionSession={createConnectionSession}
       sessionReasoning={contextThreadId ? sessionReasoning : undefined}

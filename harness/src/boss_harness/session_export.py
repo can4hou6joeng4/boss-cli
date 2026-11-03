@@ -486,6 +486,7 @@ class _Exporter:
                       "failureCode": next((turn[key] for key in ("failureCode", "recoveryReason", "taskRecoveryReason")
                                            if isinstance(turn.get(key), str) and len(turn[key]) <= 120), None),
                       "compactionPolicy": self._compaction_policy(turn.get("compactionPolicy")),
+                      "skillIds": _skill_ids(turn.get("skillIds")),
                       "usage": self._scrub_usage(self.usage_turns.get(turn_id)),
                       "usageLabel": _usage_line(self.usage_turns.get(turn_id))}
             units.append((turn_id, header))
@@ -594,6 +595,17 @@ def _identifier(value: Any) -> str | None:
     return value if isinstance(value, str) and 0 < len(value) <= 128 else None
 
 
+def _skill_ids(value: Any) -> list[str]:
+    """回合实际注入的技能 id：有界、去重，旧记录或畸形值不产生伪技能。"""
+    if not isinstance(value, list):
+        return []
+    ids: list[str] = []
+    for item in value[:10]:
+        if isinstance(item, str) and 0 < len(item) <= 200 and item not in ids:
+            ids.append(item)
+    return ids
+
+
 def _summary_job_facts(job: dict) -> list[str]:
     """One bounded, single-line description of a persisted summary-task usage bucket."""
     kind, origin = job.get("kind"), job.get("origin")
@@ -649,6 +661,8 @@ def _render_unit(unit: dict, view_log: bool) -> str:
             meta.append(f"失败 / 恢复原因：{_inline_code(unit['failureCode'])}")
         if unit["compactionPolicy"]:
             meta.extend(_compaction_facts(unit["compactionPolicy"]))
+        if unit["skillIds"]:
+            meta.append("本回合技能：" + "、".join(_inline_code(item) for item in unit["skillIds"]))
         lines.append("- " + "；".join(meta))
         lines.append(f"- 用量（provider 上报，不估算、不计价）：{unit['usageLabel']}")
         return "\n".join(lines)
@@ -899,6 +913,8 @@ def _turn_heading_html(unit: dict, view_log: bool) -> str:
         meta.append(f"失败 / 恢复原因：{unit['failureCode']}")
     if unit["compactionPolicy"]:
         meta.extend(_compaction_facts(unit["compactionPolicy"]))
+    if unit["skillIds"]:
+        meta.append("本回合技能：" + "、".join(unit["skillIds"]))
     return "".join([
         f'<section class="turn">',
         f'<h2>回合 {unit["index"]} · <code>{_h(unit["turnId"])}</code> <span class="badge">{_h(status)}</span></h2>',
