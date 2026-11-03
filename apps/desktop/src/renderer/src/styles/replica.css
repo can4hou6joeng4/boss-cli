@@ -302,6 +302,7 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .workspace-skill-problems ul { margin: 0; padding-left: 18px; overflow-wrap: anywhere; }
 .workspace-skill-problems p { margin: 0; color: var(--text-faint); }
 .workspace-skill-tools { display: flex; align-items: center; gap: 8px; }
+.workspace-skill-search { margin: 0 0 12px; }
 .workspace-skill-source { font-size: 12px; color: var(--text-muted); line-height: 1.8; margin: -4px 0 12px; overflow-wrap: anywhere; }
 .workspace-skill-source code { font: 11px var(--font-mono); }
 .workspace-skill-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; }
