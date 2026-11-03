@@ -305,15 +305,18 @@ export async function removeQueuedItem(threadId: string, queueId: string): Promi
   return response.queueItem;
 }
 
-/** 回答一次工具审批；返回是否被内核受理（id 过期时会失败）。 */
-export async function respondApproval(approvalId: string, approved: boolean): Promise<boolean> {
+/** 审批应答的送达结果：accepted 表示内核已受理；rejected 表示内核明确不受理；unconfirmed 表示请求没送到或回报不可读。 */
+export type ApprovalDelivery = "accepted" | "rejected" | "unconfirmed";
+
+/** 回答一次工具审批。区分「内核明确不受理」与「请求未送达」，调用方据此决定是否把审批卡放回界面。 */
+export async function respondApproval(approvalId: string, approved: boolean): Promise<ApprovalDelivery> {
   const api = bridge();
-  if (!api) return false;
+  if (!api) return "unconfirmed";
   try {
     const response = await api.request<ApprovalRespondResponse>(ClientMethods.approvalRespond, { approvalId, approved });
-    return response.accepted === true;
+    return response?.accepted === true ? "accepted" : "rejected";
   } catch {
-    return false;
+    return "unconfirmed";
   }
 }
 

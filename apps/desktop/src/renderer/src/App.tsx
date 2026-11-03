@@ -18,7 +18,7 @@ import { branchSupport, branchSwitchBlock, useSessionBranches } from "./data/use
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
 import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, harnessErrorText, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn } from "./data/harnessBridge";
-import { reduceHarnessEvent, type HarnessEvent } from "./data/harnessEvents";
+import { reduceHarnessEvent, autoApprovalFallback, type HarnessEvent } from "./data/harnessEvents";
 import { HarnessReplica } from "./data/harnessReplica";
 import type { QueuePage } from "./data/queueMapping";
 import { reduceModelRetry, settleModelRetryOnTurnEnd, type ModelRetryStatus } from "./data/modelRetry";
@@ -194,7 +194,15 @@ export function App(): JSX.Element {
       }
       if (params.kind !== "userMessage" && params.turnId && turnIds.current.has(id) && turnIds.current.get(id) !== params.turnId) return;
       if (event.method === "approval/requested" && params.approvalId && !params.consequential && params.toolName && rememberedApprovals.current.get(id)?.has(params.toolName)) {
-        void respondApproval(params.approvalId, true); return;
+        void respondApproval(params.approvalId, true).then(delivery => {
+          if (delivery === "accepted") return;
+          // 自动批准没被受理：把审批卡放回界面，否则回合会停在运行态等一个看不见的决定。
+          updateThread(id, previous => autoApprovalFallback(previous, event, delivery));
+          setError(delivery === "unconfirmed"
+            ? "自动批准请求未送达，已显示本次审批；请检查连接后手动确认。"
+            : "自动批准未被内核受理（可能已过期），已显示本次审批；请手动确认。");
+        });
+        return;
       }
       if (event.method === "model/retryStarted" || event.method === "model/retryEnded") {
         const receivedAt = Date.now();
@@ -619,14 +627,14 @@ export function App(): JSX.Element {
     });
   }, [markRunning, updateThread]);
   const handleApproval = useCallback(async (approvalId: string, approved: boolean, toolName: string, remember: boolean) => {
-    const session = activeRef.current; if (!session) return false;
-    const accepted = await respondApproval(approvalId, approved);
-    if (!accepted) return false;
+    const session = activeRef.current; if (!session) return "rejected" as const;
+    const delivery = await respondApproval(approvalId, approved);
+    if (delivery !== "accepted") return delivery;
     const approval = cache.current.get(session.id)?.find(message => message.approval?.approvalId === approvalId)?.approval;
     if (remember && approved && approval && !approval.consequential) {
       const tools = rememberedApprovals.current.get(session.id) ?? new Set<string>(); tools.add(toolName); rememberedApprovals.current.set(session.id, tools);
     }
-    return true;
+    return "accepted" as const;
   }, [updateThread]);
   const openRewind = useCallback(() => {
     if (!activeRef.current) { setError("请先打开一段聊天。"); return; }

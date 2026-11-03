@@ -1,6 +1,6 @@
 import type { ApprovalState, ProviderFailureInfo, QueueItem, ThreadItem } from "@boss-cli/protocol";
 import type { MessageItem } from "./mockData";
-import { toMessage } from "./harnessBridge";
+import { toMessage, type ApprovalDelivery } from "./harnessBridge";
 
 export interface HarnessEvent {
   method: string;
@@ -72,4 +72,12 @@ export function reduceHarnessEvent(previous: MessageItem[], event: HarnessEvent)
     default: return previous;
   }
   return index >= 0 ? previous.map((message, slot) => slot === index ? item : message) : [...previous, item];
+}
+
+/**
+ * 「本会话始终批准」的自动应答收尾：只有内核确认受理时才吞掉审批事件。
+ * 未受理时把卡片放回消息列表，否则回合会一直等待一个界面上不存在的决定。
+ */
+export function autoApprovalFallback(previous: MessageItem[], event: HarnessEvent, delivery: ApprovalDelivery): MessageItem[] {
+  return delivery === "accepted" ? previous : reduceHarnessEvent(previous, event);
 }

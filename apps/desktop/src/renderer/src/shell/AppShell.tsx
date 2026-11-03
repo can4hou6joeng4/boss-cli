@@ -19,7 +19,7 @@ import { ClientMethods, type ModelDescriptor, type SkillDescriptor, type ToolDes
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
 import type { CheckQueueSubmission, ComposerQueue } from "../data/composerDraft";
 import type { QueueItem } from "@boss-cli/protocol";
-import { listSkills, type SkillCatalogState } from "../data/harnessBridge";
+import { listSkills, type SkillCatalogState, type ApprovalDelivery } from "../data/harnessBridge";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import type { ModelRetryStatus } from "../data/modelRetry";
 import type { SessionBranchesView } from "./ConversationArea";
@@ -38,7 +38,7 @@ export interface AppShellProps {
   modelRetry?: ModelRetryStatus; onDismissModelRetry?: () => void;
   sessionBranches?: SessionBranchesView;
   onInterrupt?: () => void;
-  onApprovalDecision?: (approvalId: string, approved: boolean, toolName: string, remember: boolean) => void | boolean | Promise<boolean>;
+  onApprovalDecision?: (approvalId: string, approved: boolean, toolName: string, remember: boolean) => void | ApprovalDelivery | Promise<void | ApprovalDelivery>;
   onStartSessionWithPrompt: (prompt: string, domainId: string, provider: string, modelId: string, skillIds?: string[]) => Promise<SessionItem | null>;
   models?: ModelDescriptor[]; activeModelProvider?: string; activeModelId?: string;
   onSelectModel?: (provider: string, modelId: string) => void | boolean | Promise<void | boolean>;

@@ -12,7 +12,7 @@ import type { ModelRetryStatus } from "../data/modelRetry";
 import type { ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-cli/protocol";
 import type { ContextBranchSummary, ContextCompactJob, ContextEditReadResponse, SkillDescriptor } from "@boss-cli/protocol";
 import { type MessageItem, type ConversationMode } from "../data/mockData";
-import type { SkillCatalogState } from "../data/harnessBridge";
+import type { SkillCatalogState, ApprovalDelivery } from "../data/harnessBridge";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type CheckQueueSubmission } from "../data/composerDraft";
 
@@ -41,7 +41,7 @@ export interface ConversationAreaProps {
   sessionBranches?: SessionBranchesView;
   sessionReasoning?: SessionReasoningControl;
   loginGuide?: React.ReactNode; onLogin?: () => void;
-  onApprovalDecision?: (approvalId: string, approved: boolean, toolName: string, remember: boolean) => void | boolean | Promise<boolean>;
+  onApprovalDecision?: (approvalId: string, approved: boolean, toolName: string, remember: boolean) => void | ApprovalDelivery | Promise<void | ApprovalDelivery>;
   onReviewDiff?: () => void; onRevertDiff?: () => void; onOpenRewind?: () => void; onOpenCockpit?: () => void;
 }
 export const ConversationArea: React.FC<ConversationAreaProps> = ({
@@ -101,9 +101,14 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
     const remember = !approval.consequential && (rememberChoices[msgId] || false);
     if (approval.approvalId) {
       setPendingApproval(msgId); setApprovalError("");
-      const accepted = await onApprovalDecision?.(approval.approvalId, decision === "approve", approval.toolName, remember);
+      const delivery = await onApprovalDecision?.(approval.approvalId, decision === "approve", approval.toolName, remember);
       setPendingApproval(null);
-      if (accepted !== true) { setApprovalError("审批未被受理，请检查连接或等待状态刷新后重试。"); return; }
+      if (delivery !== "accepted") {
+        setApprovalError(delivery === "unconfirmed"
+          ? "审批请求未送达，请检查连接后重试；这张审批卡仍可再次提交。"
+          : "审批未被受理（可能已过期或状态已刷新），请等待状态刷新后再试。");
+        return;
+      }
       if (!simulateLocal) {
         setMessages(previous => previous.map(message => message.id === msgId && message.approval
           ? { ...message, approval: { ...message.approval, submitted: true } } : message));
