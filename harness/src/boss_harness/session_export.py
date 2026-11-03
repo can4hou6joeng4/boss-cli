@@ -40,7 +40,7 @@ MAX_RESULT_CHARS = 16_000
 MAX_PII_VALUES = 4_000
 MAX_QUEUE_ITEMS = 20
 MAX_QUEUE_INPUT_CHARS = 800
-EXPORT_SCHEMA = "boss-cli-session-export/1"
+EXPORT_SCHEMA = "boss-harness-session-export/1"
 
 SECRET_MARK = "[已脱敏:凭据]"
 ENV_MARK = "[已脱敏:环境变量]"
@@ -1069,7 +1069,9 @@ def _render_html(meta: dict, units: list[tuple[str, dict]], counts: dict, total_
     return "\n".join(parts) + "\n"
 
 
-
+def _suggested_file_name(thread_id: str, view: str, extension: str) -> str:
+    """导出文件默认名：只含固定前缀、会话 id、视图与扩展名，不带标题或路径。"""
+    return f"boss-harness-session-{thread_id}-{view}.{extension}"
 
 
 def _wire_bytes(text: str) -> int:
@@ -1127,7 +1129,7 @@ def export_thread(sessions: SessionStore, thread_id: str, *, branch: bool, fmt: 
     return {"threadId": thread_id, "view": meta["view"], "format": fmt,
             "mediaType": {"markdown": "text/markdown", "json": "application/json",
                           "html": "text/html"}[fmt],
-            "suggestedFileName": f"boss-cli-session-{thread_id}-{meta['view']}.{extension}",
+            "suggestedFileName": _suggested_file_name(thread_id, meta["view"], extension),
             "content": content, "bytes": len(content.encode("utf-8")), "maxBytes": max_bytes,
             "truncated": keep < len(units), "turnCount": len(exporter.turns), "exportedTurnCount": exported_turns,
             "toolResults": meta["toolResults"], "redactions": counts}
