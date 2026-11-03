@@ -571,6 +571,7 @@ class _Exporter:
                 "status": payload["status"],
                 "input": self.redactor.text(payload.get("input"), limit=MAX_QUEUE_INPUT_CHARS) or "",
                 "skillCount": len(skill_ids) if isinstance(skill_ids, list) else 0,
+                "skillIds": _skill_ids(skill_ids),
                 "failureCode": failure if isinstance(failure, str) and len(failure) <= 120 else None,
                 "inputPersisted": payload.get("inputPersisted")
                 if type(payload.get("inputPersisted")) is bool else None,
@@ -759,7 +760,7 @@ def _compaction_facts(policy: dict) -> list[str]:
     return facts
 
 
-def _queue_facts(item: dict) -> list[str]:
+def _queue_facts(item: dict, *, code: bool = False) -> list[str]:
     facts = []
     if item["inputPersisted"] is not None:
         facts.append("输入是否已写入会话：" + ("是" if item["inputPersisted"] else "否"))
@@ -767,7 +768,10 @@ def _queue_facts(item: dict) -> list[str]:
         facts.append(f"失败码：{item['failureCode']}")
     if item["deduplicated"]:
         facts.append("与既有请求关联")
-    if item["skillCount"]:
+    if item["skillIds"]:
+        values = [_inline_code(value) if code else value for value in item["skillIds"]]
+        facts.append("技能：" + "、".join(values))
+    elif item["skillCount"]:
         facts.append(f"技能：{item['skillCount']} 项")
     if item["autoCompaction"]:
         facts.extend(_compaction_facts(item["autoCompaction"]))
@@ -789,7 +793,7 @@ def _render_queue_markdown(queue: dict) -> str:
         parts += [f"- 共 {queue['totalItems']} 个未形成回合的队列项，最多列出 {len(items)} 个（暂停项优先）。", ""]
     for item in items:
         parts += [f"### {_queue_heading(item)}", ""]
-        facts = _queue_facts(item)
+        facts = _queue_facts(item, code=True)
         if facts:
             parts += ["- " + "；".join(facts), ""]
         parts += [_fence(item["input"] or "（空）"), ""]

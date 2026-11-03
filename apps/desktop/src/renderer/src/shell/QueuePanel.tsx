@@ -1,7 +1,8 @@
 import { useState } from "react";
-import type { QueueItem } from "@boss-harness/protocol";
+import type { QueueItem, SkillDescriptor } from "@boss-harness/protocol";
 import { IconClose } from "../components/Icons";
 import { harnessErrorText } from "../data/harnessBridge";
+import { queueSkillLabels } from "../data/queueSkillLabels";
 import { compactionLabel, compactionTitle } from "./queueCompaction";
 
 const LABELS: Record<QueueItem["status"], string> = {
@@ -13,8 +14,10 @@ const LABELS: Record<QueueItem["status"], string> = {
 };
 const MAX_VISIBLE_ITEMS = 20;
 
-export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove, onRetry }: {
+export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove, onRetry, skills = [] }: {
   items: QueueItem[];
+  /** 技能目录；用于把队列项里的技能 id 显示为名称，缺失时回退 id。 */
+  skills?: SkillDescriptor[];
   /** 内核侧总数；旧内核不返回时为 undefined。 */
   totalItems?: number;
   /** 内核按全部持久项统计的待处理数；旧内核缺省时按已载入项计算。 */
@@ -71,7 +74,14 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
           <span className={`turn-queue-kind is-${item.kind}`}>{item.kind === "steering" ? "当前回合" : "后续回合"}</span>
           <span className="turn-queue-status">{item.status === "paused" && item.failureCode === "TURN_START_FAILED" ? "启动失败，未执行"
             : item.status === "delivered" && item.deduplicated ? "已关联已有回合" : LABELS[item.status]}</span>
-          {item.skillIds && item.skillIds.length > 0 && <span className="turn-queue-skills" title={item.skillIds.join("、")}>技能 {item.skillIds.length} 项</span>}
+          {(() => {
+            const ids = item.skillIds ?? [];
+            if (!ids.length) return null;
+            const labels = queueSkillLabels(ids, skills);
+            return labels.length
+              ? <span className="turn-queue-skills" title={labels.join("、")}>技能：{labels.join("、")}</span>
+              : <span className="turn-queue-skills" title={ids.join("、")}>技能 {ids.length} 项</span>;
+          })()}
           {item.autoCompaction && <span className="turn-queue-skills" title={compactionTitle(item.autoCompaction)}>{compactionLabel(item.autoCompaction)}</span>}
           {item.inputTruncated && <span className="turn-queue-skills" title="列表只显示前 600 字符；重新排队会读取并复用完整输入">正文已截断</span>}
           <p title={item.input}>{item.input}</p>
