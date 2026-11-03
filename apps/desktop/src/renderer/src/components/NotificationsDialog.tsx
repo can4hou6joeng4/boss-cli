@@ -12,11 +12,13 @@ type PendingState =
   | { status: "ready"; approvals: PendingApproval[]; now: number }
   | { status: "error"; message: string };
 
-export function NotificationsDialog({ folders, preview = false, onSelect, onLoaded, onClose }: {
+export function NotificationsDialog({ folders, preview = false, onSelect, onOpenMessage, onLoaded, onClose }: {
   folders: ProjectFolder[];
   /** 示例模式不连接内核，不发起审批读取。 */
   preview?: boolean;
   onSelect: (session: SessionItem) => void;
+  /** 打开会话并定位到审批项；缺省时只打开会话。 */
+  onOpenMessage?: (session: SessionItem, itemId: string) => void;
   /** 成功读取后回报数量，供侧栏徽标同步；失败不调用。 */
   onLoaded?: (count: number) => void;
   onClose: () => void;
@@ -78,7 +80,7 @@ export function NotificationsDialog({ folders, preview = false, onSelect, onLoad
             const session = sessions.get(approval.threadId);
             const label = session?.title ?? `会话 ${approval.threadId.slice(0, 8)}`;
             return <li key={approval.approvalId}>
-              <button className="notification-row" disabled={!session} title={session ? `打开「${label}」` : "该会话不在当前列表中"} onClick={() => { if (!session) return; onSelect(session); onClose(); }}>
+              <button className="notification-row" disabled={!session} title={session ? `打开「${label}」并定位到审批卡` : "该会话不在当前列表中"} onClick={() => { if (!session) return; if (onOpenMessage) onOpenMessage(session, approval.itemId); else onSelect(session); onClose(); }}>
                 <span className="notification-row-heading"><strong>{approval.toolName}</strong><span className="notification-remaining"><IconClock size={12} />{approvalRemainingText(approval.deadline, state.now)}</span></span>
                 <span className="notification-row-thread">{label}{session?.archived === true ? " · 已归档" : ""}</span>
                 {approval.summary && <span className="notification-row-summary">{approval.summary}</span>}
