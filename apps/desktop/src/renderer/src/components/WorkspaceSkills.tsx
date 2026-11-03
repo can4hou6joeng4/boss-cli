@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { SkillDescriptor, SkillReadResponse } from "@boss-harness/protocol";
+import type { SkillDescriptor, SkillProblem, SkillReadResponse } from "@boss-harness/protocol";
 import { harnessErrorText, readSkill, type SkillCatalogState } from "../data/harnessBridge";
 import { CreateSkillDialog } from "./CreateSkillDialog";
 import { DeleteSkillDialog } from "./DeleteSkillDialog";
@@ -20,6 +20,8 @@ export interface WorkspaceSkillsProps {
   writable: boolean;
   /** 内核声明 skillsDelete 时才显示删除入口。 */
   deletable: boolean;
+  /** 目录里无法安全读取的 SKILL.md；旧内核不返回时为空。 */
+  problems: SkillProblem[];
   /** 把技能预选进新会话草稿；不会自动发送。 */
   onUseSkill: (skillId: string) => void;
   preview: boolean;
@@ -81,8 +83,14 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
     {props.state === "loading" && <div className="page-tool-empty">正在读取工作区技能…</div>}
     {props.state === "error" && <div className="page-tool-empty">技能目录读取失败{props.error ? `：${props.error}` : ""}。这只表示读取没有完成，不代表工作区没有技能。</div>}
     {props.state === "unavailable" && <div className="page-tool-empty">{props.preview ? "浏览器预览未连接技能目录。启动桌面端后显示工作区技能。" : "连接本地 Harness 后可读取工作区技能。"}</div>}
-    {props.state === "empty" && <div className="page-tool-empty">当前工作区没有技能。可在 <code>.boss-harness/skills/&lt;id&gt;/SKILL.md</code> 添加。</div>}
+    {props.state === "empty" && props.problems.length === 0 && <div className="page-tool-empty">当前工作区没有技能。可在 <code>.boss-harness/skills/&lt;id&gt;/SKILL.md</code> 添加。</div>}
     {props.root && (props.state === "ready" || props.state === "empty") && <p className="workspace-skill-source">技能目录：<code>{props.root}</code>{props.root === ".boss-cli/skills" ? "（旧目录；新建 .boss-harness/skills 后将改用新目录）" : ""}</p>}
+    {props.problems.length > 0 && (props.state === "ready" || props.state === "empty") && <div className="workspace-skill-problems" role="status">
+      <strong>{props.problems.length} 个技能未能加载</strong>
+      <ul>{props.problems.slice(0, 5).map(problem => <li key={problem.id}><code>{problem.id}</code>：{problem.reason}</li>)}</ul>
+      {props.problems.length > 5 && <p>另有 {props.problems.length - 5} 个未列出；修复后刷新目录即可。</p>}
+      <p>这些技能不会出现在列表，也不会被注入。常见原因：文件缺失、改为符号链接、超过 64 KiB 或不是 UTF-8。</p>
+    </div>}
     {props.skills.length > 0 && <div className="workspace-skill-layout">
       <div className="workspace-skill-list">
         {props.skills.map(skill => <button type="button" key={skill.id} aria-pressed={skill.id === selectedId} className={"workspace-skill-row" + (skill.id === selectedId ? " is-selected" : "")} onClick={() => { setSelectedId(skill.id); setReload(0); }}>
