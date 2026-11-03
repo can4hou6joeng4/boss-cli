@@ -83,7 +83,8 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [findIndex, setFindIndex] = useState(0);
-  const findMatches = findMessageMatches(messages, findQuery);
+  const [findDetails, setFindDetails] = useState(false);
+  const findMatches = findMessageMatches(messages, findQuery, { includeDetails: findDetails });
   const findPosition = findMatches.length ? Math.min(findIndex, findMatches.length - 1) : 0;
   const currentFindId = findOpen && findMatches.length ? findMatches[findPosition] : null;
   const findMatchSet = new Set(findMatches);
@@ -275,6 +276,10 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
             if (event.key === "Escape") { event.preventDefault(); closeFind(); }
             if (event.key === "Enter") { event.preventDefault(); stepFind(event.shiftKey ? -1 : 1); }
           }} />
+        <label className="thread-find-details" title="同时匹配思考内容与工具调用的输入、结果、输出">
+          <input type="checkbox" checked={findDetails} onChange={event => { setFindDetails(event.target.checked); setFindIndex(0); }} />
+          含工具与思考
+        </label>
         <span className="thread-find-count" role="status">{findQuery.trim() ? findMatches.length ? `${findPosition + 1} / ${findMatches.length}` : "无匹配" : "输入关键词"}</span>
         <button type="button" disabled={!findMatches.length} onClick={() => stepFind(-1)}>上一个</button>
         <button type="button" disabled={!findMatches.length} onClick={() => stepFind(1)}>下一个</button>
