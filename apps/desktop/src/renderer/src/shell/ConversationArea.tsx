@@ -15,6 +15,7 @@ import { type MessageItem, type ConversationMode } from "../data/mockData";
 import type { SkillCatalogState, ApprovalDelivery, ApprovalOutcome } from "../data/harnessBridge";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type CheckQueueSubmission } from "../data/composerDraft";
+import { useClipboardCopy } from "../data/clipboardCopy";
 
 /** 会话内分支入口与摘要标注；内核未声明分支能力时不传，界面完全不显示。 */
 export interface SessionBranchesView {
@@ -52,6 +53,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   threadId, continuationCheck, onContinueInterruptedTurn, modelRetry, onDismissModelRetry, sessionBranches,
 }) => {
   const [messages, setMessages] = useState<MessageItem[]>(initialMessages);
+  const clipboard = useClipboardCopy();
   const [localDraft, setLocalDraft] = useState(createComposerDraft);
   const composerDraft = draft ?? localDraft;
   const updateDraft = onDraftChange ?? setLocalDraft;
@@ -559,16 +561,18 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                 <div className="msg-action-toolbar">
                   <button
                     className="msg-action-btn"
-                    title="复制"
+                    title={clipboard.feedback?.key === item.id && !clipboard.feedback.ok ? `复制失败：${clipboard.feedback.reason}` : "复制"}
                     type="button"
                     onClick={() => {
-                      navigator.clipboard?.writeText(
-                        item.paragraphs?.join("\n\n") || item.content || ""
-                      );
+                      void clipboard.copy(item.paragraphs?.join("\n\n") || item.content || "", item.id);
                     }}
                   >
                     <IconCopy size={13} />
                   </button>
+                  {clipboard.feedback?.key === item.id && <span
+                    role="status"
+                    style={{ alignSelf: "center", fontSize: 11, color: clipboard.feedback.ok ? "var(--accent-green)" : "var(--text-muted)" }}
+                  >{clipboard.feedback.ok ? "已复制" : "复制失败"}</span>}
                   {canEditContext(item) && <button
                     className="msg-action-btn"
                     title="编辑后续模型上下文"

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useClipboardCopy } from "../data/clipboardCopy";
 import { ModalSurface } from "./ModalSurface";
 import { IconDiffFiles, IconCopy, IconCheck } from "./Icons";
 import type { MessageItem } from "../data/mockData";
@@ -9,14 +10,18 @@ const PREVIEW_LINES: Record<string, { before: string[]; after: string[] }> = {
   "configs/招聘策略_精准对齐.json": { before: ["{", "  \"reviewBeforeSend\": false", "}"], after: ["{", "  \"reviewBeforeSend\": true,", "  \"includeEvidence\": true", "}"] },
 };
 export function UnifiedDiffModal({ isOpen, onClose, onRevertChanges, messages, preview }: { isOpen: boolean; onClose: () => void; onRevertChanges?: () => void; messages: MessageItem[]; preview: boolean }) {
-  const [selected, setSelected] = useState(0), [mode, setMode] = useState<"unified" | "split">("unified"), [copied, setCopied] = useState(false);
+  const [selected, setSelected] = useState(0), [mode, setMode] = useState<"unified" | "split">("unified");
+  const clipboard = useClipboardCopy();
   if (!isOpen) return null;
   const summary = [...messages].reverse().find(message => message.diffSummary)?.diffSummary;
   const files = [...(summary?.initialFiles ?? []), ...(summary?.extraFiles ?? [])], file = files[selected] ?? files[0];
+  // 只有写入成功才换对勾；失败时保留复制图标并在 title 里说明原因，不再产生未处理的 Promise 拒绝。
+  const copyFeedback = file && clipboard.feedback?.key === file.name ? clipboard.feedback : null;
+  const copied = copyFeedback?.ok === true;
   const content = preview && file ? PREVIEW_LINES[file.name] : undefined;
   return <ModalSurface title={preview ? "变更审阅 · 示例" : "变更审阅"} onClose={onClose} className="diff-review-dialog">
-    <div className="diff-review-toolbar"><div className="segmented-control"><button className={mode === "unified" ? "selected" : ""} onClick={() => setMode("unified")}>统一差异</button><button className={mode === "split" ? "selected" : ""} onClick={() => setMode("split")}>并排对比</button></div><span className="diff-added">+{summary?.additions ?? 0}</span><span className="diff-deleted">−{summary?.deletions ?? 0}</span><button className="titlebar-btn" disabled={!file} aria-label="复制文件路径" onClick={() => { if (file) void navigator.clipboard?.writeText(file.name).then(() => setCopied(true)); }}>{copied ? <IconCheck size={15} /> : <IconCopy size={15} />}</button></div>
-    <div className="diff-review-layout"><div className="diff-file-list">{files.map((item, index) => <button className={file?.name === item.name ? "selected" : ""} key={item.name} onClick={() => { setSelected(index); setCopied(false); }}><IconDiffFiles size={15} /><span>{item.name}</span><small className="diff-added">+{item.additions}</small><small className="diff-deleted">−{item.deletions}</small></button>)}</div>
+    <div className="diff-review-toolbar"><div className="segmented-control"><button className={mode === "unified" ? "selected" : ""} onClick={() => setMode("unified")}>统一差异</button><button className={mode === "split" ? "selected" : ""} onClick={() => setMode("split")}>并排对比</button></div><span className="diff-added">+{summary?.additions ?? 0}</span><span className="diff-deleted">−{summary?.deletions ?? 0}</span><button className="titlebar-btn" disabled={!file} aria-label="复制文件路径" title={copyFeedback && !copyFeedback.ok ? `复制失败：${copyFeedback.reason}` : "复制文件路径"} onClick={() => { if (file) void clipboard.copy(file.name, file.name); }}>{copied ? <IconCheck size={15} /> : <IconCopy size={15} />}</button>{copyFeedback && !copyFeedback.ok && <span role="status" style={{ fontSize: 11, color: "var(--text-muted)" }}>复制失败</span>}</div>
+    <div className="diff-review-layout"><div className="diff-file-list">{files.map((item, index) => <button className={file?.name === item.name ? "selected" : ""} key={item.name} onClick={() => { setSelected(index); clipboard.reset(); }}><IconDiffFiles size={15} /><span>{item.name}</span><small className="diff-added">+{item.additions}</small><small className="diff-deleted">−{item.deletions}</small></button>)}</div>
       <div className="diff-review-content">{file && <div className="diff-file-heading">{file.name}</div>}{content ? <><p className="diff-preview-note">招聘内容预览片段 · 未写入文件</p><div className={`diff-code ${mode}`}>{mode === "split" ? <>{[content.before, content.after].map((lines, index) => <div key={index}><header>{index ? "变更后" : "变更前"}</header>{lines.map((line, n) => <div className={index ? "diff-line-added" : "diff-line-deleted"} key={n}><span>{n + 1}</span><code>{line}</code></div>)}</div>)}</> : <div><header>@@ 招聘内容预览 @@</header>{[...content.before.map(text => ({ text, add: false })), ...content.after.map(text => ({ text, add: true }))].map((line, index) => <div className={line.add ? "diff-line-added" : "diff-line-deleted"} key={index}><span>{line.add ? "+" : "−"}</span><code>{line.text}</code></div>)}</div>}</div></> : <div className="diff-unavailable"><IconDiffFiles size={28} /><p>{file ? "当前内核尚未提供逐行差异。" : "当前聊天没有文件变更。"}</p></div>}</div></div>
     <div className="diff-review-footer"><span>{preview ? "所有内容均为招聘任务示例" : "以本地内核返回的变更为准"}</span><div>{preview && file && onRevertChanges && <button className="secondary-button" onClick={onRevertChanges}>重置示例变更</button>}<button className="solid-button" onClick={onClose}>完成审阅</button></div></div>
   </ModalSurface>;
