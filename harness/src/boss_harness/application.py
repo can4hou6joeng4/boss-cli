@@ -3458,6 +3458,11 @@ class ApplicationService:
         if method == "thread/updated":
             return
         payload = {**(params or {}), "threadId": job["threadId"], "turnId": job["turnId"]}
+        if method == "session/error":
+            code = payload.get("code")
+            # 失败码只作为回合终态的可核对事实，限长后再写入 turn 记录。
+            if isinstance(code, str) and 0 < len(code) <= 128:
+                job["lastErrorCode"] = code
         if method == "toolCall/completed" and isinstance(payload.get("approval"), dict):
             request_id = self._server_approvals.pop(payload["approval"]["approvalId"], None)
             if request_id:
@@ -3579,7 +3584,8 @@ class ApplicationService:
                     runner.append_agent(thread_id, "回合执行失败：" + message)
                 except (OSError, ValueError):
                     pass
-                self._notify_runner(job, "session/error", {"message": message})
+                self._notify_runner(job, "session/error",
+                                    {"code": "TURN_EXECUTION_FAILED", "message": message})
         finally:
             # Cancellation, terminal persistence and queue finalization share
             # one boundary. An accepted cancel wins even after the runner has
@@ -3587,8 +3593,12 @@ class ApplicationService:
             with self.runtimes.lock:
                 if job["cancel"].is_set():
                     status = "interrupted"
+                terminal_fields: dict[str, Any] = {}
+                failure_code = job.get("lastErrorCode")
+                if status in {"error", "blocked"} and isinstance(failure_code, str):
+                    terminal_fields["failureCode"] = failure_code
                 try:
-                    self.sessions.record_turn(thread_id, job["turnId"], status)
+                    self.sessions.record_turn(thread_id, job["turnId"], status, **terminal_fields)
                 except (OSError, ValueError):
                     status = "error"
                     # The terminal row may be visible in JSONL even when fsync
