@@ -33,6 +33,7 @@ import {
   type ModelListResponse,
   type SkillDescriptor,
   type SkillListResponse,
+  type SkillProblem,
   type SkillCreateResponse,
   type SkillDeleteResponse,
   type SkillWriteResponse,
@@ -450,13 +451,17 @@ export async function configuredModels(): Promise<ModelListResponse["models"]> {
 }
 
 /** 工作区技能目录与生效来源。读取失败不吞掉：调用方要区分「没有技能」与「读取失败」。 */
-export async function listSkills(): Promise<{ skills: SkillDescriptor[]; root: string | null }> {
+export async function listSkills(): Promise<{ skills: SkillDescriptor[]; root: string | null; problems: SkillProblem[] }> {
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");
   const response = await api.request<SkillListResponse>(ClientMethods.skillsList);
   if (!response || !Array.isArray(response.skills)) throw new Error("技能目录响应无法识别");
-  // 旧内核不返回 root：界面按「未知来源」处理，而不是猜一个目录。
-  return { skills: response.skills, root: typeof response.root === "string" && response.root ? response.root : null };
+  // 旧内核不返回 root / problems：按「未知来源、没有已知问题」处理，而不是猜。
+  const problems = Array.isArray(response.problems)
+    ? response.problems.filter(item => item && typeof item.id === "string" && typeof item.reason === "string"
+      && item.id.length > 0 && item.id.length <= 200 && item.reason.length > 0 && item.reason.length <= 300)
+    : [];
+  return { skills: response.skills, root: typeof response.root === "string" && response.root ? response.root : null, problems };
 }
 
 /** 单个技能正文：仅在内核声明 skillsRead 后调用；只读，不写入会话。 */

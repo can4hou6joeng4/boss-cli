@@ -106,14 +106,43 @@ class SkillCatalog:
                         fields[match[1]] = match[2].strip("\"'")
         return fields
 
-    def list(self) -> list[dict]:
+    @classmethod
+    def _problem_reason(cls, path: Path) -> str:
+        """归类未能加载的技能文件；只返回可展示的原因，不读取正文。"""
+        try:
+            observed = os.lstat(path)
+        except FileNotFoundError:
+            return "缺少 SKILL.md 文件"
+        except OSError:
+            return "无法读取 SKILL.md"
+        if not stat.S_ISREG(observed.st_mode):
+            return "SKILL.md 不是普通文件（可能是符号链接或目录）"
+        if observed.st_size > cls.MAX_SKILL_BYTES:
+            return f"SKILL.md 超过 {cls.MAX_SKILL_BYTES} 字节"
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read(cls.MAX_SKILL_BYTES + 1)
+        except OSError:
+            return "无法读取 SKILL.md"
+        if len(data) > cls.MAX_SKILL_BYTES:
+            return f"SKILL.md 超过 {cls.MAX_SKILL_BYTES} 字节"
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            return "SKILL.md 不是有效的 UTF-8 文本"
+        return "SKILL.md 不可读取"
+
+    def scan(self) -> dict:
+        """返回可加载技能与未能加载目录的原因；两者共享同一有界目录枚举。"""
         limit = self.MAX_SKILL_DESCRIPTORS
         while True:
             skills: list[dict] = []
+            problems: list[dict] = []
             candidates = self._candidate_paths(limit)
             for skill_id, path in candidates:
                 loaded = self._read_bounded(path)
                 if loaded is None:
+                    problems.append({"id": skill_id, "reason": self._problem_reason(path)})
                     continue
                 source, byte_length, digest = loaded
                 fields = self._fields(source)
@@ -121,8 +150,12 @@ class SkillCatalog:
                                "description": fields.get("description", ""),
                                "digest": digest, "bytes": byte_length})
             if len(skills) >= self.MAX_SKILL_DESCRIPTORS or len(candidates) < limit:
-                return skills[:self.MAX_SKILL_DESCRIPTORS]
+                return {"skills": skills[:self.MAX_SKILL_DESCRIPTORS],
+                        "problems": problems[:self.MAX_SKILL_DESCRIPTORS]}
             limit *= 2
+
+    def list(self) -> list[dict]:
+        return self.scan()["skills"]
 
     def read(self, skill_id: Any) -> dict:
         """读取单个技能正文；与 list() 共用目录枚举与安全读取，拒绝越界 id。"""

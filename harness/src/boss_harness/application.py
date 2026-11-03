@@ -510,7 +510,7 @@ class ApplicationService:
             "platform/login/read": lambda p: self.connections.read_login(),
             "platform/login/complete": lambda p: self.connections.complete_login(p or {}),
             "platform/login/cancel": lambda p: self.connections.cancel_login(_text(p, "id")),
-            "skills/list": lambda p: {"skills": self.skills.list(), "root": self.skills_root},
+            "skills/list": lambda p: {**self.skills.scan(), "root": self.skills_root},
             "skills/read": self.on_skills_read,
             "skills/create": self.on_skills_create,
             "skills/write": self.on_skills_write,
