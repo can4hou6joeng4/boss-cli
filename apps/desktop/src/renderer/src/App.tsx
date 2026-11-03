@@ -20,6 +20,7 @@ import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
 import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, configuredModels, harnessErrorText, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn } from "./data/harnessBridge";
 import { reduceHarnessEvent, autoApprovalFallback, type HarnessEvent } from "./data/harnessEvents";
+import { unconfirmedFailure } from "./data/confirmationFailure";
 import { HarnessReplica } from "./data/harnessReplica";
 import type { QueuePage } from "./data/queueMapping";
 import { reduceModelRetry, settleModelRetryOnTurnEnd, type ModelRetryStatus } from "./data/modelRetry";
@@ -441,7 +442,10 @@ export function App(): JSX.Element {
     } catch (cause) {
       markRunning(id, false);
       setError(`提交结果尚未确认：${harnessErrorText(cause)}。正在读取会话状态，请核对记录后再决定下一步。`);
-      await replicaRef.current?.resume(id).catch(() => undefined);
+      // 回执未知时靠重新读取会话收敛；读取本身失败也要说明，否则「正在读取」会一直停在过期状态。
+      await replicaRef.current?.resume(id).catch(verify => {
+        setError(unconfirmedFailure("提交结果", cause, verify, "请稍后手动刷新核对。"));
+      });
     }
     // 已交给会话并发起请求；回执未知仍不能作为可自动重发的草稿。
     return true;
@@ -595,14 +599,15 @@ export function App(): JSX.Element {
       return true;
     } catch (cause) {
       if (activeRef.current?.id !== session.id) return false;
-      // 撤回是否生效未知；能读到队列就按内核状态收敛，读不到则明确说明面板可能过期。
+      // 撤回是否生效未知；能读到队列就按内核状态收敛，读不到则说明两条原因并提示面板可能过期。
       let page: QueuePage | null = null;
-      try { page = await listQueue(session.id); } catch {}
+      let rereadFailure: unknown = null;
+      try { page = await listQueue(session.id); } catch (verify) { rereadFailure = verify; }
       if (activeRef.current?.id !== session.id) return false;
       if (page) applyQueuePage(page);
       setError(page
         ? `撤回结果尚未确认（${harnessErrorText(cause)}），已重新读取队列；不会自动重复撤回。`
-        : `撤回结果尚未确认（${harnessErrorText(cause)}），且无法重新读取队列；请稍后核对，不会自动重复撤回。`);
+        : unconfirmedFailure("撤回结果", cause, rereadFailure, "请稍后核对，不会自动重复撤回。"));
       return false;
     }
   }, [applyQueuePage, harnessUp]);
