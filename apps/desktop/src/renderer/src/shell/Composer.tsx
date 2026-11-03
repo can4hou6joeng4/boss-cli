@@ -7,6 +7,7 @@ import { MODEL_OPTIONS, type ConversationMode } from "../data/mockData";
 import type { ModelDescriptor, SkillDescriptor } from "@boss-harness/protocol";
 import type { SkillCatalogState } from "../data/harnessBridge";
 import { harnessErrorText } from "../data/harnessBridge";
+import { attachmentFailureNotice, readTextAttachments } from "../data/attachmentRead";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import { createComposerDraft, clearTransferredDraft, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type QueueIntent, type CheckQueueSubmission } from "../data/composerDraft";
 import "../styles/composer-menus.css";
@@ -126,12 +127,14 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     readingRef.current = true; setNotice("");
     updateDraft(previous => previous.id === started.id ? { ...previous, pendingReads: previous.pendingReads + 1 } : previous);
     try {
-      const added = await Promise.all(files.map(async file => ({ id: crypto.randomUUID(), name: file.name, text: await file.text(), size: file.size })));
+      const { added, failures } = await readTextAttachments(files, () => crypto.randomUUID());
       updateDraft(previous => previous.id !== started.id || previous.attachments.length + added.length > MAX_ATTACHMENTS ? previous : { ...previous, attachments: [...previous.attachments, ...added] });
+      if (failures.length && alive.current && draftRef.current.id === started.id) {
+        setNotice(attachmentFailureNotice(failures, added.length));
+      }
       const active = document.activeElement;
       if (alive.current && draftRef.current.id === started.id && (active === document.body || inputRef.current?.closest(".composer-surface")?.contains(active))) focusInput();
-    } catch { if (alive.current && draftRef.current.id === started.id) setNotice("读取文件失败，请重新选择。"); }
-    finally {
+    } finally {
       readingRef.current = false;
       updateDraft(previous => previous.id === started.id ? { ...previous, pendingReads: Math.max(0, previous.pendingReads - 1) } : previous);
     }
