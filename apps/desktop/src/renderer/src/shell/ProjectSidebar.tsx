@@ -3,7 +3,7 @@ import { IconNewChat, IconSearch, IconFolder, IconChevronDown, IconChevronRight,
 import { Popover } from "../components/Popover";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
 import { UI_STORAGE_PREFIX } from "../data/uiStorage";
-import { archivedSessions, hideActionLabel, nonArchivedSessions } from "../data/sidebarVisibility";
+import { archivedSessions, attentionSessions, hideActionLabel, nonArchivedSessions, sessionFailed } from "../data/sidebarVisibility";
 import { booleanRecord } from "../data/preferenceShapes";
 import "../styles/sidebar-menus.css";
 
@@ -42,6 +42,8 @@ export function ProjectSidebar(props: Props) {
   const archived = dedupe(archivedSessions(allSessions, hidden, preferences.showHidden));
   const archivedCount = dedupe(allSessions.filter(session => session.archived === true)).length;
   const pinnedSessions = all.filter(session => props.pinned.includes(session.id));
+  // 待处理分组只做聚合，不改变各会话在项目/最近列表中的原有位置。
+  const attention = dedupe(attentionSessions(allSessions, hidden, preferences.showHidden));
   const sort = (sessions: SessionItem[]) => [...sessions].sort((a, b) => preferences.sort === "name"
     ? a.title.localeCompare(b.title, "zh-CN", { numeric: true })
     : a.updatedAt && b.updatedAt ? Date.parse(b.updatedAt) - Date.parse(a.updatedAt) : 0);
@@ -63,8 +65,7 @@ export function ProjectSidebar(props: Props) {
   const sessionRow = (session: SessionItem, scope: string) => {
     const key = scope + session.id, selected = session.id === props.activeSessionId && !props.isHomeView;
     const isHidden = hidden.has(session.id);
-    const failed = session.status !== "running" && session.status !== "interrupted"
-      && (session.lastTurnStatus === "error" || session.lastTurnStatus === "blocked");
+    const failed = sessionFailed(session);
     const failureTitle = failed ? `上次回合未完成${session.lastTurnErrorCode ? `（${session.lastTurnErrorCode}）` : ""}；打开会话查看记录` : "";
     const queueActive = session.queueActiveItems ?? 0;
     const queuePaused = session.queueCounts?.paused ?? 0;
@@ -146,6 +147,7 @@ export function ProjectSidebar(props: Props) {
     </div>
     <button className="sidebar-new-chat" onClick={props.onNewTask}><IconNewChat size={17} /><span>新聊天</span><kbd>⌘N</kbd></button>
     <div className="sidebar-scroll">
+      {attention.length > 0 && <section className="sidebar-section sidebar-attention-section"><h2>待你处理（{attention.length}）</h2>{sort(attention).map(session => sessionRow(session, "attention-"))}</section>}
       {pinnedSessions.length > 0 && <section className="sidebar-section"><h2>已置顶</h2>{sort(pinnedSessions).map(session => sessionRow(session, "pinned-"))}</section>}
       <section className="sidebar-section">
         <div className="sidebar-section-heading"><h2>{preferences.grouping === "project" ? "项目" : "聊天"}</h2><div className="sidebar-section-actions">

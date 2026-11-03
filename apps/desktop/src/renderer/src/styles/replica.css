@@ -52,6 +52,7 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .sidebar-scroll { flex: 1; min-height: 0; overflow: auto; margin: 0 -2px; padding: 0 2px 12px; scrollbar-gutter: stable; }
 .sidebar-section { margin-bottom: 19px; }
 .sidebar-section h2 { font-size: 12px; font-weight: 500; color: var(--text-faint); padding: 4px 10px; }
+.sidebar-attention-section h2 { color: var(--accent-warning); }
 .sidebar-section-heading { display: flex; justify-content: space-between; align-items: center; padding-right: 3px; margin-bottom: 4px; }
 .sidebar-section-heading .titlebar-btn { width: 23px; height: 23px; opacity: 0; }
 .sidebar-section-heading:hover .titlebar-btn, .sidebar-section-heading:focus-within .titlebar-btn { opacity: 1; }
