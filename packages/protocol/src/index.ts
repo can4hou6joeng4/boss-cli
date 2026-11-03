@@ -1079,6 +1079,7 @@ export interface SkillCreateParams { id: string; content: string }
 export interface SkillCreateResponse { skill: SkillDescriptor; root?: string }
 /**
  * `skills/write` 参数；仅在 `capabilities.skillsWrite` 为真时可用。
+ * `id` 是已存在的技能目录名（1–200 字符，允许旧名称，不含路径分隔符或控制字符）；
  * `expectedDigest` 必须来自最近一次读取，技能被外部修改后内核拒绝写入。
  */
 export interface SkillWriteParams { id: string; content: string; expectedDigest: string }
@@ -1086,6 +1087,7 @@ export interface SkillWriteParams { id: string; content: string; expectedDigest:
 export interface SkillWriteResponse { skill: SkillDescriptor; root?: string }
 /**
  * `skills/delete` 参数；仅在 `capabilities.skillsDelete` 为真时可用。
+ * `id` 是已存在的技能目录名（1–200 字符，允许旧名称，不含路径分隔符或控制字符）；
  * `expectedDigest` 必须来自最近一次读取；目录还包含其他文件时内核拒绝删除。
  */
 export interface SkillDeleteParams { id: string; expectedDigest: string }

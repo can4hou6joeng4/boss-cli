@@ -97,6 +97,13 @@ const THREAD_METHODS = new Set([
   "task/read", "queue/list", "queue/get", "queue/add", "queue/remove", "context/read", "context/compact/plan", "context/compact/start", "context/compact", "context/edit/read", "context/edit",
 ]);
 
+/** 已存在技能的目录名：允许旧名称，但必须是单层安全路径。 */
+function safeSkillId(value: unknown): value is string {
+  return typeof value === "string" && value.length >= 1 && value.length <= 200 &&
+    value !== "." && value !== ".." && !value.includes("/") && !value.includes("\\") &&
+    !/[\u0000-\u001f\u007f]/.test(value);
+}
+
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -262,13 +269,13 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
     throw new Error("invalid skill create");
   }
   if (payload.method === "skills/write" && (!params || Reflect.ownKeys(params).length !== 3 ||
-    typeof params.id !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(params.id) ||
+    !safeSkillId(params.id) ||
     typeof params.content !== "string" || Buffer.byteLength(params.content, "utf8") > 64 * 1024 ||
     typeof params.expectedDigest !== "string" || !/^[a-f0-9]{64}$/.test(params.expectedDigest))) {
     throw new Error("invalid skill write");
   }
   if (payload.method === "skills/delete" && (!params || Reflect.ownKeys(params).length !== 2 ||
-    typeof params.id !== "string" || !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(params.id) ||
+    !safeSkillId(params.id) ||
     typeof params.expectedDigest !== "string" || !/^[a-f0-9]{64}$/.test(params.expectedDigest))) {
     throw new Error("invalid skill delete");
   }

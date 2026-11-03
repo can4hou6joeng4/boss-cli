@@ -34,6 +34,7 @@ class ToolRegistry(_ToolRegistry):
 class SkillCatalog:
     MAX_SKILL_BYTES = 64 * 1024
     MAX_SKILL_DESCRIPTORS = 100
+    MAX_EXISTING_SKILL_ID = 200
     SKILL_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 
     def __init__(self, root: Path) -> None:
@@ -186,6 +187,16 @@ class SkillCatalog:
         if not stat.S_ISDIR(observed.st_mode) or os.path.islink(path):
             raise OSError("技能目录必须是普通目录")
 
+    @classmethod
+    def _existing_id(cls, skill_id: Any) -> str:
+        """已存在技能的目录名：允许旧名称，但必须是单层安全路径。"""
+        if not isinstance(skill_id, str) or not skill_id or len(skill_id) > cls.MAX_EXISTING_SKILL_ID:
+            raise ValueError("技能 id 必须是 1–200 字符的目录名")
+        if (skill_id in {".", ".."} or "/" in skill_id or "\\" in skill_id
+                or any(ord(ch) < 32 or ord(ch) == 127 for ch in skill_id)):
+            raise ValueError("技能 id 不能包含路径分隔符或控制字符")
+        return skill_id
+
     @staticmethod
     def _require_directory(path: Path) -> None:
         """确认路径是已存在的普通目录；不存在、符号链接或普通文件都拒绝。"""
@@ -253,8 +264,7 @@ class SkillCatalog:
 
     def replace(self, skill_id: Any, content: Any, expected_digest: Any) -> dict:
         """按读取时的摘要修改已存在技能；摘要不一致即拒绝，避免覆盖外部修改。"""
-        if not isinstance(skill_id, str) or not self.SKILL_ID.match(skill_id):
-            raise ValueError("技能 id 只能包含小写字母、数字、下划线与连字符，且不超过 64 字符")
+        skill_id = self._existing_id(skill_id)
         if not isinstance(content, str):
             raise ValueError("技能正文必须是字符串")
         data = content.encode("utf-8")
@@ -289,8 +299,7 @@ class SkillCatalog:
 
     def delete(self, skill_id: Any, expected_digest: Any) -> dict:
         """按读取摘要删除技能；只删仅含普通 SKILL.md 的目录，避免连带删用户文件。"""
-        if not isinstance(skill_id, str) or not self.SKILL_ID.match(skill_id):
-            raise ValueError("技能 id 只能包含小写字母、数字、下划线与连字符，且不超过 64 字符")
+        skill_id = self._existing_id(skill_id)
         if not isinstance(expected_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", expected_digest):
             raise ValueError("技能摘要格式无效")
         self._require_directory(self.create_root.parent)
