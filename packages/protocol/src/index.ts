@@ -83,7 +83,9 @@ export interface InitializeResponse {
     /** 可用 `context/instructions/read` / `context/instructions/write` 查看并保存工作区常驻说明。 */
     workspaceInstructionsEdit?: boolean;
     /** 可用只读 `skills/read` 查看单个工作区技能的 SKILL.md 正文（有界，不写入会话）。 */
-    skillsRead?: boolean };
+    skillsRead?: boolean;
+    /** 可用 `skills/create` 在当前生效技能目录新建 SKILL.md；只创建不覆盖。 */
+    skillsCreate?: boolean };
   eventCursor?: string;
 }
 
@@ -136,6 +138,7 @@ export const ClientMethods = {
   connectionCheck: "connection/check",
   skillsList: "skills/list",
   skillsRead: "skills/read",
+  skillsCreate: "skills/create",
   attachmentAdd: "attachment/add",
   attachmentRead: "attachment/read",
   contextRead: "context/read",
@@ -1056,6 +1059,13 @@ export interface SkillListResponse { skills: SkillDescriptor[]; root?: string }
 export interface SkillReadParams { id: string }
 /** `skills/read` 结果：正文来自普通 UTF-8 文件，最多 `limitBytes` 字节。 */
 export interface SkillReadResponse extends SkillDescriptor { content: string; limitBytes: number; root?: string }
+/**
+ * `skills/create` 参数；仅在 `capabilities.skillsCreate` 为真时可用。
+ * id 限定小写字母、数字、下划线与连字符，正文最多 64 KiB，且不会覆盖已有技能。
+ */
+export interface SkillCreateParams { id: string; content: string }
+/** `skills/create` 结果：新建成功的技能描述与写入的生效目录。 */
+export interface SkillCreateResponse { skill: SkillDescriptor; root?: string }
 export interface AttachmentDescriptor { id: string; name: string; digest: string; bytes: number; mediaType: string }
 
 /**

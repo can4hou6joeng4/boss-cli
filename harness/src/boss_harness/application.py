@@ -512,6 +512,7 @@ class ApplicationService:
             "platform/login/cancel": lambda p: self.connections.cancel_login(_text(p, "id")),
             "skills/list": lambda p: {"skills": self.skills.list(), "root": self.skills_root},
             "skills/read": self.on_skills_read,
+            "skills/create": self.on_skills_create,
             "context/read": self.on_context_read,
             "context/compact/plan": self.on_context_compact_plan,
             "context/compact/start": self.on_context_compact_start,
@@ -575,7 +576,8 @@ class ApplicationService:
                              "sessionBranchTree": True, "sessionBranchSummary": True,
                              "sessionBranchSnapshots": True, "sessionBranchSummaryRead": True,
                              "threadUsage": True, "sessionModelSelection": True, "threadExport": True,
-                             "workspaceInstructionsEdit": True, "skillsRead": True},
+                             "workspaceInstructionsEdit": True, "skillsRead": True,
+                             "skillsCreate": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -1864,6 +1866,19 @@ class ApplicationService:
             return {**self.skills.read(params.get("id")), "root": self.skills_root}
         except ValueError as exc:
             raise RpcError(-32004, str(exc), {"code": "SKILL_UNREADABLE"}) from None
+
+    def on_skills_create(self, params: dict | None) -> dict:
+        """新建技能；只写当前生效目录，拒绝覆盖与越界 id。"""
+        params = params or {}
+        if set(params) != {"id", "content"}:
+            raise ValueError("skills/create 只接受 id 与 content")
+        try:
+            skill = self.skills.create(params.get("id"), params.get("content"))
+        except ValueError as exc:
+            raise RpcError(-32004, str(exc), {"code": "SKILL_CREATE_INVALID"}) from None
+        except OSError as exc:
+            raise RpcError(-32004, f"技能创建失败：{exc}", {"code": "SKILL_CREATE_FAILED"}) from None
+        return {"skill": skill, "root": self.skills_root}
 
     def on_context_edit_read(self, params: dict | None) -> dict:
         params = params or {}

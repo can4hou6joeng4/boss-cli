@@ -33,6 +33,7 @@ import {
   type ModelListResponse,
   type SkillDescriptor,
   type SkillListResponse,
+  type SkillCreateResponse,
   type SkillReadResponse,
   type ToolDescriptor,
   type ToolListResponse,
@@ -459,6 +460,10 @@ export async function listSkills(): Promise<{ skills: SkillDescriptor[]; root: s
 /** 单个技能正文：仅在内核声明 skillsRead 后调用；只读，不写入会话。 */
 export const readSkill = (id: string): Promise<SkillReadResponse> =>
   contextRequest(ClientMethods.skillsRead, { id });
+
+/** 新建技能：只创建不覆盖，写入内核当前生效的技能目录。 */
+export const createSkill = (id: string, content: string): Promise<SkillCreateResponse> =>
+  contextRequest(ClientMethods.skillsCreate, { id, content });
 
 /** 内核声明的工具清单。读取失败不吞掉：调用方要区分「没有工具」与「读取失败」。 */
 export async function listTools(): Promise<ToolDescriptor[]> {
