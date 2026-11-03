@@ -297,6 +297,10 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .workspace-skill-content { max-height: 360px; overflow: auto; margin: 10px 0; padding: 10px; border-radius: 8px; background: var(--panel-bg); font: 11px/1.7 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .workspace-instructions-status { font-size: 12px; color: var(--text-muted); line-height: 1.8; margin-bottom: 8px; overflow-wrap: anywhere; }
 .workspace-instructions-status code { font: 11px var(--font-mono); }
+.workspace-skill-source { font-size: 12px; color: var(--text-muted); line-height: 1.8; margin: -4px 0 12px; overflow-wrap: anywhere; }
+.workspace-skill-source code { font: 11px var(--font-mono); }
+.workspace-skill-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 10px; }
+.workspace-skill-hint { font-size: 11px; color: var(--text-faint); }
 @media (max-width: 760px) { .workspace-skill-layout { grid-template-columns: minmax(0,1fr); } }
 .page-tool-empty, .page-empty-note { color: var(--text-faint); font-size: 12px; padding: 24px 0; line-height: 1.8; }
 .tool-list>div { padding: 13px 0; display: flex; align-items: flex-start; gap: 10px; border-bottom: 1px solid var(--border-color); }

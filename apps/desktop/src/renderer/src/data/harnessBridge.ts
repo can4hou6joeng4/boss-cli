@@ -446,13 +446,14 @@ export async function configuredModels(): Promise<ModelListResponse["models"]> {
   return response.models;
 }
 
-/** 工作区技能目录。读取失败不吞掉：调用方要区分「没有技能」与「读取失败」。 */
-export async function listSkills(): Promise<SkillDescriptor[]> {
+/** 工作区技能目录与生效来源。读取失败不吞掉：调用方要区分「没有技能」与「读取失败」。 */
+export async function listSkills(): Promise<{ skills: SkillDescriptor[]; root: string | null }> {
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");
   const response = await api.request<SkillListResponse>(ClientMethods.skillsList);
   if (!response || !Array.isArray(response.skills)) throw new Error("技能目录响应无法识别");
-  return response.skills;
+  // 旧内核不返回 root：界面按「未知来源」处理，而不是猜一个目录。
+  return { skills: response.skills, root: typeof response.root === "string" && response.root ? response.root : null };
 }
 
 /** 单个技能正文：仅在内核声明 skillsRead 后调用；只读，不写入会话。 */
