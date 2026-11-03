@@ -364,10 +364,13 @@ export async function configuredModels(): Promise<ModelListResponse["models"]> {
   return response.models;
 }
 
+/** 工作区技能目录。读取失败不吞掉：调用方要区分「没有技能」与「读取失败」。 */
 export async function listSkills(): Promise<SkillDescriptor[]> {
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");
-  return (await api.request<SkillListResponse>(ClientMethods.skillsList)).skills;
+  const response = await api.request<SkillListResponse>(ClientMethods.skillsList);
+  if (!response || !Array.isArray(response.skills)) throw new Error("技能目录响应无法识别");
+  return response.skills;
 }
 
 /** 内核声明的工具清单。读取失败不吞掉：调用方要区分「没有工具」与「读取失败」。 */
