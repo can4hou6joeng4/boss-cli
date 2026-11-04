@@ -12,10 +12,12 @@ type PendingState =
   | { status: "ready"; approvals: PendingApproval[]; now: number }
   | { status: "error"; message: string };
 
-export function NotificationsDialog({ folders, preview = false, onSelect, onOpenMessage, onLoaded, onClose }: {
+export function NotificationsDialog({ folders, preview = false, refreshToken, onSelect, onOpenMessage, onLoaded, onClose }: {
   folders: ProjectFolder[];
   /** 示例模式不连接内核，不发起审批读取。 */
   preview?: boolean;
+  /** 打开期间外部审批事件计数；变化时静默重读，不切换加载态。 */
+  refreshToken?: number;
   onSelect: (session: SessionItem) => void;
   /** 打开会话并定位到审批项；缺省时只打开会话。 */
   onOpenMessage?: (session: SessionItem, itemId: string) => void;
@@ -26,6 +28,7 @@ export function NotificationsDialog({ folders, preview = false, onSelect, onOpen
   const [state, setState] = useState<PendingState>({ status: "loading" });
   const [reload, setReload] = useState(0);
   const loaded = useRef(onLoaded); loaded.current = onLoaded;
+  const silentReload = useRef<() => void>(() => {});
 
   useEffect(() => {
     if (preview) return;
@@ -43,13 +46,23 @@ export function NotificationsDialog({ folders, preview = false, onSelect, onOpen
         },
       ).finally(() => { inFlight = false; });
     };
+    silentReload.current = () => load(true);
     load(false);
     // 打开期间每 15 秒静默重读，让新审批、已处理项与到期提示保持新鲜。
     const timer = window.setInterval(() => { if (document.visibilityState !== "hidden") load(true); }, 15_000);
     const onFocus = () => load(true);
     window.addEventListener("focus", onFocus);
-    return () => { cancelled = true; window.clearInterval(timer); window.removeEventListener("focus", onFocus); };
+    return () => {
+      cancelled = true; silentReload.current = () => {};
+      window.clearInterval(timer); window.removeEventListener("focus", onFocus);
+    };
   }, [reload, preview]);
+
+  useEffect(() => {
+    // 审批事件到达时立即静默重读；首次挂载由上面的加载负责，inFlight 会合并重复请求。
+    if (preview || !refreshToken) return;
+    silentReload.current();
+  }, [refreshToken, preview]);
 
   const retry = useCallback(() => setReload(previous => previous + 1), []);
   const onListKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
