@@ -15,6 +15,7 @@ import {
 } from "./Icons";
 import { UI_STORAGE_PREFIX } from "../data/uiStorage";
 import { primeApprovalChime } from "../data/approvalChime";
+import { readNotificationTestResult } from "../data/notificationTest";
 import "../styles/settings.css";
 import { ConnectionSettings } from "./ConnectionSettings";
 
@@ -118,6 +119,7 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
   const [section, setSection] = useState<SettingsSection>("general");
   const [preferences, setPreferences] = useState<UIPreferences>(readPreferences);
   const [status, setStatus] = useState("");
+  const [testBusy, setTestBusy] = useState(false);
   const backdropRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
@@ -216,6 +218,25 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
     }
   };
 
+  const sendTestNotification = async (): Promise<void> => {
+    const api = window.boss;
+    if (!api?.testNotification) { setStatus("当前环境未连接本机内核，无法测试系统通知。"); return; }
+    if (testBusy) return;
+    setTestBusy(true);
+    try {
+      const outcome = readNotificationTestResult(await api.testNotification());
+      setStatus(outcome === "sent"
+        ? "已请求系统展示测试通知，请留意桌面提醒。"
+        : outcome === "unsupported"
+          ? "当前系统不支持系统通知，审批与回合结束不会弹窗提醒。"
+          : "已请求发送，但未能确认系统是否展示；请检查系统的通知权限。");
+    } catch {
+      setStatus("发送测试通知失败，请检查系统通知权限。");
+    } finally {
+      setTestBusy(false);
+    }
+  };
+
   const exportPreferences = (): void => {
     try {
       const exported: Record<string, string> = {
@@ -299,6 +320,7 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
                 <SettingRow title="桌面通知" description="窗口不在前台时，审批请求与运行超过 20 秒的回合结束会弹出系统通知，点击回到工作台"><span className="settings-static-value">自动</span></SettingRow>
                 <SettingRow title="审批提示音" description="新的审批请求到达时播放两声短提示音；默认关闭"><Switch label="审批提示音" checked={preferences.approvalSound} onChange={() => { const next = !preferences.approvalSound; if (next) primeApprovalChime(); updatePreference("approvalSound", next); }} /></SettingRow>
                 <SettingRow title="通知权限" description="系统通知由操作系统授权并展示，工作台不单独申请"><span className="settings-static-value">跟随系统</span></SettingRow>
+                <SettingRow title="测试通知" description="发送一条测试系统通知，确认当前系统允许工作台提醒"><button type="button" className="settings-button" onClick={() => void sendTestNotification()} disabled={testBusy}>{testBusy ? "正在发送…" : "发送测试通知"}</button></SettingRow>
               </>
             )}
 
