@@ -16,6 +16,7 @@ import {
   readCockpitResources,
   readCockpitTools,
   shortId,
+  shouldRefreshCockpit,
   type CockpitConfig,
   type CockpitModel,
   type CockpitQueue,
@@ -40,6 +41,7 @@ const TABS: { key: CockpitTab; label: string }[] = [
 ];
 
 const APPROVAL_LIMIT = 100;
+const REFRESH_DEBOUNCE_MS = 350;
 const NUMBER = new Intl.NumberFormat("en-US");
 
 interface CockpitSnapshot {
@@ -161,6 +163,22 @@ export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose, har
     void load(true);
   }, [isOpen, load]);
 
+  useEffect(() => {
+    if (!isOpen || !harnessUp) return;
+    const api = window.boss;
+    if (!api) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = api.onNotification(raw => {
+      if (!shouldRefreshCockpit(raw?.method)) return;
+      if (timer !== null) clearTimeout(timer);
+      timer = setTimeout(() => { timer = null; void load(false); }, REFRESH_DEBOUNCE_MS);
+    });
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+      unsubscribe();
+    };
+  }, [isOpen, harnessUp, load]);
+
   if (!isOpen) return null;
 
   const { config, resources, approvals, tools, models, queue } = snapshot;
@@ -190,7 +208,7 @@ export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose, har
       <div className="cockpit-body">
         <p className="dialog-note cockpit-notice">
           {harnessUp
-            ? `数据来自本地内核只读接口${updatedText ? ` · ${updatedText} 更新` : ""}。当前版本不接入 MCP；不展示成本、缓存命中率、沙箱或死循环指标。`
+            ? `数据来自本地内核只读接口${updatedText ? ` · ${updatedText} 更新` : ""}，回合、审批与队列变化时自动刷新。当前版本不接入 MCP；不展示成本、缓存命中率、沙箱或死循环指标。`
             : "本地内核未连接，无法读取运行状态。重新连接后打开此面板即可刷新。"}
         </p>
         {loading && !loadedOnce ? <p className="cockpit-empty" role="status">正在读取内核状态…</p> : null}

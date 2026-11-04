@@ -11,6 +11,8 @@
 
 ### 新增
 
+- 运行状态面板支持事件驱动刷新：面板打开且内核已连接时订阅既有 `harness:notification`，在 `turn/started`、`turn/completed`、`approval/requested`、`approval/decided`、`queue/updated`、`context/compactionStarted`、`context/compactionCompleted`、`context/compactionFailed` 与 `context/compacted` 后自动重读快照；连续通知按 350ms 防抖合并，避免同一批事件触发多次并行读取。刷新沿用既有手动刷新路径，失败只更新对应分区错误并保留其余可读数据；未知通知不触发读取。事件过滤为纯函数，便于离线验证。协议保持 `0.2.0`（不新增 RPC，内核不变）。
+
 - 桌面新增「运行状态」面板（`⌘⇧K`，替代原「招聘驾驶舱」示例）：打开时并行读取 `config/read`、`runtime/resources/read`、`approval/list`、`tool/list`、`model/list`，当前会话存在时再读 `queue/list`；展示内核线路与模型容量、并发与保留回合、运行/收尾 owner 与容量等待、待审批明细与到期提示、工具审批属性与模型目录。移除示例数据中的虚构 MCP 服务器、成本/缓存命中率、沙箱与死循环指标，并明确标注当前版本不接入 MCP；单个来源失败只影响对应分区，断连时清空并提示未连接。协议保持 `0.2.0`（仅使用既有只读方法）。
 
 - 自动压缩默认策略可在桌面查看并保存：内核新增 `config/autoCompaction/set`（能力 `autoCompactionConfig`），接受 `enabled`、`triggerPercent`（1–100）、`keepRecentTokens`（1–1000000），写入状态目录 `config.json`（临时文件 + `os.replace` 原子替换，保留其他顶层键），重启后仍生效并立即更新当前进程策略；摘要 provider、model、effort 不受影响。`config/read` 新增 `autoCompactionSource`（`environment` / `stored` / `default` / `explicit`）；`BOSS_HARNESS_COMPACTION` 显式设置时优先，`set` 以 `AUTO_COMPACTION_ENV_MANAGED` 拒绝，显式构造的内核以 `AUTO_COMPACTION_EXPLICIT` 拒绝，均不静默覆盖。配置文件缺失或字段非法时按内置默认读取；存在但不可读时拒绝写入，避免覆盖未知配置。桌面设置新增「上下文」分区，展示来源并编辑三项默认值；能力未声明、环境变量托管或调用方显式指定时只读展示，保存失败保留草稿并显示原因。单回合覆盖语义不变。协议保持 `0.2.0`（仅新增可选方法与能力）。
