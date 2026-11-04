@@ -66,6 +66,22 @@ export interface CockpitQueue {
 }
 
 const MAX_TEXT = 400;
+const REFRESH_METHODS = new Set([
+  "turn/started",
+  "turn/completed",
+  "approval/requested",
+  "approval/decided",
+  "queue/updated",
+  "context/compactionStarted",
+  "context/compactionCompleted",
+  "context/compactionFailed",
+  "context/compacted",
+]);
+
+/** 只有会改变面板所展示快照的通知才触发自动刷新；未知方法或非字符串不猜。 */
+export function shouldRefreshCockpit(method: unknown): boolean {
+  return typeof method === "string" && REFRESH_METHODS.has(method);
+}
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
