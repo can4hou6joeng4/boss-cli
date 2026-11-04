@@ -151,6 +151,13 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .attachment-chip { display: flex; align-items: center; gap: 7px; max-width: 250px; padding: 7px 9px; border-radius: 9px; background: var(--btn-ghost-hover); font-size: 11px; }
 .attachment-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-chip button { border: 0; background: transparent; display: flex; color: var(--text-muted); cursor: pointer; }
+.composer-skill-chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 6px 8px; }
+.composer-skill-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 240px; padding: 4px 7px; border-radius: 8px; background: var(--btn-ghost-hover); color: var(--text-muted); font-size: 11px; }
+.composer-skill-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-skill-chip button { display: flex; border: 0; padding: 0; background: transparent; color: var(--text-muted); cursor: pointer; }
+.composer-skill-chip button:disabled { opacity: .45; cursor: default; }
+.composer-skill-chip button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.composer-skill-chip.is-stale { color: var(--accent-warning); }
 .composer-notice { margin: 7px 5px 0; color: var(--accent-warning); font-size: 11px; }
 .turn-continuation-notice { flex: none; display: grid; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--border-color); background: color-mix(in srgb, var(--accent-warning) 6%, transparent); color: var(--text-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .turn-continuation-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; color: var(--text-main); }
