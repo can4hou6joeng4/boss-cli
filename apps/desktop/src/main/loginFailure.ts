@@ -1,3 +1,5 @@
+import { stripIpcErrorWrapper } from "@boss-harness/shared";
+
 /**
  * 平台登录流程失败时的诊断信息。
  *
@@ -9,6 +11,6 @@ export function loginFailureDetail(error: unknown): { code?: string; message?: s
     ? error as { data?: unknown; message?: unknown } : null;
   const data = value?.data && typeof value.data === "object" ? value.data as { code?: unknown } : null;
   const code = typeof data?.code === "string" && data.code ? data.code : undefined;
-  const raw = typeof value?.message === "string" ? value.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, "").trim() : "";
+  const raw = typeof value?.message === "string" ? stripIpcErrorWrapper(value.message).trim() : "";
   return { ...(code ? { code } : {}), ...(raw ? { message: raw.slice(0, 200) } : {}) };
 }
