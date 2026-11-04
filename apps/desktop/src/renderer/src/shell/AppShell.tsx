@@ -87,6 +87,7 @@ export function AppShell(props: AppShellProps) {
   const [messageFocus, setMessageFocus] = useState<{ threadId: string; itemId: string } | null>(null);
   const [settings, setSettings] = useState(false), [search, setSearch] = useState(false), [notifications, setNotifications] = useState(false);
   const [pendingApprovals, setPendingApprovals] = useState(0);
+  const [approvalPulse, setApprovalPulse] = useState(0);
   const pendingReload = useRef<() => void>(() => {});
   useEffect(() => {
     // 示例模式与断开的内核不读取审批；读取失败保留上一次数量，不把失败显示成 0。
@@ -131,7 +132,7 @@ export function AppShell(props: AppShellProps) {
       if (method === "approval/requested" && approvalSoundEnabled()) playApprovalChime();
       if (!isApprovalCountEvent(method)) return;
       if (timer !== undefined) window.clearTimeout(timer);
-      timer = window.setTimeout(() => { timer = undefined; pendingReload.current(); }, 250);
+      timer = window.setTimeout(() => { timer = undefined; setApprovalPulse(previous => previous + 1); pendingReload.current(); }, 250);
     });
     return () => { unsubscribe(); if (timer !== undefined) window.clearTimeout(timer); };
   }, [props.simulateLocal, props.harnessUp]);
@@ -375,7 +376,7 @@ export function AppShell(props: AppShellProps) {
     </div>
     <SettingsDialog isOpen={settings} initialSection={settingsSection} onClose={() => setSettings(false)} isDark={props.isDark} onToggleTheme={props.onToggleTheme} onOpenShortcuts={() => { setSettings(false); props.onOpenShortcuts(); }} harnessUp={props.harnessUp ?? false} onLogin={() => { void loginEntry(true); }} />
     {search && <SearchDialog folders={allFolders} onSelect={select} onOpenMessage={openMessage} onClose={() => setSearch(false)} searchMessages={props.threadSearchable === true} searchArchived={props.threadSearchArchived === true} />}
-    {notifications && <NotificationsDialog folders={allFolders} preview={props.simulateLocal === true} onSelect={select} onOpenMessage={openMessage} onLoaded={setPendingApprovals} onClose={() => setNotifications(false)} />}
+    {notifications && <NotificationsDialog folders={allFolders} preview={props.simulateLocal === true} refreshToken={approvalPulse} onSelect={select} onOpenMessage={openMessage} onLoaded={setPendingApprovals} onClose={() => setNotifications(false)} />}
     {newProject && <ModalSurface title="新建项目" onClose={() => setNewProject(false)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!projectName.trim()) return; const id = "group-" + crypto.randomUUID(); setGroups(prev => [...prev, { id, name: projectName.trim(), sessions: [] }]); setDraftProjectId(id); resetDraft(); openRoute({ page: "home" }); setProjectName(""); setNewProject(false); }}><label>项目名称<input autoFocus maxLength={60} value={projectName} onChange={event => setProjectName(event.target.value)} placeholder="例如：核心产研团队招聘" /></label><p>创建一个保存在此设备上的项目分组。</p><button className="solid-button" disabled={!projectName.trim()}>创建项目</button></form></ModalSurface>}
     {rename && <ModalSurface title="更改显示名称" onClose={() => setRename(null)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!name.trim()) return; setAliases(prev => ({ ...prev, [rename.id]: name.trim() })); setRename(null); }}><label>聊天名称<input autoFocus value={name} maxLength={100} onChange={event => setName(event.target.value)} /></label><p>只更新此工作区的显示名称。</p><button className="solid-button" disabled={!name.trim()}>保存</button></form></ModalSurface>}
     {renameProject && <ModalSurface title="更改项目显示名称" onClose={() => setRenameProject(null)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!folderName.trim()) return; setProjectAliases(prev => ({ ...prev, [renameProject.id]: folderName.trim() })); setRenameProject(null); }}><label>项目名称<input autoFocus maxLength={60} value={folderName} onChange={event => setFolderName(event.target.value)} /></label><p>显示名称保存在此设备上。</p><button className="solid-button" disabled={!folderName.trim()}>保存</button></form></ModalSurface>}
