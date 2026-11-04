@@ -1,4 +1,5 @@
 /** 仅保存在当前应用内存；附件原文不写入 UI 偏好或浏览器持久存储。 */
+import { safeSlice } from "@boss-harness/shared";
 import type { QueueItem } from "@boss-harness/protocol";
 
 export interface DraftAttachment { id: string; name: string; text: string; size: number; }
@@ -30,6 +31,23 @@ export function createComposerDraft(id: string = crypto.randomUUID()): ComposerD
 }
 export function withDraftText(draft: ComposerDraft, text: string): ComposerDraft {
   return draft.text === text ? draft : { ...draft, text, textVersion: draft.textVersion + 1 };
+}
+
+/** 引用片段上限：只取消息开头一段，避免把整段长回复塞进输入框。 */
+export const QUOTE_LIMIT = 100;
+
+/**
+ * 把一条消息的引用追加到当前草稿，保留尚未发送的正文、附件与技能选择。
+ * 空引用不改变草稿；超长片段安全截断并标注省略号。
+ */
+export function appendQuote(draft: ComposerDraft, source: string, limit = QUOTE_LIMIT): ComposerDraft {
+  const text = source.trim();
+  if (!text || limit <= 0) return draft;
+  const body = safeSlice(text, limit);
+  const quoted = `> ${body}${body.length < text.length ? "…" : ""}`;
+  if (!draft.text) return withDraftText(draft, `${quoted}\n\n`);
+  const separator = draft.text.endsWith("\n\n") ? "" : draft.text.endsWith("\n") ? "\n" : "\n\n";
+  return withDraftText(draft, `${draft.text}${separator}${quoted}\n\n`);
 }
 export function clearTransferredDraft(current: ComposerDraft, submitted: ComposerDraft): ComposerDraft {
   if (current.id !== submitted.id) return current;
