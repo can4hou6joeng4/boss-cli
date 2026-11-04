@@ -1247,3 +1247,11 @@ Pi Durable 开放 [Issue #11332](https://github.com/earendil-works/pi/issues/113
 Pi 在 Agent 层重放整轮请求；本项目重试仍留在 provider 内，只发生在尚未产出内容事件前，并受回合共享恢复额度约束。provider 在每次退避前产出不含内容的 `retry_start` 流事件；外层 `with_retry_outcome` 在首个非错误事件前补 `retry_end(success)`，在错误或取消终态前补失败的 `retry_end`，`reason` 取取消归一化之后的值。未发生重试的流不增加任何事件。`TurnRunner` 将二者映射为 `model/retryStarted` / `model/retryEnded` 通知，携带 threadId、turnId、尝试序号与脱敏错误说明，不写入会话条目，也不计入输出观测；摘要任务与连接检查的消费者忽略这两类事件。协议保持 `0.2.0`：新增的是可选通知，旧客户端按未知通知忽略，或经 `optOutNotificationMethods` 屏蔽；Electron 渲染层暂不展示。
 
 本地临时探针（`/tmp`，不入库）在 Anthropic provider 的单次尝试边界注入内存替身，覆盖无重试、重试后成功、重试耗尽、重试后遇不可重试错误、退避期间取消与中途关闭生成器；并用真实 `TurnRunner` 与临时 `SessionStore` 确认成功与失败两种回合的通知顺序及 `session/error` 不变。OpenAI 线路共用同一辅助函数，仅经编译与类型检查覆盖。未调用真实模型、招聘 CLI、招聘平台或桌面 UI。
+
+## 第十一轮：排队消息投递前编辑
+
+[Issue #473](https://github.com/can4hou6joeng4/boss-cli/issues/473) 允许在投递前修正排队消息。架构参考仍是 Pi commit `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）的 `packages/agent/src/agent-loop.ts`：其 follow-up 只在到达投递点时经 `getFollowUpMessages()` 取用，队列内容本身由嵌入方持有。本项目采用同一职责边界，新增只读不变式下的 `queue/update`：仅改写仍为 `queued` 的持久项正文，保留 id、类型、请求编号、技能与自动压缩覆盖；一旦被 `delivering` 认领即拒绝，不复制 Pi 源码、不引入其队列实现。
+
+兼容与限制：JSON-RPC 维持 `0.2.0`，新增可选能力 `queueUpdate` 与方法参数；旧客户端无感知。正文沿用 1–100000 字符校验，按待处理队列字节上限重新核算；成功发布既有 `queue/updated`，不改变投递、审批、重放或暂停语义。桌面仅在能力声明后显示入口，截断项先经 `queue/get` 读取全文，避免保存预览。
+
+验证使用临时目录下的 `TurnQueue` 探针覆盖排队项改写、非排队状态拒绝、空正文/超长、保留字段与字节上限；TypeScript 类型检查、桌面构建与内核 `py_compile` 通过。未调用真实模型或招聘平台。

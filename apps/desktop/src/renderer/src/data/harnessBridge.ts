@@ -381,6 +381,14 @@ export async function listQueue(threadId: string): Promise<QueuePage> {
   return page;
 }
 
+/** 仅内核声明 `queueUpdate` 后调用；只改写仍在排队（queued）的正文。 */
+export async function updateQueuedItem(threadId: string, queueId: string, input: string): Promise<QueueItem> {
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  const response = await api.request<QueueItemResponse>(ClientMethods.queueUpdate, { threadId, queueId, input });
+  return requireQueueItem(response);
+}
+
 export async function readQueueItem(threadId: string, queueId: string): Promise<QueueItem> {
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");
