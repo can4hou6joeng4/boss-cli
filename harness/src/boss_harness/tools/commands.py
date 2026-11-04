@@ -9,7 +9,7 @@ _READ_ONLY_COMMANDS: dict[str, tuple[str, str]] = {
     "/stats": ("boss_stats", "招聘与转化漏斗"),
     "/recommend": ("boss_recommend", "职位推荐"),
     "/jobs": ("boss_hr_jobs", "已发布职位"),
-    "/chat": ("boss_chat", "沟通消息"),
+    "/chat": ("boss_hr_chat", "沟通消息"),
     "/candidates": ("boss_hr_candidates", "候选人搜索"),
 }
 
