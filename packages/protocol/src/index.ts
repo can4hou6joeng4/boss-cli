@@ -713,7 +713,7 @@ export interface ThreadSearchMatch {
   threadId: string;
   threadTitle: string;
   itemId: string;
-  role: "user" | "agent";
+  role: "user" | "agent" | "tool";
   /** 命中位置前后约 40 字符的片段，已折叠空白并截断。 */
   snippet: string;
 }
