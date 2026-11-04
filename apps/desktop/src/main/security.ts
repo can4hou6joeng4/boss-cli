@@ -82,7 +82,7 @@ const RENDERER_METHODS = new Set([
   "thread/start", "thread/list", "thread/read", "thread/resume", "thread/fork",
   "thread/leaf/read", "thread/leaf/set", "thread/branches/list", "thread/branchSummary/read", "thread/usage/read",
   "thread/search",
-  "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
+  "thread/archive", "thread/unarchive", "thread/delete", "thread/name/set", "thread/model/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
   "turn/start", "turn/interrupt", "turn/steer", "turn/read", "turn/continuation/read", "turn/continue", "task/read", "queue/list", "queue/get", "queue/add", "queue/update", "queue/remove",
   "event/list", "model/list", "config/read", "config/autoCompaction/set", "skills/list", "skills/read", "skills/create", "skills/write", "skills/delete", "tool/list", "attachment/add", "attachment/read",
   "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "context/edit/read", "context/edit", "context/instructions/read", "context/instructions/write", "approval/list", "approval/respond",
@@ -93,7 +93,7 @@ const RENDERER_METHODS = new Set([
 // so exported text goes straight from the kernel to the user-chosen file and never reaches the renderer.
 const THREAD_METHODS = new Set([
   "thread/read", "thread/resume", "thread/fork", "thread/leaf/read", "thread/leaf/set", "thread/branches/list",
-  "thread/branchSummary/read", "thread/usage/read", "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set",
+  "thread/branchSummary/read", "thread/usage/read", "thread/archive", "thread/unarchive", "thread/delete", "thread/name/set", "thread/model/set",
   "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read", "turn/start", "turn/interrupt", "turn/steer", "turn/read", "turn/continuation/read", "turn/continue",
   "task/read", "queue/list", "queue/get", "queue/add", "queue/update", "queue/remove", "context/read", "context/compact/plan", "context/compact/start", "context/compact", "context/edit/read", "context/edit",
 ]);
