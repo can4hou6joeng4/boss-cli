@@ -18,6 +18,7 @@ import { ModalSurface } from "../components/ModalSurface";
 import { type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "../data/mockData";
 import { isApprovalCountEvent, readApprovalFocus } from "../data/pendingApprovals";
 import { approvalSoundEnabled, playApprovalChime } from "../data/approvalChime";
+import { isNotificationsShortcut } from "../data/shortcuts";
 import { booleanPreference, projectFolders, stringList, stringRecord } from "../data/preferenceShapes";
 import { type ModelDescriptor, type SkillDescriptor, type ToolDescriptor } from "@boss-harness/protocol";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
@@ -330,6 +331,7 @@ export function AppShell(props: AppShellProps) {
       if (document.querySelector('[aria-modal="true"]')) return;
       if (!event.metaKey && !event.ctrlKey) return;
       if (event.key.toLowerCase() === "k" && !event.shiftKey) { event.preventDefault(); setSearch(true); }
+      if (isNotificationsShortcut(event)) { event.preventDefault(); setNotifications(true); }
       if (event.key.toLowerCase() === "n") { event.preventDefault(); newTask(); }
       if (event.key === ",") { event.preventDefault(); openSettings(); }
       if (event.key.toLowerCase() === "b" && event.altKey && summaryAvailable) { event.preventDefault(); setSummaryOpen(prev => !prev); }
