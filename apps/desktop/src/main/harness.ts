@@ -10,6 +10,7 @@ import { PlatformLogin } from "./platformLogin";
 import { preservesRpcError } from "./rpcErrors";
 import { sessionExportWriteError } from "./exportErrors";
 import { approvalNotificationContent, rememberApproval } from "./approvalNotification";
+import { readTurnEvent, recordTurnStart, turnNotificationContent } from "./turnNotification";
 
 function findRepoRoot(start: string): string {
   let current = resolve(start);
@@ -64,6 +65,31 @@ function revealWindow(): BrowserWindow | null {
   return target;
 }
 
+const turnStartedAt = new Map<string, number>();
+
+/**
+ * 窗口不在前台时，用系统通知提示运行较久（≥ 20 秒）的回合已结束。
+ * 开始时间来自 `turn/started`；缺少配对开始时间时不猜测时长，也不提醒。
+ */
+function notifyTurn(notification: JsonRpcNotification): void {
+  const event = readTurnEvent(notification);
+  if (!event) return;
+  if (event.kind === "started") {
+    recordTurnStart(turnStartedAt, event.turnId, Date.now());
+    return;
+  }
+  const startedAt = turnStartedAt.get(event.turnId);
+  turnStartedAt.delete(event.turnId);
+  if (startedAt === undefined || BrowserWindow.getFocusedWindow()) return;
+  const content = turnNotificationContent(notification, startedAt);
+  if (!content || !Notification.isSupported()) return;
+  try {
+    const native = new Notification({ title: content.title, body: content.body });
+    native.on("click", () => { revealWindow(); });
+    native.show();
+  } catch {}
+}
+
 /**
  * 窗口不在前台时用系统通知提示新的审批请求；同一 approvalId 只提醒一次。
  * 点击后聚焦工作台，定位字段齐全时再让渲染层打开会话并滚动到该审批卡。
@@ -107,6 +133,7 @@ function createHost(): HarnessHostConnection {
   connection.onNotification((notification) => {
     for (const window of windows) send(window, notification);
     notifyApproval(notification);
+    notifyTurn(notification);
   });
   return connection;
 }
