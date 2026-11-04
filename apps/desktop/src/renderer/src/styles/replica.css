@@ -108,7 +108,7 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .composer-queue-mode { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin: 0 6px 8px; }
 .composer-queue-mode button { min-height: 28px; padding: 4px 9px; border: 1px solid var(--border-color); border-radius: 6px; background: transparent; color: var(--text-muted); font-size: 11px; cursor: pointer; }
 .composer-queue-mode button[aria-pressed="true"] { color: var(--text-main); background: var(--btn-ghost-hover); border-color: var(--text-faint); }
-.composer-queue-mode button:focus-visible, .composer-stop:focus-visible, .turn-queue li>button:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.composer-queue-mode button:focus-visible, .composer-stop:focus-visible, .turn-queue li>button:focus-visible, .turn-queue-refresh:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .composer-icon { display: flex; align-items: center; justify-content: center; background: transparent; border: 0; width: 30px; height: 30px; color: var(--text-muted); border-radius: 8px; cursor: pointer; }
 .composer-icon:hover { background: var(--btn-ghost-hover); color: var(--text-main); }
 .composer-icon:disabled { opacity: .5; }
@@ -128,6 +128,11 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .turn-queue-heading strong { color: var(--text-main); font-weight: 550; }
 .turn-queue-heading span, .turn-queue-status { color: var(--text-faint); font-size: 10px; }
 .turn-queue-heading .turn-queue-more { margin-left: auto; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.turn-queue-heading .turn-queue-refresh { margin-left: auto; flex: 0 0 auto; padding: 0 2px; border: 0; background: transparent; color: var(--text-faint); font-size: 10px; cursor: pointer; }
+.turn-queue-heading .turn-queue-more + .turn-queue-refresh { margin-left: 0; }
+.turn-queue-heading .turn-queue-refresh:hover { color: var(--accent-color); }
+.turn-queue-heading .turn-queue-refresh:disabled { opacity: .45; cursor: default; }
+.turn-queue-stale { margin: 0 4px 5px; color: var(--accent-warning); font-size: 10px; }
 .turn-queue ul { list-style: none; padding: 0; margin: 0; }
 .turn-queue li { display: flex; align-items: center; gap: 8px; padding: 5px 4px; border-top: 1px solid var(--border-color); }
 .turn-queue-item-copy { min-width: 0; flex: 1; display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: 6px; }

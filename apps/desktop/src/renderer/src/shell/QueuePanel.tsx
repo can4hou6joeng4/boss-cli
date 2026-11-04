@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { QueueItem, SkillDescriptor } from "@boss-harness/protocol";
 import { IconClose } from "../components/Icons";
 import { harnessErrorText } from "../data/harnessBridge";
+import { queueRefreshErrorText, type QueueRefreshResult } from "../data/queueRefresh";
 import { queueSkillLabels } from "../data/queueSkillLabels";
 import { compactionLabel, compactionTitle } from "./queueCompaction";
 
@@ -14,7 +15,7 @@ const LABELS: Record<QueueItem["status"], string> = {
 };
 const MAX_VISIBLE_ITEMS = 20;
 
-export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove, onRetry, skills = [] }: {
+export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove, onRetry, skills = [], connected = true, onRefresh }: {
   items: QueueItem[];
   /** 技能目录；用于把队列项里的技能 id 显示为名称，缺失时回退 id。 */
   skills?: SkillDescriptor[];
@@ -24,12 +25,29 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
   activeItems?: number;
   /** 内核只返回有界投影，仍有未载入的队列记录。 */
   truncated?: boolean;
+  /** 内核连接状态；断开时队列内容可能已过期，刷新按钮禁用。 */
+  connected?: boolean;
+  /** 手动重读当前会话队列；成功返回 `{ ok: true }`，失败带回原因。 */
+  onRefresh?: () => Promise<QueueRefreshResult>;
   onRemove: (id: string) => Promise<boolean>;
   onRetry?: (item: QueueItem) => Promise<boolean>;
 }): JSX.Element | null {
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
   if (!items.length) return null;
+  const refresh = async () => {
+    if (!onRefresh || refreshing) return;
+    setRefreshing(true); setError("");
+    try {
+      const reason = queueRefreshErrorText(await onRefresh());
+      if (reason) setError(`刷新队列失败：${reason}。队列面板保留上一次内容。`);
+    } catch (cause) {
+      setError(`刷新队列失败：${harnessErrorText(cause)}。队列面板保留上一次内容。`);
+    } finally {
+      setRefreshing(false);
+    }
+  };
   const canRetry = (item: QueueItem) => Boolean(onRetry) && item.kind === "followUp"
     && item.status === "paused" && item.failureCode === "TURN_START_FAILED" && item.inputPersisted === false;
   const retry = async (item: QueueItem) => {
@@ -67,7 +85,11 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
       {hiddenNote && <span className="turn-queue-more" data-queue-total={total} data-queue-truncated={kernelHidden ? "true" : "false"} data-queue-visible={visibleItems.length}
         title={kernelHidden ? `内核只返回有界投影（待处理与已结束条目各自封顶），更早的队列记录未载入。${activeItems !== undefined
           ? "待处理数量仍按全部持久项统计。" : "待处理数量按已载入项统计。"}` : "任务队列较长，界面只显示最近的项目。"}>{hiddenNote}</span>}
+      {onRefresh && <button type="button" className="turn-queue-refresh" disabled={refreshing || !connected}
+        title={connected ? "重新读取当前会话的队列状态" : "本机内核未连接，恢复连接后再刷新"}
+        onClick={() => { void refresh(); }}>{refreshing ? "刷新中…" : "刷新"}</button>}
     </div>
+    {!connected && <p className="turn-queue-stale" role="status">本机内核已断开，队列状态可能已过期；恢复连接后会重新读取。</p>}
     <ul>
       {visibleItems.map(item => <li key={item.id}>
         <div className="turn-queue-item-copy">
