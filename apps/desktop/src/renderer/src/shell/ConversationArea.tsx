@@ -278,14 +278,16 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
           <button
             className={`mode-segment-btn ${currentMode === "plan" ? "active" : ""}`}
             onClick={() => onModeChange("plan")}
-            title="Plan 模式：只读调研并生成计划"
+            disabled={!simulateLocal}
+            title={simulateLocal ? "Plan 模式：只读调研并生成计划" : "当前连接暂不支持 Plan 模式"}
           >
             Plan
           </button>
           <button
             className={`mode-segment-btn ${currentMode === "ask" ? "active" : ""}`}
             onClick={() => onModeChange("ask")}
-            title="Ask 模式：纯问答，不执行工具"
+            disabled={!simulateLocal}
+            title={simulateLocal ? "Ask 模式：纯问答，不执行工具" : "当前连接暂不支持 Ask 模式"}
           >
             Ask
           </button>

@@ -810,6 +810,13 @@ html, body, #root {
 .mode-segment-btn:hover {
   color: var(--text-main);
 }
+.mode-segment-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.mode-segment-btn:disabled:hover {
+  color: var(--text-muted);
+}
 .mode-segment-btn.active {
   background: var(--panel-bg);
   color: var(--text-main);
