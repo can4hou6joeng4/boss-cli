@@ -141,6 +141,8 @@ export interface ApprovalData {
   remember?: boolean;
   /** 内核给出的审批 id；仿真数据没有它，因此仿真卡片不会真的发给内核。 */
   approvalId?: string;
+  /** 内核给出的到期时间（epoch 毫秒）；缺失或非法时不显示倒计时。 */
+  deadline?: number;
 }
 
 export interface PlanData {

@@ -56,6 +56,22 @@ export function mapPendingApprovals(value: unknown, limit = 100): PendingApprova
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
+/** 5 分钟内到期的审批在卡片上标警示色。 */
+export const APPROVAL_SOON_MS = 5 * MINUTE;
+
+/** 事件与会话记录里的审批到期时间：只接受有限数，其它视为未知。 */
+export function approvalDeadline(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** 审批卡倒计时的紧急度；时间不可读时不显示倒计时，而不是显示成正常。 */
+export function approvalUrgency(deadline: number, now = Date.now()): "expired" | "soon" | "normal" | "unknown" {
+  if (typeof deadline !== "number" || !Number.isFinite(deadline) || !Number.isFinite(now)) return "unknown";
+  const remaining = deadline - now;
+  if (!Number.isFinite(remaining)) return "unknown";
+  if (remaining <= 0) return "expired";
+  return remaining < APPROVAL_SOON_MS ? "soon" : "normal";
+}
 
 /** 把审批到期时间转成面板文案；非法时间与已过期要和「还有多久」区分开。 */
 export function approvalRemainingText(deadline: number, now = Date.now()): string {
