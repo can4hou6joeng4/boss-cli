@@ -138,6 +138,7 @@
 
 ### 修复
 
+- [Issue #501](https://github.com/can4hou6joeng4/boss-harness/issues/501)：补齐内核实际发送但协议缺失的通知常量。内核经 `EventHub.emit` 发布并持久化 `approval/decided`、`context/compacted` 与 `turn/steeringApplied`，桌面也按字符串消费，但 `ServerNotifications` 未声明它们，由该常量派生的 `ServerNotification` 联合类型因此不包含这三个真实通知，`HarnessClient.on` 无法订阅，第三方客户端按常量实现时会漏掉审批裁决、摘要完成与转向已应用事件。现在补上 `approvalDecided`、`contextCompacted`、`turnSteeringApplied` 三个常量，值保持与内核一致。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #499](https://github.com/can4hou6joeng4/boss-harness/issues/499)：真实连接下 Plan / Ask 模式按钮可点击但无效果。会话顶栏的三个模式按钮没有禁用条件，点击后只改变界面高亮，`currentMode` 从未传给内核，协议也没有模式参数，实际回合仍按 Agent 方式执行工具；同一功能的输入区菜单在非预览模式下却明确禁用并提示「当前连接暂不支持此模式」。现在真实连接下禁用 Plan / Ask，`title` 说明不支持原因，Agent 保持可用；预览模式行为不变，并补充禁用态样式。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #497](https://github.com/can4hou6joeng4/boss-harness/issues/497)：快捷键说明仍列出已移除的 `@` 招聘对象入口。上一轮 #495 已删除 `@` 提及菜单与「关联招聘对象」入口，但键盘快捷键弹窗的「输入」分组仍显示 `@ 选择招聘对象`，用户按说明输入 `@` 后不会出现任何选择器，容易误判为功能故障。现在删除该项；其余快捷键已逐项核对实现，保持不变。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #495](https://github.com/can4hou6joeng4/boss-harness/issues/495)：移除未接入数据的 `@` 提及菜单。输入区输入 `@` 会弹出「提及对象」菜单，列出 6 个固定条目（候选人库、在线简历、在招职位、岗位JD、转化漏斗、平台健康度），但这些条目既不会读取任何招聘数据，也不随会话、工作区或内核状态变化；选择后只是把 `@名称 ` 作为纯文本写入正文，首页却提示「@ 关联对象」，「添加上下文」菜单还提供「关联招聘对象 · 将职位、候选人等加入上下文」，消息正文又把任意 `@xxx` 渲染成药丸，容易让人误以为模型已能访问并不存在的数据。现在删除静态提及条目与菜单、首页提示、「关联招聘对象」入口及其插入逻辑，`@` 恢复为普通文本；`RichMarkdown` 同步移除 `@` 行内分组与药丸渲染，避免匹配文本被静默丢弃，仅删除该药丸使用的样式。不新增 RPC，协议与内核仍为 `0.2.0`。
