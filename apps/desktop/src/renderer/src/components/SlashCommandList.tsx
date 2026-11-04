@@ -7,6 +7,7 @@ import {
   IconChat,
   IconPanel,
   IconDiffFiles,
+  IconTerminal,
 } from "./Icons";
 
 export interface SlashCommandItem {
@@ -14,10 +15,17 @@ export interface SlashCommandItem {
   command: string;
   label: string;
   description: string;
-  iconType: "status" | "stats" | "search" | "recommend" | "jobs" | "candidates" | "chat" | "plan";
+  iconType: "tools" | "status" | "stats" | "search" | "recommend" | "jobs" | "candidates" | "chat" | "plan";
 }
 
 export const SLASH_COMMANDS: SlashCommandItem[] = [
+  {
+    id: "cmd-tools",
+    command: "/tools",
+    label: "查看上游能力目录",
+    description: "列出上游 boss-agent-cli 当前提供的全部能力（只读，不改变工具权限）",
+    iconType: "tools",
+  },
   {
     id: "cmd-status",
     command: "/status",
@@ -71,13 +79,15 @@ export const SLASH_COMMANDS: SlashCommandItem[] = [
     id: "cmd-plan",
     command: "/plan ",
     label: "制定招聘任务规划",
-    description: "以 Plan 模式拆解任务执行路线与分阶段执行计划",
+    description: "拆解任务执行路线与分阶段执行计划",
     iconType: "plan",
   },
 ];
 
 function renderSlashIcon(type: SlashCommandItem["iconType"]) {
   switch (type) {
+    case "tools":
+      return <IconTerminal size={14} />;
     case "status":
     case "recommend":
       return <IconSparkles size={14} />;
