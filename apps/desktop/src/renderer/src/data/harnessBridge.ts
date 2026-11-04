@@ -111,6 +111,11 @@ function bridge(): HarnessBridge | null {
   return window.boss ?? null;
 }
 
+/** 内核明确拒绝（已解析为 RPC 错误）；断连、IPC 或回执不可读不带该标记。 */
+export function isHarnessRpcRejection(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && (error as { rpcError?: unknown }).rpcError === true);
+}
+
 /** 渲染层展示用的内核错误文案：保留 RPC 错误码与可选原因码，其余回退为通用描述。 */
 export function harnessErrorText(error: unknown): string {
   const value = error && typeof error === "object"
@@ -374,14 +379,14 @@ export async function interruptTurn(threadId: string): Promise<boolean> {
 export async function steerTurn(params: TurnSteerParams): Promise<QueueItem> {
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");
-  const response = await api.request<QueueItemResponse>(ClientMethods.turnSteer, params);
+  const response = await contextRequest<QueueItemResponse>(ClientMethods.turnSteer, params);
   return requireQueueItem(response);
 }
 
 export async function queueFollowUp(params: QueueAddParams): Promise<QueueItem> {
   const api = bridge();
   if (!api) throw new Error("本地 Harness 未连接");
-  const response = await api.request<QueueItemResponse>(ClientMethods.queueAdd, params);
+  const response = await contextRequest<QueueItemResponse>(ClientMethods.queueAdd, params);
   return requireQueueItem(response);
 }
 
@@ -441,9 +446,7 @@ export async function respondApproval(approvalId: string, approved: boolean): Pr
     return { delivery: "rejected", reason: response.expired === true ? "审批已过期，工具未执行" : undefined };
   } catch (cause) {
     // contextRequest 解出的内核拒绝是明确不受理；其余断连、IPC 或解析失败才算未送达。
-    if (cause && typeof cause === "object" && (cause as { rpcError?: unknown }).rpcError === true) {
-      return { delivery: "rejected", reason: harnessErrorText(cause) };
-    }
+    if (isHarnessRpcRejection(cause)) return { delivery: "rejected", reason: harnessErrorText(cause) };
     return { delivery: "unconfirmed", reason: harnessErrorText(cause) };
   }
 }

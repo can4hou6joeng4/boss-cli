@@ -6,7 +6,7 @@ import { AtMentionList, filterMentions, type MentionItem } from "../components/A
 import { MODEL_OPTIONS, type ConversationMode } from "../data/mockData";
 import type { ModelDescriptor, SkillDescriptor, SkillProblem } from "@boss-harness/protocol";
 import type { SkillCatalogState } from "../data/harnessBridge";
-import { harnessErrorText } from "../data/harnessBridge";
+import { harnessErrorText, isHarnessRpcRejection } from "../data/harnessBridge";
 import { filterSkills } from "../data/skillFilter";
 import { skillChips } from "../data/skillChips";
 import { attachmentFailureNotice, readTextAttachments } from "../data/attachmentRead";
@@ -203,7 +203,17 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
       }
       updateDraft(previous => clearTransferredDraft(previous, submitted));
       if (alive.current && draftRef.current.id === submitted.id) { setSlashOpen(false); setMentionOpen(false); setMenu(null); }
-    } catch {
+    } catch (cause) {
+      // 内核明确拒绝说明消息未入队 / 未转向：解除待核对状态，内容保留在输入框供修改后正常重试。
+      if (queueing && isHarnessRpcRejection(cause)) {
+        updateDraft(previous => previous.id === submitted.id
+          ? { ...previous, submitting: false, queueSubmission: undefined }
+          : previous);
+        if (alive.current && draftRef.current.id === submitted.id) {
+          setNotice(`${queueRequest?.intent === "steering" ? "转向" : "加入队列"}被内核拒绝：${harnessErrorText(cause)}；消息仍保留在输入框，请调整后重试。`);
+        }
+        return;
+      }
       // 回调异常不能证明消息未转交；保留内容和提交锁，避免直接重复发送。
       if (alive.current && draftRef.current.id === submitted.id) setNotice(queueing
         ? "队列提交结果尚未确认；恢复原消息后再次提交会使用同一请求编号。"
