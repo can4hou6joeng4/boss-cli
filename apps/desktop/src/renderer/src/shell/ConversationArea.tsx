@@ -21,6 +21,7 @@ import { isCommandChord } from "../data/shortcuts";
 import { useClipboardCopy } from "../data/clipboardCopy";
 import { toolOutcomeBadge } from "../data/toolOutcome";
 import { findMessageMatches } from "../data/messageSearch";
+import { retryTextForMessage } from "../data/messageRetry";
 import { collectTextRanges } from "../data/findHighlight";
 import { compactTitle, stripProjectPrefix } from "../data/sessionTitle";
 
@@ -175,10 +176,10 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
     wasAtBottom.current = target.scrollHeight - target.scrollTop - target.clientHeight < 120;
     setShowScrollBottom(!wasAtBottom.current);
   };
-  const handleRetry = () => {
+  const handleRetry = (message: MessageItem) => {
     if (running || taskBlocked) return;
-    const last = [...messages].reverse().find(message => message.role === "user")?.content;
-    if (last) onSendMessage(last);
+    const text = retryTextForMessage(messages, message.id);
+    if (text) onSendMessage(text);
   };
   const recordContextEdit = useCallback((state: ContextEditReadResponse) => {
     setContextEditStates(previous => ({ ...previous, [state.itemId]: { excluded: state.excluded } }));
@@ -722,7 +723,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                     className="msg-action-btn"
                     title="重试此轮对话"
                     type="button"
-                    onClick={() => handleRetry()}
+                    onClick={() => handleRetry(item)}
                   >
                     <IconRewind size={13} />
                   </button>
