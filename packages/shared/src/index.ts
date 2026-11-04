@@ -19,3 +19,13 @@ export function formatRelativeTime(iso: string): string {
 export function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
+
+/**
+ * 去掉 Electron `ipcRenderer.invoke` 拼接的错误包装，只留下真实原因。
+ *
+ * 主进程抛出的错误跨 IPC 后只剩 `Error invoking remote method '<channel>': <String(error)>`；
+ * `String(error)` 带错误名：普通错误为 `Error: `，本项目的内核 RPC 错误为 `HarnessRpcError: `。
+ */
+export function stripIpcErrorWrapper(message: string): string {
+  return message.replace(/^Error invoking remote method '[^']+': (?:Error|HarnessRpcError): /, "");
+}

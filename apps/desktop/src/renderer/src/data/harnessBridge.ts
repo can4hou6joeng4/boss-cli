@@ -67,7 +67,7 @@ import {
   type WorkspaceInstructionsText,
   type WorkspaceInstructionsWriteResponse,
 } from "@boss-harness/protocol";
-import { formatRelativeTime } from "@boss-harness/shared";
+import { formatRelativeTime, stripIpcErrorWrapper } from "@boss-harness/shared";
 import { queuePageOf, type QueuePage } from "./queueMapping";
 import { approvalDeadlineMs, mapPendingApprovals } from "./pendingApprovals";
 import { readPagedItems } from "./pagedRead";
@@ -118,7 +118,7 @@ export function harnessErrorText(error: unknown): string {
   const data = value?.data && typeof value.data === "object" ? value.data as Record<string, unknown> : null;
   const raw = typeof value?.message === "string" && value.message.trim() ? value.message : "";
   // 未被主进程保留为 RPC 错误的方法只留下 Electron 拼接后的消息；去掉包装前缀再展示。
-  const message = raw ? raw.replace(/^Error invoking remote method '[^']+': (Error: )?/, "").slice(0, 300)
+  const message = raw ? stripIpcErrorWrapper(raw).slice(0, 300)
     : "无法读取本地内核响应";
   if (value?.rpcError === true && typeof value.code === "number") {
     return `${message}（内核 ${value.code}${typeof data?.code === "string" ? ` / ${data.code}` : ""}）`;

@@ -136,6 +136,7 @@
 
 ### 修复
 
+- 错误提示残留 Electron IPC 包装里的内部错误名：主进程 `harness:request` 对未列入 `PRESERVED` 的方法直接重新抛出内核 `HarnessRpcError`，跨 IPC 后消息被拼成 `Error invoking remote method '<channel>': HarnessRpcError: <内核消息>`，而 `harnessErrorText()` 只去掉 `Error: ` 前缀，于是归档、发送回合、审批、队列、技能与工作区说明等提示会显示「HarnessRpcError:」而不是内核原因；主进程 `loginFailureDetail()` 也有同一份正则。现在提取共享纯函数 `stripIpcErrorWrapper()`，统一去掉 IPC 包装及 `Error:` / `HarnessRpcError:` 错误名，普通消息、中文全角冒号与无包装消息保持不变；已保留错误形状的方法仍按既有 `rpcError` 路径显示错误码。不新增 RPC，协议与内核仍为 `0.2.0`。
 - 桌面端删除聊天被渲染层方法白名单拒绝：`security.ts` 的 `RENDERER_METHODS` 与线程级 `threadId` 校验清单都漏了 `thread/delete`，侧栏「删除聊天…」在 IPC 校验阶段就失败，请求到不了内核，界面只能显示通用错误；内核的 `THREAD_BUSY`、`THREAD_DELETE_INCOMPLETE`、`THREAD_NOT_FOUND` 分支因此永远走不到。现在 `thread/delete` 重新纳入两份清单，删除请求按既有 `deleteThreadFailure` 处理真实原因码；缺少、空串或超长 `threadId` 仍被拒绝，`thread/export` 等未暴露方法不受影响。不新增 RPC，协议与内核仍为 `0.2.0`。
 - 快速提问面板在已连接内核时伪造模型回复：`⌘;` 打开的浮窗首次打开就显示一条本地写死的「助手回复」，每次发送后追加固定示例文案，从未调用内核，容易被误当成模型判断。现在已连接内核时面板不再生成本地回复：提问经既有 `thread/start` + `turn/start` 创建新会话并发送，成功后关闭浮窗并切换到该会话查看回复，失败保留输入并显示真实原因、不自动重试；创建中禁止重复提交，内核未连接时禁用并说明原因。线路解析抽为纯函数 `resolveQuickAskRoute`（当前会话 → 进程默认线路 → 目录中同一 provider 的条目，`none` 与解析不出时明确拒绝，不拿显示值或目录首项猜线路）。仅在没有桌面桥的浏览器预览模式保留标注为示例的演示。不新增 RPC，协议与内核仍为 `0.2.0`。
 - 审批到期时间单位的读写不一致：内核在 `approval/requested`、`approval/list` 与会话记录中以 Unix 秒（`time.time() + approvalTimeout`）写入 `deadline`，桌面此前直接用它与 `Date.now()`（毫秒）相减，导致通知面板的到期提示与聊天审批卡倒计时把全部待审批显示为「已过期」，警戒色也停在错误色。现在渲染层在读取边界统一换算为毫秒：小于 `1e12` 的正数按 Unix 秒乘以 1000，已经是毫秒的时间戳原样保留，非法值仍按未知处理并隐藏倒计时；通知面板、聊天审批卡与会话记录三处一致。协议字段注释同步标注单位，协议版本仍为 `0.2.0`。
