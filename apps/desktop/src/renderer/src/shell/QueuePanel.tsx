@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { QueueItem, SkillDescriptor } from "@boss-harness/protocol";
 import { IconClose } from "../components/Icons";
 import { ModalSurface } from "../components/ModalSurface";
+import { useClipboardCopy } from "../data/clipboardCopy";
 import { harnessErrorText } from "../data/harnessBridge";
 import { queueRefreshErrorText, type QueueRefreshResult } from "../data/queueRefresh";
 import { queueSkillLabels } from "../data/queueSkillLabels";
@@ -40,6 +41,7 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
   const [refreshing, setRefreshing] = useState(false);
   const [reading, setReading] = useState<string | null>(null);
   const [viewing, setViewing] = useState<{ item: QueueItem; input: string } | null>(null);
+  const clipboard = useClipboardCopy();
   if (!items.length) return null;
   const refresh = async () => {
     if (!onRefresh || refreshing) return;
@@ -57,6 +59,7 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
     && item.status === "paused" && item.failureCode === "TURN_START_FAILED" && item.inputPersisted === false;
   const showFullInput = async (item: QueueItem) => {
     if (!onReadFull || reading) return;
+    clipboard.reset();
     setReading(item.id); setError("");
     try {
       const full = await onReadFull(item);
@@ -96,6 +99,10 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
       : "",
     visibleItems.length < items.length ? `仅显示 ${visibleItems.length} 项` : "",
   ].filter(Boolean).join("，");
+  // 完整输入视图与列表使用同一套技能映射，避免同一个队列项在两处显示不一致。
+  const viewingSkillIds = viewing?.item.skillIds ?? [];
+  const viewingSkillLabels = queueSkillLabels(viewingSkillIds, skills);
+  const copyFeedback = viewing && clipboard.feedback?.key === viewing.item.id ? clipboard.feedback : null;
   return <>
     <section className="turn-queue" aria-label="任务队列" aria-live="polite">
     <div className="turn-queue-heading"><strong>任务队列</strong><span data-queue-pending={pendingCount} title={activeItems !== undefined ? "待处理数量由内核按全部持久队列项统计。"
@@ -123,7 +130,7 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
               : <span className="turn-queue-skills" title={ids.join("、")}>技能 {ids.length} 项</span>;
           })()}
           {item.autoCompaction && <span className="turn-queue-skills" title={compactionTitle(item.autoCompaction)}>{compactionLabel(item.autoCompaction)}</span>}
-          {item.inputTruncated && <span className="turn-queue-skills" title="列表只显示前 600 字符；重新排队会读取并复用完整输入">正文已截断</span>}
+          {item.inputTruncated && <span className="turn-queue-skills" title="列表只显示前 600 字符；可点击「查看完整输入」核对全文，重新排队会读取并复用完整输入">正文已截断</span>}
           <p title={item.input}>{item.input}</p>
           {item.inputTruncated && onReadFull && <button type="button" className="turn-queue-expand" disabled={reading !== null}
             title="读取内核持久化的完整输入，仅供核对，不会重新提交"
@@ -150,7 +157,19 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
     {viewing && <ModalSurface title="队列消息完整输入" onClose={() => setViewing(null)}>
       <div className="dialog-form queue-input-dialog">
         <p className="dialog-note">{viewing.item.kind === "steering" ? "当前回合" : "后续回合"} · {LABELS[viewing.item.status]} · 只读展示持久化正文，关闭不会重新提交或修改队列。</p>
+        {(viewingSkillIds.length > 0 || viewing.item.autoCompaction) && <div className="queue-input-facts">
+          {viewingSkillLabels.length > 0 ? <span title={viewingSkillLabels.join("、")}>技能：{viewingSkillLabels.join("、")}</span>
+            : viewingSkillIds.length > 0 ? <span title={viewingSkillIds.join("、")}>技能 {viewingSkillIds.length} 项（目录中未找到名称）</span> : null}
+          {viewing.item.autoCompaction && <span title={compactionTitle(viewing.item.autoCompaction)}>{compactionLabel(viewing.item.autoCompaction)}</span>}
+        </div>}
         <pre className="turn-queue-full-input">{viewing.input || "（空输入）"}</pre>
+        <div className="dialog-actions queue-input-actions">
+          {copyFeedback && <span className={copyFeedback.ok ? "queue-input-copy-status" : "queue-input-copy-error"} role="status">
+            {copyFeedback.ok ? "已复制完整输入" : `复制失败：${copyFeedback.reason}；正文仍在窗口中`}
+          </span>}
+          <button className="secondary-button" disabled={!viewing.input} title="复制持久化正文，不会重新提交或修改队列"
+            onClick={() => { void clipboard.copy(viewing.input, viewing.item.id); }}>复制完整输入</button>
+        </div>
       </div>
     </ModalSurface>}
   </>;

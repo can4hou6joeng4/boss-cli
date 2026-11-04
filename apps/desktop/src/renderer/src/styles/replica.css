@@ -151,6 +151,11 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .turn-queue-item-copy>button.turn-queue-expand:disabled { opacity: .45; cursor: wait; text-decoration: none; }
 .turn-queue-item-copy>button.turn-queue-expand:focus-visible { outline: 2px solid var(--accent-color); outline-offset: 2px; }
 .turn-queue-full-input { margin: 0; max-height: 45vh; overflow: auto; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-window); color: var(--text-main); font-size: 11px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.queue-input-facts { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--text-faint); font-size: 10px; }
+.queue-input-facts span { max-width: 100%; overflow-wrap: anywhere; }
+.queue-input-actions { align-items: center; }
+.queue-input-actions .queue-input-copy-status { margin-right: auto; color: var(--accent-success); font-size: 10px; }
+.queue-input-actions .queue-input-copy-error { margin-right: auto; color: var(--accent-warning); font-size: 10px; overflow-wrap: anywhere; }
 .turn-queue-error { margin: 5px 4px; color: var(--accent-warning); font-size: 10px; }
 .attachment-list { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 6px 10px; }
 .attachment-chip { display: flex; align-items: center; gap: 7px; max-width: 250px; padding: 7px 9px; border-radius: 9px; background: var(--btn-ghost-hover); font-size: 11px; }
