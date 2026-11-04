@@ -8,6 +8,7 @@ import type { ModelDescriptor, SkillDescriptor, SkillProblem } from "@boss-harne
 import type { SkillCatalogState } from "../data/harnessBridge";
 import { harnessErrorText } from "../data/harnessBridge";
 import { filterSkills } from "../data/skillFilter";
+import { skillChips } from "../data/skillChips";
 import { attachmentFailureNotice, readTextAttachments } from "../data/attachmentRead";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import { createComposerDraft, clearTransferredDraft, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type QueueIntent, type CheckQueueSubmission } from "../data/composerDraft";
@@ -70,6 +71,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const draftRef = useRef(composerDraft); draftRef.current = composerDraft;
   const attachments = composerDraft.attachments;
   const selectedSkillIds = composerDraft.skillIds ?? [];
+  const selectedSkillChips = skillChips(selectedSkillIds, skills);
   const staleSkillIds = selectedSkillIds.filter(id => !skills.some(skill => skill.id === id));
   // 筛选只影响菜单展示，不改变已选技能；被筛掉但已选中的技能仍会随消息应用。
   const filteredSkills = filterSkills(skills, skillQuery);
@@ -284,6 +286,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     onDrop={event => { if (!event.dataTransfer.types.includes("Files")) return; event.preventDefault(); dragDepth.current = 0; setDragging(false); void addFiles([...event.dataTransfer.files]); }}>
     {dragging && <div className="composer-drop-hint" aria-hidden="true"><IconFolder size={25} /><strong>添加文件作为上下文</strong><span>TXT、Markdown、JSON、CSV · 每个最多 200 KB</span></div>}
     {attachments.length > 0 && <div className="attachment-list">{attachments.map(file => <div className="attachment-chip" key={file.id} title={`${file.name} · ${Math.max(1, Math.ceil(file.size / 1000))} KB`}><IconFolder size={15} /><span>{file.name}<small>{Math.max(1, Math.ceil(file.size / 1000))} KB · 文本</small></span><button type="button" aria-label={`移除附件 ${file.name}`} onClick={() => updateDraft(previous => ({ ...previous, attachments: previous.attachments.filter(item => item.id !== file.id) }))}><IconClose size={12} /></button></div>)}</div>}
+    {selectedSkillChips.length > 0 && <div className="composer-skill-chips" aria-label="已选运行时技能">{selectedSkillChips.map(chip => <div className={`composer-skill-chip${chip.stale ? " is-stale" : ""}`} key={chip.id} title={chip.stale ? `${chip.id} · 已不在当前技能目录中` : chip.description ?? chip.name}><IconSparkles size={11} /><span>{chip.name}</span><button type="button" aria-label={`移除技能：${chip.name}`} title={submitting ? "正在转交消息，暂不能更改技能" : "移除技能"} disabled={submitting} onClick={() => toggleSkill(chip.id)}><IconClose size={11} /></button></div>)}</div>}
     <SlashCommandList isOpen={slashOpen} onClose={() => setSlashOpen(false)} onSelect={selectSlash} search={slashQuery} selectedIndex={selectedIndex} />
     <AtMentionList isOpen={mentionOpen} onClose={() => setMentionOpen(false)} onSelect={selectMention} search={mentionQuery} selectedIndex={selectedIndex} />
     <textarea aria-label="消息输入" ref={element => { inputRef.current = element; if (typeof forwardedRef === "function") forwardedRef(element); else if (forwardedRef) forwardedRef.current = element; }} rows={2}
