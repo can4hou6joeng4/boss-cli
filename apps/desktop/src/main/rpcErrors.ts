@@ -9,6 +9,7 @@ const PRESERVED: ReadonlySet<string> = new Set([
   "approval/respond",
   "context/compact/read",
   "context/compact/start",
+  "queue/add",
   "thread/branchSummary/read",
   "thread/branches/list",
   "thread/delete",
@@ -19,6 +20,7 @@ const PRESERVED: ReadonlySet<string> = new Set([
   "thread/usage/read",
   "turn/continuation/read",
   "turn/continue",
+  "turn/steer",
 ]);
 
 export function preservesRpcError(method: string): boolean {
