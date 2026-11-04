@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import { safeSlice } from "@boss-harness/shared";
 
 /**
  * 剪贴板写入的共享入口：界面只有在真正写入成功后才能显示「已复制」。
@@ -16,7 +17,7 @@ export async function copyText(text: string): Promise<CopyResult> {
     return { ok: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
-    return { ok: false, reason: message.trim().slice(0, MAX_REASON_LENGTH) || "系统拒绝了剪贴板写入" };
+    return { ok: false, reason: safeSlice(message.trim(), MAX_REASON_LENGTH) || "系统拒绝了剪贴板写入" };
   }
 }
 

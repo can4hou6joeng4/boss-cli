@@ -1,4 +1,6 @@
 /** 附件读取：逐个文件读取文本，单个失败不拖累同批其余文件，并把原因带回界面。 */
+import { safeSlice } from "@boss-harness/shared";
+
 export interface ReadAttachment { id: string; name: string; text: string; size: number }
 export interface AttachmentFailure { name: string; reason: string }
 
@@ -8,7 +10,7 @@ const MAX_LISTED_FAILURES = 3;
 function failureReason(error: unknown): string {
   const message = error instanceof Error ? error.message : typeof error === "string" ? error : "";
   const trimmed = message.trim();
-  return trimmed ? trimmed.slice(0, MAX_REASON_LENGTH) : "无法读取";
+  return trimmed ? safeSlice(trimmed, MAX_REASON_LENGTH) : "无法读取";
 }
 
 export async function readTextAttachments(
