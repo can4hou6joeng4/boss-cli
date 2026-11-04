@@ -1,11 +1,11 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { ModalSurface } from "./ModalSurface";
 import { IconSearch, IconChat, IconChevronRight, IconClose } from "./Icons";
-import type { ThreadSearchMatch } from "@boss-harness/protocol";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
 import { sessionRows } from "../data/sessionRows";
 import { buildSearchOptions, searchRoleLabel, type SearchOption } from "../data/searchOptions";
 import { splitHighlight } from "../data/findHighlight";
+import { visibleThreadSearchHits, type ThreadSearchBatch } from "../data/messageSearch";
 import { searchThreadMessages } from "../data/harnessBridge";
 import { clearRecentSearches, readRecentSearches, rememberRecentSearch, RECENT_SEARCH_MIN_LENGTH } from "../data/recentSearches";
 
@@ -28,13 +28,17 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
   onOpenMessage?: (session: SessionItem, itemId: string) => void;
 }) {
   const [query, setQuery] = useState(""), [index, setIndex] = useState(0);
-  const [hits, setHits] = useState<ThreadSearchMatch[]>([]);
-  const [hitsTruncated, setHitsTruncated] = useState(false);
+  const [hitBatch, setHitBatch] = useState<ThreadSearchBatch | null>(null);
   const [messageState, setMessageState] = useState<"idle" | "loading" | "ready" | "error">("idle");
   const [recent, setRecent] = useState<string[]>(readRecentSearches);
   const [includeArchived, setIncludeArchived] = useState(false);
   const rows = sessionRows(folders, query, { includeArchived });
-  const rowsById = new Map(sessionRows(folders, "", { includeArchived }).map(row => [row.session.id, row]));
+  const allRows = sessionRows(folders, "", { includeArchived });
+  const rowsById = new Map(allRows.map(row => [row.session.id, row]));
+  const availableThreadIds = new Set(allRows.map(row => row.session.id));
+  const { matches: hits, truncated: hitsTruncated } = searchMessages
+    ? visibleThreadSearchHits(hitBatch, query, includeArchived, availableThreadIds)
+    : { matches: [], truncated: false };
   const options = buildSearchOptions(rows, hits, rowsById);
   const messageOptions = options.filter((option): option is Extract<SearchOption, { kind: "message" }> => option.kind === "message");
   const sessionOptions = options.filter((option): option is Extract<SearchOption, { kind: "session" }> => option.kind === "session");
@@ -47,7 +51,7 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
   useEffect(() => {
     const needle = query.trim();
     if (!searchMessages || needle.length < 2) {
-      setHits([]); setHitsTruncated(false); setMessageState("idle");
+      setHitBatch(null); setMessageState("idle");
       return;
     }
     let cancelled = false;
@@ -55,17 +59,15 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
     const timer = window.setTimeout(() => {
       void searchThreadMessages(needle, 20, includeArchived).then(result => {
         if (cancelled) return;
-        const available = new Set(sessionRows(folders, "", { includeArchived }).map(row => row.session.id));
-        setHits(result.matches.filter(match => available.has(match.threadId)));
-        setHitsTruncated(result.truncated === true);
+        setHitBatch({ query: needle, includeArchived, matches: result.matches, truncated: result.truncated === true });
         setMessageState("ready");
       }).catch(() => {
         if (cancelled) return;
-        setHits([]); setHitsTruncated(false); setMessageState("error");
+        setHitBatch(null); setMessageState("error");
       });
     }, 250);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [query, searchMessages, includeArchived, folders]);
+  }, [query, searchMessages, includeArchived]);
   const openOption = (option: SearchOption | undefined) => {
     if (!option) return;
     if (query.trim().length >= RECENT_SEARCH_MIN_LENGTH) setRecent(rememberRecentSearch(query));

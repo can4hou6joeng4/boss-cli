@@ -1,3 +1,4 @@
+import type { ThreadSearchMatch } from "@boss-harness/protocol";
 import type { MessageItem } from "./mockData";
 
 const normalize = (value: string) => value.normalize("NFKC").toLocaleLowerCase("zh-CN");
@@ -27,4 +28,38 @@ export function findMessageMatches(messages: MessageItem[], query: string, optio
   return messages
     .filter(item => normalize(messageText(item) + (options.includeDetails ? "\n" + messageDetailText(item) : "")).includes(needle))
     .map(item => item.id);
+}
+
+/** 一次消息搜索的结果批次；记录发起时的查询与归档范围，用于判断结果是否已过期。 */
+export interface ThreadSearchBatch {
+  query: string;
+  includeArchived: boolean;
+  matches: ThreadSearchMatch[];
+  truncated: boolean;
+}
+
+export interface VisibleThreadSearchHits {
+  matches: ThreadSearchMatch[];
+  truncated: boolean;
+}
+
+/**
+ * 只展示与当前查询和归档范围一致的消息命中批次。
+ * 查询变化后旧批次仍留在组件状态里，若直接渲染会让旧命中继续可点开；
+ * 这里在渲染期判定批次是否对应当前输入，并继续按当前可见会话过滤。
+ */
+export function visibleThreadSearchHits(
+  batch: ThreadSearchBatch | null,
+  query: string,
+  includeArchived: boolean,
+  availableThreadIds: ReadonlySet<string>,
+): VisibleThreadSearchHits {
+  const needle = query.trim();
+  if (!batch || !needle || batch.query !== needle || batch.includeArchived !== includeArchived) {
+    return { matches: [], truncated: false };
+  }
+  return {
+    matches: batch.matches.filter(match => availableThreadIds.has(match.threadId)),
+    truncated: batch.truncated,
+  };
 }
