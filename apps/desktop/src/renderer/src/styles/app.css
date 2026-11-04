@@ -1403,27 +1403,6 @@ html:not(.dark) .chat-citation-pill:hover {
   background: rgba(0, 0, 0, 0.08);
 }
 
-/* 关联实体 / Mention 药丸 */
-.chat-mention-pill {
-  display: inline-flex;
-  align-items: center;
-  padding: 1px 6px;
-  border-radius: var(--radius-xs);
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid var(--border-subtle);
-  color: var(--text-main);
-  font-size: 12px;
-  font-weight: 500;
-  text-decoration: none;
-  margin: 0 2px;
-  transition: all var(--transition-fast);
-  user-select: none;
-}
-.chat-mention-pill:hover {
-  background: rgba(255, 255, 255, 0.14);
-  border-color: rgba(255, 255, 255, 0.25);
-}
-
 /* 代码块容器与顶栏复制按钮 (ChatGPT.app 代码块规范) */
 .code-block-wrapper {
   margin: 10px 0;

@@ -2,7 +2,6 @@ import { useState, useRef, useEffect, forwardRef } from "react";
 import { IconPlus, IconSend, IconStop, IconShield, IconChevronDown, IconCheck, IconClose, IconFolder, IconSparkles, IconSettings, IconSearch, IconBranch, IconChat, IconLock } from "../components/Icons";
 import { Popover } from "../components/Popover";
 import { SlashCommandList, SLASH_COMMANDS, type SlashCommandItem } from "../components/SlashCommandList";
-import { AtMentionList, filterMentions, type MentionItem } from "../components/AtMentionList";
 import { MODEL_OPTIONS, type ConversationMode } from "../data/mockData";
 import type { ModelDescriptor, SkillDescriptor, SkillProblem } from "@boss-harness/protocol";
 import type { SkillCatalogState } from "../data/harnessBridge";
@@ -50,7 +49,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const [skillQuery, setSkillQuery] = useState("");
   const [modelPending, setModelPending] = useState(false);
   const [modelError, setModelError] = useState("");
-  const [slashOpen, setSlashOpen] = useState(false), [mentionOpen, setMentionOpen] = useState(false);
+  const [slashOpen, setSlashOpen] = useState(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [localDraft, setLocalDraft] = useState(createComposerDraft);
   const [dragging, setDragging] = useState(false);
@@ -90,7 +89,6 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
   const dragDepth = useRef(0);
   const slashQuery = value.match(/^\/([^\s]*)$/)?.[1] ?? "";
-  const mentionQuery = value.match(/(?:^|\s)@([^\s]*)$/)?.[1] ?? "";
   const availableModels = preview ? MODEL_OPTIONS : models.filter(model => model.configured && model.available);
   const currentDescriptor = availableModels.find(model => model.id === activeModelId && model.provider === activeModelProvider);
   const modelName = preview
@@ -110,20 +108,16 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const focusInput = () => requestAnimationFrame(() => inputRef.current?.focus());
   const toggleMenu = (next: typeof menu) => {
     setMenu(previous => previous === next ? null : next);
-    setModelQuery(""); setSkillQuery(""); setSlashOpen(false); setMentionOpen(false);
+    setModelQuery(""); setSkillQuery(""); setSlashOpen(false);
   };
   const change = (text: string) => {
     onChange(text); setNotice(""); setSelectedIndex(0);
     setSlashOpen(/^\/[^\s]*$/.test(text));
-    setMentionOpen(/(?:^|\s)@[^\s]*$/.test(text));
   };
   const selectSlash = (item: SlashCommandItem) => {
     setSlashOpen(false);
     onChange(/^\/[^\s]*$/.test(value) ? item.command + " " : `${item.command} ${value}`);
     focusInput();
-  };
-  const selectMention = (item: MentionItem) => {
-    setMentionOpen(false); onChange(value.slice(0, value.lastIndexOf("@")) + "@" + item.name + " "); focusInput();
   };
   const addFiles = async (files: File[]) => {
     if (!files.length) return;
@@ -202,7 +196,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
         if (alive.current && draftRef.current.id === submitted.id && valueVersion.current === submitted.textVersion) onChange("");
       }
       updateDraft(previous => clearTransferredDraft(previous, submitted));
-      if (alive.current && draftRef.current.id === submitted.id) { setSlashOpen(false); setMentionOpen(false); setMenu(null); }
+      if (alive.current && draftRef.current.id === submitted.id) { setSlashOpen(false); setMenu(null); }
     } catch (cause) {
       // 内核明确拒绝说明消息未入队 / 未转向：解除待核对状态，内容保留在输入框供修改后正常重试。
       if (queueing && isHarnessRpcRejection(cause)) {
@@ -298,7 +292,6 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     {attachments.length > 0 && <div className="attachment-list">{attachments.map(file => <div className="attachment-chip" key={file.id} title={`${file.name} · ${Math.max(1, Math.ceil(file.size / 1000))} KB`}><IconFolder size={15} /><span>{file.name}<small>{Math.max(1, Math.ceil(file.size / 1000))} KB · 文本</small></span><button type="button" aria-label={`移除附件 ${file.name}`} onClick={() => updateDraft(previous => ({ ...previous, attachments: previous.attachments.filter(item => item.id !== file.id) }))}><IconClose size={12} /></button></div>)}</div>}
     {selectedSkillChips.length > 0 && <div className="composer-skill-chips" aria-label="已选运行时技能">{selectedSkillChips.map(chip => <div className={`composer-skill-chip${chip.stale ? " is-stale" : ""}`} key={chip.id} title={chip.stale ? `${chip.id} · 已不在当前技能目录中` : chip.description ?? chip.name}><IconSparkles size={11} /><span>{chip.name}</span><button type="button" aria-label={`移除技能：${chip.name}`} title={submitting ? "正在转交消息，暂不能更改技能" : "移除技能"} disabled={submitting} onClick={() => toggleSkill(chip.id)}><IconClose size={11} /></button></div>)}</div>}
     <SlashCommandList isOpen={slashOpen} onClose={() => setSlashOpen(false)} onSelect={selectSlash} search={slashQuery} selectedIndex={selectedIndex} />
-    <AtMentionList isOpen={mentionOpen} onClose={() => setMentionOpen(false)} onSelect={selectMention} search={mentionQuery} selectedIndex={selectedIndex} />
     <textarea aria-label="消息输入" ref={element => { inputRef.current = element; if (typeof forwardedRef === "function") forwardedRef(element); else if (forwardedRef) forwardedRef.current = element; }} rows={2}
       placeholder={archived ? "已归档，恢复后可继续对话" : isRunning ? queueIntent === "steering" ? "补充当前任务要求…" : "安排当前任务结束后的下一步…" : blocked ? "另一个任务正在运行，请等待完成" : "和 BOSS Harness 一起工作"}
       value={value} onChange={event => change(event.target.value)}
@@ -314,15 +307,15 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
       onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={() => { composingRef.current = false; }}
       onKeyDown={event => {
         if (event.nativeEvent.isComposing || composingRef.current || event.keyCode === 229) return;
-        if (slashOpen || mentionOpen) {
-          const options = slashOpen ? SLASH_COMMANDS.filter(item => [item.command, item.label, item.description].join(" ").toLowerCase().includes(slashQuery.toLowerCase())) : filterMentions(mentionQuery);
+        if (slashOpen) {
+          const options = SLASH_COMMANDS.filter(item => [item.command, item.label, item.description].join(" ").toLowerCase().includes(slashQuery.toLowerCase()));
           if ((event.key === "ArrowDown" || event.key === "ArrowUp") && options.length) { event.preventDefault(); setSelectedIndex(previous => (previous + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length); return; }
           if (event.key === "Enter" || event.key === "Tab") {
             const option = options[selectedIndex];
-            if (option && !event.shiftKey) { event.preventDefault(); if (slashOpen) selectSlash(option as SlashCommandItem); else selectMention(option as MentionItem); return; }
-            setSlashOpen(false); setMentionOpen(false);
+            if (option && !event.shiftKey) { event.preventDefault(); selectSlash(option); return; }
+            setSlashOpen(false);
           }
-          if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setSlashOpen(false); setMentionOpen(false); return; }
+          if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setSlashOpen(false); return; }
         }
         if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submit(); }
       }} />
@@ -366,10 +359,9 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
           <Popover open={menu === "add"} onClose={() => setMenu(null)} above label="添加上下文" className="composer-action-menu">
             <div className="composer-menu-heading">添加上下文</div>
             <button type="button" disabled={readingAttachments || submitting || attachments.length >= MAX_ATTACHMENTS} onClick={() => { fileRef.current?.click(); setMenu(null); }}><IconFolder /><span>添加文件<small>TXT、Markdown、JSON、CSV</small></span><span className="menu-shortcut">本地</span></button>
-            <button type="button" onClick={() => { change(value + (value && !/\s$/.test(value) ? " " : "") + "@"); setMenu(null); focusInput(); }}><IconPlus /><span>关联招聘对象<small>将职位、候选人等加入上下文</small></span><span className="menu-shortcut">@</span></button>
             <div className="menu-divider" />
             {onLogin && <button type="button" onClick={() => { setMenu(null); onLogin(); }}><IconLock /><span>连接 BOSS 直聘<small>在当前会话右侧扫码登录</small></span></button>}
-            <button type="button" onClick={() => { if (!value.trim()) onChange("/"); setSlashOpen(true); setMentionOpen(false); setSelectedIndex(0); setMenu(null); focusInput(); }}><IconSparkles /><span>快捷指令</span><span className="menu-shortcut">/</span></button>
+            <button type="button" onClick={() => { if (!value.trim()) onChange("/"); setSlashOpen(true); setSelectedIndex(0); setMenu(null); focusInput(); }}><IconSparkles /><span>快捷指令</span><span className="menu-shortcut">/</span></button>
             <div className="composer-menu-footer">也可拖入文本文件，或粘贴较长文本作为附件。</div>
           </Popover>
         </div>

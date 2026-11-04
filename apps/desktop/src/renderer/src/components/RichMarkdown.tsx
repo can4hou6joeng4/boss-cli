@@ -55,14 +55,13 @@ export const RichMarkdown: React.FC<RichMarkdownProps> = ({ content }) => {
     });
   }
 
-  // 行内解析器（解析链接、引文药丸、Mention、粗体、行内代码）
+  // 行内解析器（解析链接、粗体、行内代码）
   const renderInline = (text: string) => {
     // 匹配:
     // 1. [text](url) -> 链接或 Citation
     // 2. `code` -> 行内代码
     // 3. **bold** -> 粗体
-    // 4. @mention -> 实体药丸
-    const tokenRegex = /(\[([^\]]+)\]\(([^)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*|@([a-zA-Z0-9_\u4e00-\u9fa5:*]+))/g;
+    const tokenRegex = /(\[([^\]]+)\]\(([^)]+)\)|`([^`]+)`|\*\*([^*]+)\*\*)/g;
 
     const elements: React.ReactNode[] = [];
     let currentIdx = 0;
@@ -127,13 +126,6 @@ export const RichMarkdown: React.FC<RichMarkdownProps> = ({ content }) => {
           <strong key={inlineMatch.index} style={{ fontWeight: 600, color: "var(--text-main)" }}>
             {inlineMatch[5]}
           </strong>
-        );
-      } else if (inlineMatch[6]) {
-        // @Mention
-        elements.push(
-          <span key={inlineMatch.index} className="chat-mention-pill">
-            @{inlineMatch[6]}
-          </span>
         );
       }
 
