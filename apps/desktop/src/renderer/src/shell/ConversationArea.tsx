@@ -5,6 +5,7 @@ import { Composer } from "./Composer";
 import { RichMarkdown } from "../components/RichMarkdown";
 import { ToolResultDetails } from "../components/ToolResultDetails";
 import { QueuePanel } from "./QueuePanel";
+import { ApprovalDeadline } from "../components/ApprovalDeadline";
 import { ContextEditDialog } from "../components/ContextEditDialog";
 import { ModelRetryNotice } from "../components/ModelRetryNotice";
 import { BranchSummaryJobNotice, BranchSummaryMarker } from "../components/BranchSummaryNotice";
@@ -531,6 +532,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                       <span>
                         敏感操作审批：<b>{item.approval.toolName}</b>
                       </span>
+                      {!item.approval.decision && item.approval.deadline !== undefined && <ApprovalDeadline deadline={item.approval.deadline} />}
                     </div>
                     <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
                       {item.approval.description}

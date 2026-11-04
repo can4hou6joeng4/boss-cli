@@ -1,6 +1,7 @@
 import type { ApprovalState, ProviderFailureInfo, QueueItem, ThreadItem } from "@boss-harness/protocol";
 import type { MessageItem } from "./mockData";
 import { toMessage, type ApprovalDelivery } from "./harnessBridge";
+import { approvalDeadline } from "./pendingApprovals";
 
 export interface HarnessEvent {
   method: string;
@@ -19,6 +20,8 @@ export interface HarnessEvent {
     source?: ThreadItem["source"];
     approvalId?: string; summary?: string; params?: Record<string, unknown>;
     consequential?: boolean; approval?: ApprovalState;
+    /** approval/requested 的等待截止时间；缺失或非法时审批卡不显示倒计时。 */
+    deadline?: number;
     eventCursor?: string; eventId?: string; clientUserMessageId?: string;
     state?: string; generation?: number; running?: boolean;
     queueId?: string; queue?: QueueItem[];
@@ -65,10 +68,12 @@ export function reduceHarnessEvent(previous: MessageItem[], event: HarnessEvent)
       else if (params.resultRef) item = { ...item, toolUse: { ...item.toolUse!, resultRef: params.resultRef, output: undefined } };
       else if (params.resultOmitted) item = { ...item, toolUse: { ...item.toolUse!, resultRef: undefined, output: "结果较大，实时详情已省略；完整结果已保存到会话历史。" } };
       break;
-    case "approval/requested":
+    case "approval/requested": {
       if (!params.approvalId) return previous;
-      item = { ...item, approval: { approvalId: params.approvalId, toolName: params.toolName ?? "tool", description: params.summary ?? "该操作需要你的批准", params: params.params ?? {}, consequential: params.consequential ?? true } };
+      const deadline = approvalDeadline(params.deadline);
+      item = { ...item, approval: { approvalId: params.approvalId, toolName: params.toolName ?? "tool", description: params.summary ?? "该操作需要你的批准", params: params.params ?? {}, consequential: params.consequential ?? true, ...(deadline !== undefined ? { deadline } : {}) } };
       break;
+    }
     default: return previous;
   }
   return index >= 0 ? previous.map((message, slot) => slot === index ? item : message) : [...previous, item];

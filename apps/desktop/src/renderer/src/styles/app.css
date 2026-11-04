@@ -1086,6 +1086,18 @@ html, body, #root {
   font-weight: 600;
   color: var(--text-main);
 }
+.approval-deadline {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.approval-deadline.is-soon { color: var(--accent-warning); }
+.approval-deadline.is-expired { color: var(--accent-error); }
 .approval-payload {
   background: rgba(0, 0, 0, 0.3);
   border-radius: var(--radius-sm);
