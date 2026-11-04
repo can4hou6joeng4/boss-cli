@@ -33,7 +33,7 @@ export interface SessionBranchesView {
 export interface ConversationAreaProps {
   messages: MessageItem[]; currentMode: ConversationMode; onModeChange: (mode: ConversationMode) => void;
   onSendMessage: ComposerSend;
-  onQueueMessage?: ComposerQueue; onCheckQueueSubmission?: CheckQueueSubmission; queueItems?: QueueItem[]; queueTotalItems?: number; queueActiveItems?: number; queueTruncated?: boolean; onRemoveQueueItem?: (id: string) => Promise<boolean>; onRetryQueueItem?: (item: QueueItem) => Promise<boolean>; onRefreshQueue?: () => Promise<QueueRefreshResult>;
+  onQueueMessage?: ComposerQueue; onCheckQueueSubmission?: CheckQueueSubmission; queueItems?: QueueItem[]; queueTotalItems?: number; queueActiveItems?: number; queueTruncated?: boolean; onRemoveQueueItem?: (id: string) => Promise<boolean>; onRetryQueueItem?: (item: QueueItem) => Promise<boolean>; onReadQueueItem?: (item: QueueItem) => Promise<QueueItem>; onRefreshQueue?: () => Promise<QueueRefreshResult>;
   draft?: ComposerDraft; onDraftChange?: UpdateComposerDraft; simulateLocal?: boolean; harnessUp?: boolean; running?: boolean; taskBlocked?: boolean;
   models?: ModelDescriptor[]; activeModelProvider?: string; activeModelId?: string;
   onSelectModel?: (provider: string, id: string) => void | boolean | Promise<void | boolean>; onOpenSettings?: () => void; onInterrupt?: () => void;
@@ -58,7 +58,7 @@ export interface ConversationAreaProps {
   onReviewDiff?: () => void; onRevertDiff?: () => void; onOpenRewind?: () => void; onOpenCockpit?: () => void;
 }
 export const ConversationArea: React.FC<ConversationAreaProps> = ({
-  messages: initialMessages, readOnly = false, archived = false, currentMode, onModeChange, onSendMessage, onQueueMessage, onCheckQueueSubmission, queueItems = [], queueTotalItems, queueActiveItems, queueTruncated, onRemoveQueueItem, onRetryQueueItem, onRefreshQueue, simulateLocal = true, harnessUp = false,
+  messages: initialMessages, readOnly = false, archived = false, currentMode, onModeChange, onSendMessage, onQueueMessage, onCheckQueueSubmission, queueItems = [], queueTotalItems, queueActiveItems, queueTruncated, onRemoveQueueItem, onRetryQueueItem, onReadQueueItem, onRefreshQueue, simulateLocal = true, harnessUp = false,
   running = false, taskBlocked = false, draft, onDraftChange, models, activeModelProvider, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, sessionReasoning,
   onInterrupt, onApprovalDecision, onReviewDiff, onRevertDiff, onOpenRewind, loginGuide, onLogin,
   skills = [], skillCatalogState = "unavailable", skillCatalogError, onRefreshSkills, skillProblems = [],
@@ -790,7 +790,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
 
       <div className="thread-composer-wrapper">
         <div className="thread-composer-inner">
-          {!simulateLocal && !archived && <QueuePanel items={queueItems} totalItems={queueTotalItems} activeItems={queueActiveItems} truncated={queueTruncated} skills={skills} connected={harnessUp} onRefresh={onRefreshQueue} onRemove={onRemoveQueueItem ?? (async () => false)} onRetry={onRetryQueueItem} />}
+          {!simulateLocal && !archived && <QueuePanel items={queueItems} totalItems={queueTotalItems} activeItems={queueActiveItems} truncated={queueTruncated} skills={skills} connected={harnessUp} onRefresh={onRefreshQueue} onReadFull={onReadQueueItem} onRemove={onRemoveQueueItem ?? (async () => false)} onRetry={onRetryQueueItem} />}
           {archived && <div className="composer-notice archived-notice" role="status">此聊天已归档，可查看历史；在侧栏「已归档」中恢复后可继续对话。</div>}
           {loginGuide}
           {approvalError && <div className="composer-notice" role="alert">{approvalError}</div>}

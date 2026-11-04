@@ -676,6 +676,13 @@ export function App(): JSX.Element {
       return { ok: false, message: harnessErrorText(cause) };
     }
   }, [applyQueuePage, harnessUp]);
+  const handleReadQueueItem = useCallback(async (item: QueueItem): Promise<QueueItem> => {
+    const session = activeRef.current;
+    if (!session || session.projectId !== HARNESS_PROJECT_ID) throw new Error("当前会话不连接本机内核");
+    if (!harnessUp) throw new Error("本机内核未连接");
+    // 队列面板只拿到截断预览；核对全文必须走 queue/get，不能把预览当成完整输入。
+    return readQueueItem(session.id, item.id);
+  }, [harnessUp]);
   const handleInterrupt = useCallback(() => {
     const id = activeRef.current?.id; if (!id || !runningRef.current.has(id)) return;
     const timer = timers.current.get(id);
@@ -739,7 +746,7 @@ export function App(): JSX.Element {
   return <>
     <AppShell isDark={isDark} onToggleTheme={() => setIsDark(previous => !previous)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => setIsSidebarOpen(previous => !previous)}
       folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} turnSkillIds={turnSkillIds} currentMode={currentMode} onModeChange={setCurrentMode}
-      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onDeleteSession={handleDeleteSession} onArchiveSession={handleArchiveSession} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueActiveItems={queueMeta.activeItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} onRefreshQueue={handleRefreshQueue} simulateLocal={preview} harnessUp={harnessUp}
+      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onDeleteSession={handleDeleteSession} onArchiveSession={handleArchiveSession} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueActiveItems={queueMeta.activeItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} onReadQueueItem={handleReadQueueItem} onRefreshQueue={handleRefreshQueue} simulateLocal={preview} harnessUp={harnessUp}
       onCreateConnectionSession={createConnectionSession}
       sessionReasoning={contextThreadId ? sessionReasoning : undefined}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession || branchSummaryRunning}
