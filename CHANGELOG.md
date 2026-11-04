@@ -138,6 +138,7 @@
 
 ### 修复
 
+- [Issue #503](https://github.com/can4hou6joeng4/boss-harness/issues/503)：快捷指令列表仍有无法执行的 `/clear` 与虚假「即时」标记。`/clear` 描述为「重置当前窗口消息展示（不影响持久化记录）」，但没有任何代码消费该指令：选中只是把 `/clear ` 插入输入框，发送后作为普通文本交给模型，消息流不会清空；另有 6 个条目带 `autoExecute: true` 并渲染「即时」徽标，但该字段除控制徽标外无任何用途，所有指令都只是填入文本、仍需用户手动发送。现在删除 `/clear` 条目及其 `clear` 图标分支与 `IconClose` 导入，移除 `autoExecute` 字段、「即时」徽标和只被它使用的 `.popup-command-badge` 样式；其余指令保持「插入文本、由用户发送」的语义不变。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #501](https://github.com/can4hou6joeng4/boss-harness/issues/501)：补齐内核实际发送但协议缺失的通知常量。内核经 `EventHub.emit` 发布并持久化 `approval/decided`、`context/compacted` 与 `turn/steeringApplied`，桌面也按字符串消费，但 `ServerNotifications` 未声明它们，由该常量派生的 `ServerNotification` 联合类型因此不包含这三个真实通知，`HarnessClient.on` 无法订阅，第三方客户端按常量实现时会漏掉审批裁决、摘要完成与转向已应用事件。现在补上 `approvalDecided`、`contextCompacted`、`turnSteeringApplied` 三个常量，值保持与内核一致。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #499](https://github.com/can4hou6joeng4/boss-harness/issues/499)：真实连接下 Plan / Ask 模式按钮可点击但无效果。会话顶栏的三个模式按钮没有禁用条件，点击后只改变界面高亮，`currentMode` 从未传给内核，协议也没有模式参数，实际回合仍按 Agent 方式执行工具；同一功能的输入区菜单在非预览模式下却明确禁用并提示「当前连接暂不支持此模式」。现在真实连接下禁用 Plan / Ask，`title` 说明不支持原因，Agent 保持可用；预览模式行为不变，并补充禁用态样式。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #497](https://github.com/can4hou6joeng4/boss-harness/issues/497)：快捷键说明仍列出已移除的 `@` 招聘对象入口。上一轮 #495 已删除 `@` 提及菜单与「关联招聘对象」入口，但键盘快捷键弹窗的「输入」分组仍显示 `@ 选择招聘对象`，用户按说明输入 `@` 后不会出现任何选择器，容易误判为功能故障。现在删除该项；其余快捷键已逐项核对实现，保持不变。不新增 RPC，协议与内核仍为 `0.2.0`。
