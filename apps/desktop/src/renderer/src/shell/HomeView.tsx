@@ -46,7 +46,7 @@ export function HomeView(props: Props) {
       <div className="starter-prompts">
         {suggestions.map(item => <button key={item.title} onClick={() => { setValue(item.prompt); ref.current?.focus(); }}><item.icon size={18} /><strong>{item.title}</strong><span>{item.detail}</span></button>)}
       </div>
-      <div className="home-keyboard-hint"><span><kbd>/</kbd> 快捷指令</span><span><kbd>@</kbd> 关联对象</span><span><kbd>⇧ Enter</kbd> 换行</span></div>
+      <div className="home-keyboard-hint"><span><kbd>/</kbd> 快捷指令</span><span><kbd>⇧ Enter</kbd> 换行</span></div>
     </div>
     <div className="workspace-status" role="status"><span className={props.preview || !props.harnessUp ? "status-dot preview" : "status-dot"} />{props.preview ? "界面预览 · 使用示例数据" : props.harnessUp ? "已连接本地招聘 Harness" : "本地招聘 Harness 未连接"}<span className="status-divider">·</span>{props.preview ? "对外操作由你确认" : "新会话默认只读"}</div>
   </div>;
