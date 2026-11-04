@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { SessionExportSaveRequest, SessionExportSaveResult } from "@boss-harness/protocol";
+import { safeSlice } from "@boss-harness/shared";
 import { ModalSurface } from "./ModalSurface";
 import { harnessErrorText } from "../data/harnessBridge";
 import "../styles/context-panel.css";
@@ -18,7 +19,7 @@ const number = (value: number) => value.toLocaleString("zh-CN");
 function rpcError(value: unknown): Error | null {
   if (!value || typeof value !== "object" || !("__harnessRpcError" in value)) return null;
   const rpc = (value as { __harnessRpcError?: { code?: unknown; message?: unknown } }).__harnessRpcError;
-  const message = typeof rpc?.message === "string" ? rpc.message.slice(0, 300) : "内核拒绝了导出请求";
+  const message = typeof rpc?.message === "string" ? safeSlice(rpc.message, 300) : "内核拒绝了导出请求";
   return new Error(typeof rpc?.code === "number" ? `${message}（内核 ${rpc.code}）` : message);
 }
 

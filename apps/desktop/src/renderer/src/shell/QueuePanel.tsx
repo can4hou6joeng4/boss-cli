@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { safeSlice } from "@boss-harness/shared";
 import type { QueueItem, SkillDescriptor } from "@boss-harness/protocol";
 import { IconClose } from "../components/Icons";
 import { ModalSurface } from "../components/ModalSurface";
@@ -180,7 +181,7 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
         </div>
         {onUpdateInput && item.status === "queued" && <button type="button" className="turn-queue-edit" title="编辑排队中的正文；不会提前投递" disabled={reading !== null || saving} onClick={() => { void startEditing(item); }}>编辑</button>}
         {canRetry(item) && <button type="button" className="turn-queue-retry" title="用同一输入与技能重新创建队列消息，并撤回旧项" disabled={pending !== null} onClick={() => { void retry(item); }}>重新排队</button>}
-        {(item.status === "queued" || item.status === "paused") && <button type="button" aria-label={`撤回排队消息：${item.input.slice(0, 80)}`} title={item.status === "paused" ? "取消暂停的队列消息" : "撤回排队消息"} disabled={pending !== null} onClick={async () => {
+        {(item.status === "queued" || item.status === "paused") && <button type="button" aria-label={`撤回排队消息：${safeSlice(item.input, 80)}`} title={item.status === "paused" ? "取消暂停的队列消息" : "撤回排队消息"} disabled={pending !== null} onClick={async () => {
           setPending(item.id); setError("");
           try { if (!await onRemove(item.id)) setError("撤回结果尚未确认，请刷新队列状态。"); }
           catch (cause) { setError(`撤回结果尚未确认：${harnessErrorText(cause)}。请刷新队列状态。`); }

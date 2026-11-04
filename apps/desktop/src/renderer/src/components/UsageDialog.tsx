@@ -1,4 +1,5 @@
 import { ModalSurface } from "./ModalSurface";
+import { safeSlice } from "@boss-harness/shared";
 import type { ThreadUsageBucket, ThreadUsageSummaryJob, ThreadUsageTurn } from "@boss-harness/protocol";
 import type { MessageItem } from "../data/mockData";
 import type { ThreadUsageState, UsageView } from "../data/useThreadUsage";
@@ -28,7 +29,7 @@ const JOB_REASON: Record<string, string> = {
 function clip(text: string | undefined, fallback: string): string {
   const value = (text ?? "").replace(/\s+/g, " ").trim();
   if (!value) return fallback;
-  return value.length > 40 ? value.slice(0, 40) + "…" : value;
+  return value.length > 40 ? safeSlice(value, 40) + "…" : value;
 }
 
 function Facts({ bucket, label }: { bucket: ThreadUsageBucket; label: string }) {
