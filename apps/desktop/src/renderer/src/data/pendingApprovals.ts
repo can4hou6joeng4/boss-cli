@@ -22,10 +22,10 @@ function readApproval(value: unknown): PendingApproval | null {
   const threadId = text(record.threadId, FIELD_LIMIT);
   const itemId = text(record.itemId, FIELD_LIMIT);
   const toolName = text(record.toolName, FIELD_LIMIT);
-  const deadline = record.deadline;
+  const deadline = approvalDeadlineMs(record.deadline);
   // 缺 id / 线程 / 工具名或到期时间不可读的条目无法定位与提示，直接丢弃。
   if (!approvalId || !threadId || !itemId || !toolName) return null;
-  if (typeof deadline !== "number" || !Number.isFinite(deadline)) return null;
+  if (deadline === undefined) return null;
   const summary = optionalText(record.summary, SUMMARY_LIMIT);
   const turnId = optionalText(record.turnId, FIELD_LIMIT);
   const paramsDigest = optionalText(record.paramsDigest, DIGEST_LIMIT);
@@ -59,9 +59,17 @@ const HOUR = 60 * MINUTE;
 /** 5 分钟内到期的审批在卡片上标警示色。 */
 export const APPROVAL_SOON_MS = 5 * MINUTE;
 
-/** 事件与会话记录里的审批到期时间：只接受有限数，其它视为未知。 */
-export function approvalDeadline(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+const MILLISECONDS_PER_SECOND = 1_000;
+/** 低于该值的到期时间按 Unix 秒解释；真实毫秒时间戳远大于它。 */
+const APPROVAL_DEADLINE_MS_THRESHOLD = 1e12;
+
+/**
+ * 内核用 Unix 秒（`time.time()`）写入审批到期时间，界面统一换算为毫秒，
+ * 再与 `Date.now()` 比较。已经是毫秒的值原样保留；非有限数视为未知。
+ */
+export function approvalDeadlineMs(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return value > 0 && value < APPROVAL_DEADLINE_MS_THRESHOLD ? value * MILLISECONDS_PER_SECOND : value;
 }
 
 /** 审批卡倒计时的紧急度；时间不可读时不显示倒计时，而不是显示成正常。 */
@@ -73,7 +81,7 @@ export function approvalUrgency(deadline: number, now = Date.now()): "expired" |
   return remaining < APPROVAL_SOON_MS ? "soon" : "normal";
 }
 
-/** 把审批到期时间转成面板文案；非法时间与已过期要和「还有多久」区分开。 */
+/** 把审批到期时间（毫秒）转成面板文案；非法时间与已过期要和「还有多久」区分开。 */
 export function approvalRemainingText(deadline: number, now = Date.now()): string {
   if (typeof deadline !== "number" || !Number.isFinite(deadline)) return "到期时间未知";
   const remaining = deadline - now;

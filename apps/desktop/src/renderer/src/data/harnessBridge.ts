@@ -66,7 +66,7 @@ import {
 } from "@boss-harness/protocol";
 import { formatRelativeTime } from "@boss-harness/shared";
 import { queuePageOf, type QueuePage } from "./queueMapping";
-import { approvalDeadline, mapPendingApprovals } from "./pendingApprovals";
+import { approvalDeadlineMs, mapPendingApprovals } from "./pendingApprovals";
 import { readPagedItems } from "./pagedRead";
 import type { MessageItem, SessionItem } from "./mockData";
 
@@ -532,7 +532,7 @@ export async function forkThread(threadId: string, turnId: string): Promise<Sess
 }
 
 function toApproval(state: ApprovalState): NonNullable<MessageItem["approval"]> {
-  const deadline = approvalDeadline(state.deadline);
+  const deadline = approvalDeadlineMs(state.deadline);
   return {
     approvalId: state.approvalId,
     toolName: state.toolName,
