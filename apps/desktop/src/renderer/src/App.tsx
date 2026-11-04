@@ -24,6 +24,7 @@ import { reduceHarnessEvent, autoApprovalFallback, type HarnessEvent } from "./d
 import { unconfirmedFailure } from "./data/confirmationFailure";
 import { HarnessReplica } from "./data/harnessReplica";
 import type { QueuePage } from "./data/queueMapping";
+import type { QueueRefreshResult } from "./data/queueRefresh";
 import { reduceModelRetry, settleModelRetryOnTurnEnd, type ModelRetryStatus } from "./data/modelRetry";
 import { toMessage } from "./data/harnessBridge";
 import { collectTurnSkillIds } from "./data/turnSkills";
@@ -662,6 +663,19 @@ export function App(): JSX.Element {
       return false;
     }
   }, [applyQueuePage, harnessUp]);
+  const handleRefreshQueue = useCallback(async (): Promise<QueueRefreshResult> => {
+    const session = activeRef.current;
+    if (!session || session.projectId !== HARNESS_PROJECT_ID) return { ok: false, message: "当前会话不连接本机内核" };
+    if (!harnessUp) return { ok: false, message: "本机内核未连接" };
+    try {
+      const page = await listQueue(session.id);
+      if (activeRef.current?.id === session.id) applyQueuePage(page);
+      return { ok: true };
+    } catch (cause) {
+      // 读不到内核状态时保留面板旧内容，由面板显示原因。
+      return { ok: false, message: harnessErrorText(cause) };
+    }
+  }, [applyQueuePage, harnessUp]);
   const handleInterrupt = useCallback(() => {
     const id = activeRef.current?.id; if (!id || !runningRef.current.has(id)) return;
     const timer = timers.current.get(id);
@@ -725,7 +739,7 @@ export function App(): JSX.Element {
   return <>
     <AppShell isDark={isDark} onToggleTheme={() => setIsDark(previous => !previous)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => setIsSidebarOpen(previous => !previous)}
       folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} turnSkillIds={turnSkillIds} currentMode={currentMode} onModeChange={setCurrentMode}
-      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onDeleteSession={handleDeleteSession} onArchiveSession={handleArchiveSession} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueActiveItems={queueMeta.activeItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} simulateLocal={preview} harnessUp={harnessUp}
+      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onDeleteSession={handleDeleteSession} onArchiveSession={handleArchiveSession} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueActiveItems={queueMeta.activeItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} onRefreshQueue={handleRefreshQueue} simulateLocal={preview} harnessUp={harnessUp}
       onCreateConnectionSession={createConnectionSession}
       sessionReasoning={contextThreadId ? sessionReasoning : undefined}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession || branchSummaryRunning}
