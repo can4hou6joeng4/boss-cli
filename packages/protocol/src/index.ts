@@ -647,6 +647,8 @@ export interface PendingApproval {
 export interface ApprovalListResponse { approvals: PendingApproval[] }
 /** 桌面进程内 IPC：点击审批系统通知后要定位的会话与条目；不经内核。 */
 export interface ApprovalFocusTarget { threadId: string; itemId: string }
+/** 桌面进程内 IPC：测试系统通知的结果；`sent` 表示已请求系统展示。 */
+export interface NotificationTestResult { sent: boolean; supported: boolean }
 export type ApprovalRespondResponse =
   | { accepted: true }
   | {

@@ -3,7 +3,7 @@ import { writeFile, chmod, lstat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { app, dialog, ipcMain, Notification, BrowserWindow, type IpcMainInvokeEvent } from "electron";
 import { HarnessHostManager, HarnessRpcError, type HarnessHostConnection } from "@boss-harness/app-client";
-import type { ApprovalFocusTarget, JsonRpcNotification, SessionExportSaveResult } from "@boss-harness/protocol";
+import type { ApprovalFocusTarget, JsonRpcNotification, NotificationTestResult, SessionExportSaveResult } from "@boss-harness/protocol";
 import { isTrustedRendererUrl, sessionExportFileName, validateHarnessRequest, validateLoginContext,
   validateSessionExportRequest, validateThreadExportResponse } from "./security";
 import { PlatformLogin } from "./platformLogin";
@@ -231,6 +231,17 @@ function registerIPC(): void {
     trustedSender(event);
     await manager.get().reconnect();
     return { ...manager.get().status(), repoRoot };
+  });
+  ipcMain.handle("notification:test", (event): NotificationTestResult => {
+    trustedSender(event);
+    if (!Notification.isSupported()) return { sent: false, supported: false };
+    try {
+      const native = new Notification({ title: "Boss Harness", body: "系统通知可用：审批请求与较久回合结束会通过这里提醒。" });
+      native.show();
+      return { sent: true, supported: true };
+    } catch {
+      return { sent: false, supported: true };
+    }
   });
   app.once("before-quit", () => { platformLogin.cancel(); manager.dispose(); host = null; windows.clear(); });
 }
