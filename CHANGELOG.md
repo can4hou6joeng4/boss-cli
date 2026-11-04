@@ -136,6 +136,7 @@
 
 ### 修复
 
+- 主窗口渲染进程崩溃后无法恢复：此前只处理 `did-fail-load`，渲染进程因崩溃、内存不足或被系统终止后会留下空白窗口，既没有原因也没有恢复动作。现在监听 `render-process-gone`：非 `clean-exit` 的意外退出在 120 秒滚动窗口内最多自动重载 2 次，重载后由既有 `did-finish-load` 恢复内核连接状态；预算耗尽或重载失败时加载无脚本、无外链的静态诊断页，展示转义后的原因与退出码，并说明会话数据仍保存在本地内核。正常退出、窗口或 `webContents` 已销毁时忽略；被后续导航取代的加载失败不再覆盖恢复流程。决策与诊断页文案为纯函数，不新增 RPC，协议与内核仍为 `0.2.0`。
 - 错误提示残留 Electron IPC 包装里的内部错误名：主进程 `harness:request` 对未列入 `PRESERVED` 的方法直接重新抛出内核 `HarnessRpcError`，跨 IPC 后消息被拼成 `Error invoking remote method '<channel>': HarnessRpcError: <内核消息>`，而 `harnessErrorText()` 只去掉 `Error: ` 前缀，于是归档、发送回合、审批、队列、技能与工作区说明等提示会显示「HarnessRpcError:」而不是内核原因；主进程 `loginFailureDetail()` 也有同一份正则。现在提取共享纯函数 `stripIpcErrorWrapper()`，统一去掉 IPC 包装及 `Error:` / `HarnessRpcError:` 错误名，普通消息、中文全角冒号与无包装消息保持不变；已保留错误形状的方法仍按既有 `rpcError` 路径显示错误码。不新增 RPC，协议与内核仍为 `0.2.0`。
 - 桌面端删除聊天被渲染层方法白名单拒绝：`security.ts` 的 `RENDERER_METHODS` 与线程级 `threadId` 校验清单都漏了 `thread/delete`，侧栏「删除聊天…」在 IPC 校验阶段就失败，请求到不了内核，界面只能显示通用错误；内核的 `THREAD_BUSY`、`THREAD_DELETE_INCOMPLETE`、`THREAD_NOT_FOUND` 分支因此永远走不到。现在 `thread/delete` 重新纳入两份清单，删除请求按既有 `deleteThreadFailure` 处理真实原因码；缺少、空串或超长 `threadId` 仍被拒绝，`thread/export` 等未暴露方法不受影响。不新增 RPC，协议与内核仍为 `0.2.0`。
 - 快速提问面板在已连接内核时伪造模型回复：`⌘;` 打开的浮窗首次打开就显示一条本地写死的「助手回复」，每次发送后追加固定示例文案，从未调用内核，容易被误当成模型判断。现在已连接内核时面板不再生成本地回复：提问经既有 `thread/start` + `turn/start` 创建新会话并发送，成功后关闭浮窗并切换到该会话查看回复，失败保留输入并显示真实原因、不自动重试；创建中禁止重复提交，内核未连接时禁用并说明原因。线路解析抽为纯函数 `resolveQuickAskRoute`（当前会话 → 进程默认线路 → 目录中同一 provider 的条目，`none` 与解析不出时明确拒绝，不拿显示值或目录首项猜线路）。仅在没有桌面桥的浏览器预览模式保留标注为示例的演示。不新增 RPC，协议与内核仍为 `0.2.0`。

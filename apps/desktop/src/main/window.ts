@@ -1,7 +1,8 @@
 import { join } from "node:path";
 import { BrowserWindow, dialog, shell } from "electron";
 import { isAllowedExternalUrl, isTrustedRendererUrl } from "./security";
-import { rendererFailurePage } from "./rendererFailure";
+import { rendererCrashPage, rendererFailurePage } from "./rendererFailure";
+import { decideRendererRecovery, rendererGoneSummary } from "./rendererRecovery";
 import type { WindowRestore } from "./windowState";
 
 /**
@@ -84,11 +85,43 @@ export function createMainWindow(restored?: WindowRestore): BrowserWindow {
     reportFailure(`${description || `error ${errorCode}`}${validatedUrl ? `（${validatedUrl}）` : ""}`);
   });
   const reason = (error: unknown): string => error instanceof Error ? error.message : String(error);
-  if (devUrl) {
-    void window.loadURL(devUrl).catch((error: unknown) => reportFailure(`${devUrl}：${reason(error)}`));
-  } else {
-    void window.loadFile(entryFile).catch((error: unknown) => reportFailure(`${entryFile}：${reason(error)}`));
-  }
+  // 记录当前导航：被后续加载取代的旧 Promise 会以 ABORTED 失败，不能当成界面加载失败。
+  let activeLoad: Promise<void> | null = null;
+  const loadRenderer = (): Promise<void> => {
+    const load = devUrl ? window.loadURL(devUrl) : window.loadFile(entryFile);
+    activeLoad = load;
+    return load;
+  };
+  const showCrashPage = (cause: string): void => {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) return;
+    activeLoad = null;
+    void window.loadURL(rendererCrashPage(cause)).catch(() => { /* 兜底页也失败时至少保留可见窗口。 */ });
+    if (!window.isVisible()) window.show();
+  };
+  // 渲染进程崩溃后 webContents 仍可继续加载；有限次自动恢复，超出预算时留下无脚本的诊断页。
+  let crashReloads: number[] = [];
+  window.webContents.on("render-process-gone", (_event, details) => {
+    const decision = decideRendererRecovery(details, crashReloads, Date.now());
+    crashReloads = decision.reloads;
+    if (decision.action === "ignore" || window.isDestroyed() || window.webContents.isDestroyed()) return;
+    if (decision.action === "reload") {
+      console.error("renderer process gone; reloading", details.reason, details.exitCode);
+      const load = loadRenderer();
+      void load.catch((error: unknown) => {
+        if (activeLoad !== load) return;
+        showCrashPage(`界面进程异常退出：${rendererGoneSummary(details)}；自动重载失败：${reason(error)}`);
+      });
+      return;
+    }
+    const cause = decision.message ?? `界面进程异常退出：${rendererGoneSummary(details)}。`;
+    console.error("renderer process gone; recovery exhausted", cause);
+    showCrashPage(cause);
+  });
+  const initialLoad = loadRenderer();
+  void initialLoad.catch((error: unknown) => {
+    if (activeLoad !== initialLoad) return;
+    reportFailure(`${devUrl ?? entryFile}：${reason(error)}`);
+  });
 
   return window;
 }
