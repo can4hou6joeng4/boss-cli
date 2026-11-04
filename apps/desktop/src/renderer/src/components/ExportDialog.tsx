@@ -53,9 +53,16 @@ export function ExportDialog({ isOpen, onClose, threadId, branchViews, connected
     version.current += 1;
     setStatus({ kind: "idle" }); setIncludeToolResults(false); setAcknowledged(false);
   }, [isOpen, threadId]);
+  // 保存完成或失败后改选项，旧结果不再描述当前选择。
+  useEffect(() => {
+    setStatus(current => current.kind === "saving" || current.kind === "idle" ? current : { kind: "idle" });
+  }, [view, format, includeToolResults, acknowledged]);
   if (!isOpen || !threadId) return null;
   const effectiveView: ExportView = branchViews ? view : "log";
-  const blocked = !connected || !window.boss?.exportSession || status.kind === "saving" || (includeToolResults && !acknowledged);
+  const saving = status.kind === "saving";
+  // 在途请求已按点击时的选项构造；完成前锁定选项与关闭入口，避免界面与文件内容脱节。
+  const requestClose = () => { if (!saving) onClose(); };
+  const blocked = !connected || !window.boss?.exportSession || saving || (includeToolResults && !acknowledged);
   const save = async () => {
     const mine = ++version.current;
     setStatus({ kind: "saving" });
@@ -74,36 +81,38 @@ export function ExportDialog({ isOpen, onClose, threadId, branchViews, connected
       setStatus({ kind: "error", message });
     }
   };
-  return <ModalSurface title="导出会话" onClose={onClose} className="context-panel export-dialog">
+  return <ModalSurface title="导出会话" onClose={requestClose} className="context-panel export-dialog" closeDisabled={saving}>
     <div className="dialog-form">
       <p className="context-panel-source" data-export-note>导出用于复盘与提交问题报告。内核默认脱敏：凭据、令牌、环境变量、本机绝对路径与附件内容不导出；工具结果只保留调用名、执行状态与结果结构，候选人个人信息按工具数据中识别到的字段值打码（未出现在工具数据中的姓名、联系方式可能无法识别，对外发送前请自行核对）。文件由主进程写入你选择的位置。</p>
-      {branchViews && <fieldset className="export-options" aria-label="导出范围">
+      {branchViews && <fieldset className="export-options" aria-label="导出范围" disabled={saving}>
         <legend>范围</legend>
-        <label className="branch-summary-option"><input type="radio" name="export-view" checked={view === "branch"} onChange={() => setView("branch")} /><span>当前分支</span></label>
-        <label className="branch-summary-option"><input type="radio" name="export-view" checked={view === "log"} onChange={() => setView("log")} /><span>完整日志（含已切离的分支）</span></label>
+        <label className="branch-summary-option"><input type="radio" name="export-view" disabled={saving} checked={view === "branch"} onChange={() => setView("branch")} /><span>当前分支</span></label>
+        <label className="branch-summary-option"><input type="radio" name="export-view" disabled={saving} checked={view === "log"} onChange={() => setView("log")} /><span>完整日志（含已切离的分支）</span></label>
       </fieldset>}
-      <fieldset className="export-options" aria-label="导出格式">
+      <fieldset className="export-options" aria-label="导出格式" disabled={saving}>
         <legend>格式</legend>
-        <label className="branch-summary-option"><input type="radio" name="export-format" checked={format === "markdown"} onChange={() => setFormat("markdown")} /><span>Markdown（便于阅读与粘贴）</span></label>
-        <label className="branch-summary-option"><input type="radio" name="export-format" checked={format === "html"} onChange={() => setFormat("html")} /><span>HTML（自包含，可用浏览器打开与打印）</span></label>
-        <label className="branch-summary-option"><input type="radio" name="export-format" checked={format === "json"} onChange={() => setFormat("json")} /><span>JSON（结构化，便于工具处理）</span></label>
+        <label className="branch-summary-option"><input type="radio" name="export-format" disabled={saving} checked={format === "markdown"} onChange={() => setFormat("markdown")} /><span>Markdown（便于阅读与粘贴）</span></label>
+        <label className="branch-summary-option"><input type="radio" name="export-format" disabled={saving} checked={format === "html"} onChange={() => setFormat("html")} /><span>HTML（自包含，可用浏览器打开与打印）</span></label>
+        <label className="branch-summary-option"><input type="radio" name="export-format" disabled={saving} checked={format === "json"} onChange={() => setFormat("json")} /><span>JSON（结构化，便于工具处理）</span></label>
       </fieldset>
-      <label className="branch-summary-option"><input type="checkbox" data-export-include checked={includeToolResults} onChange={event => { setIncludeToolResults(event.target.checked); setAcknowledged(false); }} /><span>包含工具结果明文</span></label>
+      <label className="branch-summary-option"><input type="checkbox" data-export-include disabled={saving} checked={includeToolResults} onChange={event => { setIncludeToolResults(event.target.checked); setAcknowledged(false); }} /><span>包含工具结果明文</span></label>
       {includeToolResults && <div className="context-panel-warning export-risk" role="alert" data-export-risk>
         <p><strong>风险提示：</strong>工具参数与结果明文可能包含候选人姓名、联系方式、简历正文与平台标识等个人信息。导出文件请仅用于本人复盘，不要上传到公开问题报告或发给无关人员；凭据与本机路径仍会脱敏。</p>
-        <label className="branch-summary-option"><input type="checkbox" data-export-ack checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} /><span>我了解风险，仍要包含明文</span></label>
+        <label className="branch-summary-option"><input type="checkbox" data-export-ack disabled={saving} checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} /><span>我了解风险，仍要包含明文</span></label>
       </div>}
       {!connected && <p className="context-panel-warning" role="status">本地内核未连接，暂不能导出。</p>}
+      {saving && <p className="context-panel-note" role="status">正在导出，完成前选项与关闭入口保持锁定。</p>}
       {status.kind === "saved" && <p className="context-panel-note" role="status" data-export-status="saved">
         已保存为「{status.result.fileName}」（{number(status.result.bytes)} 字节，{number(status.result.exportedTurnCount)} / {number(status.result.turnCount)} 个回合）。
         {status.result.truncated ? "内容超出导出上限，已截断并在文末标注。" : ""}
+        {status.result.toolResults === "included" ? "本次包含工具结果明文（已确认）。" : "本次未包含工具结果明文。"}
         脱敏：凭据 {number(status.result.redactions.secrets)} 处、环境变量 {number(status.result.redactions.environment)} 处、本机路径 {number(status.result.redactions.paths)} 处、候选人信息 {number(status.result.redactions.personalInfo)} 处。
       </p>}
       {status.kind === "canceled" && <p className="context-panel-note" role="status" data-export-status="canceled">已取消保存，未写入文件。</p>}
       {status.kind === "error" && <p className="context-panel-warning" role="alert" data-export-status="error">导出失败：{status.message}</p>}
       <div className="dialog-actions">
-        <button type="button" className="secondary-button" onClick={onClose}>关闭</button>
-        <button type="button" className="solid-button" data-export-save disabled={blocked} onClick={() => { void save(); }}>{status.kind === "saving" ? "正在导出…" : "选择保存位置…"}</button>
+        <button type="button" className="secondary-button" disabled={saving} onClick={onClose}>关闭</button>
+        <button type="button" className="solid-button" data-export-save disabled={blocked} onClick={() => { void save(); }}>{saving ? "正在导出…" : "选择保存位置…"}</button>
       </div>
     </div>
   </ModalSurface>;
