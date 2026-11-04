@@ -16,7 +16,7 @@ import { type MessageItem, type ConversationMode } from "../data/mockData";
 import type { SkillCatalogState, ApprovalDelivery, ApprovalOutcome } from "../data/harnessBridge";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import type { QueueRefreshResult } from "../data/queueRefresh";
-import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type CheckQueueSubmission } from "../data/composerDraft";
+import { appendQuote, createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type CheckQueueSubmission } from "../data/composerDraft";
 import { useClipboardCopy } from "../data/clipboardCopy";
 import { toolOutcomeBadge } from "../data/toolOutcome";
 import { findMessageMatches } from "../data/messageSearch";
@@ -711,7 +711,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                     type="button"
                     onClick={() => {
                       const quote = item.paragraphs?.[0] || item.content || "";
-                      setInputText(`> ${quote.slice(0, 100)}...\n\n`);
+                      updateDraft(previous => appendQuote(previous, quote));
                       textareaRef.current?.focus();
                     }}
                   >
