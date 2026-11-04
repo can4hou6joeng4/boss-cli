@@ -7,7 +7,6 @@ import {
   IconChat,
   IconPanel,
   IconDiffFiles,
-  IconClose,
 } from "./Icons";
 
 export interface SlashCommandItem {
@@ -15,8 +14,7 @@ export interface SlashCommandItem {
   command: string;
   label: string;
   description: string;
-  iconType: "status" | "stats" | "search" | "recommend" | "jobs" | "candidates" | "chat" | "plan" | "clear";
-  autoExecute?: boolean;
+  iconType: "status" | "stats" | "search" | "recommend" | "jobs" | "candidates" | "chat" | "plan";
 }
 
 export const SLASH_COMMANDS: SlashCommandItem[] = [
@@ -26,7 +24,6 @@ export const SLASH_COMMANDS: SlashCommandItem[] = [
     label: "检查账号与连接健康度",
     description: "查看 BOSS 直聘登录状态、Token 时效与平台会话健康度",
     iconType: "status",
-    autoExecute: true,
   },
   {
     id: "cmd-stats",
@@ -34,7 +31,6 @@ export const SLASH_COMMANDS: SlashCommandItem[] = [
     label: "查询招聘与转化漏斗",
     description: "查询打招呼、投递与候选池全景漏斗转化数据看板",
     iconType: "stats",
-    autoExecute: true,
   },
   {
     id: "cmd-search",
@@ -42,7 +38,6 @@ export const SLASH_COMMANDS: SlashCommandItem[] = [
     label: "检索在招职位",
     description: "按关键词、公司或技能要求检索真实职位",
     iconType: "search",
-    autoExecute: false,
   },
   {
     id: "cmd-recommend",
@@ -50,7 +45,6 @@ export const SLASH_COMMANDS: SlashCommandItem[] = [
     label: "获取个性化职位推荐",
     description: "基于简历特征与偏好获取推荐职位列表",
     iconType: "recommend",
-    autoExecute: true,
   },
   {
     id: "cmd-jobs",
@@ -58,7 +52,6 @@ export const SLASH_COMMANDS: SlashCommandItem[] = [
     label: "查看已发布职位列表",
     description: "招聘者模式：查看当前团队已发布的招聘岗位",
     iconType: "jobs",
-    autoExecute: true,
   },
   {
     id: "cmd-candidates",
@@ -66,7 +59,6 @@ export const SLASH_COMMANDS: SlashCommandItem[] = [
     label: "搜索匹配候选人",
     description: "招聘者模式：多维度筛选搜索高匹配技术牛人",
     iconType: "candidates",
-    autoExecute: false,
   },
   {
     id: "cmd-chat",
@@ -74,7 +66,6 @@ export const SLASH_COMMANDS: SlashCommandItem[] = [
     label: "查看沟通消息列表",
     description: "招聘者模式：查看与候选人的沟通列表与未读数",
     iconType: "chat",
-    autoExecute: true,
   },
   {
     id: "cmd-plan",
@@ -82,15 +73,6 @@ export const SLASH_COMMANDS: SlashCommandItem[] = [
     label: "制定招聘任务规划",
     description: "以 Plan 模式拆解任务执行路线与分阶段执行计划",
     iconType: "plan",
-    autoExecute: false,
-  },
-  {
-    id: "cmd-clear",
-    command: "/clear",
-    label: "清空当前消息流",
-    description: "重置当前窗口消息展示（不影响持久化记录）",
-    iconType: "clear",
-    autoExecute: true,
   },
 ];
 
@@ -111,8 +93,6 @@ function renderSlashIcon(type: SlashCommandItem["iconType"]) {
       return <IconChat size={14} />;
     case "plan":
       return <IconPanel size={14} />;
-    case "clear":
-      return <IconClose size={14} />;
   }
 }
 
@@ -183,9 +163,6 @@ export const SlashCommandList: React.FC<SlashCommandListProps> = ({
                     <div className="popup-command-desc">{item.description}</div>
                   </div>
                 </div>
-                {item.autoExecute && (
-                  <span className="popup-command-badge">即时</span>
-                )}
               </div>
             );
           })
