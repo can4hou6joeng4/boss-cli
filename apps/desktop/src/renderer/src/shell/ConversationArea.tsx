@@ -198,7 +198,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
       if (delivery !== "accepted") {
         setApprovalError(delivery === "unconfirmed"
           ? `审批请求未送达${reason}，请检查连接后重试；这张审批卡仍可再次提交。`
-          : "审批未被受理（可能已过期或状态已刷新），请等待状态刷新后再试。");
+          : `审批未被受理${reason || "（可能已过期或状态已刷新）"}；请等待状态刷新后再试。`);
         return;
       }
       if (!simulateLocal) {

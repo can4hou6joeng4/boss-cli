@@ -219,7 +219,7 @@ export function App(): JSX.Element {
           const reason = outcome.reason ? `（${outcome.reason}）` : "";
           setError(outcome.delivery === "unconfirmed"
             ? `自动批准请求未送达${reason}，已显示本次审批；请检查连接后手动确认。`
-            : `自动批准未被内核受理（可能已过期）${reason}，已显示本次审批；请手动确认。`);
+            : `自动批准未被内核受理${reason || "（可能已过期）"}，已显示本次审批；请手动确认。`);
         });
         return;
       }
