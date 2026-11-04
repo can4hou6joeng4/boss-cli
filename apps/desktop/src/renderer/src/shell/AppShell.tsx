@@ -16,7 +16,7 @@ import { SearchDialog } from "../components/SearchDialog";
 import { NotificationsDialog } from "../components/NotificationsDialog";
 import { ModalSurface } from "../components/ModalSurface";
 import { type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "../data/mockData";
-import { isApprovalCountEvent } from "../data/pendingApprovals";
+import { isApprovalCountEvent, readApprovalFocus } from "../data/pendingApprovals";
 import { booleanPreference, projectFolders, stringList, stringRecord } from "../data/preferenceShapes";
 import { type ModelDescriptor, type SkillDescriptor, type ToolDescriptor } from "@boss-harness/protocol";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
@@ -208,6 +208,22 @@ export function AppShell(props: AppShellProps) {
     setMessageFocus({ threadId: session.id, itemId });
     select(session);
   };
+  const approvalFocus = useRef<(value: unknown) => void>(() => {});
+  approvalFocus.current = value => {
+    // 点击审批系统通知：目标字段不合法或会话不在当前列表时保持原位，绝不误开新任务。
+    const target = readApprovalFocus(value);
+    if (!target) return;
+    const session = allFolders.flatMap(folder => folder.sessions).find(item => item.id === target.threadId);
+    if (!session) return;
+    setMessageFocus({ threadId: target.threadId, itemId: target.itemId });
+    openRoute({ page: "home", sessionId: session.id });
+  };
+  useEffect(() => {
+    if (props.simulateLocal) return;
+    const api = window.boss;
+    if (!api?.onApprovalFocus) return;
+    return api.onApprovalFocus(value => approvalFocus.current(value));
+  }, [props.simulateLocal]);
   const confirmDeleteSession = async () => {
     const target = deleteSession;
     if (!target || deleteBusy || !props.onDeleteSession) return;

@@ -11,6 +11,9 @@ export interface ApprovalNotificationContent {
   approvalId: string;
   title: string;
   body: string;
+  /** 仅当 threadId 与 itemId 都合法时携带，用于点击后定位审批卡。 */
+  threadId?: string;
+  itemId?: string;
 }
 
 function exactText(value: unknown, limit: number): string | null {
@@ -39,10 +42,13 @@ export function approvalNotificationContent(notification: JsonRpcNotification): 
   const toolName = exactText(record.toolName, TOOL_NAME_LIMIT);
   if (!approvalId || !toolName) return null;
   const summary = typeof record.summary === "string" ? compact(record.summary, BODY_LIMIT) : "";
+  const threadId = exactText(record.threadId, ID_LIMIT);
+  const itemId = exactText(record.itemId, ID_LIMIT);
   return {
     approvalId,
     title: compact(`待批准：${toolName}`, TITLE_LIMIT),
     body: summary || FALLBACK_BODY,
+    ...(threadId && itemId ? { threadId, itemId } : {}),
   };
 }
 
