@@ -3,6 +3,7 @@ import type { PendingApproval } from "@boss-harness/protocol";
 import { ModalSurface } from "./ModalSurface";
 import { IconNotification, IconCheck, IconClock } from "./Icons";
 import { approvalRemainingText, groupPendingApprovals, nextApprovalIndex } from "../data/pendingApprovals";
+import { notificationGroupLabel } from "../data/notificationLabels";
 import { harnessErrorText, listPendingApprovals } from "../data/harnessBridge";
 import { sessionRows } from "../data/sessionRows";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
@@ -79,9 +80,9 @@ export function NotificationsDialog({ folders, preview = false, refreshToken, on
     event.preventDefault();
     target.focus();
   };
-  const sessions = state.status === "ready"
-    ? new Map(sessionRows(folders, "", { includeArchived: true }).map(row => [row.session.id, row.session]))
-    : new Map<string, SessionItem>();
+  const rows = state.status === "ready"
+    ? new Map(sessionRows(folders, "", { includeArchived: true }).map(row => [row.session.id, row]))
+    : new Map<string, { session: SessionItem; project: string }>();
 
   return (
     <ModalSurface title="通知" onClose={onClose}>
@@ -104,11 +105,12 @@ export function NotificationsDialog({ folders, preview = false, refreshToken, on
         </div>
         <ul className="notification-list">
           {groupPendingApprovals(state.approvals).map(group => {
-            const session = sessions.get(group.threadId);
-            const label = session?.title ?? `会话 ${group.threadId.slice(0, 8)}`;
+            const row = rows.get(group.threadId);
+            const session = row?.session;
+            const label = notificationGroupLabel({ threadId: group.threadId, session, project: row?.project });
             return <li key={group.threadId} className="notification-group">
               <div className="notification-group-heading">
-                <span className="notification-group-thread">{label}{session?.archived === true ? " · 已归档" : ""}</span>
+                <span className="notification-group-thread">{label}</span>
                 <span>{group.approvals.length} 项</span>
               </div>
               <ul className="notification-group-list">
