@@ -20,6 +20,7 @@ import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
 import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, archiveThread, configuredModels, deleteThread, harnessErrorText, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn, unarchiveThread, updateQueuedItem } from "./data/harnessBridge";
 import { deleteThreadFailure } from "./data/deleteThreadError";
+import { resolveQuickAskRoute } from "./data/quickAsk";
 import { reduceHarnessEvent, autoApprovalFallback, type HarnessEvent } from "./data/harnessEvents";
 import { unconfirmedFailure } from "./data/confirmationFailure";
 import { HarnessReplica } from "./data/harnessReplica";
@@ -783,7 +784,14 @@ export function App(): JSX.Element {
     }); }}>重新连接</button>}<button onClick={() => setError("")} aria-label="关闭提示"><IconClose size={14} /></button></div>}
     <CockpitModal isOpen={isCockpitOpen} onClose={() => setIsCockpitOpen(false)} harnessUp={harnessUp} threadId={contextThreadId} />
     <ContextPanel isOpen={contextPanel.isOpen} onClose={contextPanel.close} threadId={contextThreadId} title={activeSession?.title ?? ""} connected={harnessUp} busy={contextPanel.busy} state={contextPanel.state} onKeepRecentChange={contextPanel.changeKeepRecent} onRefresh={() => { void contextPanel.refresh(); }} onPlan={() => { void contextPanel.plan(); }} onStart={() => { void contextPanel.start(); }} onCancel={() => { void contextPanel.cancel(); }} autoCompaction={autoCompaction} workspaceEditor={capabilities?.workspaceInstructionsEdit === true} />
-    <SideChatModal isOpen={isSideChatOpen} onClose={() => setIsSideChatOpen(false)} />
+    <SideChatModal isOpen={isSideChatOpen} onClose={() => setIsSideChatOpen(false)}
+      connected={harnessUp} preview={!window.boss} busy={startingSession}
+      onAsk={async question => {
+        // 复用既有会话创建与发送链路；不新增 RPC，也不在本地生成任何回复。
+        const resolved = resolveQuickAskRoute(activeSession, defaultModel, modelOptions);
+        if (!resolved.ok) { setError(resolved.reason); return false; }
+        return Boolean(await handleStartSessionWithPrompt(question, "", resolved.route.provider, resolved.route.model));
+      }} />
     <RewindOverlay messages={messages} fork={!preview} isOpen={isRewindOpen} onClose={() => setIsRewindOpen(false)} onConfirmRewind={messageCount => {
       const id = activeRef.current?.id;
       if (!id) return;

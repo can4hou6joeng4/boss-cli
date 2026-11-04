@@ -5,7 +5,7 @@ const GROUPS = [
     ["⌘ ⌥ B", "切换聊天摘要"], ["⌘ [ / ⌘ ]", "后退 / 前进"], ["⌘ ,", "打开设置"], ["⌘ /", "键盘快捷键"],
   ] },
   { title: "输入", shortcuts: [["Enter", "发送消息"], ["⇧ Enter", "换行"], ["/", "选择快捷指令"], ["@", "选择招聘对象"], ["↑ / ↓", "选择菜单项"], ["Esc", "关闭菜单或弹窗"]] },
-  { title: "项目扩展", shortcuts: [["⌘ ⇧ K", "运行状态"], ["⌘ ;", "快速提问 · 示例"], ["Esc Esc", "会话回溯 · 示例会话"]] },
+  { title: "项目扩展", shortcuts: [["⌘ ⇧ K", "运行状态"], ["⌘ ;", "快速提问"], ["Esc Esc", "会话回溯 / 新建分支"]] },
 ];
 export function KeyboardShortcutsModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   if (!isOpen) return null;
