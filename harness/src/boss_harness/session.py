@@ -45,6 +45,8 @@ _SEARCH_PER_THREAD = 5
 _SEARCH_TEXT_BUDGET = 4 * 1024 * 1024
 _SEARCH_THREAD_BYTES = 8 * 1024 * 1024
 _SEARCH_SNIPPET_BYTES = 200
+_SEARCH_TOOL_ARGS = 2000
+_SEARCH_TOOL_TEXT = 6000
 # In-session branch pointer (Pi session-manager leafId).  Sessions that never
 # record one keep the historical linear projection byte-for-byte.
 LEAF_ENTRY_TYPE = "leaf"
@@ -2054,8 +2056,28 @@ class SessionStore:
             fragment = fragment[:_SEARCH_SNIPPET_BYTES].rstrip()
         return ("…" if left else "") + fragment + ("…" if right < len(text) else "")
 
+    @staticmethod
+    def _search_tool_text(item: dict) -> str:
+        """把工具调用压成可检索文本：工具名 + 有界参数 + 结果摘要；无工具名返回空串。"""
+        name = item.get("toolName")
+        if not isinstance(name, str) or not name.strip():
+            return ""
+        parts = [name.strip()]
+        arguments = item.get("toolArguments")
+        if isinstance(arguments, dict):
+            try:
+                rendered = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
+            except (TypeError, ValueError):
+                rendered = ""
+            if rendered and len(rendered) <= _SEARCH_TOOL_ARGS:
+                parts.append(rendered)
+        summary = item.get("resultSummary")
+        if isinstance(summary, str) and summary:
+            parts.append(summary)
+        return "\n".join(parts)[:_SEARCH_TOOL_TEXT]
+
     def search_messages(self, query: str, *, limit: int = 30, include_archived: bool = False) -> dict:
-        """在会话的用户 / 助手消息中做有界全文搜索；默认不含已归档，跳过损坏或过大的会话。"""
+        """在会话的用户 / 助手消息与工具调用中做有界全文搜索；默认不含已归档，跳过损坏或过大的会话。"""
         if not isinstance(query, str) or not query.strip() or len(query) > 200:
             raise ValueError("query 必须是非空字符串（最多 200 字符）")
         if type(limit) is not int or not 1 <= limit <= 50:
@@ -2082,8 +2104,14 @@ class SessionStore:
             scanned_threads += 1
             per_thread = 0
             for item in items:
-                kind, text = item.get("kind"), item.get("text")
-                if kind not in ("userMessage", "agentMessage") or not isinstance(text, str) or not text:
+                kind = item.get("kind")
+                if kind == "toolCall":
+                    text, role = self._search_tool_text(item), "tool"
+                    if not text:
+                        continue
+                elif kind in ("userMessage", "agentMessage") and isinstance(item.get("text"), str) and item["text"]:
+                    text, role = item["text"], "user" if kind == "userMessage" else "agent"
+                else:
                     continue
                 scanned_chars += len(text)
                 normalized, origins = self._search_normalized(text)
@@ -2097,7 +2125,7 @@ class SessionStore:
                     "threadId": thread["id"],
                     "threadTitle": title if isinstance(title, str) else "",
                     "itemId": str(item.get("id") or ""),
-                    "role": "user" if kind == "userMessage" else "agent",
+                    "role": role,
                     "snippet": self._search_snippet(text, start, end),
                 })
                 per_thread += 1

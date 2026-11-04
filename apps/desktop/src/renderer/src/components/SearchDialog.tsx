@@ -4,7 +4,7 @@ import { IconSearch, IconChat, IconChevronRight, IconClose } from "./Icons";
 import type { ThreadSearchMatch } from "@boss-harness/protocol";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
 import { sessionRows } from "../data/sessionRows";
-import { buildSearchOptions, type SearchOption } from "../data/searchOptions";
+import { buildSearchOptions, searchRoleLabel, type SearchOption } from "../data/searchOptions";
 import { splitHighlight } from "../data/findHighlight";
 import { searchThreadMessages } from "../data/harnessBridge";
 import { clearRecentSearches, readRecentSearches, rememberRecentSearch, RECENT_SEARCH_MIN_LENGTH } from "../data/recentSearches";
@@ -105,7 +105,7 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
           {messageOptions.map(option => {
             const { hit, row } = option;
             return <button type="button" key={option.key} title={hit.snippet} {...optionProps(option)}>
-              <IconChat size={17} /><span><strong><Highlighted text={hit.threadTitle || row.session.title} query={query} /></strong><small>{row.session.archived === true ? "已归档 · " : ""}{row.project} · {hit.role === "user" ? "你" : "助手"} · <Highlighted text={hit.snippet} query={query} /></small></span><IconChevronRight size={13} />
+              <IconChat size={17} /><span><strong><Highlighted text={hit.threadTitle || row.session.title} query={query} /></strong><small>{row.session.archived === true ? "已归档 · " : ""}{row.project} · {searchRoleLabel(hit.role)} · <Highlighted text={hit.snippet} query={query} /></small></span><IconChevronRight size={13} />
             </button>;
           })}
         </>}

@@ -30,3 +30,8 @@ export function buildSearchOptions(
   }
   return options;
 }
+
+/** 命中来源的界面标签；工具命中要与「你」「助手」区分。 */
+export function searchRoleLabel(role: ThreadSearchMatch["role"]): string {
+  return role === "user" ? "你" : role === "tool" ? "工具" : "助手";
+}
