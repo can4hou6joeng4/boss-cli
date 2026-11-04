@@ -426,6 +426,7 @@ button.user-skill-chip:hover { border-color: var(--text-muted); color: var(--tex
 .shortcut-row kbd { border: 1px solid var(--border-color); border-radius: 5px; background: var(--panel-bg); padding: 3px 7px; white-space: nowrap; color: var(--text-muted); }
 .cockpit-dialog { width: min(820px, 94vw); }
 .cockpit-dialog .cockpit-body { overflow: auto; min-height: 0; }
+.cockpit-dialog .cockpit-notice { margin: 0 0 14px; }
 .cockpit-notice { margin: 0 24px 16px; }
 .rewind-dialog { width: min(560px, 94vw); }
 .rewind-points { display: flex; flex-direction: column; gap: 8px; max-height: 42vh; overflow: auto; }

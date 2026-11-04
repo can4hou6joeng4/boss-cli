@@ -1,226 +1,354 @@
-import React, { useState } from "react";
-import { IconCheck } from "./Icons";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import type { PendingApproval, RuntimeResourceOwner, RuntimeResourcesReadResponse } from "@boss-harness/protocol";
 import { ModalSurface } from "./ModalSurface";
-import { MOCK_COCKPIT_DATA } from "../data/mockData";
+import { configuredModels, harnessErrorText, listPendingApprovals, listQueue, listTools, readConfig, readRuntimeResources } from "../data/harnessBridge";
+import { approvalRemainingText, approvalUrgency } from "../data/pendingApprovals";
+import { compactionSourceLabel } from "../data/compactionSettings";
+import {
+  compactionSummary,
+  durationText,
+  ownerKindLabel,
+  ownerStateLabel,
+  queueSummaryText,
+  readCockpitConfig,
+  readCockpitModels,
+  readCockpitQueue,
+  readCockpitResources,
+  readCockpitTools,
+  shortId,
+  type CockpitConfig,
+  type CockpitModel,
+  type CockpitQueue,
+  type CockpitTool,
+} from "../data/cockpitData";
 
 export interface CockpitModalProps {
   isOpen: boolean;
   onClose: () => void;
+  harnessUp: boolean;
+  /** 当前会话；首页、预览或无活动会话时为 null。 */
+  threadId: string | null;
 }
 
-type TabKey = "Summary" | "Safety" | "Verify" | "Model" | "Context" | "Trace" | "MCP" | "Advisory";
+type CockpitTab = "overview" | "turns" | "approvals" | "catalog";
 
-export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose }) => {
-  const [activeTab, setActiveTab] = useState<TabKey>("Summary");
+const TABS: { key: CockpitTab; label: string }[] = [
+  { key: "overview", label: "概览" },
+  { key: "turns", label: "回合" },
+  { key: "approvals", label: "审批" },
+  { key: "catalog", label: "工具与模型" },
+];
+
+const APPROVAL_LIMIT = 100;
+const NUMBER = new Intl.NumberFormat("en-US");
+
+interface CockpitSnapshot {
+  config?: CockpitConfig;
+  resources?: RuntimeResourcesReadResponse;
+  approvals?: PendingApproval[];
+  tools?: CockpitTool[];
+  models?: CockpitModel[];
+  queue?: CockpitQueue;
+}
+
+type CockpitErrors = Partial<Record<keyof CockpitSnapshot, string>>;
+
+function numberText(value: number | undefined, suffix = ""): string {
+  return value === undefined ? "未提供" : `${NUMBER.format(value)}${suffix}`;
+}
+
+function Fact({ label, value }: { label: string; value: string }) {
+  return <div className="cockpit-fact"><span className="cockpit-fact-label">{label}</span><span className="cockpit-fact-value">{value}</span></div>;
+}
+
+function SourceError({ label, error }: { label: string; error?: string }) {
+  return error ? <p className="cockpit-error" role="status">{label}读取失败：{error}</p> : null;
+}
+
+function OwnerRow({ owner }: { owner: RuntimeResourceOwner }) {
+  const flags = [owner.cancelRequested ? "已请求取消" : "", owner.abortPending ? "中止待完成" : ""].filter(Boolean).join(" · ");
+  const phase = [owner.phase, owner.phaseStatus].filter(Boolean).join(" · ");
+  return (
+    <div className="cockpit-row">
+      <div className="cockpit-row-main">
+        <div className="cockpit-row-title">{ownerKindLabel(owner.kind)} · {shortId(owner.id)}</div>
+        <div className="cockpit-row-sub">
+          会话 {shortId(owner.threadId)} · {ownerStateLabel(owner.state)} · 已运行 {durationText(owner.ageSeconds)}
+        </div>
+        {flags ? <div className="cockpit-row-sub cockpit-row-alert-text">{flags}</div> : null}
+      </div>
+      {phase ? <span className="cockpit-badge">{phase}</span> : null}
+    </div>
+  );
+}
+
+function ApprovalRow({ approval }: { approval: PendingApproval }) {
+  const urgency = approvalUrgency(approval.deadline);
+  const badge = urgency === "expired" ? "已过期" : urgency === "soon" ? "即将到期" : "待处理";
+  return (
+    <div className={`cockpit-row ${urgency === "expired" || urgency === "soon" ? "cockpit-row-attention" : ""}`}>
+      <div className="cockpit-row-main">
+        <div className="cockpit-row-title">{approval.toolName}</div>
+        {approval.summary ? <div className="cockpit-row-sub">{approval.summary}</div> : null}
+        <div className="cockpit-row-sub">会话 {shortId(approval.threadId)} · {approvalRemainingText(approval.deadline)}</div>
+      </div>
+      <span className={`cockpit-badge ${urgency === "expired" || urgency === "soon" ? "cockpit-badge-warn" : ""}`}>{badge}</span>
+    </div>
+  );
+}
+
+export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose, harnessUp, threadId }) => {
+  const [activeTab, setActiveTab] = useState<CockpitTab>("overview");
+  const [snapshot, setSnapshot] = useState<CockpitSnapshot>({});
+  const [errors, setErrors] = useState<CockpitErrors>({});
+  const [loading, setLoading] = useState(false);
+  const [loadedOnce, setLoadedOnce] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const epoch = useRef(0);
+
+  const load = useCallback(async (initial: boolean) => {
+    const run = ++epoch.current;
+    if (!harnessUp) {
+      setSnapshot({});
+      setErrors({});
+      setLoading(false);
+      setLoadedOnce(true);
+      setUpdatedAt(null);
+      return;
+    }
+    if (initial) {
+      setSnapshot({});
+      setErrors({});
+      setLoadedOnce(false);
+      setUpdatedAt(null);
+    }
+    setLoading(true);
+    const results = await Promise.allSettled([
+      readConfig().then(readCockpitConfig),
+      readRuntimeResources().then(readCockpitResources),
+      listPendingApprovals(APPROVAL_LIMIT),
+      listTools().then(readCockpitTools),
+      configuredModels().then(readCockpitModels),
+      threadId ? listQueue(threadId) : Promise.resolve(null),
+    ] as const);
+    if (run !== epoch.current) return;
+    const [configResult, resourcesResult, approvalsResult, toolsResult, modelsResult, queueResult] = results;
+    const next: CockpitSnapshot = {};
+    const failures: CockpitErrors = {};
+    if (configResult.status === "fulfilled") next.config = configResult.value;
+    else failures.config = harnessErrorText(configResult.reason);
+    if (resourcesResult.status === "fulfilled") next.resources = resourcesResult.value;
+    else failures.resources = harnessErrorText(resourcesResult.reason);
+    if (approvalsResult.status === "fulfilled") next.approvals = approvalsResult.value;
+    else failures.approvals = harnessErrorText(approvalsResult.reason);
+    if (toolsResult.status === "fulfilled") next.tools = toolsResult.value;
+    else failures.tools = harnessErrorText(toolsResult.reason);
+    if (modelsResult.status === "fulfilled") next.models = modelsResult.value;
+    else failures.models = harnessErrorText(modelsResult.reason);
+    if (queueResult.status === "fulfilled") {
+      const queue = readCockpitQueue(queueResult.value);
+      if (queue) next.queue = queue;
+    } else failures.queue = harnessErrorText(queueResult.reason);
+    setSnapshot(next);
+    setErrors(failures);
+    setLoading(false);
+    setLoadedOnce(true);
+    setUpdatedAt(Date.now());
+  }, [harnessUp, threadId]);
+
+  useEffect(() => {
+    if (!isOpen) { epoch.current += 1; return; }
+    void load(true);
+  }, [isOpen, load]);
 
   if (!isOpen) return null;
 
-  const data = MOCK_COCKPIT_DATA;
+  const { config, resources, approvals, tools, models, queue } = snapshot;
+  const configKnown = !errors.config && config !== undefined;
+  const approvalsKnown = !errors.approvals && approvals !== undefined;
+  const toolsKnown = !errors.tools && tools !== undefined;
+  const modelsKnown = !errors.models && models !== undefined;
+  const queueKnown = !errors.queue && queue !== undefined;
+  const approvalRequiredCount = toolsKnown ? tools.filter(tool => tool.requiresApproval).length : undefined;
+  const configuredModelCount = modelsKnown ? models.filter(model => model.configured).length : undefined;
+  const updatedText = updatedAt === null ? "" : new Date(updatedAt).toLocaleTimeString("zh-CN", { hour12: false });
 
   return (
-    <ModalSurface title="运行状态透视 · 示例" onClose={onClose} className="cockpit-dialog">
-      <p className="dialog-note cockpit-notice">示例数据，用于展示运行指标布局。当前尚未连接实时指标服务。</p>
-        {/* 8 个 Tab 标签栏 */}
-        <div className="cockpit-tabs-row">
-          {(
-            [
-              "Summary",
-              "Safety",
-              "Verify",
-              "Model",
-              "Context",
-              "Trace",
-              "MCP",
-              "Advisory",
-            ] as TabKey[]
-          ).map((tab) => (
-            <button
-              key={tab}
-              className={`cockpit-tab-btn ${activeTab === tab ? "active" : ""}`}
-              onClick={() => setActiveTab(tab)}
-              type="button"
-            >
-              {tab}
+    <ModalSurface title="运行状态" onClose={onClose} className="cockpit-dialog">
+      <div className="cockpit-toolbar">
+        <div className="cockpit-tabs-row" role="tablist" aria-label="运行状态分区">
+          {TABS.map(tab => (
+            <button key={tab.key} className={`cockpit-tab-btn ${activeTab === tab.key ? "active" : ""}`}
+              onClick={() => setActiveTab(tab.key)} type="button" role="tab" aria-selected={activeTab === tab.key}>
+              {tab.label}
             </button>
           ))}
         </div>
+        <button className="cockpit-refresh" type="button" disabled={!harnessUp || loading}
+          onClick={() => { void load(false); }}>{loading && loadedOnce ? "刷新中…" : "刷新"}</button>
+      </div>
+      <div className="cockpit-body">
+        <p className="dialog-note cockpit-notice">
+          {harnessUp
+            ? `数据来自本地内核只读接口${updatedText ? ` · ${updatedText} 更新` : ""}。当前版本不接入 MCP；不展示成本、缓存命中率、沙箱或死循环指标。`
+            : "本地内核未连接，无法读取运行状态。重新连接后打开此面板即可刷新。"}
+        </p>
+        {loading && !loadedOnce ? <p className="cockpit-empty" role="status">正在读取内核状态…</p> : null}
 
-        {/* Tab 内容区 */}
-        <div className="cockpit-body">
-          {activeTab === "Summary" && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-              <div className="tool-block" style={{ padding: 14 }}>
-                <div style={{ fontWeight: 600, marginBottom: 8, color: "var(--accent-color)" }}>
-                  当前会话配置
+        {activeTab === "overview" && (
+          <div className="cockpit-grid">
+            <section className="cockpit-card">
+              <h3>内核线路</h3>
+              {errors.config ? <p className="cockpit-error">配置读取失败：{errors.config}</p> : config ? (
+                <div className="cockpit-facts">
+                  <Fact label="Provider" value={config.provider ?? "未提供"} />
+                  <Fact label="模型" value={config.model ?? "未提供"} />
+                  <Fact label="协议" value={config.protocolVersion ?? "未提供"} />
+                  <Fact label="工具包" value={config.toolBundleId ?? "未提供"} />
+                  <Fact label="上下文窗口" value={config.contextWindow === undefined ? "未提供"
+                    : `${NUMBER.format(config.contextWindow)} token${config.capacityIsEstimate ? "（估算）" : ""}`} />
+                  <Fact label="最大输出" value={config.modelMaxOutputTokens === undefined ? "未提供"
+                    : `${NUMBER.format(config.modelMaxOutputTokens)} token`} />
+                  <Fact label="推理档位" value={config.reasoningEfforts?.length ? config.reasoningEfforts.join(" / ") : "未提供"} />
+                  <Fact label="能力来源" value={config.capabilitySource ?? "未提供"} />
                 </div>
-                <div style={{ fontSize: 13, lineHeight: 2 }}>
-                  <div><b>模型路由：</b>{data.summary.model}</div>
-                  <div><b>认知星域：</b>{data.summary.domain}</div>
-                  <div><b>执行轮次：</b>{data.summary.turns} 轮迭代</div>
-                </div>
-              </div>
+              ) : <p className="cockpit-empty">尚未读取配置。</p>}
+            </section>
 
-              <div className="tool-block" style={{ padding: 14 }}>
-                <div style={{ fontWeight: 600, marginBottom: 8, color: "var(--accent-green)" }}>
-                  资源消耗与命中
+            <section className="cockpit-card">
+              <h3>运行资源</h3>
+              {errors.resources ? <p className="cockpit-error">资源读取失败：{errors.resources}</p> : resources ? (
+                <div className="cockpit-facts">
+                  <Fact label="并发业务回合" value={`${NUMBER.format(resources.activeTurnCount)} / ${NUMBER.format(resources.turnCapacity)}`} />
+                  <Fact label="保留回合" value={`${NUMBER.format(resources.retainedTurnCount)} / ${NUMBER.format(resources.maxRetainedTurns)}`} />
+                  <Fact label="运行中 owner" value={`${NUMBER.format(resources.ownerCount)}${resources.ownersTruncated ? `（可见 ${resources.owners.length}）` : ""}`} />
+                  <Fact label="容量等待" value={`${NUMBER.format(resources.waiterCount)}${resources.waitersTruncated ? `（可见 ${resources.waiters.length}）` : ""}`} />
                 </div>
-                <div style={{ fontSize: 13, lineHeight: 2 }}>
-                  <div><b>Token 用量：</b>{data.summary.totalTokens}</div>
-                  <div><b>前缀缓存命中率：</b>{data.summary.cacheHitRate}</div>
-                  <div><b>累计成本：</b>{data.summary.totalCost}</div>
-                </div>
-              </div>
-            </div>
-          )}
+              ) : <p className="cockpit-empty">尚未读取运行资源。</p>}
+            </section>
 
-          {activeTab === "Safety" && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div className="tool-block" style={{ padding: 14 }}>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>死循环防护 (Doom Loop Guard)</div>
-                <div style={{ color: "var(--accent-green)", fontSize: 13 }}>
-                  ● 未检测到死循环风险，执行链路处于健康周期
+            <section className="cockpit-card">
+              <h3>待办与目录</h3>
+              <div className="cockpit-facts">
+                <Fact label="待审批" value={errors.approvals ? "读取失败" : approvals
+                  ? `${NUMBER.format(approvals.length)}${approvals.length >= APPROVAL_LIMIT ? "（已达显示上限）" : ""}`
+                  : "未提供"} />
+                <Fact label="工具" value={errors.tools ? "读取失败" : tools ? `${NUMBER.format(tools.length)}（需审批 ${numberText(approvalRequiredCount)}）` : "未提供"} />
+                <Fact label="模型线路" value={errors.models ? "读取失败" : models ? `${NUMBER.format(models.length)}（当前配置 ${numberText(configuredModelCount)}）` : "未提供"} />
+                <Fact label="当前会话队列" value={errors.queue ? "读取失败" : threadId === null ? "未选择会话"
+                  : queueKnown ? queueSummaryText(queue ?? null) : "未提供"} />
+              </div>
+            </section>
+
+            <section className="cockpit-card">
+              <h3>调度与策略</h3>
+              {errors.config ? <p className="cockpit-error">配置读取失败：{errors.config}</p> : config ? (
+                <div className="cockpit-facts">
+                  <Fact label="审批策略" value={config.approvalPolicy ?? "未提供"} />
+                  <Fact label="审批期限" value={config.approvalTimeoutSeconds === undefined ? "未提供" : `${durationText(config.approvalTimeoutSeconds)}`} />
+                  <Fact label="转向投递" value={config.steeringMode ?? "未提供"} />
+                  <Fact label="并行线程" value={numberText(config.parallelThreads)} />
+                  <Fact label="单回合模型请求上限" value={numberText(config.maxModelRequests)} />
+                  <Fact label="自动压缩" value={compactionSummary(config)} />
+                  <Fact label="压缩策略来源" value={compactionSourceLabel(config.autoCompactionSource)} />
                 </div>
-              </div>
-              <div className="tool-block" style={{ padding: 14 }}>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>沙箱权限</div>
-                <div style={{ fontSize: 13 }}>{data.safety.sandboxMode}</div>
-              </div>
-              <div className="tool-block" style={{ padding: 14 }}>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>活跃拦截 Hook</div>
-                {data.safety.activeHooks.map((h) => (
-                  <div key={h} style={{ fontSize: 12, color: "var(--text-muted)", display: "flex", alignItems: "center", gap: 6 }}>
-                    <IconCheck size={12} style={{ color: "var(--accent-green)" }} />
-                    <span>{h}</span>
+              ) : <p className="cockpit-empty">尚未读取配置。</p>}
+            </section>
+          </div>
+        )}
+
+        {activeTab === "turns" && (
+          <div className="cockpit-stack">
+            <SourceError label="运行资源" error={errors.resources} />
+            {resources ? (
+              <>
+                <h3 className="cockpit-subheading">运行中或收尾中的 owner（{NUMBER.format(resources.ownerCount)}）</h3>
+                {resources.ownersTruncated ? <p className="dialog-note">明细已按内核上限截断，仅显示 {resources.owners.length} 项。</p> : null}
+                {resources.owners.length === 0
+                  ? <p className="cockpit-empty">当前没有运行中或收尾中的回合与摘要任务。</p>
+                  : <div className="cockpit-list">{resources.owners.map((owner, index) => <OwnerRow key={`${owner.kind}:${owner.id}:${index}`} owner={owner} />)}</div>}
+                <h3 className="cockpit-subheading">容量等待（{NUMBER.format(resources.waiterCount)}）</h3>
+                {resources.waitersTruncated ? <p className="dialog-note">等待明细已按内核上限截断，仅显示 {resources.waiters.length} 项。</p> : null}
+                {resources.waiters.length === 0
+                  ? <p className="cockpit-empty">当前没有等待业务回合容量的会话。</p>
+                  : <div className="cockpit-list">{resources.waiters.map((waiter, index) => (
+                    <div className="cockpit-row" key={`${waiter.threadId}:${waiter.position}:${index}`}>
+                      <div className="cockpit-row-main">
+                        <div className="cockpit-row-title">第 {waiter.position} 位 · 会话 {shortId(waiter.threadId)}</div>
+                        <div className="cockpit-row-sub">已等待 {durationText(waiter.waitingSeconds)}</div>
+                      </div>
+                    </div>
+                  ))}</div>}
+              </>
+            ) : !errors.resources ? <p className="cockpit-empty">尚未读取运行资源。</p> : null}
+          </div>
+        )}
+
+        {activeTab === "approvals" && (
+          <div className="cockpit-stack">
+            <SourceError label="待审批列表" error={errors.approvals} />
+            {approvals ? (
+              approvals.length === 0
+                ? <p className="cockpit-empty">当前没有待审批的调用。写操作仍会逐次请求批准。</p>
+                : <>
+                  <div className="cockpit-list">{approvals.map(approval => <ApprovalRow key={approval.approvalId} approval={approval} />)}</div>
+                  {approvals.length >= APPROVAL_LIMIT
+                    ? <p className="cockpit-empty">审批清单最多显示 {APPROVAL_LIMIT} 条；其余请求仍以内核待审批状态为准。</p>
+                    : null}
+                </>
+            ) : !errors.approvals ? <p className="cockpit-empty">尚未读取审批列表。</p> : null}
+          </div>
+        )}
+
+        {activeTab === "catalog" && (
+          <div className="cockpit-stack">
+            <h3 className="cockpit-subheading">工具（{toolsKnown ? tools.length : "未读取"}）</h3>
+            <SourceError label="工具清单" error={errors.tools} />
+            <p className="dialog-note">
+              工具来自当前 ToolBundle（{configKnown ? config.toolBundleId ?? "标识未提供" : "配置未读取"}）；只读工具无需批准，写操作逐次批准。
+              当前版本不接入 MCP，本面板不展示不存在的服务器状态。
+            </p>
+            {tools && tools.length > 0 ? (
+              <div className="cockpit-list">{tools.map(tool => (
+                <div className="cockpit-row" key={tool.name}>
+                  <div className="cockpit-row-main">
+                    <div className="cockpit-row-title">{tool.name}</div>
+                    {tool.description ? <div className="cockpit-row-sub">{tool.description}</div> : null}
                   </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {activeTab === "Verify" && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div className="tool-block" style={{ padding: 14 }}>
-                <div style={{ fontWeight: 600, color: "var(--accent-green)" }}>
-                  RED 闸门状态：{data.verify.redGateStatus}
-                </div>
-                <div style={{ fontSize: 13, marginTop: 4 }}>
-                  证据得分：{data.verify.evidenceScore}
-                </div>
-                <div style={{ fontSize: 13, color: "var(--text-muted)", marginTop: 2 }}>
-                  交付就绪度：{data.verify.deliveryReadiness}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === "Model" && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div className="tool-block" style={{ padding: 14 }}>
-                <div style={{ fontWeight: 600, marginBottom: 6 }}>前缀缓存与推测解码</div>
-                <div style={{ fontSize: 13, lineHeight: 1.8 }}>
-                  <div><b>输入 Token：</b>{data.model.inputTokens}</div>
-                  <div><b>缓存读取 (Cache Read)：</b>{data.model.cacheReadTokens}</div>
-                  <div><b>新增缓存 (Cache Create)：</b>{data.model.cacheCreateTokens}</div>
-                  <div><b>输出 Token：</b>{data.model.outputTokens}</div>
-                  <div><b>推测解码命中：</b>{data.model.speculativeDecodeRate}</div>
-                  <div><b>路由通道：</b>{data.model.routerPath}</div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === "Context" && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-              <div className="tool-block" style={{ padding: 14 }}>
-                <div style={{ fontWeight: 600, marginBottom: 8 }}>
-                  上下文占用 ({data.context.percentUsed}%)
-                </div>
-                <div className="ctx-bar" style={{ width: "100%", height: 10, borderRadius: 5 }}>
-                  <div
-                    className="ctx-fill"
-                    style={{ width: `${data.context.percentUsed}%` }}
-                  />
-                </div>
-                <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 8 }}>
-                  已消耗 {data.context.currentTokens} / 上限 {data.context.maxTokens} Tokens · 钉定锚点: {data.context.pinnedAnchors} · 压缩次数: {data.context.compactionCount}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {activeTab === "Trace" && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              <div style={{ fontSize: 12, color: "var(--text-faint)", marginBottom: 4 }}>
-                事件时间线瀑布流（Event Timeline）
-              </div>
-              {data.trace.map((t, idx) => (
-                <div
-                  key={idx}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    padding: "8px 12px",
-                    background: "rgba(255,255,255,0.03)",
-                    borderRadius: 6,
-                    fontSize: 12,
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <span style={{ color: "var(--accent-color)", fontWeight: 600 }}>
-                      Turn {t.turn}
-                    </span>
-                    <span style={{ color: "var(--text-faint)" }}>[{t.type}]</span>
-                    <span style={{ fontWeight: 500 }}>{t.name}</span>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ color: "var(--accent-cyan)" }}>{t.latency}</span>
-                    <span style={{ color: t.status === "ok" ? "var(--accent-green)" : "var(--accent-warning)" }}>
-                      {t.status}
-                    </span>
+                  <div className="cockpit-badges">
+                    <span className={`cockpit-badge ${tool.readOnly ? "" : "cockpit-badge-warn"}`}>{tool.readOnly ? "只读" : "写操作"}</span>
+                    {tool.requiresApproval ? <span className="cockpit-badge cockpit-badge-warn">逐次审批</span> : null}
+                    {tool.executionMode === "sequential" ? <span className="cockpit-badge">串行</span> : null}
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
+              ))}</div>
+            ) : tools && tools.length === 0 ? <p className="cockpit-empty">内核未返回工具条目。</p> : null}
 
-          {activeTab === "MCP" && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {data.mcp.map((server) => (
-                <div
-                  key={server.name}
-                  className="tool-block"
-                  style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px" }}
-                >
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{server.name}</div>
-                    <div style={{ fontSize: 12, color: "var(--text-faint)" }}>
-                      可用工具数: {server.toolsCount}
+            <h3 className="cockpit-subheading">模型（{modelsKnown ? models.length : "未读取"}）</h3>
+            <SourceError label="模型目录" error={errors.models} />
+            {models && models.length > 0 ? (
+              <div className="cockpit-list">{models.map(model => (
+                <div className="cockpit-row" key={`${model.provider}:${model.id}`}>
+                  <div className="cockpit-row-main">
+                    <div className="cockpit-row-title">{model.id}</div>
+                    <div className="cockpit-row-sub">
+                      {model.provider}
+                      {model.contextWindow === undefined ? "" : ` · ${NUMBER.format(model.contextWindow)} token 上下文`}
+                      {model.maxOutputTokens === undefined ? "" : ` · 最大输出 ${NUMBER.format(model.maxOutputTokens)}`}
+                      {model.reasoningEfforts?.length ? ` · 推理 ${model.reasoningEfforts.join(" / ")}` : ""}
                     </div>
                   </div>
-                  <div style={{ textAlign: "right", fontSize: 12 }}>
-                    <div style={{ color: "var(--accent-green)", fontWeight: 600 }}>
-                      ● {server.status}
-                    </div>
-                    <div style={{ color: "var(--text-faint)" }}>{server.ping}</div>
+                  <div className="cockpit-badges">
+                    {model.configured ? <span className="cockpit-badge">当前配置</span> : null}
+                    <span className={`cockpit-badge ${model.available ? "" : "cockpit-badge-warn"}`}>{model.available ? "线路可用" : "线路缺失"}</span>
+                    {model.capacityIsEstimate ? <span className="cockpit-badge">容量估算</span> : null}
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
-
-          {activeTab === "Advisory" && (
-            <div className="tool-block" style={{ padding: 14 }}>
-              <div style={{ fontWeight: 600, marginBottom: 8 }}>提醒投放与建议效能统计</div>
-              <div style={{ fontSize: 13, lineHeight: 2 }}>
-                <div><b>总计投放提醒：</b>{data.advisory.rendered} 次</div>
-                <div><b>模型采纳：</b>{data.advisory.adopted} 次</div>
-                <div><b>忽略与丢弃：</b>{data.advisory.dismissed} 次</div>
-                <div><b>整体效能得分：</b>{data.advisory.efficiencyScore}</div>
-              </div>
-            </div>
-          )}
-        </div>
+              ))}</div>
+            ) : models && models.length === 0 ? <p className="cockpit-empty">内核未返回模型条目。</p> : null}
+          </div>
+        )}
+      </div>
     </ModalSurface>
   );
 };

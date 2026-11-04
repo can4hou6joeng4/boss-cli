@@ -1607,7 +1607,7 @@ html:not(.dark) .code-block-header {
   to { opacity: 1; transform: scale(1); }
 }
 
-/* 驾驶舱 (Cockpit) 专属布局 */
+/* 运行状态面板 (Cockpit) 专属布局 */
 .cockpit-modal {
   width: 880px;
   height: 600px;
@@ -1649,6 +1649,93 @@ html:not(.dark) .code-block-header {
   overflow-y: auto;
   padding: 20px;
 }
+.cockpit-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding-right: 16px;
+  background: rgba(0, 0, 0, 0.15);
+  border-bottom: 1px solid var(--border-color);
+}
+.cockpit-toolbar .cockpit-tabs-row {
+  flex: 1;
+  min-width: 0;
+  padding: 0 16px;
+  background: transparent;
+  border-bottom: 0;
+}
+.cockpit-refresh {
+  flex: none;
+  padding: 5px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.cockpit-refresh:hover:not(:disabled) { color: var(--text-main); background: var(--btn-ghost-hover); }
+.cockpit-refresh:disabled { opacity: 0.5; cursor: default; }
+.cockpit-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.cockpit-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--panel-bg);
+}
+.cockpit-card h3, .cockpit-subheading {
+  margin: 0 0 10px;
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 600;
+}
+.cockpit-subheading { margin-top: 8px; }
+.cockpit-facts { display: flex; flex-direction: column; gap: 7px; }
+.cockpit-fact { display: flex; justify-content: space-between; align-items: baseline; gap: 14px; font-size: 12px; }
+.cockpit-fact-label { flex: none; color: var(--text-muted); }
+.cockpit-fact-value { min-width: 0; text-align: right; color: var(--text-main); overflow-wrap: anywhere; }
+.cockpit-stack { display: flex; flex-direction: column; gap: 10px; }
+.cockpit-list { display: flex; flex-direction: column; gap: 6px; }
+.cockpit-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.cockpit-row-attention { border-color: var(--accent-warning); }
+.cockpit-row-main { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.cockpit-row-title { font-size: 12px; font-weight: 600; color: var(--text-main); overflow-wrap: anywhere; }
+.cockpit-row-sub {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.cockpit-row-alert-text { color: var(--accent-warning); }
+.cockpit-badges { display: flex; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 4px; max-width: 45%; }
+.cockpit-badge {
+  padding: 2px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+.cockpit-badge-warn { color: var(--accent-warning); border-color: var(--accent-warning); }
+.cockpit-empty { margin: 6px 0; color: var(--text-faint); font-size: 12px; }
+.cockpit-error { margin: 6px 0; color: var(--accent-warning); font-size: 12px; overflow-wrap: anywhere; }
 
 /* 旁路提问 (SideChat) 专属轻量浮窗 */
 .sidechat-floating-window {

@@ -18,7 +18,7 @@ const ITEMS: Array<{ id: Destination; title: string; icon: ComponentType<IconPro
   { id: "sidechat", title: "快速提问", icon: IconChat, shortcut: "⌘;" },
   { id: "recents", title: "最近聊天", icon: IconHistory, page: "recents" },
   { id: "library", title: "资料库", icon: IconFolder, page: "library" },
-  { id: "cockpit", title: "招聘驾驶舱", icon: IconBranch, secondary: true, shortcut: "⌘⇧K" },
+  { id: "cockpit", title: "运行状态", icon: IconBranch, secondary: true, shortcut: "⌘⇧K" },
   { id: "skills", title: "技能与工具", icon: IconSparkles, page: "skills", secondary: true },
 ];
 const DEFAULT_ORDER = ITEMS.map(item => item.id);
