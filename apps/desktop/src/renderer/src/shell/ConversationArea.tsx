@@ -22,6 +22,7 @@ import { useClipboardCopy } from "../data/clipboardCopy";
 import { toolOutcomeBadge } from "../data/toolOutcome";
 import { findMessageMatches } from "../data/messageSearch";
 import { retryTextForMessage } from "../data/messageRetry";
+import { messageCopyText } from "../data/messageCopy";
 import { collectTextRanges } from "../data/findHighlight";
 import { compactTitle, stripProjectPrefix } from "../data/sessionTitle";
 
@@ -347,6 +348,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
           {messages.map((item, messageIndex) => <React.Fragment key={item.id}>{(() => {
             const toolBadge = item.toolUse ? toolOutcomeBadge(item.toolUse.executionState, item.toolUse.status, item.toolUse.errorCode) : null;
             const findMatch = findOpen && findMatchSet.has(item.id);
+            const copyText = messageCopyText(item);
             if (item.role === "user") {
               return (
                 <div className={"msg-row-user" + (findMatch ? " is-find-match" : "") + (currentFindId === item.id ? " is-find-current" : "") + (focusFlash === item.id ? " is-focus-target" : "")} id={"message-" + item.id}>
@@ -686,20 +688,22 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
 
                 {/* 消息底部快捷工具栏 (ChatGPT.app 纯图标紧凑交互) */}
                 <div className="msg-action-toolbar">
-                  <button
-                    className="msg-action-btn"
-                    title={clipboard.feedback?.key === item.id && !clipboard.feedback.ok ? `复制失败：${clipboard.feedback.reason}` : "复制"}
-                    type="button"
-                    onClick={() => {
-                      void clipboard.copy(item.paragraphs?.join("\n\n") || item.content || "", item.id);
-                    }}
-                  >
-                    <IconCopy size={13} />
-                  </button>
-                  {clipboard.feedback?.key === item.id && <span
-                    role="status"
-                    style={{ alignSelf: "center", fontSize: 11, color: clipboard.feedback.ok ? "var(--accent-green)" : "var(--text-muted)" }}
-                  >{clipboard.feedback.ok ? "已复制" : "复制失败"}</span>}
+                  {copyText && <>
+                    <button
+                      className="msg-action-btn"
+                      title={clipboard.feedback?.key === item.id && !clipboard.feedback.ok ? `复制失败：${clipboard.feedback.reason}` : "复制"}
+                      type="button"
+                      onClick={() => {
+                        void clipboard.copy(copyText, item.id);
+                      }}
+                    >
+                      <IconCopy size={13} />
+                    </button>
+                    {clipboard.feedback?.key === item.id && <span
+                      role="status"
+                      style={{ alignSelf: "center", fontSize: 11, color: clipboard.feedback.ok ? "var(--accent-green)" : "var(--text-muted)" }}
+                    >{clipboard.feedback.ok ? "已复制" : "复制失败"}</span>}
+                  </>}
                   {canEditContext(item) && <button
                     className="msg-action-btn"
                     title="编辑后续模型上下文"
@@ -707,18 +711,17 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                     type="button"
                     onClick={() => setContextEditItemId(item.id)}
                   ><IconEdit size={13} /></button>}
-                  <button
+                  {copyText && <button
                     className="msg-action-btn"
                     title="引用"
                     type="button"
                     onClick={() => {
-                      const quote = item.paragraphs?.[0] || item.content || "";
-                      updateDraft(previous => appendQuote(previous, quote));
+                      updateDraft(previous => appendQuote(previous, copyText));
                       textareaRef.current?.focus();
                     }}
                   >
                     <IconQuote size={13} />
-                  </button>
+                  </button>}
                   <button
                     className="msg-action-btn"
                     title="重试此轮对话"
