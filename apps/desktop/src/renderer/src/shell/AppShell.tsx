@@ -18,7 +18,7 @@ import { ModalSurface } from "../components/ModalSurface";
 import { type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "../data/mockData";
 import { isApprovalCountEvent, readApprovalFocus } from "../data/pendingApprovals";
 import { approvalSoundEnabled, playApprovalChime } from "../data/approvalChime";
-import { isNotificationsShortcut } from "../data/shortcuts";
+import { isCommandChord, isNotificationsShortcut } from "../data/shortcuts";
 import { booleanPreference, projectFolders, stringList, stringRecord } from "../data/preferenceShapes";
 import { type ModelDescriptor, type SkillDescriptor, type ToolDescriptor } from "@boss-harness/protocol";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
@@ -334,13 +334,13 @@ export function AppShell(props: AppShellProps) {
       if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
       if (document.querySelector('[aria-modal="true"]')) return;
       if (!event.metaKey && !event.ctrlKey) return;
-      if (event.key.toLowerCase() === "k" && !event.shiftKey) { event.preventDefault(); setSearch(true); }
+      if (isCommandChord(event, "k")) { event.preventDefault(); setSearch(true); }
       if (isNotificationsShortcut(event)) { event.preventDefault(); setNotifications(true); }
-      if (event.key.toLowerCase() === "n") { event.preventDefault(); newTask(); }
-      if (event.key === ",") { event.preventDefault(); openSettings(); }
-      if (event.key.toLowerCase() === "b" && event.altKey && summaryAvailable) { event.preventDefault(); setSummaryOpen(prev => !prev); }
-      if (event.key === "[") { event.preventDefault(); go(-1); }
-      if (event.key === "]") { event.preventDefault(); go(1); }
+      if (isCommandChord(event, "n")) { event.preventDefault(); newTask(); }
+      if (isCommandChord(event, ",")) { event.preventDefault(); openSettings(); }
+      if (isCommandChord(event, "b", { alt: true }) && summaryAvailable) { event.preventDefault(); setSummaryOpen(prev => !prev); }
+      if (isCommandChord(event, "[")) { event.preventDefault(); go(-1); }
+      if (isCommandChord(event, "]")) { event.preventDefault(); go(1); }
     };
     window.addEventListener("keydown", handle); return () => window.removeEventListener("keydown", handle);
   });

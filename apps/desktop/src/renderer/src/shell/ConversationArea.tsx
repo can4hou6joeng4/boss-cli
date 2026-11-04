@@ -17,6 +17,7 @@ import type { SkillCatalogState, ApprovalDelivery, ApprovalOutcome } from "../da
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import type { QueueRefreshResult } from "../data/queueRefresh";
 import { appendQuote, createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type CheckQueueSubmission } from "../data/composerDraft";
+import { isCommandChord } from "../data/shortcuts";
 import { useClipboardCopy } from "../data/clipboardCopy";
 import { toolOutcomeBadge } from "../data/toolOutcome";
 import { findMessageMatches } from "../data/messageSearch";
@@ -155,7 +156,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
     const handle = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
       if (document.querySelector('[aria-modal="true"]')) return;
-      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "f" || event.shiftKey || event.altKey) return;
+      if (!isCommandChord(event, "f")) return;
       event.preventDefault();
       setFindOpen(true);
     };
