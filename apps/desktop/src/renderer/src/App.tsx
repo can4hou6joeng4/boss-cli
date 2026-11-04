@@ -22,6 +22,7 @@ import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, archiveThread, configuredMode
 import { deleteThreadFailure } from "./data/deleteThreadError";
 import { resolveQuickAskRoute } from "./data/quickAsk";
 import { sessionTitleFromPrompt } from "./data/sessionTitle";
+import { isCommandChord } from "./data/shortcuts";
 import { reduceHarnessEvent, autoApprovalFallback, type HarnessEvent } from "./data/harnessEvents";
 import { unconfirmedFailure } from "./data/confirmationFailure";
 import { HarnessReplica } from "./data/harnessReplica";
@@ -734,11 +735,10 @@ export function App(): JSX.Element {
       const command = event.metaKey || event.ctrlKey;
       if (event.key === "Escape") { const now = Date.now(); if (now - lastEsc.current < 450) { openRewind(); lastEsc.current = 0; } else lastEsc.current = now; return; }
       if (!command) return;
-      const key = event.key.toLowerCase();
-      if (key === "k" && event.shiftKey) { event.preventDefault(); setIsCockpitOpen(true); }
-      if (key === ";") { event.preventDefault(); setIsSideChatOpen(previous => !previous); }
-      if (key === "b" && !event.shiftKey && !event.altKey) { event.preventDefault(); setIsSidebarOpen(previous => !previous); }
-      if (key === "/") { event.preventDefault(); setIsShortcutsOpen(previous => !previous); }
+      if (isCommandChord(event, "k", { shift: true })) { event.preventDefault(); setIsCockpitOpen(true); }
+      if (isCommandChord(event, ";")) { event.preventDefault(); setIsSideChatOpen(previous => !previous); }
+      if (isCommandChord(event, "b")) { event.preventDefault(); setIsSidebarOpen(previous => !previous); }
+      if (isCommandChord(event, "/")) { event.preventDefault(); setIsShortcutsOpen(previous => !previous); }
     };
     window.addEventListener("keydown", handle); return () => window.removeEventListener("keydown", handle);
   }, [handleNewTask, openRewind]);
