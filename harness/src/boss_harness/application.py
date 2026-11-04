@@ -50,6 +50,7 @@ from boss_harness.tool_results import MAX_PAGE_BYTES, project_item, read_result_
 from boss_harness.tool_bundle import ToolBundle
 from boss_harness.summary import BRANCH_SUMMARY_SYSTEM, SUMMARY_MAX_REQUESTS, SummaryPlanner
 from boss_harness.compaction import CompactionPolicy, ContextCompactionFailed
+from boss_harness.settings import load_auto_compaction, save_auto_compaction
 from boss_harness.context import NoCompactionSource
 from boss_harness.shutdown import TrackedAbort, join_until
 from boss_harness.hooks import HookFailure, LifecycleHooks
@@ -274,7 +275,14 @@ class ApplicationService:
         if type(config.max_tokens) is not int or config.max_tokens <= 0:
             raise ValueError("max_tokens 必须是正整数")
         self.model_catalog = model_catalog if model_catalog is not None else ModelCatalog.from_environment()
-        self.compaction_policy = compaction_policy if compaction_policy is not None else CompactionPolicy.from_environment()
+        self.state_dir = state_dir
+        stored_compaction = None if compaction_policy is not None else load_auto_compaction(state_dir)
+        self._auto_compaction_source = ("explicit" if compaction_policy is not None
+                                        else "environment" if "BOSS_HARNESS_COMPACTION" in os.environ
+                                        else "stored" if stored_compaction is not None else "default")
+        self.compaction_policy = (compaction_policy if compaction_policy is not None
+                                  else CompactionPolicy.from_environment(stored_compaction))
+        self._policy_lock = threading.RLock()
         if not isinstance(self.compaction_policy, CompactionPolicy):
             raise ValueError("compaction_policy 必须是 CompactionPolicy")
         self._business_services = tool_bundle is None
@@ -505,6 +513,7 @@ class ApplicationService:
             "queue/get": self.on_queue_get,
             "queue/remove": self.on_queue_remove, "tool/list": self.on_tool_list,
             "model/list": self.on_model_list, "config/read": self.on_config_read,
+            "config/autoCompaction/set": self.on_config_auto_compaction_set,
             "connection/read": lambda p: self.connections.read(),
             "connection/check": lambda p: self.connections.start(_text(p, "target")),
             # Host-only login transport; never included in renderer/model allowlists.
@@ -583,7 +592,8 @@ class ApplicationService:
                              "threadSearch": True, "threadSearchArchived": True,
                              "workspaceInstructionsEdit": True, "skillsRead": True,
                              "skillsCreate": True, "skillsWrite": True,
-                             "skillsDelete": True, "queueUpdate": True},
+                             "skillsDelete": True, "queueUpdate": True,
+                             "autoCompactionConfig": self._auto_compaction_source in {"stored", "default"}},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -628,7 +638,28 @@ class ApplicationService:
                 "modelCapabilities": self.model_catalog.resolve(self.config.provider, self.config.model).describe(),
                 "toolBundleId": self.tool_bundle.id,
                 "autoCompaction": self.compaction_policy.describe(),
+                "autoCompactionSource": self._auto_compaction_source,
                 "approvalPolicy": "each-consequential-call", "approvalTimeoutSeconds": self.approval_timeout}
+
+    def on_config_auto_compaction_set(self, params: dict | None) -> dict:
+        params = params or {}
+        if self._auto_compaction_source == "environment":
+            raise RpcError(-32004, "自动压缩默认策略由 BOSS_HARNESS_COMPACTION 管理，未写入配置文件",
+                           {"code": "AUTO_COMPACTION_ENV_MANAGED"})
+        if self._auto_compaction_source == "explicit":
+            raise RpcError(-32004, "该内核实例的自动压缩策略由调用方显式指定，不能写入配置文件",
+                           {"code": "AUTO_COMPACTION_EXPLICIT"})
+        required = {"enabled", "triggerPercent", "keepRecentTokens"}
+        if set(params) != required:
+            raise ValueError("自动压缩设置必须且只能包含 enabled、triggerPercent、keepRecentTokens")
+        # 先按既有策略构造完整副本；校验失败时不会触碰磁盘或当前策略。
+        policy = self.compaction_policy.override(params)
+        with self._policy_lock:
+            save_auto_compaction(self.state_dir, params)
+            self.compaction_policy = policy
+            self._auto_compaction_source = "stored"
+        return {"autoCompaction": self.compaction_policy.describe(),
+                "autoCompactionSource": self._auto_compaction_source}
 
     def _discover_model_configs(self) -> dict[str, ModelConfig]:
         routes = {self.config.provider: self.config}

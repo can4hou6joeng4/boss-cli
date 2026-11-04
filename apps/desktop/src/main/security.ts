@@ -84,7 +84,7 @@ const RENDERER_METHODS = new Set([
   "thread/search",
   "thread/archive", "thread/unarchive", "thread/name/set", "thread/model/set", "thread/reasoning/read", "thread/reasoning/set", "thread/turns/list", "thread/items/list", "thread/item/result/read", "thread/item/content/read",
   "turn/start", "turn/interrupt", "turn/steer", "turn/read", "turn/continuation/read", "turn/continue", "task/read", "queue/list", "queue/get", "queue/add", "queue/update", "queue/remove",
-  "event/list", "model/list", "config/read", "skills/list", "skills/read", "skills/create", "skills/write", "skills/delete", "tool/list", "attachment/add", "attachment/read",
+  "event/list", "model/list", "config/read", "config/autoCompaction/set", "skills/list", "skills/read", "skills/create", "skills/write", "skills/delete", "tool/list", "attachment/add", "attachment/read",
   "context/read", "context/compact/plan", "context/compact/start", "context/compact/abort", "context/compact/read", "context/compact", "context/edit/read", "context/edit", "context/instructions/read", "context/instructions/write", "approval/list", "approval/respond",
   "connection/read", "connection/check",
   "runtime/resources/read",
@@ -195,6 +195,14 @@ export function validateHarnessRequest(payload: unknown): { method: string; para
       typeof params.threadId !== "string" || !/^[A-Za-z0-9_-]{1,200}$/.test(params.threadId) ||
       typeof params.queueId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(params.queueId)) {
       throw new Error("invalid queue read");
+    }
+    return { method: payload.method, params };
+  }
+  if (payload.method === "config/autoCompaction/set") {
+    if (!validAutoCompaction(params) || !params || Object.keys(params).length !== 3 ||
+      typeof params.enabled !== "boolean" || typeof params.triggerPercent !== "number" ||
+      typeof params.keepRecentTokens !== "number") {
+      throw new Error("invalid auto compaction settings");
     }
     return { method: payload.method, params };
   }

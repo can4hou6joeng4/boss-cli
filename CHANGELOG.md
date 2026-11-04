@@ -11,6 +11,8 @@
 
 ### 新增
 
+- 自动压缩默认策略可在桌面查看并保存：内核新增 `config/autoCompaction/set`（能力 `autoCompactionConfig`），接受 `enabled`、`triggerPercent`（1–100）、`keepRecentTokens`（1–1000000），写入状态目录 `config.json`（临时文件 + `os.replace` 原子替换，保留其他顶层键），重启后仍生效并立即更新当前进程策略；摘要 provider、model、effort 不受影响。`config/read` 新增 `autoCompactionSource`（`environment` / `stored` / `default` / `explicit`）；`BOSS_HARNESS_COMPACTION` 显式设置时优先，`set` 以 `AUTO_COMPACTION_ENV_MANAGED` 拒绝，显式构造的内核以 `AUTO_COMPACTION_EXPLICIT` 拒绝，均不静默覆盖。配置文件缺失或字段非法时按内置默认读取；存在但不可读时拒绝写入，避免覆盖未知配置。桌面设置新增「上下文」分区，展示来源并编辑三项默认值；能力未声明、环境变量托管或调用方显式指定时只读展示，保存失败保留草稿并显示原因。单回合覆盖语义不变。协议保持 `0.2.0`（仅新增可选方法与能力）。
+
 - 排队中的消息可在投递前编辑：内核新增 `queue/update`（能力 `queueUpdate`），仅接受仍为 `queued` 的队列项，改写正文时保留 id、类型、`clientUserMessageId`、技能与自动压缩覆盖；`delivering` / `delivered` / `paused` / `cancelled` 明确拒绝，避免改写已发生的投递事实。正文沿用 1–100000 字符校验并重新核对待处理队列字节上限，成功后发布既有 `queue/updated`。桌面队列面板对排队项显示「编辑」；正文被截断时必须先经 `queue/get` 读取完整输入再进入编辑器，绝不保存 600 字符预览。保存失败显示真实原因并保留草稿，保存成功用内核返回项更新面板；能力未声明时不显示入口。协议保持 `0.2.0`（仅新增可选方法与能力）。
 
 - 队列完整输入视图可复制并显示附加配置：模态中新增「复制完整输入」，复用共享剪贴板入口，成功后提示「已复制完整输入」，失败显示真实原因且不声称成功，空输入禁用复制；同时展示该项的运行时技能（名称优先、缺失回退 id、全部不可用时显示数量）与自动压缩覆盖（标签加完整悬停说明），与队列列表保持一致。切换条目时清除上一次复制反馈；仍只读，不新增 RPC，协议与内核版本不变（仍为 `0.2.0`）。
