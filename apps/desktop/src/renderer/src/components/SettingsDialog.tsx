@@ -296,7 +296,7 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
             {section === "notifications" && (
               <>
                 <p className="settings-intro">管理任务结束或需要你参与时的提醒方式。</p>
-                <SettingRow title="桌面通知" description="窗口不在前台时，审批请求会弹出系统通知，点击回到工作台"><span className="settings-static-value">自动</span></SettingRow>
+                <SettingRow title="桌面通知" description="窗口不在前台时，审批请求与运行超过 20 秒的回合结束会弹出系统通知，点击回到工作台"><span className="settings-static-value">自动</span></SettingRow>
                 <SettingRow title="审批提示音" description="新的审批请求到达时播放两声短提示音；默认关闭"><Switch label="审批提示音" checked={preferences.approvalSound} onChange={() => { const next = !preferences.approvalSound; if (next) primeApprovalChime(); updatePreference("approvalSound", next); }} /></SettingRow>
                 <SettingRow title="通知权限" description="系统通知由操作系统授权并展示，工作台不单独申请"><span className="settings-static-value">跟随系统</span></SettingRow>
               </>
