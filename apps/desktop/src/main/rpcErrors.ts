@@ -6,6 +6,7 @@
  * 只加入确实按错误码分支或需要精确文案的方法，避免改变其他调用方的返回约定。
  */
 const PRESERVED: ReadonlySet<string> = new Set([
+  "approval/respond",
   "context/compact/read",
   "context/compact/start",
   "thread/branchSummary/read",

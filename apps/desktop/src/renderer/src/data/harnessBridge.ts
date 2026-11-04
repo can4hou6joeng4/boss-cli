@@ -434,11 +434,16 @@ export async function respondApproval(approvalId: string, approved: boolean): Pr
   const api = bridge();
   if (!api) return { delivery: "unconfirmed", reason: "本地 Harness 未连接" };
   try {
-    const response = await api.request<ApprovalRespondResponse>(ClientMethods.approvalRespond, { approvalId, approved });
+    const response = await contextRequest<ApprovalRespondResponse>(ClientMethods.approvalRespond, { approvalId, approved });
     // 回报不可读不等于内核拒绝：只有布尔值才代表明确受理或不受理。
     if (!response || typeof response.accepted !== "boolean") return { delivery: "unconfirmed", reason: "内核审批回执无法识别" };
-    return { delivery: response.accepted ? "accepted" : "rejected" };
+    if (response.accepted) return { delivery: "accepted" };
+    return { delivery: "rejected", reason: response.expired === true ? "审批已过期，工具未执行" : undefined };
   } catch (cause) {
+    // contextRequest 解出的内核拒绝是明确不受理；其余断连、IPC 或解析失败才算未送达。
+    if (cause && typeof cause === "object" && (cause as { rpcError?: unknown }).rpcError === true) {
+      return { delivery: "rejected", reason: harnessErrorText(cause) };
+    }
     return { delivery: "unconfirmed", reason: harnessErrorText(cause) };
   }
 }
