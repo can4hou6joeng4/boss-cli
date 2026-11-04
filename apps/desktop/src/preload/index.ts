@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import type { InitializeResponse, JsonRpcNotification, PlatformLoginStatus, PlatformLoginAction, PlatformLoginContext,
-  SessionExportSaveRequest, SessionExportSaveResult } from "@boss-harness/protocol";
+import type { ApprovalFocusTarget, InitializeResponse, JsonRpcNotification, PlatformLoginStatus, PlatformLoginAction,
+  PlatformLoginContext, SessionExportSaveRequest, SessionExportSaveResult } from "@boss-harness/protocol";
 
 interface HarnessStatus {
   running: boolean;
@@ -46,6 +46,12 @@ const api = {
       listener(notification);
     ipcRenderer.on("harness:notification", handler);
     return () => ipcRenderer.removeListener("harness:notification", handler);
+  },
+  /** 点击审批系统通知后要定位的会话与条目；载荷由渲染层再次校验后才使用。 */
+  onApprovalFocus(listener: (target: ApprovalFocusTarget) => void): () => void {
+    const handler = (_event: IpcRendererEvent, target: ApprovalFocusTarget): void => listener(target);
+    ipcRenderer.on("harness:focus-approval", handler);
+    return () => ipcRenderer.removeListener("harness:focus-approval", handler);
   },
 };
 

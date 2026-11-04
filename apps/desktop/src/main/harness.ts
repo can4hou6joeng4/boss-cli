@@ -3,7 +3,7 @@ import { writeFile, chmod, lstat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { app, dialog, ipcMain, Notification, BrowserWindow, type IpcMainInvokeEvent } from "electron";
 import { HarnessHostManager, HarnessRpcError, type HarnessHostConnection } from "@boss-harness/app-client";
-import type { JsonRpcNotification, SessionExportSaveResult } from "@boss-harness/protocol";
+import type { ApprovalFocusTarget, JsonRpcNotification, SessionExportSaveResult } from "@boss-harness/protocol";
 import { isTrustedRendererUrl, sessionExportFileName, validateHarnessRequest, validateLoginContext,
   validateSessionExportRequest, validateThreadExportResponse } from "./security";
 import { PlatformLogin } from "./platformLogin";
@@ -54,17 +54,19 @@ function send(window: BrowserWindow, notification: JsonRpcNotification): void {
 
 const notifiedApprovals = new Set<string>();
 
-/** 点击系统通知后回到工作台：恢复最小化窗口并聚焦。 */
-function focusWindow(): void {
+/** 点击系统通知后回到工作台：恢复最小化窗口并聚焦，返回被聚焦的窗口。 */
+function revealWindow(): BrowserWindow | null {
   const target = [...windows].find((window) => !window.isDestroyed());
-  if (!target) return;
+  if (!target) return null;
   if (target.isMinimized()) target.restore();
   target.show();
   target.focus();
+  return target;
 }
 
 /**
  * 窗口不在前台时用系统通知提示新的审批请求；同一 approvalId 只提醒一次。
+ * 点击后聚焦工作台，定位字段齐全时再让渲染层打开会话并滚动到该审批卡。
  * 通知失败（系统不支持、权限或平台限制）只影响提醒，不影响窗口内通知转发。
  */
 function notifyApproval(notification: JsonRpcNotification): void {
@@ -74,7 +76,12 @@ function notifyApproval(notification: JsonRpcNotification): void {
   if (!Notification.isSupported()) return;
   try {
     const native = new Notification({ title: content.title, body: content.body });
-    native.on("click", focusWindow);
+    native.on("click", () => {
+      const target = revealWindow();
+      if (!target || !content.threadId || !content.itemId) return;
+      const focus: ApprovalFocusTarget = { threadId: content.threadId, itemId: content.itemId };
+      try { target.webContents.send("harness:focus-approval", focus); } catch {}
+    });
     native.show();
   } catch {}
 }

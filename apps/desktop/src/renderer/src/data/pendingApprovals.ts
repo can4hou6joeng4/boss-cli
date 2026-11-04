@@ -86,6 +86,15 @@ export function nextApprovalIndex(current: number, count: number, delta: number)
   return (current + delta + count) % count;
 }
 
+/** 校验主进程转来的通知点击目标；字段缺失、类型不对或超长时返回 null，调用方不得跳转。 */
+export function readApprovalFocus(value: unknown): { threadId: string; itemId: string } | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const threadId = text(record.threadId, FIELD_LIMIT);
+  const itemId = text(record.itemId, FIELD_LIMIT);
+  return threadId && itemId ? { threadId, itemId } : null;
+}
+
 export interface PendingApprovalGroup { threadId: string; approvals: PendingApproval[] }
 
 /** 按线程分组并保留首次出现顺序；内核已按线程排序，这里只做稳定聚合。 */

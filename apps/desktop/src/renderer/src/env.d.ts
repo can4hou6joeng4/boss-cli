@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { JsonRpcNotification, PlatformLoginStatus, PlatformLoginAction, PlatformLoginContext, SessionExportSaveRequest, SessionExportSaveResult } from "@boss-harness/protocol";
+import type { ApprovalFocusTarget, JsonRpcNotification, PlatformLoginStatus, PlatformLoginAction, PlatformLoginContext, SessionExportSaveRequest, SessionExportSaveResult } from "@boss-harness/protocol";
 import type { HarnessConnectionStatus } from "@boss-harness/app-client";
 
 declare global {
@@ -13,6 +13,7 @@ declare global {
       platformLogin(action: PlatformLoginAction, context?: PlatformLoginContext): Promise<PlatformLoginStatus>;
       onPlatformLogin(listener: (status: PlatformLoginStatus) => void): () => void;
       onNotification(listener: (notification: JsonRpcNotification) => void): () => void;
+      onApprovalFocus(listener: (target: ApprovalFocusTarget) => void): () => void;
     };
   }
 }
