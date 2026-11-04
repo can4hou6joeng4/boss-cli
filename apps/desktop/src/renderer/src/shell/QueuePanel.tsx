@@ -158,12 +158,10 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
           <span className="turn-queue-status">{item.status === "paused" && item.failureCode === "TURN_START_FAILED" ? "启动失败，未执行"
             : item.status === "delivered" && item.deduplicated ? "已关联已有回合" : LABELS[item.status]}</span>
           {(() => {
-            const ids = item.skillIds ?? [];
-            if (!ids.length) return null;
-            const labels = queueSkillLabels(ids, skills);
+            const labels = queueSkillLabels(item.skillIds, skills);
             return labels.length
               ? <span className="turn-queue-skills" title={labels.join("、")}>技能：{labels.join("、")}</span>
-              : <span className="turn-queue-skills" title={ids.join("、")}>技能 {ids.length} 项</span>;
+              : null;
           })()}
           {item.autoCompaction && <span className="turn-queue-skills" title={compactionTitle(item.autoCompaction)}>{compactionLabel(item.autoCompaction)}</span>}
           {item.inputTruncated && <span className="turn-queue-skills" title="列表只显示前 600 字符；可点击「查看完整输入」核对全文，重新排队会读取并复用完整输入">正文已截断</span>}
@@ -194,9 +192,8 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
     {viewing && <ModalSurface title="队列消息完整输入" onClose={() => setViewing(null)}>
       <div className="dialog-form queue-input-dialog">
         <p className="dialog-note">{viewing.item.kind === "steering" ? "当前回合" : "后续回合"} · {LABELS[viewing.item.status]} · 只读展示持久化正文，关闭不会重新提交或修改队列。</p>
-        {(viewingSkillIds.length > 0 || viewing.item.autoCompaction) && <div className="queue-input-facts">
-          {viewingSkillLabels.length > 0 ? <span title={viewingSkillLabels.join("、")}>技能：{viewingSkillLabels.join("、")}</span>
-            : viewingSkillIds.length > 0 ? <span title={viewingSkillIds.join("、")}>技能 {viewingSkillIds.length} 项（目录中未找到名称）</span> : null}
+        {(viewingSkillLabels.length > 0 || viewing.item.autoCompaction) && <div className="queue-input-facts">
+          {viewingSkillLabels.length > 0 && <span title={viewingSkillLabels.join("、")}>技能：{viewingSkillLabels.join("、")}</span>}
           {viewing.item.autoCompaction && <span title={compactionTitle(viewing.item.autoCompaction)}>{compactionLabel(viewing.item.autoCompaction)}</span>}
         </div>}
         <pre className="turn-queue-full-input">{viewing.input || "（空输入）"}</pre>
