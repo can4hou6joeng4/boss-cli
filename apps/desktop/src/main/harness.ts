@@ -3,7 +3,8 @@ import { writeFile, chmod, lstat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { app, dialog, ipcMain, Notification, BrowserWindow, type IpcMainInvokeEvent } from "electron";
 import { HarnessHostManager, HarnessRpcError, type HarnessHostConnection } from "@boss-harness/app-client";
-import type { ApprovalFocusTarget, JsonRpcNotification, NotificationTestResult, SessionExportSaveResult } from "@boss-harness/protocol";
+import type { ApprovalFocusTarget, BadgeCountResult, JsonRpcNotification, NotificationTestResult,
+  SessionExportSaveResult } from "@boss-harness/protocol";
 import { isTrustedRendererUrl, sessionExportFileName, validateHarnessRequest, validateLoginContext,
   validateSessionExportRequest, validateThreadExportResponse } from "./security";
 import { PlatformLogin } from "./platformLogin";
@@ -11,6 +12,7 @@ import { preservesRpcError } from "./rpcErrors";
 import { sessionExportWriteError } from "./exportErrors";
 import { approvalNotificationContent, rememberApproval } from "./approvalNotification";
 import { readTurnEvent, recordTurnStart, turnNotificationContent } from "./turnNotification";
+import { normalizeBadgeCount } from "./notificationBadge";
 
 function findRepoRoot(start: string): string {
   let current = resolve(start);
@@ -231,6 +233,13 @@ function registerIPC(): void {
     trustedSender(event);
     await manager.get().reconnect();
     return { ...manager.get().status(), repoRoot };
+  });
+  ipcMain.handle("notification:badge", (event, value: unknown): BadgeCountResult => {
+    trustedSender(event);
+    const count = normalizeBadgeCount(value);
+    // 非法数量忽略，保持现有徽标；平台不支持时返回 false，不影响侧栏与通知面板。
+    if (count === null) return { applied: false };
+    try { return { applied: app.setBadgeCount(count) }; } catch { return { applied: false }; }
   });
   ipcMain.handle("notification:test", (event): NotificationTestResult => {
     trustedSender(event);
