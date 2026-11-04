@@ -93,7 +93,9 @@ export interface InitializeResponse {
     /** 可用 `skills/write` 按读取摘要修改已有技能；摘要变化时拒绝写入。 */
     skillsWrite?: boolean;
     /** 可用 `skills/delete` 按读取摘要删除技能；目录含其他文件时拒绝。 */
-    skillsDelete?: boolean };
+    skillsDelete?: boolean;
+    /** 可用 `queue/update` 在投递前改写仍在排队的队列项正文。 */
+    queueUpdate?: boolean };
   eventCursor?: string;
 }
 
@@ -139,6 +141,7 @@ export const ClientMethods = {
   queueAdd: "queue/add",
   queueList: "queue/list",
   queueGet: "queue/get",
+  queueUpdate: "queue/update",
   queueRemove: "queue/remove",
   modelList: "model/list",
   configRead: "config/read",
@@ -784,6 +787,8 @@ export interface QueueListResponse {
   truncated?: boolean;
 }
 export interface QueueGetParams { threadId: string; queueId: string }
+/** `queue/update`：仅改写仍在排队（`queued`）的正文；能力为 `queueUpdate`。 */
+export interface QueueUpdateParams { threadId: string; queueId: string; input: string }
 export interface QueueItemResponse { queueItem: QueueItem }
 
 export type TaskKind = "turn" | "queue" | "compaction";

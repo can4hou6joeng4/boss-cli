@@ -501,6 +501,7 @@ class ApplicationService:
             "approval/list": self.on_approval_list, "approval/respond": self.on_approval_respond,
             "event/list": self.on_event_list,
             "queue/add": self.on_queue_add, "queue/list": self.on_queue_list,
+            "queue/update": self.on_queue_update,
             "queue/get": self.on_queue_get,
             "queue/remove": self.on_queue_remove, "tool/list": self.on_tool_list,
             "model/list": self.on_model_list, "config/read": self.on_config_read,
@@ -582,7 +583,7 @@ class ApplicationService:
                              "threadSearch": True, "threadSearchArchived": True,
                              "workspaceInstructionsEdit": True, "skillsRead": True,
                              "skillsCreate": True, "skillsWrite": True,
-                             "skillsDelete": True},
+                             "skillsDelete": True, "queueUpdate": True},
             "toolBridge": {**bridge_description, "tools": self.runner.tool_names,
                            "bundleId": self.tool_bundle.id},
             "modelBridge": {"provider": self.config.provider, "model": self.config.model,
@@ -3992,6 +3993,21 @@ class ApplicationService:
 
     def on_queue_get(self, params: dict | None) -> dict:
         return {"queueItem": self.queue.get(_text(params, "threadId"), _text(params, "queueId"))}
+
+    def on_queue_update(self, params: dict | None) -> dict:
+        params = params or {}
+        thread_id = _text(params, "threadId")
+        queue_id = _text(params, "queueId")
+        text = _text(params, "input")
+        # Same admission lock as dispatch/remove: once an item is claimed as
+        # delivering, an edit can no longer slip in behind the claim.
+        with self._follow_up_admission_lock, self.runtimes.lock:
+            if self.runtimes.closed:
+                raise RpcError(-32003, "内核正在关闭")
+            self.sessions.require_thread(thread_id)
+            item = self.queue.update_input(thread_id, queue_id, text)
+        self.events.emit("queue/updated", {"threadId": thread_id, "queueId": item["id"]})
+        return {"queueItem": item}
 
     def on_queue_remove(self, params: dict | None) -> dict:
         thread_id = _text(params, "threadId")

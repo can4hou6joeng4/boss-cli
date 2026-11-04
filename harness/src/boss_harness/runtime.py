@@ -325,6 +325,28 @@ class TurnQueue:
                 "clientUserMessageId": client_id, "skillIds": skill_ids,
                 **({"autoCompaction": auto_compaction} if auto_compaction is not None else {})})
 
+    def update_input(self, thread_id: str, queue_id: str, text: str) -> dict:
+        """Replace the text of an unclaimed queue item without touching its identity."""
+        if not isinstance(text, str) or not text.strip() or len(text) > 100_000:
+            raise ValueError("队列 input 必须是 1 到 100000 字符")
+        with self.lock:
+            self.settle_pauses(thread_id)
+            items = self.list(thread_id)
+            item = next((q for q in items if q["id"] == queue_id), None)
+            if item is None:
+                raise ValueError("队列项不存在")
+            if item.get("status") != "queued":
+                raise ValueError("只有排队中的消息可以编辑")
+            _, pending_bytes = self._pending_usage(items)
+            pending_bytes += len(text.encode("utf-8")) - len(item["input"].encode("utf-8"))
+            if pending_bytes > MAX_PENDING_QUEUE_INPUT_BYTES:
+                raise RpcError(-32005, "会话待处理队列已达到内核资源上限",
+                               {"code": "QUEUE_LIMIT", "maxItems": MAX_PENDING_QUEUE_ITEMS,
+                                "maxInputBytes": MAX_PENDING_QUEUE_INPUT_BYTES})
+            if item["input"] == text:
+                return item
+            return self._save(thread_id, {**item, "input": text})
+
     def transition(self, thread_id: str, queue_id: str, status: str) -> dict:
         with self.lock:
             self.settle_pauses(thread_id)

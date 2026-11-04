@@ -144,6 +144,8 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .turn-queue li>button { flex: 0 0 26px; width: 26px; height: 26px; display: grid; place-items: center; border: 0; border-radius: 6px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .turn-queue li>button.turn-queue-retry { flex: 0 0 auto; width: auto; padding: 0 7px; font-size: 10px; white-space: nowrap; color: var(--accent-success); }
 .turn-queue li>button.turn-queue-retry:hover { background: var(--btn-ghost-hover); }
+.turn-queue li>button.turn-queue-edit { flex: 0 0 auto; width: auto; padding: 0 7px; font-size: 10px; white-space: nowrap; color: var(--accent-color); }
+.turn-queue li>button.turn-queue-edit:hover { background: var(--btn-ghost-hover); }
 .turn-queue li>button:hover { color: var(--accent-warning); background: var(--btn-ghost-hover); }
 .turn-queue li>button:disabled { opacity: .45; cursor: wait; }
 .turn-queue-item-copy>button.turn-queue-expand { grid-column: 1 / -1; justify-self: start; padding: 0; border: 0; border-radius: 3px; background: transparent; color: var(--accent-color); font-size: 10px; cursor: pointer; }
@@ -156,6 +158,12 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .queue-input-actions { align-items: center; }
 .queue-input-actions .queue-input-copy-status { margin-right: auto; color: var(--accent-success); font-size: 10px; }
 .queue-input-actions .queue-input-copy-error { margin-right: auto; color: var(--accent-warning); font-size: 10px; overflow-wrap: anywhere; }
+.queue-input-editor { width: 100%; min-height: 180px; max-height: 45vh; resize: vertical; padding: 10px 12px; border: 1px solid var(--border-active); border-radius: 8px; background: var(--bg-window); color: var(--text-main); font: inherit; font-size: 12px; line-height: 1.6; outline: none; }
+.queue-input-editor:focus-visible { border-color: var(--accent-color); }
+.queue-input-editor:disabled { opacity: .6; cursor: wait; }
+.queue-input-editor-meta { display: flex; justify-content: space-between; gap: 12px; color: var(--text-faint); font-size: 10px; }
+.queue-input-editor-meta .is-warning { color: var(--accent-warning); }
+.dialog-form p.queue-input-edit-error { margin: 0; color: var(--accent-warning); font-size: 11px; overflow-wrap: anywhere; }
 .turn-queue-error { margin: 5px 4px; color: var(--accent-warning); font-size: 10px; }
 .attachment-list { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 6px 10px; }
 .attachment-chip { display: flex; align-items: center; gap: 7px; max-width: 250px; padding: 7px 9px; border-radius: 9px; background: var(--btn-ghost-hover); font-size: 11px; }
