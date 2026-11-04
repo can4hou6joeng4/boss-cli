@@ -1,4 +1,5 @@
 import type { EventListResponse, ItemContentReference, ItemContentReadResponse, ItemListResponse, ThreadItem, ThreadReadResponse } from "@boss-harness/protocol";
+import { safeSlice } from "@boss-harness/shared";
 import type { HarnessEvent } from "./harnessEvents";
 
 interface Api { request<T>(method: string, params?: unknown): Promise<T> }
@@ -257,7 +258,7 @@ export class HarnessReplica {
   }
 
   private reportFailure(threadId: string, error: unknown): void {
-    const detail = error instanceof Error ? error.message.slice(0, 300) : "响应无效";
+    const detail = error instanceof Error ? safeSlice(error.message, 300) : "响应无效";
     const message = `读取会话内容失败：${detail}。已保留当前内容，请重新打开会话重试。`;
     if (threadId) this.failures.set(threadId, message);
     this.onEvent({ method: "session/error", params: { threadId, message } });

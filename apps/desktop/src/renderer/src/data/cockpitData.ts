@@ -5,6 +5,7 @@ import type {
   RuntimeResourceWaiter,
   RuntimeResourcesReadResponse,
 } from "@boss-harness/protocol";
+import { safeSlice } from "@boss-harness/shared";
 import type { QueuePage } from "./queueMapping";
 
 /** 驾驶舱只展示内核已声明或有持久记录的事实；字段缺失时保留为 undefined，由界面显示「未提供」。 */
@@ -242,7 +243,7 @@ export function readCockpitTools(values: unknown): CockpitTool[] {
   return values.flatMap(value => {
     if (!isObject(value)) return [];
     const name = text(value.name, 200);
-    const description = typeof value.description === "string" ? value.description.slice(0, 600) : "";
+    const description = typeof value.description === "string" ? safeSlice(value.description, 600) : "";
     const readOnly = boolean(value.readOnly);
     const requiresApproval = boolean(value.requiresApproval);
     const executionMode = value.executionMode === "sequential" || value.executionMode === "parallel" ? value.executionMode : undefined;

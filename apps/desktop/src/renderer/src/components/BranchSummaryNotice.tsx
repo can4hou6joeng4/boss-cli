@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { IconCheck, IconClock, IconClose } from "./Icons";
 import type { ContextBranchSummary, ContextCompactJob } from "@boss-harness/protocol";
+import { safeSlice } from "@boss-harness/shared";
 import { readBranchSummary } from "../data/harnessBridge";
 
 function readError(error: unknown): string {
   const value = error && typeof error === "object" ? error as { code?: unknown; message?: unknown; data?: unknown } : null;
   const data = value?.data && typeof value.data === "object" ? value.data as Record<string, unknown> : null;
-  const message = typeof value?.message === "string" ? value.message.slice(0, 300) : "无法读取本地内核响应";
+  const message = typeof value?.message === "string" ? safeSlice(value.message, 300) : "无法读取本地内核响应";
   const code = typeof value?.code === "number" ? `内核 ${value.code}${typeof data?.code === "string" ? ` / ${data.code}` : ""}` : "";
   return code ? `${message}（${code}）` : message;
 }
