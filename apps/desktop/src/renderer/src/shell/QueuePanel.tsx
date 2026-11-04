@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { QueueItem, SkillDescriptor } from "@boss-harness/protocol";
 import { IconClose } from "../components/Icons";
+import { ModalSurface } from "../components/ModalSurface";
 import { harnessErrorText } from "../data/harnessBridge";
 import { queueRefreshErrorText, type QueueRefreshResult } from "../data/queueRefresh";
 import { queueSkillLabels } from "../data/queueSkillLabels";
@@ -15,7 +16,7 @@ const LABELS: Record<QueueItem["status"], string> = {
 };
 const MAX_VISIBLE_ITEMS = 20;
 
-export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove, onRetry, skills = [], connected = true, onRefresh }: {
+export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove, onRetry, onReadFull, skills = [], connected = true, onRefresh }: {
   items: QueueItem[];
   /** 技能目录；用于把队列项里的技能 id 显示为名称，缺失时回退 id。 */
   skills?: SkillDescriptor[];
@@ -29,12 +30,16 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
   connected?: boolean;
   /** 手动重读当前会话队列；成功返回 `{ ok: true }`，失败带回原因。 */
   onRefresh?: () => Promise<QueueRefreshResult>;
+  /** 读取队列项在持久化记录中的完整输入，仅供核对，不会重新提交。 */
+  onReadFull?: (item: QueueItem) => Promise<QueueItem>;
   onRemove: (id: string) => Promise<boolean>;
   onRetry?: (item: QueueItem) => Promise<boolean>;
 }): JSX.Element | null {
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [reading, setReading] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<{ item: QueueItem; input: string } | null>(null);
   if (!items.length) return null;
   const refresh = async () => {
     if (!onRefresh || refreshing) return;
@@ -50,6 +55,18 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
   };
   const canRetry = (item: QueueItem) => Boolean(onRetry) && item.kind === "followUp"
     && item.status === "paused" && item.failureCode === "TURN_START_FAILED" && item.inputPersisted === false;
+  const showFullInput = async (item: QueueItem) => {
+    if (!onReadFull || reading) return;
+    setReading(item.id); setError("");
+    try {
+      const full = await onReadFull(item);
+      setViewing({ item: full, input: full.input });
+    } catch (cause) {
+      setError(`读取完整输入失败：${harnessErrorText(cause)}。队列面板仍显示预览。`);
+    } finally {
+      setReading(null);
+    }
+  };
   const retry = async (item: QueueItem) => {
     setPending(item.id); setError("");
     try {
@@ -79,7 +96,8 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
       : "",
     visibleItems.length < items.length ? `仅显示 ${visibleItems.length} 项` : "",
   ].filter(Boolean).join("，");
-  return <section className="turn-queue" aria-label="任务队列" aria-live="polite">
+  return <>
+    <section className="turn-queue" aria-label="任务队列" aria-live="polite">
     <div className="turn-queue-heading"><strong>任务队列</strong><span data-queue-pending={pendingCount} title={activeItems !== undefined ? "待处理数量由内核按全部持久队列项统计。"
       : kernelHidden ? "待处理数量按内核已载入的队列项统计。" : undefined}>{pendingCount} 项待处理</span>
       {hiddenNote && <span className="turn-queue-more" data-queue-total={total} data-queue-truncated={kernelHidden ? "true" : "false"} data-queue-visible={visibleItems.length}
@@ -107,6 +125,9 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
           {item.autoCompaction && <span className="turn-queue-skills" title={compactionTitle(item.autoCompaction)}>{compactionLabel(item.autoCompaction)}</span>}
           {item.inputTruncated && <span className="turn-queue-skills" title="列表只显示前 600 字符；重新排队会读取并复用完整输入">正文已截断</span>}
           <p title={item.input}>{item.input}</p>
+          {item.inputTruncated && onReadFull && <button type="button" className="turn-queue-expand" disabled={reading !== null}
+            title="读取内核持久化的完整输入，仅供核对，不会重新提交"
+            onClick={() => { void showFullInput(item); }}>{reading === item.id ? "读取中…" : "查看完整输入"}</button>}
           {item.status === "paused" && item.failureCode === "TURN_START_FAILED" && <p className="turn-queue-error">
             {item.inputPersisted === true ? "输入已保留在当前会话，核对后可发起新任务。" : item.inputPersisted === false
               ? onRetry ? "输入尚未写入当前会话，可直接重新排队。" : "输入尚未写入当前会话，核对后可发起新任务。" : "请先核对当前会话，再决定是否发起新任务。"}
@@ -125,5 +146,12 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
       </li>)}
     </ul>
     {error && <p className="turn-queue-error" role="status">{error}</p>}
-  </section>;
+    </section>
+    {viewing && <ModalSurface title="队列消息完整输入" onClose={() => setViewing(null)}>
+      <div className="dialog-form queue-input-dialog">
+        <p className="dialog-note">{viewing.item.kind === "steering" ? "当前回合" : "后续回合"} · {LABELS[viewing.item.status]} · 只读展示持久化正文，关闭不会重新提交或修改队列。</p>
+        <pre className="turn-queue-full-input">{viewing.input || "（空输入）"}</pre>
+      </div>
+    </ModalSurface>}
+  </>;
 }
