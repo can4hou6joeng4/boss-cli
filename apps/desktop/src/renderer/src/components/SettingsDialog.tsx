@@ -291,9 +291,9 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
             {section === "notifications" && (
               <>
                 <p className="settings-intro">管理任务结束或需要你参与时的提醒方式。</p>
-                <SettingRow title="桌面通知" description="系统通知尚未接入当前工作台"><span className="settings-badge">不可用</span></SettingRow>
+                <SettingRow title="桌面通知" description="窗口不在前台时，审批请求会弹出系统通知，点击回到工作台"><span className="settings-static-value">自动</span></SettingRow>
                 <SettingRow title="提示音" description="声音提醒尚未接入当前工作台"><span className="settings-badge">不可用</span></SettingRow>
-                <SettingRow title="通知权限" description="当前界面尚未申请系统通知权限"><span className="settings-static-value">未连接</span></SettingRow>
+                <SettingRow title="通知权限" description="系统通知由操作系统授权并展示，工作台不单独申请"><span className="settings-static-value">跟随系统</span></SettingRow>
               </>
             )}
 

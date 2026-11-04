@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { writeFile, chmod, lstat } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { app, dialog, ipcMain, BrowserWindow, type IpcMainInvokeEvent } from "electron";
+import { app, dialog, ipcMain, Notification, BrowserWindow, type IpcMainInvokeEvent } from "electron";
 import { HarnessHostManager, HarnessRpcError, type HarnessHostConnection } from "@boss-harness/app-client";
 import type { JsonRpcNotification, SessionExportSaveResult } from "@boss-harness/protocol";
 import { isTrustedRendererUrl, sessionExportFileName, validateHarnessRequest, validateLoginContext,
@@ -9,6 +9,7 @@ import { isTrustedRendererUrl, sessionExportFileName, validateHarnessRequest, va
 import { PlatformLogin } from "./platformLogin";
 import { preservesRpcError } from "./rpcErrors";
 import { sessionExportWriteError } from "./exportErrors";
+import { approvalNotificationContent, rememberApproval } from "./approvalNotification";
 
 function findRepoRoot(start: string): string {
   let current = resolve(start);
@@ -51,6 +52,33 @@ function send(window: BrowserWindow, notification: JsonRpcNotification): void {
   try { window.webContents.send("harness:notification", notification); } catch {}
 }
 
+const notifiedApprovals = new Set<string>();
+
+/** 点击系统通知后回到工作台：恢复最小化窗口并聚焦。 */
+function focusWindow(): void {
+  const target = [...windows].find((window) => !window.isDestroyed());
+  if (!target) return;
+  if (target.isMinimized()) target.restore();
+  target.show();
+  target.focus();
+}
+
+/**
+ * 窗口不在前台时用系统通知提示新的审批请求；同一 approvalId 只提醒一次。
+ * 通知失败（系统不支持、权限或平台限制）只影响提醒，不影响窗口内通知转发。
+ */
+function notifyApproval(notification: JsonRpcNotification): void {
+  if (BrowserWindow.getFocusedWindow()) return;
+  const content = approvalNotificationContent(notification);
+  if (!content || !rememberApproval(notifiedApprovals, content.approvalId)) return;
+  if (!Notification.isSupported()) return;
+  try {
+    const native = new Notification({ title: content.title, body: content.body });
+    native.on("click", focusWindow);
+    native.show();
+  } catch {}
+}
+
 function createHost(): HarnessHostConnection {
   repoRoot = findRepoRoot(app.getAppPath());
   const venvPython = resolve(repoRoot, ".venv", "bin", "python");
@@ -69,7 +97,10 @@ function createHost(): HarnessHostConnection {
       },
     },
   });
-  connection.onNotification((notification) => { for (const window of windows) send(window, notification); });
+  connection.onNotification((notification) => {
+    for (const window of windows) send(window, notification);
+    notifyApproval(notification);
+  });
   return connection;
 }
 
