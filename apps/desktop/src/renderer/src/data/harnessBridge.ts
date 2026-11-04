@@ -45,6 +45,7 @@ import {
   type ConnectionReport,
   type ConnectionTarget,
   type ConfigReadResponse,
+  type RuntimeResourcesReadResponse,
   type ContextReadResponse,
   type ContextCompactPlan,
   type ContextCompactPlanParams,
@@ -315,6 +316,11 @@ export async function sendTurn(threadId: string, input: string, clientUserMessag
 
 export function readConfig(): Promise<ConfigReadResponse> {
   return contextRequest(ClientMethods.configRead, {});
+}
+
+/** 运行中与收尾中的回合、摘要 owner 及容量等待者；只读快照。 */
+export function readRuntimeResources(): Promise<RuntimeResourcesReadResponse> {
+  return contextRequest(ClientMethods.runtimeResourcesRead, {});
 }
 
 /** 仅内核声明 `autoCompactionConfig` 后调用；保存默认策略并立即在当前进程生效。 */

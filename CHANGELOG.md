@@ -11,6 +11,8 @@
 
 ### 新增
 
+- 桌面新增「运行状态」面板（`⌘⇧K`，替代原「招聘驾驶舱」示例）：打开时并行读取 `config/read`、`runtime/resources/read`、`approval/list`、`tool/list`、`model/list`，当前会话存在时再读 `queue/list`；展示内核线路与模型容量、并发与保留回合、运行/收尾 owner 与容量等待、待审批明细与到期提示、工具审批属性与模型目录。移除示例数据中的虚构 MCP 服务器、成本/缓存命中率、沙箱与死循环指标，并明确标注当前版本不接入 MCP；单个来源失败只影响对应分区，断连时清空并提示未连接。协议保持 `0.2.0`（仅使用既有只读方法）。
+
 - 自动压缩默认策略可在桌面查看并保存：内核新增 `config/autoCompaction/set`（能力 `autoCompactionConfig`），接受 `enabled`、`triggerPercent`（1–100）、`keepRecentTokens`（1–1000000），写入状态目录 `config.json`（临时文件 + `os.replace` 原子替换，保留其他顶层键），重启后仍生效并立即更新当前进程策略；摘要 provider、model、effort 不受影响。`config/read` 新增 `autoCompactionSource`（`environment` / `stored` / `default` / `explicit`）；`BOSS_HARNESS_COMPACTION` 显式设置时优先，`set` 以 `AUTO_COMPACTION_ENV_MANAGED` 拒绝，显式构造的内核以 `AUTO_COMPACTION_EXPLICIT` 拒绝，均不静默覆盖。配置文件缺失或字段非法时按内置默认读取；存在但不可读时拒绝写入，避免覆盖未知配置。桌面设置新增「上下文」分区，展示来源并编辑三项默认值；能力未声明、环境变量托管或调用方显式指定时只读展示，保存失败保留草稿并显示原因。单回合覆盖语义不变。协议保持 `0.2.0`（仅新增可选方法与能力）。
 
 - 排队中的消息可在投递前编辑：内核新增 `queue/update`（能力 `queueUpdate`），仅接受仍为 `queued` 的队列项，改写正文时保留 id、类型、`clientUserMessageId`、技能与自动压缩覆盖；`delivering` / `delivered` / `paused` / `cancelled` 明确拒绝，避免改写已发生的投递事实。正文沿用 1–100000 字符校验并重新核对待处理队列字节上限，成功后发布既有 `queue/updated`。桌面队列面板对排队项显示「编辑」；正文被截断时必须先经 `queue/get` 读取完整输入再进入编辑器，绝不保存 600 字符预览。保存失败显示真实原因并保留草稿，保存成功用内核返回项更新面板；能力未声明时不显示入口。协议保持 `0.2.0`（仅新增可选方法与能力）。

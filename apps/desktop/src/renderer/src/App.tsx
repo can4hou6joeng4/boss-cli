@@ -781,7 +781,7 @@ export function App(): JSX.Element {
       // 重连按钮此前没有任何结果反馈：失败时仍停留在同一条错误上，用户无法判断是否试过。
       setError(status.running ? "" : `重新连接失败：${status.error || "本地内核仍未运行"}。请检查启动配置后重启应用。`);
     }); }}>重新连接</button>}<button onClick={() => setError("")} aria-label="关闭提示"><IconClose size={14} /></button></div>}
-    <CockpitModal isOpen={isCockpitOpen} onClose={() => setIsCockpitOpen(false)} />
+    <CockpitModal isOpen={isCockpitOpen} onClose={() => setIsCockpitOpen(false)} harnessUp={harnessUp} threadId={contextThreadId} />
     <ContextPanel isOpen={contextPanel.isOpen} onClose={contextPanel.close} threadId={contextThreadId} title={activeSession?.title ?? ""} connected={harnessUp} busy={contextPanel.busy} state={contextPanel.state} onKeepRecentChange={contextPanel.changeKeepRecent} onRefresh={() => { void contextPanel.refresh(); }} onPlan={() => { void contextPanel.plan(); }} onStart={() => { void contextPanel.start(); }} onCancel={() => { void contextPanel.cancel(); }} autoCompaction={autoCompaction} workspaceEditor={capabilities?.workspaceInstructionsEdit === true} />
     <SideChatModal isOpen={isSideChatOpen} onClose={() => setIsSideChatOpen(false)} />
     <RewindOverlay messages={messages} fork={!preview} isOpen={isRewindOpen} onClose={() => setIsRewindOpen(false)} onConfirmRewind={messageCount => {
