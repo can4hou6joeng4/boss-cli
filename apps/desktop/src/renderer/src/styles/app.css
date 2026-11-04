@@ -1724,6 +1724,7 @@ html:not(.dark) .code-block-header {
   -webkit-line-clamp: 2;
 }
 .cockpit-row-alert-text { color: var(--accent-warning); }
+.cockpit-row-actions { display: flex; margin-top: 3px; }
 .cockpit-badges { display: flex; flex: none; flex-wrap: wrap; justify-content: flex-end; gap: 4px; max-width: 45%; }
 .cockpit-badge {
   padding: 2px 8px;

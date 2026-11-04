@@ -11,6 +11,8 @@
 
 ### 新增
 
+- 运行状态面板可核对持久任务记录：回合页的每个运行中或收尾中 owner 行新增「核对持久记录」，经既有只读 `task/read` 查询同一任务（turn / compaction）的持久状态、归属、当前进程持有情况、恢复策略、阶段与已验证关联；核对为手动触发，只读，不恢复、不重放、不取消任务。响应按白名单严格校验（locator / threadId 归属、`ownership`、`recoveryPolicy`、`runtimeOwned`、`phase`、`relations`、`historyWindow`），非法响应整体拒绝且不展示半份数据；`TASK_NOT_FOUND` 明确提示任务已不在持久记录中，其余失败保留内核错误码且不自动重试；关闭面板或切换会话后清除上次结果。纯逻辑映射与校验位于 `taskCheck`，不新增 RPC，协议与内核版本不变（仍为 `0.2.0`）。
+
 - 运行状态面板支持事件驱动刷新：面板打开且内核已连接时订阅既有 `harness:notification`，在 `turn/started`、`turn/completed`、`approval/requested`、`approval/decided`、`queue/updated`、`context/compactionStarted`、`context/compactionCompleted`、`context/compactionFailed` 与 `context/compacted` 后自动重读快照；连续通知按 350ms 防抖合并，避免同一批事件触发多次并行读取。刷新沿用既有手动刷新路径，失败只更新对应分区错误并保留其余可读数据；未知通知不触发读取。事件过滤为纯函数，便于离线验证。协议保持 `0.2.0`（不新增 RPC，内核不变）。
 
 - 桌面新增「运行状态」面板（`⌘⇧K`，替代原「招聘驾驶舱」示例）：打开时并行读取 `config/read`、`runtime/resources/read`、`approval/list`、`tool/list`、`model/list`，当前会话存在时再读 `queue/list`；展示内核线路与模型容量、并发与保留回合、运行/收尾 owner 与容量等待、待审批明细与到期提示、工具审批属性与模型目录。移除示例数据中的虚构 MCP 服务器、成本/缓存命中率、沙箱与死循环指标，并明确标注当前版本不接入 MCP；单个来源失败只影响对应分区，断连时清空并提示未连接。协议保持 `0.2.0`（仅使用既有只读方法）。

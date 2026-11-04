@@ -63,6 +63,8 @@ import {
   type TurnListResponse,
   type ThreadUsageReadResponse,
   type ThreadSearchResponse,
+  type TaskReadParams,
+  type TaskReadResponse,
   type QueueStatusCounts,
   type WorkspaceInstructionsText,
   type WorkspaceInstructionsWriteResponse,
@@ -195,6 +197,12 @@ export const readThreadUsage = (threadId: string, view: "log" | "branch", cursor
 /** 跨会话消息搜索：仅在内核声明 threadSearch 后调用；只读、有界。 */
 export const searchThreadMessages = (query: string, limit = 20, includeArchived = false): Promise<ThreadSearchResponse> =>
   contextRequest(ClientMethods.threadSearch, includeArchived ? { query, limit, includeArchived } : { query, limit });
+/** 持久任务只读核对：仅使用既有 task/read；不会恢复、重放或取消任务。 */
+export async function readTaskStatus(params: TaskReadParams): Promise<TaskReadResponse> {
+  const api = bridge();
+  if (!api) throw new Error("本地 Harness 未连接");
+  return contextRequest<TaskReadResponse>(ClientMethods.taskRead, params);
+}
 export const listBranchTurns = (threadId: string, cursor?: string | null): Promise<TurnListResponse> =>
   contextRequest(ClientMethods.threadTurnsList, cursor ? { threadId, view: "branch", cursor, limit: 200 } : { threadId, view: "branch", limit: 200 });
 
