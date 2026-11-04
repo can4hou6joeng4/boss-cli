@@ -1770,6 +1770,8 @@ html:not(.dark) .code-block-header {
   flex-direction: column;
   gap: 10px;
 }
+.sidechat-note { margin: 0; color: var(--text-faint); font-size: 12px; line-height: 1.5; }
+.sidechat-notice { margin: 0; color: var(--accent-warning); font-size: 12px; line-height: 1.5; }
 .sidechat-composer {
   padding: 10px;
   border-top: 1px solid var(--border-color);

@@ -10,6 +10,7 @@
 - [求职者沟通列表](#求职者沟通列表)
 - [技能与队列](#技能与队列)
 - [自动压缩默认策略](#自动压缩默认策略)
+- [快速提问](#快速提问)
 - [运行状态](#运行状态)
 - [上游 CLI 设置](#上游-cli-设置)
 - [返回 README 快速开始](../README.md#快速开始)
@@ -49,6 +50,12 @@ OpenAI Responses 与 Anthropic Messages 的单次传输默认最多运行 600 �
 内核默认启用自动压缩：输入预算使用达到 80% 时生成摘要，并尽量保留最近 20000 token。桌面「设置 → 上下文」可查看并修改这三项默认值；内核侧对应 `config/autoCompaction/set`（能力 `autoCompactionConfig`），只接受 `enabled`、`triggerPercent`（1–100）与 `keepRecentTokens`（1–1000000）。保存后立即在当前进程生效，并原子写入内核状态目录下的 `config.json`；重启后仍生效，其他顶层配置键保持不变。摘要使用的 provider、model、effort 不在此界面修改，仍由启动配置决定。
 
 策略来源经 `config/read` 的 `autoCompactionSource` 如实返回：`environment` 表示由 `BOSS_HARNESS_COMPACTION` 管理，`stored` 表示来自 `config.json`，`default` 表示内置默认，`explicit` 表示调用方在构造内核时显式指定。环境变量优先于持久配置；此时设置页只读，直接调用 `config/autoCompaction/set` 会以 `AUTO_COMPACTION_ENV_MANAGED` 拒绝，不会静默覆盖环境变量；显式构造的内核以 `AUTO_COMPACTION_EXPLICIT` 拒绝写入。配置文件缺失或字段非法时按内置默认读取；文件存在但不可读或不是 JSON 对象时，保存会明确失败而不是覆盖原文件。单回合覆盖的语义不变：它优先于默认值，发送一次后消耗，不写入会话或 `config.json`。
+
+## 快速提问
+
+按 `⌘;`（Windows / Linux 为 `Ctrl+;`）或选择侧栏「快速提问」打开浮窗。已连接内核时，提问会经内核新建一个会话并立即发送，当前会话与正在运行的任务不受影响；成功后浮窗关闭并切换到新会话查看回复。
+
+创建或发送失败时输入保留并显示真实原因，不会自动重试，也不会在本地生成任何回复。模型线路按「当前会话 → 进程默认线路 → 目录中同一 provider 的条目」解析；解析不出精确线路或线路为 `none` 时明确拒绝，不拿显示值或目录首项猜线路。创建中禁止重复提交，内核未连接时禁用输入。浏览器预览模式（没有桌面桥）保留演示交互，回复全部标注为示例。
 
 ## 运行状态
 
