@@ -21,6 +21,7 @@ import { useClipboardCopy } from "../data/clipboardCopy";
 import { toolOutcomeBadge } from "../data/toolOutcome";
 import { findMessageMatches } from "../data/messageSearch";
 import { collectTextRanges } from "../data/findHighlight";
+import { compactTitle, stripProjectPrefix } from "../data/sessionTitle";
 
 /** 会话内分支入口与摘要标注；内核未声明分支能力时不传，界面完全不显示。 */
 export interface SessionBranchesView {
@@ -260,11 +261,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
     else summariesAfter.set(index, [...(summariesAfter.get(index) ?? []), summary]);
   }
   const firstUserMsg = messages.find((m) => m.role === "user")?.content;
-  const threadTitle = firstUserMsg
-    ? firstUserMsg.length > 28
-      ? `${firstUserMsg.slice(0, 28)}…`
-      : firstUserMsg
-    : "招聘任务会话";
+  const threadTitle = compactTitle(stripProjectPrefix(firstUserMsg ?? ""), 28, "招聘任务会话");
 
   return (
     <div className="thread-workspace">

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ModalSurface } from "./ModalSurface";
 import type { MessageItem } from "../data/mockData";
 import { isSettledTurn, type BranchSupport, type SessionBranchState } from "../data/useSessionBranches";
+import { compactTitle } from "../data/sessionTitle";
 import type { ThreadBranchEndpoint } from "@boss-harness/protocol";
 
 type Target = BranchTarget;
@@ -12,9 +13,7 @@ function timeOf(value: string | null | undefined): string {
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
 }
 function clip(text: string | null | undefined, fallback: string): string {
-  const value = (text ?? "").replace(/\s+/g, " ").trim();
-  if (!value) return fallback;
-  return value.length > 80 ? value.slice(0, 80) + "…" : value;
+  return compactTitle(text, 80, fallback);
 }
 
 /**

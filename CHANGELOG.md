@@ -138,6 +138,7 @@
 
 ### 修复
 
+- [Issue #515](https://github.com/can4hou6joeng4/boss-harness/issues/515)：新建会话标题取自带项目前缀的完整提示词。首页选择招聘项目后发送的内容是「招聘项目：<项目名>」加空行再加正文，`App.tsx` 直接 `slice(0, 32)` 作为 `thread/start` 标题，侧栏经常只显示项目前缀并带入换行，看不到用户实际问题。新增纯函数 `sessionTitleFromPrompt`：仅剥离首页固定格式的项目前缀，折叠空白后安全截断到 32 字符，无正文回退「新会话」；发送给模型的输入不变。会话顶栏回退标题与分支标签改用同一安全截断（沿用 28 / 80 字符上限与省略号），不再从代理对中间切开。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #513](https://github.com/can4hou6joeng4/boss-harness/issues/513)：通知标题截断可能切断 Unicode 代理对。通知面板分组标题按 120 字符、审批系统通知正文按 240 字符直接 `slice`，边界落在 emoji 等补充平面字符中间时会留下孤立高代理项，界面与系统通知显示替换字符。新增共享 `safeSlice`，按 UTF-16 预算截断但不切开代理对；分组标题（含「已归档」后缀）与审批通知正文改用它，既有上限、省略号位置与未截断文本行为不变，共享 `truncate` 同步修正。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #511](https://github.com/can4hou6joeng4/boss-harness/issues/511)：快捷指令描述超出对应只读工具的实际能力。`/status` 宣称「平台会话健康度」，而 `boss_status` 默认只读本地登录态、不做在线验证；`/stats` 宣称「查询……全景漏斗」，而 `boss_stats` 只读本地数据、不刷新平台；`/candidates` 宣称「多维度筛选」，而 `boss_hr_candidates` 只接受一个 `query` 关键词；`/search`、`/recommend`、`/jobs`、`/chat` 未标明只读，`/recommend` 还宣称接收偏好参数。现在七条工具型指令的描述与对应 `boss_*` 工具说明对齐，明确只读与本地/在线边界，移除「平台会话健康度」「全景」「多维度筛选」「偏好」等未实现能力；指令集合、顺序、图标与「插入文本、由用户发送」语义不变。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #509](https://github.com/can4hou6joeng4/boss-harness/issues/509)：离线 `/chat` 指令调用了求职者视角的沟通工具。上一轮 #507 把 `/chat` 映射到 `boss_chat`（「求职者模式：读取当前配置业务上下文的指定页沟通概览」），而桌面菜单对 `/chat` 的描述是「招聘者模式：查看与候选人的沟通列表与未读数」，对应工具应为 `boss_hr_chat`。现在 `/chat` 改用 `boss_hr_chat`，参数仍为 `{}`（使用工具默认页码），回复标题保持「沟通消息」；`/jobs`、`/candidates` 等其余映射不变。不新增 RPC，协议与内核仍为 `0.2.0`。
