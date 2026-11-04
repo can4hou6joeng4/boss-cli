@@ -61,7 +61,7 @@ npm run build
 BOSS_HARNESS_PROVIDER=none npm run dev
 ```
 
-`none` 会跳过模型调用，但输入 `/tools` 或 `/search` 仍会尝试调用上游 `boss-agent-cli`；未安装或未配置该 CLI 时，这两个命令不可用。真实模型请求可能联网并产生费用。
+`none` 会跳过模型调用，但 `/tools`、`/search`、`/status`、`/stats`、`/recommend`、`/jobs`、`/chat`、`/candidates` 仍会直接调用上游只读工具；未安装或未配置该 CLI 时这些命令不可用。真实模型请求可能联网并产生费用。
 
 ## 试跑一条任务
 
