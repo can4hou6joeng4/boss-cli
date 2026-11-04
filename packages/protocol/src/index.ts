@@ -413,6 +413,7 @@ export interface ApprovalState {
   /** 出站操作必须显式批准；只读操作可为 false。 */
   consequential: boolean;
   decision?: "approve" | "deny" | "expired";
+  /** 等待截止时间，Unix epoch 秒；桌面渲染时换算为毫秒。 */
   deadline?: number;
 }
 
@@ -641,6 +642,7 @@ export interface PendingApproval {
   itemId: string;
   toolName: string;
   summary: string;
+  /** 等待截止时间，Unix epoch 秒；桌面渲染时换算为毫秒。 */
   deadline: number;
   paramsDigest: string;
 }

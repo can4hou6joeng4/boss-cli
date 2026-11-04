@@ -1,7 +1,7 @@
 import type { ApprovalState, ProviderFailureInfo, QueueItem, ThreadItem } from "@boss-harness/protocol";
 import type { MessageItem } from "./mockData";
 import { toMessage, type ApprovalDelivery } from "./harnessBridge";
-import { approvalDeadline } from "./pendingApprovals";
+import { approvalDeadlineMs } from "./pendingApprovals";
 
 export interface HarnessEvent {
   method: string;
@@ -70,7 +70,7 @@ export function reduceHarnessEvent(previous: MessageItem[], event: HarnessEvent)
       break;
     case "approval/requested": {
       if (!params.approvalId) return previous;
-      const deadline = approvalDeadline(params.deadline);
+      const deadline = approvalDeadlineMs(params.deadline);
       item = { ...item, approval: { approvalId: params.approvalId, toolName: params.toolName ?? "tool", description: params.summary ?? "该操作需要你的批准", params: params.params ?? {}, consequential: params.consequential ?? true, ...(deadline !== undefined ? { deadline } : {}) } };
       break;
     }
