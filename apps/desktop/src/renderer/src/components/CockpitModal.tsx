@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { PendingApproval, RuntimeResourceOwner, RuntimeResourcesReadResponse } from "@boss-harness/protocol";
 import { ModalSurface } from "./ModalSurface";
-import { configuredModels, harnessErrorText, listPendingApprovals, listQueue, listTools, readConfig, readRuntimeResources } from "../data/harnessBridge";
+import { configuredModels, harnessErrorText, listPendingApprovals, listQueue, listTools, readConfig, readRuntimeResources, readTaskStatus } from "../data/harnessBridge";
+import { parseTaskRead, taskCheckErrorText, taskCheckLines, taskLocatorForOwner, type TaskCheckState } from "../data/taskCheck";
 import { approvalRemainingText, approvalUrgency } from "../data/pendingApprovals";
 import { compactionSourceLabel } from "../data/compactionSettings";
 import {
@@ -67,9 +68,16 @@ function SourceError({ label, error }: { label: string; error?: string }) {
   return error ? <p className="cockpit-error" role="status">{label}读取失败：{error}</p> : null;
 }
 
-function OwnerRow({ owner }: { owner: RuntimeResourceOwner }) {
+function OwnerRow({ owner, check, onCheck }: {
+  owner: RuntimeResourceOwner;
+  check?: TaskCheckState;
+  onCheck: () => void;
+}) {
   const flags = [owner.cancelRequested ? "已请求取消" : "", owner.abortPending ? "中止待完成" : ""].filter(Boolean).join(" · ");
   const phase = [owner.phase, owner.phaseStatus].filter(Boolean).join(" · ");
+  const key = `${owner.kind}:${owner.id}`;
+  const checkable = taskLocatorForOwner(owner) !== null;
+  const lines = check?.task ? taskCheckLines(check.task) : [];
   return (
     <div className="cockpit-row">
       <div className="cockpit-row-main">
@@ -78,6 +86,13 @@ function OwnerRow({ owner }: { owner: RuntimeResourceOwner }) {
           会话 {shortId(owner.threadId)} · {ownerStateLabel(owner.state)} · 已运行 {durationText(owner.ageSeconds)}
         </div>
         {flags ? <div className="cockpit-row-sub cockpit-row-alert-text">{flags}</div> : null}
+        {checkable ? <div className="cockpit-row-actions">
+          <button type="button" className="cockpit-refresh" disabled={check?.loading === true} onClick={onCheck}>
+            {check?.loading ? "核对中…" : check?.task || check?.error ? "重新核对持久记录" : "核对持久记录"}
+          </button>
+        </div> : null}
+        {lines.map((line, index) => <div className="cockpit-row-sub" key={`${key}:${index}`}>{line}</div>)}
+        {check?.error ? <div className="cockpit-row-sub cockpit-row-alert-text" role="status">{check.error}</div> : null}
       </div>
       {phase ? <span className="cockpit-badge">{phase}</span> : null}
     </div>
@@ -106,7 +121,24 @@ export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose, har
   const [loading, setLoading] = useState(false);
   const [loadedOnce, setLoadedOnce] = useState(false);
   const [updatedAt, setUpdatedAt] = useState<number | null>(null);
+  const [taskChecks, setTaskChecks] = useState<Record<string, TaskCheckState>>({});
   const epoch = useRef(0);
+  const checkEpoch = useRef(0);
+
+  useEffect(() => { checkEpoch.current += 1; setTaskChecks({}); }, [isOpen, threadId]);
+  const runTaskCheck = useCallback(async (owner: RuntimeResourceOwner) => {
+    const params = taskLocatorForOwner(owner);
+    if (!params) return;
+    const key = `${owner.kind}:${owner.id}`;
+    const run = checkEpoch.current;
+    setTaskChecks(previous => ({ ...previous, [key]: { loading: true } }));
+    try {
+      const task = parseTaskRead(await readTaskStatus(params), params);
+      if (run === checkEpoch.current) setTaskChecks(previous => ({ ...previous, [key]: { loading: false, task } }));
+    } catch (cause) {
+      if (run === checkEpoch.current) setTaskChecks(previous => ({ ...previous, [key]: { loading: false, error: `核对失败：${taskCheckErrorText(cause)}` } }));
+    }
+  }, []);
 
   const load = useCallback(async (initial: boolean) => {
     const run = ++epoch.current;
@@ -281,10 +313,12 @@ export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose, har
             {resources ? (
               <>
                 <h3 className="cockpit-subheading">运行中或收尾中的 owner（{NUMBER.format(resources.ownerCount)}）</h3>
+                <p className="dialog-note">可逐个 owner 经 task/read 核对持久记录；核对为只读，不恢复、不重放、不取消任务。</p>
                 {resources.ownersTruncated ? <p className="dialog-note">明细已按内核上限截断，仅显示 {resources.owners.length} 项。</p> : null}
                 {resources.owners.length === 0
                   ? <p className="cockpit-empty">当前没有运行中或收尾中的回合与摘要任务。</p>
-                  : <div className="cockpit-list">{resources.owners.map((owner, index) => <OwnerRow key={`${owner.kind}:${owner.id}:${index}`} owner={owner} />)}</div>}
+                  : <div className="cockpit-list">{resources.owners.map((owner, index) => <OwnerRow key={`${owner.kind}:${owner.id}:${index}`} owner={owner}
+                    check={taskChecks[`${owner.kind}:${owner.id}`]} onCheck={() => { void runTaskCheck(owner); }} />)}</div>}
                 <h3 className="cockpit-subheading">容量等待（{NUMBER.format(resources.waiterCount)}）</h3>
                 {resources.waitersTruncated ? <p className="dialog-note">等待明细已按内核上限截断，仅显示 {resources.waiters.length} 项。</p> : null}
                 {resources.waiters.length === 0
