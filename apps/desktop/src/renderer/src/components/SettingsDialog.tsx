@@ -14,6 +14,7 @@ import {
   IconTerminal,
 } from "./Icons";
 import { UI_STORAGE_PREFIX } from "../data/uiStorage";
+import { primeApprovalChime } from "../data/approvalChime";
 import "../styles/settings.css";
 import { ConnectionSettings } from "./ConnectionSettings";
 
@@ -36,6 +37,7 @@ interface UIPreferences {
   fontSize: number;
   density: Density;
   motion: Motion;
+  approvalSound: boolean;
 }
 
 const STORAGE_PREFIX = UI_STORAGE_PREFIX;
@@ -66,6 +68,7 @@ function readPreferences(): UIPreferences {
     fontSize: 13,
     density: "comfortable",
     motion: window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "reduced" : "full",
+    approvalSound: false,
   };
   try {
     const fontSize = Number(localStorage.getItem(`${STORAGE_PREFIX}fontSize`));
@@ -75,6 +78,7 @@ function readPreferences(): UIPreferences {
       motion: localStorage.getItem(`${STORAGE_PREFIX}motion`) === "reduced"
         ? "reduced"
         : localStorage.getItem(`${STORAGE_PREFIX}motion`) === "full" ? "full" : defaults.motion,
+      approvalSound: localStorage.getItem(`${STORAGE_PREFIX}approvalSound`) === "true",
     };
   } catch {
     return defaults;
@@ -218,6 +222,7 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
         [`${STORAGE_PREFIX}fontSize`]: String(preferences.fontSize),
         [`${STORAGE_PREFIX}density`]: preferences.density,
         [`${STORAGE_PREFIX}motion`]: preferences.motion,
+        [`${STORAGE_PREFIX}approvalSound`]: String(preferences.approvalSound),
       };
       // Workspace aliases and project names can contain private text, even if
       // other components store them under the UI prefix. Export this allowlist only.
@@ -292,7 +297,7 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
               <>
                 <p className="settings-intro">管理任务结束或需要你参与时的提醒方式。</p>
                 <SettingRow title="桌面通知" description="窗口不在前台时，审批请求会弹出系统通知，点击回到工作台"><span className="settings-static-value">自动</span></SettingRow>
-                <SettingRow title="提示音" description="声音提醒尚未接入当前工作台"><span className="settings-badge">不可用</span></SettingRow>
+                <SettingRow title="审批提示音" description="新的审批请求到达时播放两声短提示音；默认关闭"><Switch label="审批提示音" checked={preferences.approvalSound} onChange={() => { const next = !preferences.approvalSound; if (next) primeApprovalChime(); updatePreference("approvalSound", next); }} /></SettingRow>
                 <SettingRow title="通知权限" description="系统通知由操作系统授权并展示，工作台不单独申请"><span className="settings-static-value">跟随系统</span></SettingRow>
               </>
             )}

@@ -17,6 +17,7 @@ import { NotificationsDialog } from "../components/NotificationsDialog";
 import { ModalSurface } from "../components/ModalSurface";
 import { type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "../data/mockData";
 import { isApprovalCountEvent, readApprovalFocus } from "../data/pendingApprovals";
+import { approvalSoundEnabled, playApprovalChime } from "../data/approvalChime";
 import { booleanPreference, projectFolders, stringList, stringRecord } from "../data/preferenceShapes";
 import { type ModelDescriptor, type SkillDescriptor, type ToolDescriptor } from "@boss-harness/protocol";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
@@ -117,7 +118,10 @@ export function AppShell(props: AppShellProps) {
     if (!api?.onNotification) return;
     let timer: number | undefined;
     const unsubscribe = api.onNotification(raw => {
-      if (!isApprovalCountEvent((raw as { method?: unknown }).method)) return;
+      const method = (raw as { method?: unknown }).method;
+      // 提示音是可选的本机反馈：只在新审批请求到达且用户开启时播放，失败不影响刷新。
+      if (method === "approval/requested" && approvalSoundEnabled()) playApprovalChime();
+      if (!isApprovalCountEvent(method)) return;
       if (timer !== undefined) window.clearTimeout(timer);
       timer = window.setTimeout(() => { timer = undefined; pendingReload.current(); }, 250);
     });
