@@ -649,6 +649,8 @@ export interface ApprovalListResponse { approvals: PendingApproval[] }
 export interface ApprovalFocusTarget { threadId: string; itemId: string }
 /** 桌面进程内 IPC：测试系统通知的结果；`sent` 表示已请求系统展示。 */
 export interface NotificationTestResult { sent: boolean; supported: boolean }
+/** 桌面进程内 IPC：应用图标徽标是否被当前平台接受。 */
+export interface BadgeCountResult { applied: boolean }
 export type ApprovalRespondResponse =
   | { accepted: true }
   | {

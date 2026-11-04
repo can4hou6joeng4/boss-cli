@@ -112,6 +112,13 @@ export function AppShell(props: AppShellProps) {
     };
   }, [props.simulateLocal, props.harnessUp]);
   useEffect(() => {
+    // 待审批数量同步到应用图标徽标；平台不支持时主进程返回 applied=false，不影响侧栏徽标。
+    if (props.simulateLocal) return;
+    const api = window.boss;
+    if (!api?.setBadgeCount) return;
+    void api.setBadgeCount(pendingApprovals).catch(() => {});
+  }, [pendingApprovals, props.simulateLocal]);
+  useEffect(() => {
     // 内核主动推送审批变化时尽快刷新徽标；连续事件防抖合并为一次读取。
     if (props.simulateLocal || props.harnessUp === false) return;
     const api = window.boss;

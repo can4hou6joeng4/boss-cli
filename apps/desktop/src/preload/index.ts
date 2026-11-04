@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import type { ApprovalFocusTarget, InitializeResponse, JsonRpcNotification, NotificationTestResult, PlatformLoginStatus,
-  PlatformLoginAction, PlatformLoginContext, SessionExportSaveRequest, SessionExportSaveResult } from "@boss-harness/protocol";
+import type { ApprovalFocusTarget, BadgeCountResult, InitializeResponse, JsonRpcNotification, NotificationTestResult,
+  PlatformLoginStatus, PlatformLoginAction, PlatformLoginContext, SessionExportSaveRequest,
+  SessionExportSaveResult } from "@boss-harness/protocol";
 
 interface HarnessStatus {
   running: boolean;
@@ -46,6 +47,10 @@ const api = {
       listener(notification);
     ipcRenderer.on("harness:notification", handler);
     return () => ipcRenderer.removeListener("harness:notification", handler);
+  },
+  /** 把待审批数量同步到应用图标徽标；平台不支持时主进程返回 applied=false。 */
+  setBadgeCount(count: number): Promise<BadgeCountResult> {
+    return ipcRenderer.invoke("notification:badge", count) as Promise<BadgeCountResult>;
   },
   /** 请主进程发送一条测试系统通知，用于确认当前系统的通知权限。 */
   testNotification(): Promise<NotificationTestResult> {
