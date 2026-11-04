@@ -95,7 +95,9 @@ export interface InitializeResponse {
     /** 可用 `skills/delete` 按读取摘要删除技能；目录含其他文件时拒绝。 */
     skillsDelete?: boolean;
     /** 可用 `queue/update` 在投递前改写仍在排队的队列项正文。 */
-    queueUpdate?: boolean };
+    queueUpdate?: boolean;
+    /** 可用 `config/autoCompaction/set` 持久化自动压缩默认策略。 */
+    autoCompactionConfig?: boolean };
   eventCursor?: string;
 }
 
@@ -145,6 +147,7 @@ export const ClientMethods = {
   queueRemove: "queue/remove",
   modelList: "model/list",
   configRead: "config/read",
+  configAutoCompactionSet: "config/autoCompaction/set",
   runtimeResourcesRead: "runtime/resources/read",
   connectionRead: "connection/read",
   connectionCheck: "connection/check",
@@ -866,8 +869,23 @@ export interface ConfigReadResponse {
   toolBundleId?: string;
   /** 内核启动时解析的自动压缩策略；旧内核可能不返回。 */
   autoCompaction?: AutoCompactionPolicy;
+  /** 自动压缩策略来源；旧内核可能不返回。 */
+  autoCompactionSource?: AutoCompactionSource;
   approvalPolicy?: string;
   approvalTimeoutSeconds?: number;
+}
+
+/** `environment` 表示由 BOSS_HARNESS_COMPACTION 管理；`stored` 为状态目录配置；`default` 为内置默认；`explicit` 为调用方显式传入。 */
+export type AutoCompactionSource = "environment" | "stored" | "default" | "explicit";
+/** `config/autoCompaction/set`：只接受可持久化的三个字段，摘要线路仍由环境配置决定。 */
+export interface AutoCompactionSetParams {
+  enabled: boolean;
+  triggerPercent: number;
+  keepRecentTokens: number;
+}
+export interface AutoCompactionSetResponse {
+  autoCompaction: AutoCompactionPolicy;
+  autoCompactionSource: AutoCompactionSource;
 }
 
 export interface ModelCapabilities {

@@ -56,6 +56,8 @@ export interface AppShellProps {
   skillsDeletable?: boolean;
   /** 内核声明 workspaceInstructionsEdit 后，「技能与工具」页才提供说明编辑。 */
   workspaceInstructionsEditable?: boolean;
+  /** 内核声明 autoCompactionConfig 后，设置页才能保存自动压缩默认策略。 */
+  autoCompactionConfig?: boolean;
   continuationCheck?: { threadId: string; sourceTurnId: string; loading: boolean; submitting?: boolean;
     uncertain?: boolean; response?: TurnContinuationReadResponse; error?: string } | null;
   onContinueInterruptedTurn?: () => void;
@@ -375,7 +377,7 @@ export function AppShell(props: AppShellProps) {
         </div>
       </div>
     </div>
-    <SettingsDialog isOpen={settings} initialSection={settingsSection} onClose={() => setSettings(false)} isDark={props.isDark} onToggleTheme={props.onToggleTheme} onOpenShortcuts={() => { setSettings(false); props.onOpenShortcuts(); }} harnessUp={props.harnessUp ?? false} onLogin={() => { void loginEntry(true); }} />
+    <SettingsDialog isOpen={settings} initialSection={settingsSection} onClose={() => setSettings(false)} isDark={props.isDark} onToggleTheme={props.onToggleTheme} onOpenShortcuts={() => { setSettings(false); props.onOpenShortcuts(); }} harnessUp={props.harnessUp ?? false} autoCompactionConfig={props.autoCompactionConfig === true} onLogin={() => { void loginEntry(true); }} />
     {search && <SearchDialog folders={allFolders} onSelect={select} onOpenMessage={openMessage} onClose={() => setSearch(false)} searchMessages={props.threadSearchable === true} searchArchived={props.threadSearchArchived === true} />}
     {notifications && <NotificationsDialog folders={allFolders} preview={props.simulateLocal === true} refreshToken={approvalPulse} onSelect={select} onOpenMessage={openMessage} onLoaded={setPendingApprovals} onClose={() => setNotifications(false)} />}
     {newProject && <ModalSurface title="新建项目" onClose={() => setNewProject(false)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!projectName.trim()) return; const id = "group-" + crypto.randomUUID(); setGroups(prev => [...prev, { id, name: projectName.trim(), sessions: [] }]); setDraftProjectId(id); resetDraft(); openRoute({ page: "home" }); setProjectName(""); setNewProject(false); }}><label>项目名称<input autoFocus maxLength={60} value={projectName} onChange={event => setProjectName(event.target.value)} placeholder="例如：核心产研团队招聘" /></label><p>创建一个保存在此设备上的项目分组。</p><button className="solid-button" disabled={!projectName.trim()}>创建项目</button></form></ModalSurface>}

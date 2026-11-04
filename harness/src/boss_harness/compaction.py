@@ -96,10 +96,17 @@ class CompactionPolicy:
                                 self.provider, self.model, self.effort)
 
     @classmethod
-    def from_environment(cls) -> CompactionPolicy:
+    def from_environment(cls, stored: dict | None = None) -> CompactionPolicy:
+        """环境变量 > 状态目录中的持久设置 > 内置默认值。
+
+        持久设置只保存 enabled / triggerPercent / keepRecentTokens 三项；provider、
+        model、effort 仍由环境配置或调用方决定，避免一次界面保存静默重置摘要线路。
+        """
+        base = verified_policy(stored, ("enabled", "triggerPercent", "keepRecentTokens")) or {}
         raw = os.environ.get("BOSS_HARNESS_COMPACTION")
         if raw is None:
-            return cls()
+            return cls(base.get("enabled", True), base.get("triggerPercent", 80),
+                       base.get("keepRecentTokens", 20_000))
         def unique(pairs: list[tuple]) -> dict:
             result = {}
             for key, value in pairs:
@@ -113,8 +120,9 @@ class CompactionPolicy:
             value = json.loads(raw, object_pairs_hook=unique)
             if not isinstance(value, dict) or set(value) - _COMPACTION_FIELDS:
                 raise ValueError("unknown field")
-            return cls(value.get("enabled", True), value.get("triggerPercent", 80),
-                       value.get("keepRecentTokens", 20_000), value.get("provider"),
-                       value.get("model"), value.get("effort"))
+            return cls(value.get("enabled", base.get("enabled", True)),
+                       value.get("triggerPercent", base.get("triggerPercent", 80)),
+                       value.get("keepRecentTokens", base.get("keepRecentTokens", 20_000)),
+                       value.get("provider"), value.get("model"), value.get("effort"))
         except (TypeError, ValueError, UnicodeError):
             raise ValueError("BOSS_HARNESS_COMPACTION 配置无效；请检查自动压缩字段与类型") from None

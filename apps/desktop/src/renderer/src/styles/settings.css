@@ -239,6 +239,54 @@
   background: var(--bg-window);
 }
 
+.settings-number-input {
+  width: 104px;
+  min-height: 32px;
+  padding: 6px 9px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-window);
+  color: var(--text-main);
+  font: inherit;
+  text-align: right;
+}
+
+.settings-number-input:focus-visible {
+  border-color: var(--border-active, var(--border-color));
+  outline: none;
+}
+
+.settings-number-input:disabled {
+  opacity: .6;
+}
+
+.settings-number-suffix {
+  margin-left: 6px;
+  color: var(--text-muted);
+  font-size: calc(var(--ui-font-size, 13px) - 1px);
+}
+
+.settings-policy-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+
+.settings-policy-status {
+  margin: 12px 0 0;
+  color: var(--text-muted);
+  font-size: calc(var(--ui-font-size, 13px) - 1px);
+  line-height: 1.7;
+}
+
+.settings-policy-status.is-error {
+  color: var(--accent-warning, var(--text-main));
+}
+
+.settings-policy-status.is-saved {
+  color: var(--accent-green, var(--text-muted));
+}
+
 .settings-select option {
   background: var(--bg-window);
   color: var(--text-main);

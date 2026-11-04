@@ -25,6 +25,8 @@ import {
   type TurnContinueResponse,
   type TurnStartResponse,
   type TurnAutoCompactionOverride,
+  type AutoCompactionSetParams,
+  type AutoCompactionSetResponse,
   type TurnSteerParams,
   type QueueAddParams,
   type QueueItem,
@@ -313,6 +315,11 @@ export async function sendTurn(threadId: string, input: string, clientUserMessag
 
 export function readConfig(): Promise<ConfigReadResponse> {
   return contextRequest(ClientMethods.configRead, {});
+}
+
+/** 仅内核声明 `autoCompactionConfig` 后调用；保存默认策略并立即在当前进程生效。 */
+export function setAutoCompactionSettings(params: AutoCompactionSetParams): Promise<AutoCompactionSetResponse> {
+  return contextRequest(ClientMethods.configAutoCompactionSet, params);
 }
 
 export function readTurnContinuation(params: TurnContinuationReadParams): Promise<TurnContinuationReadResponse> {

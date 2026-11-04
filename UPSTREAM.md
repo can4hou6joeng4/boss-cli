@@ -1255,3 +1255,13 @@ Pi 在 Agent 层重放整轮请求；本项目重试仍留在 provider 内，只
 兼容与限制：JSON-RPC 维持 `0.2.0`，新增可选能力 `queueUpdate` 与方法参数；旧客户端无感知。正文沿用 1–100000 字符校验，按待处理队列字节上限重新核算；成功发布既有 `queue/updated`，不改变投递、审批、重放或暂停语义。桌面仅在能力声明后显示入口，截断项先经 `queue/get` 读取全文，避免保存预览。
 
 验证使用临时目录下的 `TurnQueue` 探针覆盖排队项改写、非排队状态拒绝、空正文/超长、保留字段与字节上限；TypeScript 类型检查、桌面构建与内核 `py_compile` 通过。未调用真实模型或招聘平台。
+
+## 第十二轮：自动压缩默认策略持久化
+
+[Issue #475](https://github.com/can4hou6joeng4/boss-harness/issues/475) 让自动压缩的默认策略可以在桌面查看并保存。架构参考仍是 Pi commit `d5b3de22d0e24a3e9c38a9410d3329b099717283`（MIT）的 `packages/agent/src/agent-loop.ts`：Pi 的 agent loop 负责请求准备与循环，上下文预算与压缩策略属于嵌入方决定的部分；本项目沿用这一职责边界，把「默认策略」作为 Harness 自身的持久设置，不复制 Pi 源码，也不改变 agent loop。
+
+实现上新增 `config/autoCompaction/set`（能力 `autoCompactionConfig`），只接受 `enabled`、`triggerPercent` 与 `keepRecentTokens`：先按当前策略构造完整副本，校验通过后原子写入状态目录 `config.json`，再更新当前进程策略，因此写入失败不会留下半套设置。读取时把持久文件中的三个字段作为默认值，`BOSS_HARNESS_COMPACTION` 的字段逐个覆盖；来源经 `autoCompactionSource` 返回，环境变量或调用方显式构造时拒绝写入并给出稳定错误码，避免界面保存悄悄覆盖启动配置。配置文件缺失或字段非法时回退内置默认；文件存在但不可读时拒绝保存，避免破坏未知内容。`provider`、`model`、`effort` 不进入持久文件，仍由环境配置决定。
+
+兼容与限制：JSON-RPC 维持 `0.2.0`，新增可选方法与能力，`config/read` 只增可选字段；旧客户端无感知，旧内核下桌面设置页只读。单回合覆盖仍优先于默认值并在发送后消耗，不写入会话或 `config.json`。桌面新增「上下文」设置分区，来源为环境变量或调用方显式指定时不提供编辑。
+
+验证使用 `/tmp` 临时探针覆盖：持久文件缺失 / 往返 / 保留其他顶层键 / 损坏 JSON 时读取回退且保存拒绝；环境变量逐字段覆盖持久值；`from_environment` 的非法持久字段回退；处理器在默认来源下写入并立即更新策略、在环境变量与显式来源下拒绝。TypeScript 类型检查、桌面构建与内核 `py_compile` 通过。未调用真实模型、招聘平台或桌面 UI。

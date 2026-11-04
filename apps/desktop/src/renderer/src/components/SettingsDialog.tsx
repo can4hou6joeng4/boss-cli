@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import type { AutoCompactionSource } from "@boss-harness/protocol";
 import appIcon from "../../../../resources/icon.png";
 import {
   IconCheck,
@@ -16,6 +17,8 @@ import {
 import { UI_STORAGE_PREFIX } from "../data/uiStorage";
 import { primeApprovalChime } from "../data/approvalChime";
 import { readNotificationTestResult } from "../data/notificationTest";
+import { compactionDraft, compactionFields, compactionSourceLabel, type CompactionSettingDraft } from "../data/compactionSettings";
+import { harnessErrorText, readConfig, setAutoCompactionSettings } from "../data/harnessBridge";
 import "../styles/settings.css";
 import { ConnectionSettings } from "./ConnectionSettings";
 
@@ -26,11 +29,13 @@ export interface SettingsDialogProps {
   onToggleTheme: () => void;
   onOpenShortcuts: () => void;
   harnessUp: boolean;
+  /** 内核声明 autoCompactionConfig 后，才允许在设置页保存默认策略。 */
+  autoCompactionConfig?: boolean;
   initialSection?: SettingsSection;
   onLogin?: () => void;
 }
 
-export type SettingsSection = "general" | "appearance" | "notifications" | "connections" | "data" | "keyboard" | "about";
+export type SettingsSection = "general" | "appearance" | "context" | "notifications" | "connections" | "data" | "keyboard" | "about";
 type Density = "compact" | "comfortable";
 type Motion = "reduced" | "full";
 
@@ -54,9 +59,21 @@ function KeyboardIcon(): JSX.Element {
   );
 }
 
+function ContextIcon(): JSX.Element {
+  return (
+    <svg width="17" height="17" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M2.5 5.5h13M2.5 9h13M2.5 12.5h13" />
+      <circle cx="6.5" cy="5.5" r="1.6" fill="var(--bg-window)" />
+      <circle cx="11.5" cy="9" r="1.6" fill="var(--bg-window)" />
+      <circle cx="7.5" cy="12.5" r="1.6" fill="var(--bg-window)" />
+    </svg>
+  );
+}
+
 const SECTIONS: Array<{ id: SettingsSection; title: string; icon: ReactNode }> = [
   { id: "general", title: "常规", icon: <IconSettings size={17} /> },
   { id: "appearance", title: "外观", icon: <IconSun size={17} /> },
+  { id: "context", title: "上下文", icon: <ContextIcon /> },
   { id: "notifications", title: "通知", icon: <IconNotification size={17} /> },
   { id: "connections", title: "模型与连接", icon: <IconTerminal size={17} /> },
   { id: "data", title: "数据管理", icon: <IconFolder size={17} /> },
@@ -115,11 +132,16 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: () =
 }
 
 /** Keep mounted with isOpen=false so saved interface preferences apply at startup. */
-export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenShortcuts, harnessUp, initialSection, onLogin }: SettingsDialogProps): JSX.Element | null {
+export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenShortcuts, harnessUp, autoCompactionConfig = false, initialSection, onLogin }: SettingsDialogProps): JSX.Element | null {
   const [section, setSection] = useState<SettingsSection>("general");
   const [preferences, setPreferences] = useState<UIPreferences>(readPreferences);
   const [status, setStatus] = useState("");
   const [testBusy, setTestBusy] = useState(false);
+  const [compaction, setCompaction] = useState<CompactionSettingDraft | null>(null);
+  const [compactionSource, setCompactionSource] = useState<AutoCompactionSource | undefined>();
+  const [compactionBusy, setCompactionBusy] = useState(false);
+  const [compactionError, setCompactionError] = useState("");
+  const [compactionSaved, setCompactionSaved] = useState(false);
   const backdropRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
@@ -141,6 +163,33 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
   }, []);
+
+  // 每次进入「上下文」分区都重读内核；未保存的草稿不跨越分区保留，避免与磁盘值悄悄分叉。
+  useEffect(() => {
+    if (!isOpen || section !== "context" || !harnessUp) return;
+    let cancelled = false;
+    setCompactionBusy(true);
+    setCompactionError("");
+    setCompactionSaved(false);
+    readConfig().then(config => {
+      if (cancelled) return;
+      const draft = compactionDraft(config.autoCompaction);
+      if (!draft) {
+        setCompaction(null);
+        setCompactionError("当前内核未返回可用的自动压缩默认值。");
+        return;
+      }
+      setCompaction(draft);
+      setCompactionSource(config.autoCompactionSource);
+    }).catch(cause => {
+      if (cancelled) return;
+      setCompaction(null);
+      setCompactionError(`读取自动压缩默认值失败：${harnessErrorText(cause)}。`);
+    }).finally(() => {
+      if (!cancelled) setCompactionBusy(false);
+    });
+    return () => { cancelled = true; };
+  }, [isOpen, section, harnessUp]);
 
   useLayoutEffect(() => {
     if (!isOpen) return;
@@ -237,6 +286,35 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
     }
   };
 
+  const editCompaction = (patch: Partial<CompactionSettingDraft>): void => {
+    setCompactionSaved(false);
+    setCompaction(current => current ? { ...current, ...patch } : current);
+  };
+
+  const saveCompaction = async (): Promise<void> => {
+    if (!compaction || compactionBusy) return;
+    const fields = compactionFields(compaction);
+    if (!fields) {
+      setCompactionError("触发阈值必须是 1 到 100 的整数百分比，近期保留目标必须是 1 到 1000000 的整数 token。");
+      return;
+    }
+    setCompactionBusy(true);
+    setCompactionError("");
+    setCompactionSaved(false);
+    try {
+      const response = await setAutoCompactionSettings(fields);
+      const saved = compactionDraft(response.autoCompaction);
+      if (saved) setCompaction(saved);
+      setCompactionSource(response.autoCompactionSource);
+      setCompactionSaved(true);
+    } catch (cause) {
+      // 环境变量托管、配置文件不可写或断连时保留草稿，由用户决定是否重试。
+      setCompactionError(`保存失败：${harnessErrorText(cause)}。设置未确认，草稿仍保留。`);
+    } finally {
+      setCompactionBusy(false);
+    }
+  };
+
   const exportPreferences = (): void => {
     try {
       const exported: Record<string, string> = {
@@ -269,6 +347,7 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
 
   if (!isOpen) return null;
   const currentSection = SECTIONS.find((item) => item.id === section)!;
+  const compactionEditable = autoCompactionConfig && compactionSource !== "environment" && compactionSource !== "explicit";
 
   return createPortal(
     <div className="settings-backdrop" ref={backdropRef} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
@@ -311,6 +390,49 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
                 <SettingRow title="紧凑会话" description="缩小消息与侧栏条目的间距"><Switch label="紧凑会话" checked={preferences.density === "compact"} onChange={() => updatePreference("density", preferences.density === "compact" ? "comfortable" : "compact")} /></SettingRow>
                 <SettingRow title="减少动态效果" description="减少过渡动画与平滑滚动"><Switch label="减少动态效果" checked={preferences.motion === "reduced"} onChange={() => updatePreference("motion", preferences.motion === "reduced" ? "full" : "reduced")} /></SettingRow>
                 <div className="settings-preview"><span className="settings-preview-label">文字预览</span><p>让每一次招聘任务，都有清晰的下一步。</p><span>基于事实、保留判断依据，在你的参与下推进。</span></div>
+              </>
+            )}
+
+            {section === "context" && (
+              <>
+                <p className="settings-intro">设置自动压缩的内核默认值。单个回合仍可在会话上下文面板临时覆盖，发送后恢复这里的默认值。</p>
+                {!harnessUp ? (
+                  <div className="settings-note"><IconTerminal size={17} /><div><h3>本机内核未连接</h3><p>连接后可以读取并保存自动压缩默认策略。</p></div></div>
+                ) : compactionBusy && !compaction ? (
+                  <p className="settings-intro">正在读取自动压缩默认值…</p>
+                ) : !compaction ? (
+                  <div className="settings-note"><IconTerminal size={17} /><div><h3>无法读取自动压缩设置</h3><p>{compactionError || "当前内核未返回可用的自动压缩默认值。"}</p></div></div>
+                ) : (
+                  <>
+                    <SettingRow title="自动压缩" description="接近上下文预算上限时自动生成摘要；关闭后只保留手动压缩">
+                      {compactionEditable
+                        ? <Switch label="自动压缩" checked={compaction.enabled} onChange={() => editCompaction({ enabled: !compaction.enabled })} />
+                        : <span className="settings-static-value">{compaction.enabled ? "已启用" : "已关闭"}</span>}
+                    </SettingRow>
+                    <SettingRow title="触发阈值" description="输入预算使用达到该百分比时开始自动压缩">
+                      {compactionEditable
+                        ? <><input className="settings-number-input" type="number" min={1} max={100} step={1} aria-label="自动压缩触发阈值"
+                          value={compaction.triggerPercent} onChange={event => editCompaction({ triggerPercent: event.target.value })} /><span className="settings-number-suffix">%</span></>
+                        : <span className="settings-static-value">{compaction.triggerPercent}%</span>}
+                    </SettingRow>
+                    <SettingRow title="近期保留目标" description="压缩时尽量保留的近期 token 数">
+                      {compactionEditable
+                        ? <><input className="settings-number-input" type="number" min={1} max={1000000} step={1000} aria-label="自动压缩近期保留 token"
+                          value={compaction.keepRecentTokens} onChange={event => editCompaction({ keepRecentTokens: event.target.value })} /><span className="settings-number-suffix">token</span></>
+                        : <span className="settings-static-value">{compaction.keepRecentTokens} token</span>}
+                    </SettingRow>
+                    <SettingRow title="策略来源" description="环境变量显式设置时优先生效，界面不会覆盖它"><span className="settings-static-value">{compactionSourceLabel(compactionSource)}</span></SettingRow>
+                    {compactionEditable && <div className="settings-policy-actions"><button type="button" className="settings-button" disabled={compactionBusy}
+                      onClick={() => { void saveCompaction(); }}>{compactionBusy ? "保存中…" : "保存默认策略"}</button></div>}
+                    {!compactionEditable && <p className="settings-policy-status">{compactionSource === "environment"
+                      ? "该策略由环境变量管理；修改 BOSS_HARNESS_COMPACTION 并重启内核后才能在此编辑。"
+                      : compactionSource === "explicit"
+                        ? "该策略由当前内核调用方显式指定，不能写入配置文件。"
+                        : "当前内核不支持在界面保存默认策略；可继续使用单回合覆盖。"}</p>}
+                    {compactionError && <p className="settings-policy-status is-error" role="alert">{compactionError}</p>}
+                    {compactionSaved && <p className="settings-policy-status is-saved" role="status">已保存到本机内核配置，立即生效。</p>}
+                  </>
+                )}
               </>
             )}
 
