@@ -1,3 +1,4 @@
+import { safeSlice } from "@boss-harness/shared";
 import type { SessionItem } from "./mockData";
 
 /** 组标题上限：项目名与会话标题相加后仍可读；截断时保留归档后缀。 */
@@ -27,5 +28,5 @@ export function notificationGroupLabel(source: NotificationGroupSource): string 
   const suffix = source.session?.archived === true ? ARCHIVED_SUFFIX : "";
   if (base.length + suffix.length <= NOTIFICATION_LABEL_LIMIT) return `${base}${suffix}`;
   const room = Math.max(1, NOTIFICATION_LABEL_LIMIT - suffix.length - 1);
-  return `${base.slice(0, room)}…${suffix}`;
+  return `${safeSlice(base, room)}…${suffix}`;
 }

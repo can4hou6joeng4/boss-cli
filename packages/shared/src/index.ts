@@ -16,8 +16,20 @@ export function formatRelativeTime(iso: string): string {
   return new Date(then).toLocaleDateString("zh-CN");
 }
 
+/**
+ * 按 UTF-16 偏移截断，但不切开代理对：边界落在补充平面字符中间时少取一个码元。
+ * 长度预算仍按 `String.length` 计算，调用方无需改用码点计数。
+ */
+export function safeSlice(text: string, end: number): string {
+  const limit = Math.min(Math.floor(end), text.length);
+  if (!Number.isFinite(limit) || limit <= 0) return "";
+  const last = text.charCodeAt(limit - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? limit - 1 : limit);
+}
+
 export function truncate(text: string, max: number): string {
-  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+  if (max <= 0) return "";
+  return text.length <= max ? text : `${safeSlice(text, max - 1)}…`;
 }
 
 /**

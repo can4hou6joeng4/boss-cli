@@ -1,4 +1,5 @@
 import type { JsonRpcNotification } from "@boss-harness/protocol";
+import { safeSlice } from "@boss-harness/shared";
 
 const ID_LIMIT = 200;
 const TOOL_NAME_LIMIT = 120;
@@ -26,7 +27,7 @@ function exactText(value: unknown, limit: number): string | null {
 function compact(value: string, limit: number): string {
   const collapsed = value.replace(/\s+/g, " ").trim();
   if (collapsed.length <= limit) return collapsed;
-  return `${collapsed.slice(0, limit - 1).trimEnd()}…`;
+  return `${safeSlice(collapsed, limit - 1).trimEnd()}…`;
 }
 
 /**
