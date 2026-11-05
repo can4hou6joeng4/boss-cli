@@ -569,7 +569,8 @@ export async function forkThread(threadId: string, turnId: string): Promise<Sess
     model: response.thread.model, reasoningEffort: response.thread.reasoningEffort };
 }
 
-function toApproval(state: ApprovalState): NonNullable<MessageItem["approval"]> {
+/** 把内核的审批状态转成渲染层消息：协议里 `deadline` 是 Unix 秒，这里统一换算为毫秒。 */
+export function toApproval(state: ApprovalState): NonNullable<MessageItem["approval"]> {
   const deadline = approvalDeadlineMs(state.deadline);
   return {
     approvalId: state.approvalId,
