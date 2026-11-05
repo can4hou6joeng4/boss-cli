@@ -185,6 +185,14 @@ export interface MessageItem {
     status?: ThreadItem["status"];
     errorCode?: string;
     recoveryAction?: string;
+    /** 内核测量的执行耗时（毫秒）；旧内核或未执行的调用没有。 */
+    durationMs?: number;
+    /** 渲染层收到开始执行事件的本机时钟；刷新恢复的历史条目没有。 */
+    startedAt?: number;
+    /** 渲染层收到等待审批 / 排队事件的本机时钟。 */
+    waitingSince?: number;
+    /** 渲染层收到完成事件的本机时钟；内核耗时缺失时用于回退计算。 */
+    endedAt?: number;
   };
   approval?: ApprovalData;
   plan?: PlanData;

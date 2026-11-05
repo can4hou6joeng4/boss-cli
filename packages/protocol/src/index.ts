@@ -330,6 +330,8 @@ export interface ThreadItem {
   source?: { ref: string; tool: string; queriedAt: string };
   errorCode?: string;
   recoveryAction?: string;
+  /** 内核测量的工具执行耗时（毫秒）；只统计获准后实际派发到返回的时间，未执行或旧条目没有该字段。 */
+  durationMs?: number;
   executionState?: "queued" | "pending_approval" | "approved" | "not_approved" | "executing" | "completed" | "failed" | "not_executed" | "outcome_unknown";
   result?: { ok: boolean; command: string; data: unknown; pagination?: Record<string, unknown> | null; error: unknown; hints: unknown };
   resultOmitted?: boolean;

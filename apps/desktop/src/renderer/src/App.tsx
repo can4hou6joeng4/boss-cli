@@ -246,7 +246,8 @@ export function App(): JSX.Element {
         updateModelRetry(id, previous => settleModelRetryOnTurnEnd(previous, params.status, Date.now()));
         void replica.resume(id); void refresh(); return;
       }
-      updateThread(id, previous => reduceHarnessEvent(previous, event));
+      const receivedAt = Date.now();
+      updateThread(id, previous => reduceHarnessEvent(previous, event, receivedAt));
     }, snapshot => {
       if (cancelled) return;
       const id = snapshot.thread.id;
