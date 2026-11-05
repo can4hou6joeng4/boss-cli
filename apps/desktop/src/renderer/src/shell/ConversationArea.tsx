@@ -20,7 +20,7 @@ import { appendQuote, createComposerDraft, withDraftText, type ComposerDraft, ty
 import { isCommandChord } from "../data/shortcuts";
 import { useClipboardCopy } from "../data/clipboardCopy";
 import { toolOutcomeBadge } from "../data/toolOutcome";
-import { findMessageMatches } from "../data/messageSearch";
+import { findFoldedMatches, findMessageMatches } from "../data/messageSearch";
 import { retryTextForMessage } from "../data/messageRetry";
 import { messageCopyText } from "../data/messageCopy";
 import { collectTextRanges } from "../data/findHighlight";
@@ -103,11 +103,33 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const findPosition = findMatches.length ? Math.min(findIndex, findMatches.length - 1) : 0;
   const currentFindId = findOpen && findMatches.length ? findMatches[findPosition] : null;
   const findMatchSet = new Set(findMatches);
+  const foldedFindMap = useMemo(() => new Map(
+    (findOpen && findDetails ? findFoldedMatches(messages, findQuery) : []).map(match => [match.id, match] as const),
+  ), [findOpen, findDetails, messages, findQuery]);
   const stepFind = (delta: number) => {
     if (!findMatches.length) return;
     setFindIndex((findPosition + delta + findMatches.length) % findMatches.length);
   };
   const closeFind = () => { setFindOpen(false); setFindQuery(""); setFindIndex(0); };
+  // 当前命中位于折叠块时展开它，否则隐藏文本的命中高亮不可见；只收起本次自动展开的块，不动用户手动展开的块。
+  useEffect(() => {
+    if (!findOpen || !findDetails || !currentFindId) return;
+    const root = document.getElementById("message-" + currentFindId);
+    const folded = foldedFindMap.get(currentFindId);
+    if (!root || !folded) return;
+    const opened: HTMLDetailsElement[] = [];
+    const reveal = (selector: string, needed: boolean) => {
+      if (!needed) return;
+      const element = root.querySelector<HTMLDetailsElement>(selector);
+      if (element && !element.open) { element.open = true; opened.push(element); }
+    };
+    reveal("details.thinking-block", folded.thinking);
+    reveal("details.tool-block", folded.tool);
+    reveal("details.tool-source-output", folded.output);
+    return () => {
+      for (const element of opened) if (element.isConnected) element.open = false;
+    };
+  }, [findOpen, findDetails, currentFindId, foldedFindMap]);
   useEffect(() => {
     if (!findOpen || !currentFindId) return;
     document.getElementById("message-" + currentFindId)?.scrollIntoView({ block: "center", behavior: "smooth" });
