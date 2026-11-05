@@ -11,6 +11,7 @@
 
 ### 新增
 
+- [Issue #588](https://github.com/can4hou6joeng4/boss-harness/issues/588)：复制与标题栏轻量导出补上审批结论与期限。工具条目带审批结论时在「耗时」后输出「审批：已批准 / 已拒绝 / 等待超时，按未批准处理」；尚无结论但 `deadline` 为合法 epoch 毫秒时输出 UTC ISO「审批期限」，整秒省略 `.000`，已决定不再输出期限，未知结论与非法期限不输出。审批条目没有工具详情时也可单独复制审批行，无审批数据时文本与之前完全一致。纯渲染层实现，不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #586](https://github.com/can4hou6joeng4/boss-harness/issues/586)：复制与标题栏轻量导出补上工具耗时。消息「复制」与「导出为 Markdown」复用同一文本拼装，已完成工具在 `durationMs` 合法或 `startedAt` / `endedAt` 可计算且不倒序时输出「耗时 X」，优先使用内核测量值，旧内核才回退到渲染层时间；运行中、等待审批、排队、未批准与未执行不输出耗时，不复制会持续变化的「已运行」。`durationMs` 为 0 时显示「耗时 不足 1 秒」，负数、NaN、字符串与布尔值不输出，无耗时数据时文本与之前完全一致。纯渲染层实现，不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #584](https://github.com/can4hou6joeng4/boss-harness/issues/584)：会话导出补全回合用时与审批期限。回合头在 `startedAt` / `completedAt` 均可解析、带时区且结束不早于开始时输出可选 `durationMs`，Markdown / HTML 显示「用时」；工具审批信息在 `deadline` 为有限正数时输出 UTC ISO 时间，等待审批时显示「审批期限」，已决定仍显示决定时间。缺失、无法解析、无时区、倒序、非有限与非法类型不输出，不写 0、不写负数。沿用既有脱敏、字节上限与导出 schema。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #582](https://github.com/can4hou6joeng4/boss-harness/issues/582)：会话导出展示工具执行耗时。`thread/export` 的工具条目带有合法 `durationMs`（非负整数）时输出该可选字段，Markdown / HTML 同时显示可读耗时（沿用「不足 1 秒 / N 秒 / N 分 M 秒 / N 小时 M 分」）与精确毫秒；记录状态为 `not_approved` / `not_executed` 的调用即使误带耗时也不输出，旧会话缺少该字段时不显示、不写 0。缺失、负数、布尔、浮点与超出安全整数的值不输出，沿用既有脱敏与字节上限。不新增 RPC，协议与内核仍为 `0.2.0`。
