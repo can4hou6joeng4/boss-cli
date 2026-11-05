@@ -27,7 +27,8 @@ from typing import Any, Iterable
 from boss_harness.compaction import verified_policy
 from boss_harness.context import tool_execution_status
 from boss_harness.models.secret import redact_secrets
-from boss_harness.session import BRANCH_SUMMARY_ENTRY_TYPE, MAX_BRANCH_SUMMARY_CHARS, SessionStore
+from boss_harness.session import (BRANCH_SUMMARY_ENTRY_TYPE, MAX_BRANCH_SUMMARY_CHARS, SessionStore,
+                                  bounded_skill_ids)
 from boss_harness.usage import SOURCE as USAGE_SOURCE, summarize_usage
 
 EXPORT_FORMATS = ("markdown", "json", "html")
@@ -486,7 +487,7 @@ class _Exporter:
                       "failureCode": next((turn[key] for key in ("failureCode", "recoveryReason", "taskRecoveryReason")
                                            if isinstance(turn.get(key), str) and len(turn[key]) <= 120), None),
                       "compactionPolicy": self._compaction_policy(turn.get("compactionPolicy")),
-                      "skillIds": _skill_ids(turn.get("skillIds")),
+                      "skillIds": bounded_skill_ids(turn.get("skillIds")),
                       "usage": self._scrub_usage(self.usage_turns.get(turn_id)),
                       "usageLabel": _usage_line(self.usage_turns.get(turn_id))}
             units.append((turn_id, header))
@@ -563,15 +564,15 @@ class _Exporter:
             if queue_id not in keep_ids:
                 continue
             kind = payload.get("kind")
-            skill_ids = payload.get("skillIds")
+            skill_ids = bounded_skill_ids(payload.get("skillIds"))
             failure = payload.get("failureCode")
             items.append({
                 "queueId": queue_id,
                 "kind": kind if kind in {"steering", "followUp"} else "unknown",
                 "status": payload["status"],
                 "input": self.redactor.text(payload.get("input"), limit=MAX_QUEUE_INPUT_CHARS) or "",
-                "skillCount": len(skill_ids) if isinstance(skill_ids, list) else 0,
-                "skillIds": _skill_ids(skill_ids),
+                "skillCount": len(skill_ids),
+                "skillIds": skill_ids,
                 "failureCode": failure if isinstance(failure, str) and len(failure) <= 120 else None,
                 "inputPersisted": payload.get("inputPersisted")
                 if type(payload.get("inputPersisted")) is bool else None,
@@ -594,17 +595,6 @@ _JOB_REASON = {"threshold": "触达阈值", "budget": "预算不足", "overflow"
 
 def _identifier(value: Any) -> str | None:
     return value if isinstance(value, str) and 0 < len(value) <= 128 else None
-
-
-def _skill_ids(value: Any) -> list[str]:
-    """回合实际注入的技能 id：有界、去重，旧记录或畸形值不产生伪技能。"""
-    if not isinstance(value, list):
-        return []
-    ids: list[str] = []
-    for item in value[:10]:
-        if isinstance(item, str) and 0 < len(item) <= 200 and item not in ids:
-            ids.append(item)
-    return ids
 
 
 def _summary_job_facts(job: dict) -> list[str]:

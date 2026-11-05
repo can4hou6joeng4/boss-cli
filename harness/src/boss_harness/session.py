@@ -93,13 +93,22 @@ def _valid_timestamp(value: Any) -> str | None:
     return value
 
 
-def _turn_skill_ids(value: Any) -> list[str]:
-    """回合实际注入的技能 id：有界、去重，旧记录或畸形值不产生伪技能。"""
+MAX_SKILL_IDS = 10
+MAX_SKILL_ID_LENGTH = 200
+
+
+def bounded_skill_ids(value: Any) -> list[str]:
+    """回合实际注入的技能 id：先校验、后计数，按 id 去重并最多 ``MAX_SKILL_IDS`` 项。
+
+    旧记录或畸形值不产生伪技能；前部的非法项也不占名额。
+    """
     if not isinstance(value, list):
         return []
     ids: list[str] = []
-    for item in value[:10]:
-        if isinstance(item, str) and 0 < len(item) <= 200 and item not in ids:
+    for item in value:
+        if len(ids) >= MAX_SKILL_IDS:
+            break
+        if isinstance(item, str) and 0 < len(item) <= MAX_SKILL_ID_LENGTH and item not in ids:
             ids.append(item)
     return ids
 
@@ -2517,7 +2526,7 @@ class SessionStore:
             status = record.get("status")
             if isinstance(status, str) and status in _TERMINAL | {"running"}:
                 turn["status"] = status
-            skill_ids = _turn_skill_ids(record.get("skillIds"))
+            skill_ids = bounded_skill_ids(record.get("skillIds"))
             if skill_ids:
                 turn["skillIds"] = skill_ids
         page = turns[offset:offset + limit]
