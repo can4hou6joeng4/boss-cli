@@ -23,6 +23,14 @@ export function archivedSessions(sessions: SessionItem[], hidden: ReadonlySet<st
   return visibleSessions(sessions.filter(session => session.archived === true), hidden, showHidden);
 }
 
+/**
+ * 「显示已隐藏的聊天」的计数：只统计当前列表中真实存在的隐藏会话。
+ * 持久化 id 可能指向已删除或尚未加载的会话，直接按集合大小计数会虚高。
+ */
+export function hiddenSessionCount(sessions: SessionItem[], hidden: ReadonlySet<string>): number {
+  return new Set(sessions.filter(session => hidden.has(session.id)).map(session => session.id)).size;
+}
+
 /** 上一回合以 error / blocked 结束；运行中或等待预检的会话不计入，避免重复提示。 */
 export function sessionFailed(session: SessionItem): boolean {
   return session.status !== "running" && session.status !== "interrupted"

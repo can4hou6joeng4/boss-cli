@@ -4,7 +4,7 @@ import { IconNewChat, IconSearch, IconFolder, IconChevronDown, IconChevronRight,
 import { Popover } from "../components/Popover";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
 import { UI_STORAGE_PREFIX } from "../data/uiStorage";
-import { archivedSessions, attentionSessions, hideActionLabel, nonArchivedSessions, sessionFailed } from "../data/sidebarVisibility";
+import { archivedSessions, attentionSessions, hideActionLabel, hiddenSessionCount, nonArchivedSessions, sessionFailed } from "../data/sidebarVisibility";
 import { booleanRecord } from "../data/preferenceShapes";
 import "../styles/sidebar-menus.css";
 
@@ -41,7 +41,8 @@ export function ProjectSidebar(props: Props) {
   const all = dedupe(included(allSessions));
   // 归档会话只在「已归档」分组出现，不混进项目列表与最近聊天。
   const archived = dedupe(archivedSessions(allSessions, hidden, preferences.showHidden));
-  const archivedCount = dedupe(allSessions.filter(session => session.archived === true)).length;
+  // 菜单计数与分组使用同一份结果，避免菜单按全部归档、分组却按可见条目计数。
+  const hiddenCount = hiddenSessionCount(allSessions, hidden);
   const pinnedSessions = all.filter(session => props.pinned.includes(session.id));
   // 待处理分组只做聚合，不改变各会话在项目/最近列表中的原有位置。
   const attention = dedupe(attentionSessions(allSessions, hidden, preferences.showHidden));
@@ -161,8 +162,8 @@ export function ProjectSidebar(props: Props) {
               {(["updated", "name"] as const).map(sort => <button role="menuitemradio" aria-checked={preferences.sort === sort} key={sort} onClick={() => props.onPreferencesChange({ ...preferences, sort })}>{sort === "updated" ? <IconHistory /> : <IconEdit />}{sort === "updated" ? "最近更新" : "名称"}{preferences.sort === sort && <IconCheck className="menu-check" />}</button>)}
               <div className="menu-divider" />
               <button role="menuitemcheckbox" aria-checked={preferences.showRecent} onClick={() => props.onPreferencesChange({ ...preferences, showRecent: !preferences.showRecent })}><IconHistory />显示最近聊天{preferences.showRecent && <IconCheck className="menu-check" />}</button>
-              <button role="menuitemcheckbox" aria-checked={preferences.showHidden} onClick={() => props.onPreferencesChange({ ...preferences, showHidden: !preferences.showHidden })}><IconLock />显示已隐藏的聊天{hidden.size ? `（${hidden.size}）` : ""}{preferences.showHidden && <IconCheck className="menu-check" />}</button>
-              <button role="menuitemcheckbox" aria-checked={preferences.showArchived} onClick={() => props.onPreferencesChange({ ...preferences, showArchived: !preferences.showArchived })}><IconArchive />显示已归档的聊天{archivedCount ? `（${archivedCount}）` : ""}{preferences.showArchived && <IconCheck className="menu-check" />}</button>
+              <button role="menuitemcheckbox" aria-checked={preferences.showHidden} onClick={() => props.onPreferencesChange({ ...preferences, showHidden: !preferences.showHidden })}><IconLock />显示已隐藏的聊天{hiddenCount ? `（${hiddenCount}）` : ""}{preferences.showHidden && <IconCheck className="menu-check" />}</button>
+              <button role="menuitemcheckbox" aria-checked={preferences.showArchived} onClick={() => props.onPreferencesChange({ ...preferences, showArchived: !preferences.showArchived })}><IconArchive />显示已归档的聊天{archived.length ? `（${archived.length}）` : ""}{preferences.showArchived && <IconCheck className="menu-check" />}</button>
             </Popover>
           </div>
           <button className="titlebar-btn" onClick={props.onNewProject} aria-label="新建项目" title="新建项目分组"><IconPlus size={14} /></button>
