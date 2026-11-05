@@ -24,16 +24,23 @@ export function toolDurationMs(value: unknown): number | undefined {
   return validTime(value) ? value : undefined;
 }
 
-/** 工具耗时文案：完成显示「耗时」，运行中显示「已运行」，等待审批 / 排队不混入执行耗时。 */
-export function toolTimingLabel(toolUse: ToolTimingInput, now = Date.now()): string | null {
+/** 已完成工具的内核 / 回退耗时文案；运行中、等待审批与未执行不返回，供复制与导出复用。 */
+export function toolCompletedTimingLabel(toolUse: ToolTimingInput): string | null {
   // 未获批准或未执行的调用没有执行耗时；即使条目误带内核耗时也不显示成一次执行。
   if (toolUse.executionState === "not_approved" || toolUse.executionState === "not_executed") return null;
   const duration = toolDurationMs(toolUse.durationMs);
   if (duration !== undefined) return `耗时 ${formatDuration(duration)}`;
-  if (toolUse.endedAt !== undefined) {
-    if (!validTime(toolUse.startedAt) || !validTime(toolUse.endedAt) || toolUse.endedAt < toolUse.startedAt) return null;
-    return `耗时 ${formatDuration(toolUse.endedAt - toolUse.startedAt)}`;
-  }
+  if (toolUse.endedAt === undefined) return null;
+  if (!validTime(toolUse.startedAt) || !validTime(toolUse.endedAt) || toolUse.endedAt < toolUse.startedAt) return null;
+  return `耗时 ${formatDuration(toolUse.endedAt - toolUse.startedAt)}`;
+}
+
+/** 工具耗时文案：完成显示「耗时」，运行中显示「已运行」，等待审批 / 排队不混入执行耗时。 */
+export function toolTimingLabel(toolUse: ToolTimingInput, now = Date.now()): string | null {
+  const completed = toolCompletedTimingLabel(toolUse);
+  if (completed) return completed;
+  // 有结束时间但时间非法或倒序时不回退成「已运行」，避免显示虚假时长。
+  if (toolUse.endedAt !== undefined) return null;
   if (!validTime(now)) return null;
   if (validTime(toolUse.startedAt)) return `已运行 ${formatDuration(Math.max(0, now - toolUse.startedAt))}`;
   if (validTime(toolUse.waitingSince)) {
