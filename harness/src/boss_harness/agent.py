@@ -71,6 +71,7 @@ N_MODEL_RETRY_ENDED = "model/retryEnded"
 N_ITEM_STARTED = "item/started"
 N_ITEM_COMPLETED = "item/completed"
 N_TOOL_CALL_STARTED = "toolCall/started"
+N_TOOL_CALL_EXECUTING = "toolCall/executing"
 N_TOOL_CALL_COMPLETED = "toolCall/completed"
 N_APPROVAL_REQUESTED = "approval/requested"
 N_THREAD_UPDATED = "thread/updated"
@@ -102,6 +103,10 @@ class _PreparedTool:
     dispatched: bool = False
     dispatch_persistence_failed: bool = False
     cancelled_before_dispatch: bool = False
+    # 实际派发给 handler 的单调时钟起点；未派发的调用不记录。
+    started_monotonic: float | None = None
+    # handler 返回（含异常）时的单调时钟；并行批次按真实返回时间计，而不是按源顺序收尾时间。
+    finished_monotonic: float | None = None
 
 
 @dataclass
@@ -375,6 +380,7 @@ class TurnRunner:
         call_id: str | None = None,
         approval: dict[str, Any] | None = None,
         execution_state: str | None = None,
+        duration_ms: int | None = None,
     ) -> bool:
         status = "completed" if result.ok else "failed"
         arguments = dict((entry.payload or {}).get("toolArguments") or {})
@@ -398,6 +404,9 @@ class TurnRunner:
             "modelResult": model_result(result, source=source, item_id=entry.id,
                                          max_bytes=self._tool_result_limit(name)),
         }
+        # 只统计获准后实际派发到返回的时间；未执行、拒绝或派发失败的调用不写这个字段。
+        if duration_ms is not None:
+            payload["durationMs"] = duration_ms
         if approval is not None:
             payload["approval"] = approval
         revision = Entry(type="item", parent_id=self.sessions.last_entry_id(thread_id), payload=payload)
@@ -429,6 +438,7 @@ class TurnRunner:
                     "ok": result.ok,
                     "error": project_error(result.error),
                     "resultSummary": payload["resultSummary"],
+                    **({"durationMs": duration_ms} if duration_ms is not None else {}),
                     **{key: transport[key] for key in ("result", "resultOmitted", "resultRef") if key in transport},
                     "source": source,
                     "approval": approval,
@@ -578,6 +588,9 @@ class TurnRunner:
             with self._dispatch_lock:
                 prepared.cancelled_before_dispatch = self.cancelled()
                 prepared.dispatched = not prepared.cancelled_before_dispatch
+                # 计时从确认派发开始，审批等待与排队时间不计入工具执行耗时。
+                if prepared.dispatched:
+                    prepared.started_monotonic = time.monotonic()
         except Exception:
             prepared.dispatch_persistence_failed = True
             result = ToolResult(ok=False, command=name, error={
@@ -588,6 +601,15 @@ class TurnRunner:
             return result
         if prepared.cancelled_before_dispatch:
             return ToolResult(ok=False, command=name, error={"code": "CANCELLED", "message": "操作已取消，未执行工具"})
+        if prepared.dispatched:
+            # 执行状态已由 _tool_phase 持久化；通知失败只影响实时徽标，完成事件仍会给出终态。
+            try:
+                self.notify(N_TOOL_CALL_EXECUTING, {
+                    "threadId": thread_id, "itemId": prepared.entry.id,
+                    "toolName": name, "executionState": "executing",
+                })
+            except Exception:
+                pass
         return None
 
     def _call_handler(self, prepared: _PreparedTool, bridge: Any) -> ToolResult:
@@ -597,11 +619,19 @@ class TurnRunner:
         except Exception as exc:
             return ToolResult(ok=False, command=prepared.name,
                               error={"code": "TOOL_ERROR", "message": self.safe_error(exc)})
+        finally:
+            # 并行批次按源顺序收尾，耗时必须停在 handler 真正返回的时刻。
+            prepared.finished_monotonic = time.monotonic()
 
     def _finish_tool(self, thread_id: str, prepared: _PreparedTool, result: ToolResult) -> ToolResultItem:
         """暂停判定、finish 持久化与通知；只在回合主线程按模型顺序执行。"""
         name, call_id, entry, approval = prepared.name, prepared.call_id, prepared.entry, prepared.approval
         dispatched = prepared.dispatched
+        # 只统计实际派发后的执行时间；等待审批、拒绝与派发前取消都不产生耗时。
+        duration_ms = None
+        if dispatched and prepared.started_monotonic is not None:
+            finished = prepared.finished_monotonic if prepared.finished_monotonic is not None else time.monotonic()
+            duration_ms = max(0, int(round((finished - prepared.started_monotonic) * 1000)))
         pause = False
         if not result.ok and name != MODEL_RESULT_READ_TOOL and self.pause_on_result is not None:
             try:
@@ -626,7 +656,7 @@ class TurnRunner:
                            else "outcome_unknown" if unknown else None)
         try:
             recovered_persistence = self.finish_tool_call(thread_id, entry, name, result, call_id, approval,
-                execution_state)
+                execution_state, duration_ms)
             if recovered_persistence:
                 self._blocked = ToolResult(ok=False, command=name, error={
                     "code": "TOOL_RESULT_PERSISTENCE_RECOVERED",
@@ -658,7 +688,7 @@ class TurnRunner:
                                          max_bytes=self._tool_result_limit(name)), is_error=True)
             try:
                 self.finish_tool_call(thread_id, entry, name, uncertain, call_id, approval,
-                                      "outcome_unknown")
+                                      "outcome_unknown", duration_ms)
             except ToolCompletionNotificationError:
                 pass
             except ToolRevisionPersistenceError:

@@ -4,6 +4,7 @@ import { DiffCard } from "./DiffCard";
 import { Composer } from "./Composer";
 import { RichMarkdown } from "../components/RichMarkdown";
 import { ToolResultDetails } from "../components/ToolResultDetails";
+import { ToolTiming } from "../components/ToolTiming";
 import { QueuePanel } from "./QueuePanel";
 import { ApprovalDeadline } from "../components/ApprovalDeadline";
 import { ContextEditDialog } from "../components/ContextEditDialog";
@@ -467,6 +468,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                     <summary className="tool-summary">
                       <IconTerminal size={12} />
                       <span>调用工具: <strong>{item.toolUse.name}</strong></span>
+                      <ToolTiming toolUse={item.toolUse} />
                       {toolBadge && <span className={`tool-outcome-badge ${toolBadge.tone}`}>{toolBadge.label}</span>}
                     </summary>
                     <div className="tool-code-preview">{item.toolUse.input}</div>

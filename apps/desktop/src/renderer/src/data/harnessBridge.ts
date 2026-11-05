@@ -72,6 +72,7 @@ import { formatRelativeTime, safeSlice, stripIpcErrorWrapper } from "@boss-harne
 import { queuePageOf, type QueuePage } from "./queueMapping";
 import { approvalDeadlineMs, mapPendingApprovals, type PendingApprovalList } from "./pendingApprovals";
 import { readPagedItems } from "./pagedRead";
+import { toolDurationMs } from "./toolTiming";
 import type { MessageItem, SessionItem } from "./mockData";
 
 export const HARNESS_PROJECT_ID = "proj-harness";
@@ -480,6 +481,7 @@ export function toMessage(item: ThreadItem): MessageItem | null {
                 status: item.status,
                 errorCode: item.errorCode,
                 recoveryAction: item.recoveryAction,
+                durationMs: toolDurationMs(item.durationMs),
                 output: item.result ? JSON.stringify(item.result, null, 2) : undefined,
                 input: JSON.stringify(item.toolArguments ?? {}, null, 2),
                 result: item.resultSummary ?? (item.status === "running" ? "正在执行" : item.status ?? ""),
