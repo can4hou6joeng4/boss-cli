@@ -17,6 +17,7 @@ export-html/（完整条目 + leaf 渲染为可阅读文档）。本模块独立
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 from datetime import datetime, timezone
@@ -268,6 +269,36 @@ def _duration_text(ms: int) -> str:
     return f"{hours} 小时 {tail} 分" if tail else f"{hours} 小时"
 
 
+def _parse_timestamp(value: Any) -> datetime | None:
+    """Parse an ISO timestamp only when it carries a timezone; naive values stay unknown."""
+    if not isinstance(value, str) or not value:
+        return None
+    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _timestamp_duration(start: Any, end: Any) -> int | None:
+    """Elapsed milliseconds between two timezone-aware timestamps; reversed or bad values are unknown."""
+    first, last = _parse_timestamp(start), _parse_timestamp(end)
+    if first is None or last is None or last < first:
+        return None
+    return int(round((last - first).total_seconds() * 1000))
+
+
+def _deadline_text(value: Any) -> str | None:
+    """Approval deadlines are persisted as Unix seconds; export an unambiguous UTC timestamp."""
+    if type(value) not in (int, float) or not math.isfinite(float(value)) or value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(value, timezone.utc).isoformat(timespec="seconds")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
 def _fence(text: str, language: str = "text") -> str:
     longest = max((len(run) for run in re.findall(r"`+|~+", text)), default=0)
     marker = "`" * max(3, longest + 1)
@@ -411,9 +442,13 @@ class _Exporter:
                 and status["executed"] is not False):
             unit["durationMs"] = duration
         if approval is not None:
-            unit["approval"] = {"required": True, "decision": approval.get("decision"),
-                                "decidedAt": approval.get("decidedAt"),
-                                "description": self.redactor.text(approval.get("description"), limit=300)}
+            record = {"required": True, "decision": approval.get("decision"),
+                      "decidedAt": approval.get("decidedAt"),
+                      "description": self.redactor.text(approval.get("description"), limit=300)}
+            deadline = _deadline_text(approval.get("deadline"))
+            if deadline is not None:
+                record["deadline"] = deadline
+            unit["approval"] = record
         source = item.get("source")
         if isinstance(source, dict):
             unit["source"] = {key: source.get(key) for key in ("ref", "queriedAt")
@@ -497,9 +532,11 @@ class _Exporter:
         units: list[tuple[str, dict]] = [("", unit) for unit in after.get(None, [])]
         for index, turn in enumerate(self.turns):
             turn_id = turn["turnId"]
+            duration = _timestamp_duration(turn.get("startedAt"), turn.get("completedAt"))
             header = {"kind": "turn", "index": index + 1, "turnId": turn_id,
                       "status": turn.get("status"), "startedAt": turn.get("startedAt"),
                       "completedAt": turn.get("completedAt"),
+                      **({"durationMs": duration} if duration is not None else {}),
                       "provider": turn.get("provider") if isinstance(turn.get("provider"), str) else None,
                       "model": self.redactor.text(turn.get("model"), limit=120) or None,
                       "onCurrentBranch": turn_id in self.active_turn_ids,
@@ -663,6 +700,8 @@ def _render_unit(unit: dict, view_log: bool) -> str:
         lines = [f"## 回合 {unit['index']} · {_inline_code(unit['turnId'])} · "
                  f"{_TURN_STATUS.get(unit['status'], '状态不明')}", ""]
         meta = [f"开始：{unit['startedAt'] or '—'}", f"结束：{unit['completedAt'] or '—'}"]
+        if "durationMs" in unit:
+            meta.append(f"用时：{_duration_text(unit['durationMs'])}（{unit['durationMs']} 毫秒）")
         if unit["model"]:
             meta.append(f"模型：{unit['provider'] or '—'} / {unit['model']}")
         if view_log:
@@ -702,7 +741,12 @@ def _render_unit(unit: dict, view_log: bool) -> str:
         if approval:
             decision = {"approve": "用户批准", "deny": "用户拒绝", "expired": "审批已过期",
                         None: "等待审批"}.get(approval["decision"], "状态不明")
-            lines.append(f"- 审批：{decision}" + (f"（{approval['decidedAt']}）" if approval["decidedAt"] else ""))
+            line = f"- 审批：{decision}"
+            if approval["decidedAt"]:
+                line += f"（{approval['decidedAt']}）"
+            elif approval.get("deadline"):
+                line += f"（审批期限：{approval['deadline']}）"
+            lines.append(line)
         if unit["errorCode"]:
             lines.append(f"- 错误码：{_inline_code(unit['errorCode'])}")
         if unit["recoveryAction"]:
@@ -920,6 +964,8 @@ def _h(value: Any) -> str:
 def _turn_heading_html(unit: dict, view_log: bool) -> str:
     status = _TURN_STATUS.get(unit["status"], "状态不明")
     meta = [f"开始：{unit['startedAt'] or '—'}", f"结束：{unit['completedAt'] or '—'}"]
+    if "durationMs" in unit:
+        meta.append(f"用时：{_duration_text(unit['durationMs'])}（{unit['durationMs']} 毫秒）")
     if unit["model"]:
         meta.append(f"模型：{unit['provider'] or '—'} / {unit['model']}")
     if view_log:
@@ -972,8 +1018,12 @@ def _render_unit_html(unit: dict) -> str:
         if approval:
             decision = {"approve": "用户批准", "deny": "用户拒绝", "expired": "审批已过期",
                         None: "等待审批"}.get(approval["decision"], "状态不明")
-            parts.append(f'<li>审批：{_h(decision)}'
-                         + (f'（{_h(approval["decidedAt"])}）' if approval["decidedAt"] else "") + "</li>")
+            line = f'<li>审批：{_h(decision)}'
+            if approval["decidedAt"]:
+                line += f'（{_h(approval["decidedAt"])}）'
+            elif approval.get("deadline"):
+                line += f'（审批期限：{_h(approval["deadline"])}）'
+            parts.append(line + "</li>")
         if unit["errorCode"]:
             parts.append(f'<li>错误码：<code>{_h(unit["errorCode"])}</code></li>')
         if unit["recoveryAction"]:
