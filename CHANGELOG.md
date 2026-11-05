@@ -11,6 +11,7 @@
 
 ### 新增
 
+- [Issue #570](https://github.com/can4hou6joeng4/boss-harness/issues/570)：会话内查找的「含工具与思考」覆盖工具卡上可见的全部字段：除既有思考内容与工具输入 / 结果 / 结构化输出外，工具名、来源编号、错误码与恢复建议也参与匹配，勾选后可直接用界面上看到的 `boss_hr_greet`、`vllm#42` 或恢复建议定位消息。工具名位于摘要行、默认可见，命中时不会多余地展开折叠块；来源、错误码、恢复建议与输入 / 结果 / 输出仍按折叠命中自动展开，保证高亮可见。各字段独立匹配，沿用 NFKC 与不区分大小写的归一化，`resultRef` 存在时不匹配未渲染的原始输出。不新增 RPC，协议与内核仍为 `0.2.0`。
 - 运行状态面板可核对持久任务记录：回合页的每个运行中或收尾中 owner 行新增「核对持久记录」，经既有只读 `task/read` 查询同一任务（turn / compaction）的持久状态、归属、当前进程持有情况、恢复策略、阶段与已验证关联；核对为手动触发，只读，不恢复、不重放、不取消任务。响应按白名单严格校验（locator / threadId 归属、`ownership`、`recoveryPolicy`、`runtimeOwned`、`phase`、`relations`、`historyWindow`），非法响应整体拒绝且不展示半份数据；`TASK_NOT_FOUND` 明确提示任务已不在持久记录中，其余失败保留内核错误码且不自动重试；关闭面板或切换会话后清除上次结果。纯逻辑映射与校验位于 `taskCheck`，不新增 RPC，协议与内核版本不变（仍为 `0.2.0`）。
 
 - 运行状态面板支持事件驱动刷新：面板打开且内核已连接时订阅既有 `harness:notification`，在 `turn/started`、`turn/completed`、`approval/requested`、`approval/decided`、`queue/updated`、`context/compactionStarted`、`context/compactionCompleted`、`context/compactionFailed` 与 `context/compacted` 后自动重读快照；连续通知按 350ms 防抖合并，避免同一批事件触发多次并行读取。刷新沿用既有手动刷新路径，失败只更新对应分区错误并保留其余可读数据；未知通知不触发读取。事件过滤为纯函数，便于离线验证。协议保持 `0.2.0`（不新增 RPC，内核不变）。
