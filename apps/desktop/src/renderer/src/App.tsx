@@ -417,7 +417,8 @@ export function App(): JSX.Element {
       await deleteThread(session.id);
     } catch (cause) {
       const failure = deleteThreadFailure(cause);
-      if (failure.status === "failed") { setError(failure.message); return false; }
+      // 只有内核明确拒绝才能断言聊天仍存在；结果未确认时保留列表并提示核对，不臆断删除结果。
+      if (failure.status !== "incomplete") { setError(failure.message); return false; }
       warning = failure.message;
     }
     cache.current.delete(session.id);

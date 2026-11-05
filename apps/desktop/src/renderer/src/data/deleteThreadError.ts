@@ -4,11 +4,12 @@ import { harnessErrorText } from "./harnessBridge";
  * 删除会话失败的展示结果。
  *
  * `incomplete` 表示会话已从列表消失（内核已隐藏、稍后继续清理），调用方仍需移除本地状态；
- * `failed` 表示会话原样保留，调用方应保持列表不变。
+ * `failed` 表示内核明确拒绝删除，会话原样保留；
+ * `unknown` 表示结果未确认（传输错误、未知原因码或响应形状不符），调用方保留列表并提示核对。
  */
-export type DeleteThreadFailure = { status: "incomplete" | "failed"; message: string };
+export type DeleteThreadFailure = { status: "incomplete" | "failed" | "unknown"; message: string };
 
-/** 按内核原因码给出可操作的中文提示；未知错误保留原文，避免把失败说成成功。 */
+/** 按内核原因码给出可操作的中文提示；未知错误不臆断删除结果，避免把未确认说成未删除。 */
 export function deleteThreadFailure(error: unknown): DeleteThreadFailure {
   const value = error && typeof error === "object"
     ? error as { rpcError?: unknown; data?: unknown } : null;
@@ -22,6 +23,6 @@ export function deleteThreadFailure(error: unknown): DeleteThreadFailure {
     case "THREAD_NOT_FOUND":
       return { status: "incomplete", message: "该聊天已不存在，已从列表移除。" };
     default:
-      return { status: "failed", message: `删除聊天失败：${harnessErrorText(error)}。聊天未删除，请稍后重试。` };
+      return { status: "unknown", message: `删除结果尚未确认：${harnessErrorText(error)}。请刷新会话列表核对；若该聊天已消失，无需重试。` };
   }
 }
