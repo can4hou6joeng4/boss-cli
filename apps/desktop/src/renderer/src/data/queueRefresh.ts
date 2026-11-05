@@ -1,3 +1,5 @@
+import { safeSlice } from "@boss-harness/shared";
+
 /** 队列手动刷新的结果：成功时不带原因，失败时带回可展示的原因。 */
 export interface QueueRefreshResult {
   ok: boolean;
@@ -16,7 +18,7 @@ export function queueRefreshErrorText(value: unknown): string | null {
   const record = value as Record<string, unknown>;
   if (record.ok === true) return null;
   const message = typeof record.message === "string"
-    ? record.message.replace(/\s+/g, " ").trim().slice(0, MESSAGE_LIMIT)
+    ? safeSlice(record.message.replace(/\s+/g, " ").trim(), MESSAGE_LIMIT)
     : "";
   return message || "原因未知";
 }
