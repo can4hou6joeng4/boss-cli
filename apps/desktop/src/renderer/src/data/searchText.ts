@@ -61,13 +61,16 @@ export function searchTextWithMap(text: string): MappedSearchText {
 }
 
 /**
- * 内核搜索使用的归一化：逐码点 NFKC + casefold。
+ * 内核搜索使用的归一化：按字素簇 NFKC + 逐码点 casefold。
  * 与 `searchText` 的整串小写刻意分开：内核 `_search_normalized` 用 casefold，
- * 两者在 `ß`/`ss`、`ς`/`σ` 等码点上结果不同。
+ * 两者在 `ß`/`ss`、`ς`/`σ` 等码点上结果不同。按簇归一化才能与内核一样
+ * 把 NFD 重音与分解谚文组合成单个字符。
  */
 export function kernelSearchText(value: string): string {
   let normalized = "";
-  for (const char of value) normalized += caseFold(char.normalize("NFKC"));
+  for (const { segment } of graphemes.segment(value)) {
+    for (const char of segment.normalize("NFKC")) normalized += caseFold(char);
+  }
   return normalized;
 }
 
@@ -76,15 +79,15 @@ export function kernelSearchTextWithMap(text: string): MappedSearchText {
   let normalized = "";
   const starts: number[] = [];
   const ends: number[] = [];
-  let offset = 0;
-  for (const char of text) {
-    const folded = caseFold(char.normalize("NFKC"));
-    for (let index = 0; index < folded.length; index += 1) {
-      normalized += folded[index];
-      starts.push(offset);
-      ends.push(offset + char.length);
+  for (const { segment, index } of graphemes.segment(text)) {
+    for (const char of segment.normalize("NFKC")) {
+      const folded = caseFold(char);
+      for (let offset = 0; offset < folded.length; offset += 1) {
+        normalized += folded[offset];
+        starts.push(index);
+        ends.push(index + segment.length);
+      }
     }
-    offset += char.length;
   }
   return { normalized, starts, ends };
 }

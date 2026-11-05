@@ -47,6 +47,14 @@ _SEARCH_THREAD_BYTES = 8 * 1024 * 1024
 _SEARCH_SNIPPET_BYTES = 200
 _SEARCH_TOOL_ARGS = 2000
 _SEARCH_TOOL_TEXT = 6000
+
+
+def _is_hangul_jamo(char: str) -> bool:
+    """谚文 jamo（含扩展区）：NFKC 会把连续的 L / V / T 合成一个音节。"""
+    code = ord(char)
+    return 0x1100 <= code <= 0x11FF or 0xA960 <= code <= 0xA97C or 0xD7B0 <= code <= 0xD7FB
+
+
 # In-session branch pointer (Pi session-manager leafId).  Sessions that never
 # record one keep the historical linear projection byte-for-byte.
 LEAF_ENTRY_TYPE = "leaf"
@@ -2045,17 +2053,32 @@ class SessionStore:
         return {"threads": [json.loads(row["metadata_json"]) for row in page], "nextCursor": next_cursor}
 
     @staticmethod
-    def _search_normalized(value: str) -> tuple[str, list[int]]:
-        """NFKC + casefold 归一化，并记录每个归一化字符对应的原文索引。"""
+    def _search_normalized(value: str) -> tuple[str, list[int], list[int]]:
+        """按组合簇 NFKC + casefold 归一化，返回文本与每个字符对应的原文起止索引。
+
+        NFKC 会把基字符与后续组合记号、分解状态的谚文 jamo 组合成一个字符；逐码点
+        归一化做不到跨码点组合，NFC / NFD 正文互相查询会漏命中。casefold 逐码点进行，
+        与旧实现的语义一致（上下文无关，不改变词尾 sigma 等结果）。
+        """
         parts: list[str] = []
-        origins: list[int] = []
-        for index, char in enumerate(value):
-            part = unicodedata.normalize("NFKC", char).casefold()
-            if not part:
-                continue
-            parts.append(part)
-            origins.extend([index] * len(part))
-        return "".join(parts), origins
+        starts: list[int] = []
+        ends: list[int] = []
+        index = 0
+        length = len(value)
+        while index < length:
+            end = index + 1
+            if _is_hangul_jamo(value[index]):
+                while end < length and _is_hangul_jamo(value[end]):
+                    end += 1
+            while end < length and unicodedata.combining(value[end]):
+                end += 1
+            part = unicodedata.normalize("NFKC", value[index:end]).casefold()
+            if part:
+                parts.append(part)
+                starts.extend([index] * len(part))
+                ends.extend([end] * len(part))
+            index = end
+        return "".join(parts), starts, ends
 
     @staticmethod
     def _search_snippet(text: str, start: int, end: int) -> str:
@@ -2093,7 +2116,7 @@ class SessionStore:
             raise ValueError("limit 必须是 1–50 的整数")
         if type(include_archived) is not bool:
             raise ValueError("includeArchived 必须是布尔值")
-        needle, _ = self._search_normalized(query.strip())
+        needle, _, _ = self._search_normalized(query.strip())
         if not needle:
             return {"query": query.strip(), "matches": [], "truncated": False}
         matches: list[dict] = []
@@ -2123,12 +2146,12 @@ class SessionStore:
                 else:
                     continue
                 scanned_chars += len(text)
-                normalized, origins = self._search_normalized(text)
+                normalized, starts, ends = self._search_normalized(text)
                 index = normalized.find(needle)
                 if index < 0:
                     continue
-                start = origins[index]
-                end = origins[index + len(needle) - 1] + 1
+                start = starts[index]
+                end = ends[index + len(needle) - 1]
                 title = thread.get("title")
                 matches.append({
                     "threadId": thread["id"],
