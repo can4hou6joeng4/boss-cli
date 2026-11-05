@@ -4,14 +4,14 @@ import { IconSearch, IconChat, IconChevronRight, IconClose } from "./Icons";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
 import { sessionRows } from "../data/sessionRows";
 import { buildSearchOptions, searchRoleLabel, type SearchOption } from "../data/searchOptions";
-import { splitHighlight } from "../data/findHighlight";
+import { splitKernelHighlight } from "../data/findHighlight";
 import { visibleThreadSearchHits, type ThreadSearchBatch } from "../data/messageSearch";
 import { searchThreadMessages } from "../data/harnessBridge";
 import { clearRecentSearches, readRecentSearches, rememberRecentSearch, RECENT_SEARCH_MIN_LENGTH } from "../data/recentSearches";
 
-/** 用 `mark` 标出关键词；无命中时原样输出。 */
+/** 用 `mark` 标出关键词；无命中时原样输出。内核命中片段按内核的 casefold 归一化标注。 */
 function Highlighted({ text, query }: { text: string; query: string }) {
-  return <>{splitHighlight(text, query).map((segment, index) => segment.match
+  return <>{splitKernelHighlight(text, query).map((segment, index) => segment.match
     ? <mark className="search-match" key={index}>{segment.text}</mark>
     : segment.text)}</>;
 }
