@@ -34,6 +34,20 @@ export function bucketOf(value: unknown): ThreadUsageBucket | null {
 const strings = (value: unknown, limit: number): string[] | null => Array.isArray(value) && value.every(item => typeof item === "string")
   ? (value as string[]).slice(0, limit).map(item => item.slice(0, 120)) : null;
 
+const SKILL_LIMIT = 10;
+const SKILL_ID_LIMIT = 200;
+
+/** 与内核 _turn_skill_ids 一致：先校验、后计数，按 id 去重并最多 10 项；没有合法 id 时省略。 */
+function skillIdsOf(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const ids: string[] = [];
+  for (const item of value) {
+    if (ids.length >= SKILL_LIMIT) break;
+    if (typeof item === "string" && item.length > 0 && item.length <= SKILL_ID_LIMIT && !ids.includes(item)) ids.push(item);
+  }
+  return ids.length ? ids : undefined;
+}
+
 const POLICY_KEYS = ["enabled", "triggerPercent", "keepRecentTokens", "provider", "model", "effort"] as const;
 const POLICY_PROVIDERS = new Set(["anthropic", "openai", "codex"]);
 const POLICY_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -83,12 +97,14 @@ export function turnOf(value: unknown): ThreadUsageTurn | null {
   const providers = strings(raw.providers, 8), models = strings(raw.models, 8);
   if (typeof raw.turnId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(raw.turnId) || !providers || !models) return null;
   const compactionPolicy = compactionPolicyOf(raw.compactionPolicy);
+  const skillIds = skillIdsOf(raw.skillIds);
   const timing: Partial<ThreadUsageTurn> = {};
   const startedAt = timestampOf(raw.startedAt), completedAt = timestampOf(raw.completedAt);
   if (startedAt) timing.startedAt = startedAt;
   if (completedAt) timing.completedAt = completedAt;
   if (typeof raw.status === "string" && TURN_STATUSES.has(raw.status)) timing.status = raw.status as ThreadUsageTurn["status"];
   return { ...bucket, turnId: raw.turnId, providers, models,
+    ...(skillIds ? { skillIds } : {}),
     ...timing,
     ...(compactionPolicy ? { compactionPolicy } : {}) };
 }
