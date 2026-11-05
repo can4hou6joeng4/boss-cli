@@ -10,7 +10,7 @@ import type { ProjectFolder, SessionItem } from "../data/mockData";
 
 type PendingState =
   | { status: "loading" }
-  | { status: "ready"; approvals: PendingApproval[]; now: number }
+  | { status: "ready"; approvals: PendingApproval[]; truncated: boolean; now: number }
   | { status: "error"; message: string };
 
 export function NotificationsDialog({ folders, preview = false, refreshToken, onSelect, onOpenMessage, onLoaded, onClose }: {
@@ -39,7 +39,7 @@ export function NotificationsDialog({ folders, preview = false, refreshToken, on
       inFlight = true;
       if (!silent) setState({ status: "loading" });
       void listPendingApprovals(100).then(
-        approvals => { if (cancelled) return; setState({ status: "ready", approvals, now: Date.now() }); loaded.current?.(approvals.length); },
+        result => { if (cancelled) return; setState({ status: "ready", approvals: result.approvals, truncated: result.truncated, now: Date.now() }); loaded.current?.(result.approvals.length); },
         cause => {
           if (cancelled) return;
           // 后台刷新失败保留已有列表；首次读取失败才展示错误与重试。
@@ -100,7 +100,9 @@ export function NotificationsDialog({ folders, preview = false, refreshToken, on
       </div>}
       {!preview && state.status === "ready" && state.approvals.length > 0 && <div onKeyDown={onListKeyDown}>
         <div className="notification-toolbar">
-          <span>{state.approvals.length} 项等待你确认 · ↑ ↓ 选择</span>
+          <span title={state.truncated ? "内核还有更早的待审批未放入本次列表；处理当前项后刷新查看。" : undefined}>
+            {state.approvals.length} 项等待你确认{state.truncated ? "（仍有更早项未显示）" : ""} · ↑ ↓ 选择
+          </span>
           <button className="secondary-button" onClick={retry}>刷新</button>
         </div>
         <ul className="notification-list">

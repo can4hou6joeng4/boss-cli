@@ -3886,7 +3886,8 @@ class ApplicationService:
         limit = params.get("limit", 100)
         if type(limit) is not int or not 1 <= limit <= 200:
             raise ValueError("limit 必须是 1 到 200 之间的整数")
-        return {"approvals": self.sessions.pending_approvals(thread_id, limit=limit)}
+        approvals, truncated = self.sessions.pending_approvals(thread_id, limit=limit)
+        return {"approvals": approvals, "truncated": truncated}
 
     def on_approval_respond(self, params: dict | None) -> dict:
         if not isinstance(params, dict) or set(params) != {"approvalId", "approved"}:

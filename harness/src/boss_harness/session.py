@@ -1196,7 +1196,9 @@ class SessionStore:
             return False
         return approval.get("paramsDigest") == digest
 
-    def pending_approvals(self, thread_id: str | None = None, *, limit: int = 100) -> list[dict]:
+    def pending_approvals(self, thread_id: str | None = None, *,
+                          limit: int = 100) -> tuple[list[dict], bool]:
+        """Return the bounded pending page and whether older approvals were omitted."""
         _limit(limit, maximum=200)
         if thread_id is not None:
             self.path_for(thread_id)
@@ -1205,7 +1207,7 @@ class SessionStore:
                 self.require_thread(thread_id)
             pending_deletions = sorted(self._pending_deletion_ids())
             if len(pending_deletions) > 800:
-                return []
+                return [], False
             query = """SELECT a.approval_id,a.thread_id,a.turn_id,a.item_id,a.tool_name,
                        a.deadline,a.params_digest FROM approvals a
                        JOIN threads t ON t.id=a.thread_id
@@ -1221,15 +1223,17 @@ class SessionStore:
                 query += " AND a.thread_id NOT IN (" + ",".join("?" for _ in pending_deletions) + ")"
                 parameters.extend(pending_deletions)
             query += " ORDER BY t.updated_at DESC,a.thread_id DESC,a.item_id DESC LIMIT ?"
-            parameters.append(limit)
+            # Fetch one extra row only to distinguish “exactly at the limit” from “more remain”.
+            parameters.append(limit + 1)
             with self._index.connection() as connection:
                 rows = connection.execute(query, parameters).fetchall()
-            return [{"approvalId": row["approval_id"], "threadId": row["thread_id"],
-                     "turnId": row["turn_id"], "itemId": row["item_id"],
-                     "toolName": row["tool_name"],
-                     "summary": f"需要你批准后才会执行：{row['tool_name']}",
-                     "deadline": row["deadline"], "paramsDigest": row["params_digest"]}
-                    for row in rows]
+            truncated = len(rows) > limit
+            return ([{"approvalId": row["approval_id"], "threadId": row["thread_id"],
+                      "turnId": row["turn_id"], "itemId": row["item_id"],
+                      "toolName": row["tool_name"],
+                      "summary": f"需要你批准后才会执行：{row['tool_name']}",
+                      "deadline": row["deadline"], "paramsDigest": row["params_digest"]}
+                     for row in rows[:limit]], truncated)
 
     def _append_approval_decision(self, thread_id: str, item: dict, decision: str,
                                   *, live_owner: bool) -> dict:

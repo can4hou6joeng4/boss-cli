@@ -37,9 +37,20 @@ function readApproval(value: unknown): PendingApproval | null {
   };
 }
 
+export interface PendingApprovalList {
+  approvals: PendingApproval[];
+  /** 内核还有更早的待审批未返回；旧内核缺省视为没有截断。 */
+  truncated: boolean;
+}
+
 /** 校验 approval/list 的返回：外层不可读时抛错（不能伪装成「没有通知」），单条非法只丢弃该条。 */
-export function mapPendingApprovals(value: unknown, limit = 100): PendingApproval[] {
+export function mapPendingApprovals(value: unknown, limit = 100): PendingApprovalList {
   if (!value || typeof value !== "object" || !Array.isArray((value as Record<string, unknown>).approvals)) {
+    throw new Error("内核审批列表无法识别");
+  }
+  const truncated = (value as Record<string, unknown>).truncated;
+  // 截断标记决定「是否还有更早的待审批」能否如实展示；存在但类型不对时整体拒绝，不猜。
+  if (truncated !== undefined && typeof truncated !== "boolean") {
     throw new Error("内核审批列表无法识别");
   }
   const seen = new Set<string>();
@@ -51,7 +62,7 @@ export function mapPendingApprovals(value: unknown, limit = 100): PendingApprova
     approvals.push(approval);
     if (approvals.length >= limit) break;
   }
-  return approvals;
+  return { approvals, truncated: truncated === true };
 }
 
 const MINUTE = 60_000;
