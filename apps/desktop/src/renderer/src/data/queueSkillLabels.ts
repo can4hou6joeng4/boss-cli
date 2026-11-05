@@ -10,18 +10,20 @@ function skillId(value: unknown): value is string {
 
 /**
  * 队列项技能的可读标签：优先显示目录中的名称，找不到或名称为空时回退 id。
- * 先校验、后计数：跳过非法 id，去重并最多 10 项；旧内核或畸形记录不产生伪技能。
+ * 先校验、后计数：跳过非法 id，按 id 去重并最多 10 项；目录不要求名称唯一，
+ * 同名不同 id 是两个技能，不得按显示名合并。
  */
 export function queueSkillLabels(skillIds: string[] | null | undefined, skills: SkillDescriptor[] = []): string[] {
   if (!Array.isArray(skillIds)) return [];
   const names = new Map(skills.map(skill => [skill.id, skill.name]));
   const labels: string[] = [];
+  const seen = new Set<string>();
   for (const id of skillIds) {
     if (labels.length >= LABEL_LIMIT) break;
-    if (!skillId(id)) continue;
+    if (!skillId(id) || seen.has(id)) continue;
+    seen.add(id);
     const name = names.get(id);
-    const label = typeof name === "string" && name.trim() ? name : id;
-    if (!labels.includes(label)) labels.push(label);
+    labels.push(typeof name === "string" && name.trim() ? name : id);
   }
   return labels;
 }
