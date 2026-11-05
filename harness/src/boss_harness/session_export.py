@@ -254,6 +254,20 @@ def _inline_code(value: Any) -> str:
     return "`" + str(value).replace("`", "'").replace("\n", " ") + "`"
 
 
+def _duration_text(ms: int) -> str:
+    """Human-readable duration, matching the desktop ``formatDuration`` wording."""
+    seconds = (ms + 500) // 1000
+    if seconds < 1:
+        return "不足 1 秒"
+    if seconds < 60:
+        return f"{seconds} 秒"
+    minutes, rest = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes} 分 {rest} 秒" if rest else f"{minutes} 分"
+    hours, tail = divmod(minutes, 60)
+    return f"{hours} 小时 {tail} 分" if tail else f"{hours} 小时"
+
+
 def _fence(text: str, language: str = "text") -> str:
     longest = max((len(run) for run in re.findall(r"`+|~+", text)), default=0)
     marker = "`" * max(3, longest + 1)
@@ -391,6 +405,11 @@ class _Exporter:
             "recoveryAction": self.redactor.text(item.get("recoveryAction"), limit=600) or None,
             "arguments": self._arguments(item.get("toolArguments")),
         }
+        # 只导出真正派发过的耗时；未执行 / 被拒绝的条目即使误带字段也不显示成一次执行。
+        duration = item.get("durationMs")
+        if (type(duration) is int and 0 <= duration <= 2**53 - 1
+                and status["executed"] is not False):
+            unit["durationMs"] = duration
         if approval is not None:
             unit["approval"] = {"required": True, "decision": approval.get("decision"),
                                 "decidedAt": approval.get("decidedAt"),
@@ -677,6 +696,8 @@ def _render_unit(unit: dict, view_log: bool) -> str:
         executed = {True: "是", False: "否", None: "未知，需核对平台状态"}[execution["executed"]]
         lines.append(f"- 执行状态：`{execution['state']}`（记录状态 `{unit['status']}`）；已执行：{executed}"
                      + ("；外部写操作" if execution["externalWrite"] else "；只读"))
+        if "durationMs" in unit:
+            lines.append(f"- 耗时：{_duration_text(unit['durationMs'])}（{unit['durationMs']} 毫秒）")
         approval = unit.get("approval")
         if approval:
             decision = {"approve": "用户批准", "deny": "用户拒绝", "expired": "审批已过期",
@@ -945,6 +966,8 @@ def _render_unit_html(unit: dict) -> str:
         parts = [f'<div class="{classes}"><h3>工具调用 <code>{_h(unit["toolName"])}</code> — {_h(execution["label"])}</h3><ul>',
                  f'<li>执行状态：<code>{_h(execution["state"])}</code>（记录状态 <code>{_h(unit["status"])}</code>）；'
                  f'已执行：{executed}；{"外部写操作" if execution["externalWrite"] else "只读"}</li>']
+        if "durationMs" in unit:
+            parts.append(f'<li>耗时：{_h(_duration_text(unit["durationMs"]))}（{unit["durationMs"]} 毫秒）</li>')
         approval = unit.get("approval")
         if approval:
             decision = {"approve": "用户批准", "deny": "用户拒绝", "expired": "审批已过期",
