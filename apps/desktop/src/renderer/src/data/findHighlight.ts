@@ -1,34 +1,15 @@
+import { searchText, searchTextWithMap } from "./searchText";
+
 export interface TextRange { start: number; end: number }
-
-const LOCALE = "zh-CN";
-const normalizeChar = (char: string) => char.normalize("NFKC").toLocaleLowerCase(LOCALE);
-
-/** 归一化整段文本，并记录每个归一化字符对应的原文 UTF-16 区间；DOM Range 的偏移量以 UTF-16 为单位。 */
-function normalizeWithMap(text: string): { normalized: string; starts: number[]; ends: number[] } {
-  let normalized = "";
-  const starts: number[] = [];
-  const ends: number[] = [];
-  let offset = 0;
-  for (const char of text) {
-    const value = normalizeChar(char);
-    for (let index = 0; index < value.length; index += 1) {
-      normalized += value[index];
-      starts.push(offset);
-      ends.push(offset + char.length);
-    }
-    offset += char.length;
-  }
-  return { normalized, starts, ends };
-}
 
 /**
  * 在文本中查找所有命中区间，返回原文偏移量（不重叠，按出现顺序）。
- * 与 messageSearch 使用相同的 NFKC + 不区分大小写归一化，`limit` 限制单段文本的区间数。
+ * 与 messageSearch 共用同一套整串 NFKC + 不区分大小写归一化，`limit` 限制单段文本的区间数。
  */
 export function findTextRanges(text: string, query: string, limit = 200): TextRange[] {
-  const needle = Array.from(query.trim()).map(normalizeChar).join("");
+  const needle = searchText(query).trim();
   if (!needle || limit <= 0) return [];
-  const { normalized, starts, ends } = normalizeWithMap(text);
+  const { normalized, starts, ends } = searchTextWithMap(text);
   const ranges: TextRange[] = [];
   let from = 0;
   while (ranges.length < limit) {

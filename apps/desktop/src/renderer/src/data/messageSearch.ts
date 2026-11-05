@@ -1,7 +1,6 @@
 import type { ThreadSearchMatch } from "@boss-harness/protocol";
 import type { MessageItem } from "./mockData";
-
-const normalize = (value: string) => value.normalize("NFKC").toLocaleLowerCase("zh-CN");
+import { searchText } from "./searchText";
 
 /** 在当前聊天中查找时参与匹配的可见文本；工具结果与思考过程默认不展开。 */
 function messageText(item: MessageItem): string {
@@ -23,10 +22,10 @@ function messageDetailText(item: MessageItem): string {
  * `includeDetails` 为真时额外匹配思考内容与工具调用的输入、结果、输出。
  */
 export function findMessageMatches(messages: MessageItem[], query: string, options: { includeDetails?: boolean } = {}): string[] {
-  const needle = normalize(query).trim();
+  const needle = searchText(query).trim();
   if (!needle) return [];
   return messages
-    .filter(item => normalize(messageText(item) + (options.includeDetails ? "\n" + messageDetailText(item) : "")).includes(needle))
+    .filter(item => searchText(messageText(item) + (options.includeDetails ? "\n" + messageDetailText(item) : "")).includes(needle))
     .map(item => item.id);
 }
 
