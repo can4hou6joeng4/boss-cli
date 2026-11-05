@@ -12,16 +12,31 @@ export interface QuickAskRoute {
 
 export type QuickAskResolution = { ok: true; route: QuickAskRoute } | { ok: false; reason: string };
 
+/** 有内容的线路字段才可用；空串与纯空白视为缺失，避免把损坏记录送进内核。 */
+function usable(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 /**
  * 解析快速提问要使用的线路：当前会话 → 进程默认线路 → 目录里同一 provider 的条目。
+ * provider 与 model 必须来自同一条线路：没有 provider 的旧会话，其 model 可能属于其他线路，
+ * 不能与默认 provider 拼成一对（内核 thread/start 只接受该 provider 的配置基模型），此时整对回退默认线路。
  * 解析不出精确 provider/model 时明确失败，不用显示值或占位线路冒充可用配置。
  */
 export function resolveQuickAskRoute(session: RouteFields | null | undefined,
   defaultModel: QuickAskRoute | null | undefined, models: ModelDescriptor[] | undefined): QuickAskResolution {
-  const provider = session?.provider ?? defaultModel?.provider;
-  const model = session?.model
-    ?? (provider !== undefined && provider === defaultModel?.provider ? defaultModel?.model : undefined)
-    ?? models?.find(candidate => candidate.provider === provider)?.id;
+  const sessionProvider = session && usable(session.provider) ? session.provider.trim() : undefined;
+  const sessionModel = session && usable(session.model) ? session.model.trim() : undefined;
+  const defaultProvider = defaultModel && usable(defaultModel.provider) ? defaultModel.provider.trim() : undefined;
+  const defaultModelId = defaultModel && usable(defaultModel.model) ? defaultModel.model.trim() : undefined;
+  const provider = sessionProvider ?? defaultProvider;
+  const catalogModel = models?.find(candidate => candidate.provider === provider)?.id;
+  // 只有会话自带 provider 时，会话 model 才与它同线；否则沿用的 model 必须来自默认线路。
+  const model = sessionProvider !== undefined && sessionModel !== undefined
+    ? sessionModel
+    : provider !== undefined && provider === defaultProvider && defaultModelId !== undefined
+      ? defaultModelId
+      : usable(catalogModel) ? catalogModel.trim() : undefined;
   if (!provider || !model) {
     return { ok: false, reason: "没有可用的模型线路，无法提问。请先在设置中配置模型。" };
   }
