@@ -243,7 +243,9 @@ export function readCockpitTools(values: unknown): CockpitTool[] {
   return values.flatMap(value => {
     if (!isObject(value)) return [];
     const name = text(value.name, 200);
-    const description = typeof value.description === "string" ? safeSlice(value.description, 600) : "";
+    // 描述超长时截断并标记省略，避免把半句话当成完整规则；预算内原样保留。
+    const rawDescription = typeof value.description === "string" ? value.description : "";
+    const description = rawDescription.length > 600 ? `${safeSlice(rawDescription, 600)}…` : rawDescription;
     const readOnly = boolean(value.readOnly);
     const requiresApproval = boolean(value.requiresApproval);
     const executionMode = value.executionMode === "sequential" || value.executionMode === "parallel" ? value.executionMode : undefined;
