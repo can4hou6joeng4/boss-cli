@@ -1,3 +1,5 @@
+import { caseFold } from "./caseFold";
+
 const LOCALE = "zh-CN";
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
@@ -55,5 +57,34 @@ export function searchTextWithMap(text: string): MappedSearchText {
   }
   starts.length = normalized.length;
   ends.length = normalized.length;
+  return { normalized, starts, ends };
+}
+
+/**
+ * 内核搜索使用的归一化：逐码点 NFKC + casefold。
+ * 与 `searchText` 的整串小写刻意分开：内核 `_search_normalized` 用 casefold，
+ * 两者在 `ß`/`ss`、`ς`/`σ` 等码点上结果不同。
+ */
+export function kernelSearchText(value: string): string {
+  let normalized = "";
+  for (const char of value) normalized += caseFold(char.normalize("NFKC"));
+  return normalized;
+}
+
+/** 与 `kernelSearchText` 对应的原文 UTF-16 区间映射。 */
+export function kernelSearchTextWithMap(text: string): MappedSearchText {
+  let normalized = "";
+  const starts: number[] = [];
+  const ends: number[] = [];
+  let offset = 0;
+  for (const char of text) {
+    const folded = caseFold(char.normalize("NFKC"));
+    for (let index = 0; index < folded.length; index += 1) {
+      normalized += folded[index];
+      starts.push(offset);
+      ends.push(offset + char.length);
+    }
+    offset += char.length;
+  }
   return { normalized, starts, ends };
 }

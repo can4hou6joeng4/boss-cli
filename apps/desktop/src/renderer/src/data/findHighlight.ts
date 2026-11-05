@@ -1,15 +1,10 @@
-import { searchText, searchTextWithMap } from "./searchText";
+import { kernelSearchText, kernelSearchTextWithMap, searchText, searchTextWithMap, type MappedSearchText } from "./searchText";
 
 export interface TextRange { start: number; end: number }
 
-/**
- * 在文本中查找所有命中区间，返回原文偏移量（不重叠，按出现顺序）。
- * 与 messageSearch 共用同一套整串 NFKC + 不区分大小写归一化，`limit` 限制单段文本的区间数。
- */
-export function findTextRanges(text: string, query: string, limit = 200): TextRange[] {
-  const needle = searchText(query).trim();
-  if (!needle || limit <= 0) return [];
-  const { normalized, starts, ends } = searchTextWithMap(text);
+/** 在已归一化的文本中查找命中区间，并把偏移量还原到原文。 */
+function scanRanges(mapped: MappedSearchText, needle: string, limit: number): TextRange[] {
+  const { normalized, starts, ends } = mapped;
   const ranges: TextRange[] = [];
   let from = 0;
   while (ranges.length < limit) {
@@ -24,14 +19,26 @@ export function findTextRanges(text: string, query: string, limit = 200): TextRa
   return ranges;
 }
 
+/**
+ * 在文本中查找所有命中区间，返回原文偏移量（不重叠，按出现顺序）。
+ * 与 messageSearch 共用同一套整串 NFKC + 不区分大小写归一化，`limit` 限制单段文本的区间数。
+ */
+export function findTextRanges(text: string, query: string, limit = 200): TextRange[] {
+  const needle = searchText(query).trim();
+  if (!needle || limit <= 0) return [];
+  return scanRanges(searchTextWithMap(text), needle, limit);
+}
+
+/** 标注内核搜索命中：内核使用逐码点 NFKC + casefold，与小写归一化在 `ß`/`ss` 等处不同。 */
+export function findKernelTextRanges(text: string, query: string, limit = 200): TextRange[] {
+  const needle = kernelSearchText(query.trim());
+  if (!needle || limit <= 0) return [];
+  return scanRanges(kernelSearchTextWithMap(text), needle, limit);
+}
+
 export interface TextSegment { text: string; match: boolean }
 
-/**
- * 把文本拆成命中 / 未命中片段，供搜索结果标注关键词。
- * 复用 `findTextRanges` 的归一化与区间计算，未命中时返回整段原文。
- */
-export function splitHighlight(text: string, query: string, limit = 50): TextSegment[] {
-  const ranges = findTextRanges(text, query, limit);
+function splitByRanges(text: string, ranges: TextRange[]): TextSegment[] {
   if (!ranges.length) return text ? [{ text, match: false }] : [];
   const segments: TextSegment[] = [];
   let cursor = 0;
@@ -43,6 +50,19 @@ export function splitHighlight(text: string, query: string, limit = 50): TextSeg
   }
   if (cursor < text.length) segments.push({ text: text.slice(cursor), match: false });
   return segments;
+}
+
+/**
+ * 把文本拆成命中 / 未命中片段，供搜索结果标注关键词。
+ * 复用 `findTextRanges` 的归一化与区间计算，未命中时返回整段原文。
+ */
+export function splitHighlight(text: string, query: string, limit = 50): TextSegment[] {
+  return splitByRanges(text, findTextRanges(text, query, limit));
+}
+
+/** 标注内核命中片段：与 `findKernelTextRanges` 共用内核的 casefold 归一化。 */
+export function splitKernelHighlight(text: string, query: string, limit = 50): TextSegment[] {
+  return splitByRanges(text, findKernelTextRanges(text, query, limit));
 }
 
 /** 收集元素内的文本节点并映射到原文偏移量，供 CSS Custom Highlight 使用。 */
