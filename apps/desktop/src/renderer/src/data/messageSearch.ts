@@ -32,13 +32,15 @@ export interface VisibleDetailText {
 /**
  * 工具卡与审批卡里实际渲染的详情文本。
  * 没有思考时长不渲染思考块；`resultRef` 存在时结构化输出不渲染，原始输出不能参与匹配。
- * 审批期限使用卡片上的倒计时文案，而不是内核原始时间戳。
+ * 审批期限使用卡片上的倒计时文案，而不是内核原始时间戳；卡片只在尚无结论时显示倒计时，
+ * 已裁决的条目即使仍带 `deadline` 也不参与期限匹配。
  */
 function visibleDetailText(item: MessageItem, now = Date.now()): VisibleDetailText {
   const badge = item.toolUse
     ? toolOutcomeBadge(item.toolUse.executionState, item.toolUse.status, item.toolUse.errorCode)
     : null;
   const approval = item.approval;
+  const approvalStatus = approvalDecisionText(approval?.decision) ?? "";
   return {
     thinking: item.thinkingTime ? item.thinkingContent ?? "" : "",
     toolName: item.toolUse?.name ?? "",
@@ -49,9 +51,10 @@ function visibleDetailText(item: MessageItem, now = Date.now()): VisibleDetailTe
     recoveryAction: item.toolUse?.recoveryAction ?? "",
     result: item.toolUse?.result ?? "",
     output: item.toolUse?.resultRef ? "" : item.toolUse?.output ?? "",
-    approvalStatus: approvalDecisionText(approval?.decision) ?? "",
+    approvalStatus,
     approvalDescription: approval?.description ?? "",
-    approvalDeadline: approval?.deadline !== undefined
+    // 与审批卡一致：只有尚无结论时才渲染倒计时；未知结论同样按已裁决处理。
+    approvalDeadline: approval && !approval.decision && approval.deadline !== undefined
       ? approvalRemainingText(approval.deadline, now)
       : "",
   };

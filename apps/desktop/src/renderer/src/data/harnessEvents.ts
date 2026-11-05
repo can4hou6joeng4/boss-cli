@@ -1,6 +1,6 @@
 import type { ApprovalState, ProviderFailureInfo, QueueItem, ThreadItem } from "@boss-harness/protocol";
 import type { MessageItem } from "./mockData";
-import { toMessage, type ApprovalDelivery } from "./harnessBridge";
+import { toApproval, toMessage, type ApprovalDelivery } from "./harnessBridge";
 import { approvalDeadlineMs } from "./pendingApprovals";
 import { toolDurationMs } from "./toolTiming";
 
@@ -90,7 +90,7 @@ export function reduceHarnessEvent(previous: MessageItem[], event: HarnessEvent,
     case "approval/decided": {
       if (!params.approval) return previous;
       const executionState = toolExecutionState(params.executionState);
-      item = { ...item, approval: params.approval,
+      item = { ...item, approval: toApproval(params.approval),
         ...(item.toolUse && executionState ? { toolUse: { ...item.toolUse, executionState,
           // 审批通过后重新开始执行计时；等待审批的时长不计入工具耗时。
           ...(executionState === "approved" && at !== undefined ? { startedAt: at, waitingSince: undefined } : {}) } } : {}) };
@@ -131,7 +131,7 @@ export function reduceHarnessEvent(previous: MessageItem[], event: HarnessEvent,
       if (durationMs !== undefined) toolUse.durationMs = durationMs; else delete toolUse.durationMs;
       // 内核耗时缺失时用本机时钟回退；没有开始记录（如刷新后接入在途调用）则不显示耗时。
       if (at !== undefined && item.toolUse?.startedAt !== undefined) toolUse.endedAt = at; else delete toolUse.endedAt;
-      item = { ...item, toolUse, ...(params.approval ? { approval: params.approval } : {}) };
+      item = { ...item, toolUse, ...(params.approval ? { approval: toApproval(params.approval) } : {}) };
       if (params.result) item = { ...item, toolUse: { ...item.toolUse!, resultRef: undefined, output: JSON.stringify(params.result, null, 2) } };
       else if (params.resultRef) item = { ...item, toolUse: { ...item.toolUse!, resultRef: params.resultRef, output: undefined } };
       else if (params.resultOmitted) item = { ...item, toolUse: { ...item.toolUse!, resultRef: undefined, output: "结果较大，实时详情已省略；完整结果已保存到会话历史。" } };
