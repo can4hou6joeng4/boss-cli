@@ -22,8 +22,8 @@ export function NotificationsDialog({ folders, preview = false, refreshToken, on
   onSelect: (session: SessionItem) => void;
   /** 打开会话并定位到审批项；缺省时只打开会话。 */
   onOpenMessage?: (session: SessionItem, itemId: string) => void;
-  /** 成功读取后回报数量，供侧栏徽标同步；失败不调用。 */
-  onLoaded?: (count: number) => void;
+  /** 成功读取后回报数量与截断标记，供侧栏徽标同步；失败不调用。 */
+  onLoaded?: (count: number, truncated: boolean) => void;
   onClose: () => void;
 }) {
   const [state, setState] = useState<PendingState>({ status: "loading" });
@@ -39,7 +39,7 @@ export function NotificationsDialog({ folders, preview = false, refreshToken, on
       inFlight = true;
       if (!silent) setState({ status: "loading" });
       void listPendingApprovals(100).then(
-        result => { if (cancelled) return; setState({ status: "ready", approvals: result.approvals, truncated: result.truncated, now: Date.now() }); loaded.current?.(result.approvals.length); },
+        result => { if (cancelled) return; setState({ status: "ready", approvals: result.approvals, truncated: result.truncated, now: Date.now() }); loaded.current?.(result.approvals.length, result.truncated); },
         cause => {
           if (cancelled) return;
           // 后台刷新失败保留已有列表；首次读取失败才展示错误与重试。

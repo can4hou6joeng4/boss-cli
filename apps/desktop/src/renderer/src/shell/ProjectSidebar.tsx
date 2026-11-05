@@ -1,5 +1,5 @@
 import { useEffect, useState, type MouseEvent } from "react";
-import { approvalBadgeText } from "../data/pendingApprovals";
+import { approvalBadgeLabel, approvalBadgeText } from "../data/pendingApprovals";
 import { IconNewChat, IconSearch, IconFolder, IconChevronDown, IconChevronRight, IconMore, IconNotification, IconPlus, IconSettings, IconHistory, IconCopy, IconEdit, IconPin, IconCheck, IconSliders, IconClose, IconLock, IconTrash, IconArchive } from "../components/Icons";
 import { Popover } from "../components/Popover";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
@@ -16,7 +16,7 @@ interface Props {
   preferences: SidebarPreferences; onPreferencesChange: (value: SidebarPreferences) => void; localGroupIds: string[];
   onSelectSession: (session: SessionItem) => void; onNewTask: () => void; onSearch: () => void;
   onNewTaskInProject: (folder: ProjectFolder) => void;
-  onOpenSettings: () => void; onRecents: () => void; onNewProject: () => void; onNotifications: () => void; /** 跨会话待审批数量，0 或未知时不显示徽标。 */ pendingApprovals?: number;
+  onOpenSettings: () => void; onRecents: () => void; onNewProject: () => void; onNotifications: () => void; /** 跨会话待审批数量，0 或未知时不显示徽标。 */ pendingApprovals?: number; /** 数量只是已返回条数、内核还有更早项未返回。 */ pendingApprovalsTruncated?: boolean;
   onRename: (session: SessionItem) => void; onPin: (id: string) => void; onHide: (id: string) => void;
   /** 打开删除确认；真正的删除与结果提示由外层负责。 */
   onDelete: (session: SessionItem) => void;
@@ -130,6 +130,7 @@ export function ProjectSidebar(props: Props) {
       {!isCollapsed && <div className="sidebar-session-list">{sort(sessions).map(session => sessionRow(session, folder.id + "-"))}{!sessions.length && <span className="empty-folder-note">暂无聊天</span>}</div>}
     </div>;
   };
+  const approvalLabel = approvalBadgeLabel(props.pendingApprovals ?? 0, props.pendingApprovalsTruncated === true);
   return <aside className={"project-sidebar" + (props.isOpen ? "" : " is-collapsed")} aria-label="项目与聊天" aria-hidden={!props.isOpen} onContextMenu={event => rightClick("preferences", event)}>
     <div className="project-sidebar-header">
       <div className="popover-anchor">
@@ -143,7 +144,7 @@ export function ProjectSidebar(props: Props) {
         </Popover>
       </div>
       <div className="sidebar-header-actions">
-        <button className={"titlebar-btn" + (props.pendingApprovals ? " has-badge" : "")} onClick={props.onNotifications} aria-label={props.pendingApprovals ? `通知（${props.pendingApprovals} 项待审批）` : "通知"} title={props.pendingApprovals ? `通知 · ${props.pendingApprovals} 项待审批` : "通知"}><IconNotification size={16} />{props.pendingApprovals && <span className="notification-badge" aria-hidden="true">{approvalBadgeText(props.pendingApprovals)}</span>}</button>
+        <button className={"titlebar-btn" + (props.pendingApprovals ? " has-badge" : "")} onClick={props.onNotifications} aria-label={approvalLabel ? `通知（${approvalLabel}）` : "通知"} title={approvalLabel ? `通知 · ${approvalLabel}` : "通知"}><IconNotification size={16} />{props.pendingApprovals && <span className="notification-badge" aria-hidden="true">{approvalBadgeText(props.pendingApprovals)}</span>}</button>
         <button className="titlebar-btn" onClick={props.onSearch} aria-label="搜索聊天" title="搜索聊天 · ⌘K"><IconSearch size={16} /></button>
       </div>
     </div>
