@@ -101,7 +101,7 @@ export function AppShell(props: AppShellProps) {
       if (inFlight || document.visibilityState === "hidden") return;
       inFlight = true;
       void listPendingApprovals(100).then(
-        approvals => { if (!cancelled) setPendingApprovals(approvals.length); },
+        result => { if (!cancelled) setPendingApprovals(result.approvals.length); },
         () => {},
       ).finally(() => { inFlight = false; });
     };

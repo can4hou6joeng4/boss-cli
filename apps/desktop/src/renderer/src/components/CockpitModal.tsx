@@ -49,6 +49,8 @@ interface CockpitSnapshot {
   config?: CockpitConfig;
   resources?: RuntimeResourcesReadResponse;
   approvals?: PendingApproval[];
+  /** 内核是否还有更早的待审批未返回；旧内核缺省。 */
+  approvalsTruncated?: boolean;
   tools?: CockpitTool[];
   models?: CockpitModel[];
   queue?: CockpitQueue;
@@ -173,8 +175,10 @@ export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose, har
     else failures.config = harnessErrorText(configResult.reason);
     if (resourcesResult.status === "fulfilled") next.resources = resourcesResult.value;
     else failures.resources = harnessErrorText(resourcesResult.reason);
-    if (approvalsResult.status === "fulfilled") next.approvals = approvalsResult.value;
-    else failures.approvals = harnessErrorText(approvalsResult.reason);
+    if (approvalsResult.status === "fulfilled") {
+      next.approvals = approvalsResult.value.approvals;
+      next.approvalsTruncated = approvalsResult.value.truncated;
+    } else failures.approvals = harnessErrorText(approvalsResult.reason);
     if (toolsResult.status === "fulfilled") next.tools = toolsResult.value;
     else failures.tools = harnessErrorText(toolsResult.reason);
     if (modelsResult.status === "fulfilled") next.models = modelsResult.value;
@@ -213,9 +217,11 @@ export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose, har
 
   if (!isOpen) return null;
 
-  const { config, resources, approvals, tools, models, queue } = snapshot;
+  const { config, resources, approvals, approvalsTruncated: approvalsTruncatedRaw, tools, models, queue } = snapshot;
   const configKnown = !errors.config && config !== undefined;
   const approvalsKnown = !errors.approvals && approvals !== undefined;
+  // 旧内核不返回截断字段，映射层按未截断处理；不再用条数猜测，恰好达到上限也不会误报。
+  const approvalsTruncated = approvalsKnown && approvalsTruncatedRaw === true;
   const toolsKnown = !errors.tools && tools !== undefined;
   const modelsKnown = !errors.models && models !== undefined;
   const queueKnown = !errors.queue && queue !== undefined;
@@ -281,7 +287,7 @@ export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose, har
               <h3>待办与目录</h3>
               <div className="cockpit-facts">
                 <Fact label="待审批" value={errors.approvals ? "读取失败" : approvals
-                  ? `${NUMBER.format(approvals.length)}${approvals.length >= APPROVAL_LIMIT ? "（已达显示上限）" : ""}`
+                  ? `${NUMBER.format(approvals.length)}${approvalsTruncated ? "（仍有更早项未显示）" : ""}`
                   : "未提供"} />
                 <Fact label="工具" value={errors.tools ? "读取失败" : tools ? `${NUMBER.format(tools.length)}（需审批 ${numberText(approvalRequiredCount)}）` : "未提供"} />
                 <Fact label="模型线路" value={errors.models ? "读取失败" : models ? `${NUMBER.format(models.length)}（当前配置 ${numberText(configuredModelCount)}）` : "未提供"} />
@@ -344,8 +350,8 @@ export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose, har
                 ? <p className="cockpit-empty">当前没有待审批的调用。写操作仍会逐次请求批准。</p>
                 : <>
                   <div className="cockpit-list">{approvals.map(approval => <ApprovalRow key={approval.approvalId} approval={approval} />)}</div>
-                  {approvals.length >= APPROVAL_LIMIT
-                    ? <p className="cockpit-empty">审批清单最多显示 {APPROVAL_LIMIT} 条；其余请求仍以内核待审批状态为准。</p>
+                  {approvalsTruncated
+                    ? <p className="cockpit-empty">审批清单最多显示 {APPROVAL_LIMIT} 条，仍有更早的待审批未返回；其余请求仍以内核待审批状态为准。</p>
                     : null}
                 </>
             ) : !errors.approvals ? <p className="cockpit-empty">尚未读取审批列表。</p> : null}

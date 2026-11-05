@@ -655,7 +655,8 @@ export interface PendingApproval {
   deadline: number;
   paramsDigest: string;
 }
-export interface ApprovalListResponse { approvals: PendingApproval[] }
+/** `truncated` 为真表示内核还有更早的待审批没有放入本次响应；旧内核不返回。 */
+export interface ApprovalListResponse { approvals: PendingApproval[]; truncated?: boolean }
 /** 桌面进程内 IPC：点击审批系统通知后要定位的会话与条目；不经内核。 */
 export interface ApprovalFocusTarget { threadId: string; itemId: string }
 /** 桌面进程内 IPC：测试系统通知的结果；`sent` 表示已请求系统展示。 */
