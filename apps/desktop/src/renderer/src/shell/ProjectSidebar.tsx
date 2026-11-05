@@ -16,7 +16,7 @@ interface Props {
   preferences: SidebarPreferences; onPreferencesChange: (value: SidebarPreferences) => void; localGroupIds: string[];
   onSelectSession: (session: SessionItem) => void; onNewTask: () => void; onSearch: () => void;
   onNewTaskInProject: (folder: ProjectFolder) => void;
-  onOpenSettings: () => void; onRecents: () => void; onNewProject: () => void; onNotifications: () => void; /** 跨会话待审批数量，0 或未知时不显示徽标。 */ pendingApprovals?: number; /** 数量只是已返回条数、内核还有更早项未返回。 */ pendingApprovalsTruncated?: boolean;
+  onOpenSettings: () => void; onRecents: () => void; onNewProject: () => void; onNotifications: () => void; /** 跨会话待审批数量，0 或未知时不显示徽标。 */ pendingApprovals?: number; /** 数量只是已返回条数、内核还有更早项未返回。 */ pendingApprovalsTruncated?: boolean; /** 每个会话的待审批数量；缺失或 0 时不显示会话行徽标。 */ approvalCounts?: Record<string, number>;
   onRename: (session: SessionItem) => void; onPin: (id: string) => void; onHide: (id: string) => void;
   /** 打开删除确认；真正的删除与结果提示由外层负责。 */
   onDelete: (session: SessionItem) => void;
@@ -71,12 +71,15 @@ export function ProjectSidebar(props: Props) {
     const failureTitle = failed ? `上次回合未完成${session.lastTurnErrorCode ? `（${session.lastTurnErrorCode}）` : ""}；打开会话查看记录` : "";
     const queueActive = session.queueActiveItems ?? 0;
     const queuePaused = session.queueCounts?.paused ?? 0;
+    const approvalCount = props.approvalCounts?.[session.id] ?? 0;
+    const approvalBadge = approvalBadgeText(approvalCount);
+    const approvalTitle = approvalBadgeLabel(approvalCount, props.pendingApprovalsTruncated === true);
     const queueTitle = session.queueCounts
       ? `待处理 ${queueActive} 条：排队 ${session.queueCounts.queued} · 投递中 ${session.queueCounts.delivering} · 暂停 ${queuePaused}`
       : `有 ${queueActive} 条尚未形成回合的排队、投递中或暂停消息`;
     const projectId = props.folders.find(folder => folder.sessions.some(item => item.id === session.id))?.id;
     return <div className={"sidebar-session popover-anchor" + (selected ? " selected" : "") + (isHidden ? " is-hidden" : "")} key={session.id} onContextMenu={event => rightClick(key, event)}>
-      <button className="session-select" onClick={() => props.onSelectSession(session)} title={session.status === "interrupted" ? `${session.title} · 上回合中断，等待预检` : failed ? `${session.title} · ${failureTitle}` : session.title} aria-current={selected ? "page" : undefined}><span className={"session-state" + (session.status === "running" ? " running" : session.status === "interrupted" ? " interrupted" : failed ? " failed" : "")} /><span className="session-title">{session.title}</span>{isHidden && <span className="session-hidden-badge" title="已在侧栏隐藏；可在聊天选项中取消隐藏">已隐藏</span>}{session.archived === true && <span className="session-archived-badge" title="已归档；恢复后才能继续对话">已归档</span>}{queueActive > 0 && <span className={"session-queue-badge" + (queuePaused > 0 ? " has-paused" : "")} title={queueTitle}>{queuePaused > 0 ? `暂停 ${queuePaused}` : `队列 ${queueActive}`}</span>}{failed && <span className="session-failure-badge" title={failureTitle}>上次异常</span>}</button>
+      <button className="session-select" onClick={() => props.onSelectSession(session)} title={session.status === "interrupted" ? `${session.title} · 上回合中断，等待预检` : failed ? `${session.title} · ${failureTitle}` : session.title} aria-current={selected ? "page" : undefined}><span className={"session-state" + (session.status === "running" ? " running" : session.status === "interrupted" ? " interrupted" : failed ? " failed" : "")} /><span className="session-title">{session.title}</span>{isHidden && <span className="session-hidden-badge" title="已在侧栏隐藏；可在聊天选项中取消隐藏">已隐藏</span>}{session.archived === true && <span className="session-archived-badge" title="已归档；恢复后才能继续对话">已归档</span>}{approvalBadge && <span className="session-approval-badge" title={approvalTitle ?? undefined}>待审批 {approvalBadge}</span>}{queueActive > 0 && <span className={"session-queue-badge" + (queuePaused > 0 ? " has-paused" : "")} title={queueTitle}>{queuePaused > 0 ? `暂停 ${queuePaused}` : `队列 ${queueActive}`}</span>}{failed && <span className="session-failure-badge" title={failureTitle}>上次异常</span>}</button>
       <button className="session-overflow titlebar-btn" aria-label={"会话选项：" + session.title} aria-haspopup="menu" aria-expanded={context?.key === key} onClick={() => toggle(key)}><IconMore size={15} /></button>
       <Popover open={context?.key === key} onClose={close} align="right" anchorPoint={context?.key === key ? context.point : undefined} label="聊天选项" className="sidebar-context-menu">
         {view === "main" ? <>

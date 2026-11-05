@@ -137,6 +137,16 @@ export function readApprovalFocus(value: unknown): { threadId: string; itemId: s
   return threadId && itemId ? { threadId, itemId } : null;
 }
 
+/** 按会话汇总待审批数量，供侧栏会话行展示；解析阶段已按 approvalId 去重。 */
+export function countPendingApprovalsByThread(approvals: readonly PendingApproval[]): Record<string, number> {
+  // 用无原型对象承接内核返回的 threadId，避免特殊键名污染原型链。
+  const counts: Record<string, number> = Object.create(null) as Record<string, number>;
+  for (const approval of approvals) {
+    counts[approval.threadId] = (counts[approval.threadId] ?? 0) + 1;
+  }
+  return counts;
+}
+
 export interface PendingApprovalGroup { threadId: string; approvals: PendingApproval[] }
 
 /** 按线程分组并保留首次出现顺序；内核已按线程排序，这里只做稳定聚合。 */
