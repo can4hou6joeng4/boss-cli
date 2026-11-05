@@ -138,6 +138,7 @@
 
 ### 修复
 
+- [Issue #546](https://github.com/can4hou6joeng4/boss-harness/issues/546)：会话用量面板已支持显示「该回合实际注入的技能」，协议 `ThreadUsageTurn.skillIds`、内核 `_turn_skill_ids` 与 `UsageDialog` 的展示分支都已就位，但映射函数 `turnOf` 重建回合对象时没有复制 `skillIds`，该字段被静默丢弃，展示分支成为死代码。现在 `turnOf` 按内核同样的边界保留技能 id：只接受长度 1–200 的字符串，先校验后计数、按 id 去重并最多 10 项；字段缺失或没有合法 id 时省略，前部非法项不会挤掉后续合法 id。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #544](https://github.com/can4hou6joeng4/boss-harness/issues/544)：会话用量映射把摘要任务显式的 `throughTurnId: null` 当成非法值拒绝。协议允许 `string | null`，内核 `usage.py` 对分支摘要固定写入 null，对缺少 checkpoint 元数据的压缩任务也会写入 null；`summaryJobsOf` 对任一任务校验失败即整体抛错并清空已读取的数据，因此只要会话有过带用量的分支摘要，整个用量对话框就只显示「摘要任务用量格式无法识别」，合计、明细与每回合用量全部不可见。现在 `throughTurnId` 复用 `idOrNull`：缺失时省略，null 原样保留，只拒绝空串、超长与非字符串。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #542](https://github.com/can4hou6joeng4/boss-harness/issues/542)：队列面板按显示名去重技能标签，而技能目录不要求名称唯一，两个不同 id 的技能声明同一名称时，后一个会被当成重复项丢弃。队列实际附带的技能数与面板、悬停提示不一致，用户无法确认第二个技能是否生效。`queueSkillLabels` 改为按技能 id 去重：同一 id 重复出现只保留一次，同名不同 id 各自保留；非法项仍先跳过且不占 10 项名额，名称缺失或纯空白时仍回退 id。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #539](https://github.com/can4hou6joeng4/boss-harness/issues/539)：快速提问解析线路时按字段分别取值，旧会话没有 provider、其 model 又与默认线路不同时，会得到「默认 provider + 旧会话 model」的混合线路。内核 `thread/start` 只接受该 provider 的配置基模型，因此这条路径每次都会以 `MODEL_ROUTE_UNAVAILABLE` 失败，提示也无法引导用户处理；主输入框对同类旧会话本有 `legacyRouteMismatch` 保护，快速提问却绕过了它。现在 `resolveQuickAskRoute` 只返回同一来源的精确 `provider`/`model` 对：会话自带 provider 时沿用会话线路；没有 provider 的旧会话整对回退进程默认线路，不再拼接旧模型；空串与纯空白字段按缺失处理并按内核规则去除两端空白；默认线路缺失或线路为 `none` 时仍明确拒绝，不猜目录首项。不新增 RPC，协议与内核仍为 `0.2.0`。
