@@ -9,6 +9,8 @@ export interface HarnessEvent {
     threadId?: string; turnId?: string; itemId?: string; kind?: ThreadItem["kind"];
     text?: string; delta?: string; message?: string; thinking?: string;
     status?: string; toolName?: string; arguments?: Record<string, unknown>;
+    /** 工具事件的执行状态；内核旧版本缺省，渲染层按未知处理。 */
+    executionState?: string;
     resultSummary?: string; error?: { code?: string; message?: string };
     code?: string; recoveryAttempted?: boolean; outputObserved?: boolean;
     errorInfo?: ProviderFailureInfo;
@@ -29,6 +31,33 @@ export interface HarnessEvent {
     attempt?: number; maxAttempts?: number; delayMs?: number; errorMessage?: string;
     success?: boolean; reason?: string; finalError?: string;
   };
+}
+
+const TOOL_STATUSES = new Set<NonNullable<ThreadItem["status"]>>(["running", "completed", "failed"]);
+const TOOL_EXECUTION_STATES = new Set<NonNullable<ThreadItem["executionState"]>>([
+  "queued", "pending_approval", "approved", "not_approved", "executing",
+  "completed", "failed", "not_executed", "outcome_unknown",
+]);
+
+/** 校验事件里的工具状态；未知值按缺失处理，不把内核新增状态当成已知。 */
+function toolStatus(value: unknown): ThreadItem["status"] {
+  return typeof value === "string" && TOOL_STATUSES.has(value as NonNullable<ThreadItem["status"]>)
+    ? value as NonNullable<ThreadItem["status"]> : undefined;
+}
+
+function toolExecutionState(value: unknown): ThreadItem["executionState"] {
+  return typeof value === "string" && TOOL_EXECUTION_STATES.has(value as NonNullable<ThreadItem["executionState"]>)
+    ? value as NonNullable<ThreadItem["executionState"]> : undefined;
+}
+
+/** 启动卡正文与徽标保持一致：等待审批的工具不能显示成正在执行。 */
+function runningToolText(state: ThreadItem["executionState"]): string {
+  switch (state) {
+    case "pending_approval": return "等待审批";
+    case "queued": return "排队中";
+    case "not_approved": return "未获批准";
+    default: return "正在执行";
+  }
 }
 
 /** 同一 itemId 的增量、工具状态与审批更新合并到同一条卡片。 */
@@ -54,20 +83,38 @@ export function reduceHarnessEvent(previous: MessageItem[], event: HarnessEvent)
       item = { ...item, ...message };
       break;
     }
-    case "approval/decided":
+    case "approval/decided": {
       if (!params.approval) return previous;
-      item = { ...item, approval: params.approval };
+      const executionState = toolExecutionState(params.executionState);
+      item = { ...item, approval: params.approval,
+        ...(item.toolUse && executionState ? { toolUse: { ...item.toolUse, executionState } } : {}) };
       break;
-    case "toolCall/started":
-      item = { ...item, toolUse: { name: params.toolName ?? "tool", input: JSON.stringify(params.arguments ?? {}, null, 2), result: "正在执行" } };
+    }
+    case "toolCall/started": {
+      const executionState = toolExecutionState(params.executionState);
+      item = { ...item, toolUse: { name: params.toolName ?? "tool", input: JSON.stringify(params.arguments ?? {}, null, 2),
+        result: runningToolText(executionState), ...(executionState ? { executionState } : {}) } };
       break;
-    case "toolCall/completed":
-      item = { ...item, toolUse: { ...item.toolUse, source: params.source ?? item.toolUse?.source, name: params.toolName ?? item.toolUse?.name ?? "tool", input: item.toolUse?.input ?? "{}", result: params.resultSummary ?? params.error?.message ?? params.status ?? "已结束" },
-        ...(params.approval ? { approval: params.approval } : {}) };
+    }
+    case "toolCall/completed": {
+      const status = toolStatus(params.status);
+      const executionState = toolExecutionState(params.executionState);
+      const errorCode = typeof params.error?.code === "string" && params.error.code ? params.error.code : undefined;
+      const toolUse: NonNullable<MessageItem["toolUse"]> = { ...item.toolUse,
+        source: params.source ?? item.toolUse?.source,
+        name: params.toolName ?? item.toolUse?.name ?? "tool",
+        input: item.toolUse?.input ?? "{}",
+        result: params.resultSummary ?? params.error?.message ?? params.status ?? "已结束" };
+      // 完成事件是终态：内核没带的状态必须清掉，否则新内核的启动态（如等待审批）会残留到结束。
+      if (status) toolUse.status = status; else delete toolUse.status;
+      if (executionState) toolUse.executionState = executionState; else delete toolUse.executionState;
+      if (errorCode) toolUse.errorCode = errorCode; else delete toolUse.errorCode;
+      item = { ...item, toolUse, ...(params.approval ? { approval: params.approval } : {}) };
       if (params.result) item = { ...item, toolUse: { ...item.toolUse!, resultRef: undefined, output: JSON.stringify(params.result, null, 2) } };
       else if (params.resultRef) item = { ...item, toolUse: { ...item.toolUse!, resultRef: params.resultRef, output: undefined } };
       else if (params.resultOmitted) item = { ...item, toolUse: { ...item.toolUse!, resultRef: undefined, output: "结果较大，实时详情已省略；完整结果已保存到会话历史。" } };
       break;
+    }
     case "approval/requested": {
       if (!params.approvalId) return previous;
       const deadline = approvalDeadlineMs(params.deadline);

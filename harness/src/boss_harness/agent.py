@@ -351,7 +351,8 @@ class TurnRunner:
         )
         self.notify(
             N_TOOL_CALL_STARTED,
-            {"threadId": thread_id, "itemId": entry.id, "toolName": name, "arguments": arguments},
+            {"threadId": thread_id, "itemId": entry.id, "toolName": name, "arguments": arguments,
+             "executionState": payload["executionState"]},
         )
         return entry
 
@@ -362,7 +363,8 @@ class TurnRunner:
             payload["approval"] = dict(approval)
         self.sessions.append(thread_id, Entry(type="item", payload=payload))
         if approval is not None and phase in {"approved", "not_approved", "not_executed"}:
-            self.notify("approval/decided", {"threadId": thread_id, "itemId": entry.id, "approval": dict(approval)})
+            self.notify("approval/decided", {"threadId": thread_id, "itemId": entry.id,
+                                              "approval": dict(approval), "executionState": phase})
 
     def finish_tool_call(
         self,
@@ -423,6 +425,7 @@ class TurnRunner:
                     "itemId": entry.id,
                     "toolName": name,
                     "status": status,
+                    "executionState": payload["executionState"],
                     "ok": result.ok,
                     "error": project_error(result.error),
                     "resultSummary": payload["resultSummary"],
