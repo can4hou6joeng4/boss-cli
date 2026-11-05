@@ -21,6 +21,7 @@ import { appendQuote, createComposerDraft, withDraftText, type ComposerDraft, ty
 import { isCommandChord } from "../data/shortcuts";
 import { useClipboardCopy } from "../data/clipboardCopy";
 import { toolOutcomeBadge } from "../data/toolOutcome";
+import { toolQueriedAt } from "../data/toolSource";
 import { findFoldedMatches, findMessageMatches } from "../data/messageSearch";
 import { retryTextForMessage } from "../data/messageRetry";
 import { messageCopyText } from "../data/messageCopy";
@@ -370,6 +371,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
           {leadingSummaries.map(summary => <BranchSummaryMarker key={summary.entryId} summary={summary} threadId={threadId} canRead={sessionBranches?.summaryRead === true} />)}
           {messages.map((item, messageIndex) => <React.Fragment key={item.id}>{(() => {
             const toolBadge = item.toolUse ? toolOutcomeBadge(item.toolUse.executionState, item.toolUse.status, item.toolUse.errorCode) : null;
+            const sourceQueriedAt = item.toolUse?.source ? toolQueriedAt(item.toolUse.source.queriedAt) : null;
             const findMatch = findOpen && findMatchSet.has(item.id);
             const copyText = messageCopyText(item);
             if (item.role === "user") {
@@ -472,7 +474,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                       {toolBadge && <span className={`tool-outcome-badge ${toolBadge.tone}`}>{toolBadge.label}</span>}
                     </summary>
                     <div className="tool-code-preview">{item.toolUse.input}</div>
-                    {item.toolUse.source && <div className="tool-source-reference"><span>来源编号</span><code>{item.toolUse.source.ref}</code><span>查询于 {new Date(item.toolUse.source.queriedAt).toLocaleString()}</span></div>}
+                    {item.toolUse.source && <div className="tool-source-reference"><span>来源编号</span><code>{item.toolUse.source.ref}</code>{sourceQueriedAt && <span>查询于 {sourceQueriedAt.toLocaleString()}</span>}</div>}
                     {item.toolUse.errorCode && <div className="tool-outcome-meta"><span>错误码</span><code>{item.toolUse.errorCode}</code></div>}
                     {item.toolUse.recoveryAction && <div className="tool-outcome-meta"><span>恢复建议</span><span>{item.toolUse.recoveryAction}</span></div>}
                     {item.toolUse.result && (
