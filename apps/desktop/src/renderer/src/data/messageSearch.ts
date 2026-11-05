@@ -2,30 +2,47 @@ import type { ThreadSearchMatch } from "@boss-harness/protocol";
 import type { MessageItem } from "./mockData";
 import { searchText } from "./searchText";
 
-/** 在当前聊天中查找时参与匹配的可见文本；工具结果与思考过程默认不展开。 */
-function messageText(item: MessageItem): string {
-  return [item.content ?? "", ...(item.paragraphs ?? []), ...(item.bullets ?? [])].join("\n");
+/** 正文实际渲染的文本：用户消息渲染 `content`，智能体消息渲染 `paragraphs`。 */
+function visibleBodyText(item: MessageItem): string {
+  return item.role === "user" ? item.content ?? "" : (item.paragraphs ?? []).join("\n\n");
 }
 
-function messageDetailText(item: MessageItem): string {
-  return [
-    item.thinkingContent ?? "",
-    item.toolUse?.input ?? "",
-    item.toolUse?.result ?? "",
-    item.toolUse?.output ?? "",
-  ].join("\n");
+/** 折叠块中会渲染的详情文本；`resultRef` 存在时输出改为按需读取，此时为 `undefined`。 */
+export interface VisibleDetailText {
+  thinking?: string;
+  input?: string;
+  result?: string;
+  output?: string;
+}
+
+/**
+ * 折叠块里实际渲染的详情文本，默认收起、不进入正文 DOM。
+ * 没有思考时长不渲染思考块；`resultRef` 存在时结构化输出不渲染，原始输出不能参与匹配。
+ */
+function visibleDetailText(item: MessageItem): VisibleDetailText {
+  return {
+    thinking: item.thinkingTime ? item.thinkingContent ?? "" : "",
+    input: item.toolUse?.input ?? "",
+    result: item.toolUse?.result ?? "",
+    output: item.toolUse?.resultRef ? "" : item.toolUse?.output ?? "",
+  };
 }
 
 /**
  * 返回匹配消息的 id，按消息顺序排列。
  * 查询为空（或只有空白）时不选中任何消息；匹配使用 NFKC 归一化且不区分大小写。
- * `includeDetails` 为真时额外匹配思考内容与工具调用的输入、结果、输出。
+ * 只匹配实际渲染的文本：正文按角色取字段，`includeDetails` 为真时额外匹配折叠块中的思考、
+ * 工具输入 / 结果 / 结构化输出。各字段独立匹配，不把记录里存在但界面不渲染的字段计入，
+ * 避免计数命中却既无高亮也无折叠块可展开。
  */
 export function findMessageMatches(messages: MessageItem[], query: string, options: { includeDetails?: boolean } = {}): string[] {
   const needle = searchText(query).trim();
   if (!needle) return [];
+  const hit = (text: string | undefined) =>
+    typeof text === "string" && text.length > 0 && searchText(text).includes(needle);
   return messages
-    .filter(item => searchText(messageText(item) + (options.includeDetails ? "\n" + messageDetailText(item) : "")).includes(needle))
+    .filter(item => hit(visibleBodyText(item))
+      || (options.includeDetails === true && Object.values(visibleDetailText(item)).some(hit)))
     .map(item => item.id);
 }
 
@@ -42,8 +59,8 @@ export interface FoldedMessageMatch {
 
 /**
  * 找出「包含详情」查找中命中位于折叠块内的消息，按消息顺序排列。
- * 只统计实际会渲染的折叠块：没有思考时长不渲染思考块，`resultRef` 存在时输出改为按需读取、不进入正文 DOM；
- * 归一化与 `findMessageMatches` 一致，保证展开的块与计数来自同一套匹配语义。
+ * 与 `findMessageMatches` 共用 `visibleDetailText`：只统计实际会渲染的折叠块，
+ * 没有思考时长不渲染思考块，`resultRef` 存在时输出按需读取、不展开内层。
  */
 export function findFoldedMatches(messages: MessageItem[], query: string): FoldedMessageMatch[] {
   const needle = searchText(query).trim();
@@ -52,11 +69,10 @@ export function findFoldedMatches(messages: MessageItem[], query: string): Folde
     typeof text === "string" && text.length > 0 && searchText(text).includes(needle);
   const matches: FoldedMessageMatch[] = [];
   for (const item of messages) {
-    // `resultRef` 存在时结构化输出改为按需读取，原始 output 不进入正文 DOM。
-    const outputText = item.toolUse?.resultRef ? undefined : item.toolUse?.output;
-    const thinking = Boolean(item.thinkingTime) && hit(item.thinkingContent);
-    const tool = Boolean(item.toolUse) && (hit(item.toolUse?.input) || hit(item.toolUse?.result) || hit(outputText));
-    const output = hit(outputText);
+    const detail = visibleDetailText(item);
+    const thinking = hit(detail.thinking);
+    const tool = Boolean(item.toolUse) && (hit(detail.input) || hit(detail.result) || hit(detail.output));
+    const output = hit(detail.output);
     if (thinking || tool) matches.push({ id: item.id, thinking, tool, output });
   }
   return matches;
