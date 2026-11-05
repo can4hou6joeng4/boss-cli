@@ -76,6 +76,7 @@ html:not(.dark) .rail-button.selected { background: #0000000c; }
 .session-failure-badge { flex: 0 0 auto; margin-left: 4px; padding: 0 4px; border: 1px solid color-mix(in srgb, var(--accent-error) 40%, transparent); border-radius: 4px; color: var(--accent-error); font-size: 10px; line-height: 15px; }
 .session-queue-badge { flex: 0 0 auto; margin-left: 4px; padding: 0 4px; border: 1px solid color-mix(in srgb, var(--accent-cyan) 40%, transparent); border-radius: 4px; color: var(--accent-cyan); font-size: 10px; line-height: 15px; }
 .session-queue-badge.has-paused { border-color: color-mix(in srgb, var(--accent-warning) 45%, transparent); color: var(--accent-warning); }
+.session-approval-badge { flex: 0 0 auto; margin-left: 4px; padding: 0 4px; border: 1px solid color-mix(in srgb, var(--accent-warning) 45%, transparent); border-radius: 4px; color: var(--accent-warning); font-size: 10px; line-height: 15px; }
 .sidebar-session.is-hidden .session-title { color: var(--text-faint); }
 .sidebar-session.selected .session-select { color: var(--text-main); }
 .session-state { flex: 0 0 4px; width: 4px; height: 4px; border-radius: 50%; background: var(--text-faint); opacity: .5; }
