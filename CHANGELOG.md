@@ -138,6 +138,7 @@
 
 ### 修复
 
+- [Issue #539](https://github.com/can4hou6joeng4/boss-harness/issues/539)：快速提问解析线路时按字段分别取值，旧会话没有 provider、其 model 又与默认线路不同时，会得到「默认 provider + 旧会话 model」的混合线路。内核 `thread/start` 只接受该 provider 的配置基模型，因此这条路径每次都会以 `MODEL_ROUTE_UNAVAILABLE` 失败，提示也无法引导用户处理；主输入框对同类旧会话本有 `legacyRouteMismatch` 保护，快速提问却绕过了它。现在 `resolveQuickAskRoute` 只返回同一来源的精确 `provider`/`model` 对：会话自带 provider 时沿用会话线路；没有 provider 的旧会话整对回退进程默认线路，不再拼接旧模型；空串与纯空白字段按缺失处理并按内核规则去除两端空白；默认线路缺失或线路为 `none` 时仍明确拒绝，不猜目录首项。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #537](https://github.com/can4hou6joeng4/boss-harness/issues/537)：删除聊天遇到未知原因码、传输错误或响应形状不符时，`deleteThreadFailure` 一律返回 `failed` 并断言「聊天未删除」，但内核可能已经完成或部分完成删除。新增 `unknown` 状态：只有 `THREAD_BUSY` 才明确判定聊天仍存在；未知结果统一提示「删除结果尚未确认，请刷新会话列表核对；若该聊天已消失，无需重试」，调用方保留列表但不再给出确定性结论。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #535](https://github.com/can4hou6joeng4/boss-harness/issues/535)：导出对话框进入保存后仍可修改范围、格式与「包含工具结果明文」，也可通过 Esc、遮罩或关闭按钮关闭；请求参数在点击时已固定，界面却可能显示相反的选择，成功提示也不说明实际是否包含明文。保存期间现锁定所有导出选项与关闭入口（含标题栏、遮罩与 Esc），`ModalSurface` 新增可选 `closeDisabled`，其他调用方行为不变；成功提示按主进程返回的 `toolResults` 明确写出「本次包含工具结果明文（已确认）」或「本次未包含工具结果明文」；保存完成或失败后修改任一选项会清除旧状态提示，避免旧结果描述新选择。不新增 RPC，协议与内核仍为 `0.2.0`。
 - [Issue #533](https://github.com/can4hou6joeng4/boss-harness/issues/533)：队列项与回合摘要的技能 id 列表在渲染层先取前 10 个原始条目、再做类型与长度校验，前部的 `null`、空串、超长或非字符串条目会占满名额，把后面的合法技能全部挤掉；队列面板还会把原始 `skillIds.length` 显示成「技能 N 项」，把畸形记录显示成真实技能数量。`queueSkillLabels` 与 `collectTurnSkillIds` 改为先校验、后计数：跳过非法项，按出现顺序最多保留 10 个合法且去重的技能；目录名称为空或缺失时仍回退 id，存在合法 id 时展示与原来一致。队列列表与完整输入模态在没有合法技能 id 时不再渲染技能行，也不再用原始 id 列表作悬停说明。不新增 RPC，协议与内核仍为 `0.2.0`。
