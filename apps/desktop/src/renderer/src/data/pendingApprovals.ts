@@ -109,6 +109,13 @@ export function approvalBadgeText(count: number): string | null {
   return count > 9 ? "9+" : String(Math.floor(count));
 }
 
+/** 铃铛的无障碍 / 悬停文案；截断时数量只是已返回条数，必须标成「至少」，不能断言总数。 */
+export function approvalBadgeLabel(count: number, truncated = false): string | null {
+  if (typeof count !== "number" || !Number.isFinite(count) || count <= 0) return null;
+  const visible = Math.floor(count);
+  return truncated ? `至少 ${visible} 项待审批` : `${visible} 项待审批`;
+}
+
 /** 只有审批请求与裁决会改变待审批数量；其它通知不触发重新读取。 */
 export function isApprovalCountEvent(method: unknown): boolean {
   return method === "approval/requested" || method === "approval/decided";
