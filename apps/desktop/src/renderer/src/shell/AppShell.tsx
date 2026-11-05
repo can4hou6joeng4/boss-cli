@@ -23,6 +23,7 @@ import { booleanPreference, projectFolders, stringList, stringRecord } from "../
 import { type ModelDescriptor, type SkillDescriptor, type ToolDescriptor } from "@boss-harness/protocol";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
 import type { CheckQueueSubmission, ComposerQueue } from "../data/composerDraft";
+import { exportMarkdown } from "../data/exportMarkdown";
 import type { QueueItem } from "@boss-harness/protocol";
 import type { QueueRefreshResult } from "../data/queueRefresh";
 import { harnessErrorText, listPendingApprovals, listSkills, listTools, type SkillCatalogState, type ToolCatalogState, type ApprovalDelivery, type ApprovalOutcome } from "../data/harnessBridge";
@@ -346,7 +347,7 @@ export function AppShell(props: AppShellProps) {
   });
   const exportChat = () => {
     if (!hasConversation) return;
-    const markdown = "# " + title + "\n\n" + props.messages.map(message => "## " + (message.role === "user" ? "你" : "BOSS Harness") + "\n\n" + [message.content, ...(message.paragraphs ?? []), ...(message.bullets ?? []).map(line => "- " + line), message.toolUse ? `工具：${message.toolUse.name}\n\n${message.toolUse.result ?? ""}` : ""].filter(Boolean).join("\n\n")).join("\n\n");
+    const markdown = exportMarkdown(title, props.messages);
     const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown;charset=utf-8" }));
     const link = document.createElement("a"); link.href = url; link.download = title.replace(/[\\/:*?"<>|]/g, "_") + ".md"; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
