@@ -1,6 +1,7 @@
 import type {
   AutoCompactionPolicy, ThreadUsageBucket, ThreadUsageSummaryJob, ThreadUsageTurn,
 } from "@boss-harness/protocol";
+import { safeSlice } from "@boss-harness/shared";
 
 const COUNT_KEYS = ["requests", "verifiedRequests", "unverifiedRequests", "promptTokens",
   "uncachedInputTokens", "outputTokens"] as const;
@@ -18,7 +19,7 @@ export function bucketOf(value: unknown): ThreadUsageBucket | null {
   const unverifiedReasons: Record<string, number> = {};
   for (const [reason, amount] of Object.entries(reasons as Record<string, unknown>).slice(0, 20)) {
     if (!isCount(amount)) return null;
-    unverifiedReasons[reason.slice(0, 40)] = amount;
+    unverifiedReasons[safeSlice(reason, 40)] = amount;
   }
   // 新内核才返回 unreportedRequests（未上报 usage，unverifiedRequests 的子集）；旧内核缺省视为不区分。
   const unreported = raw.unreportedRequests;
@@ -32,7 +33,7 @@ export function bucketOf(value: unknown): ThreadUsageBucket | null {
 }
 
 const strings = (value: unknown, limit: number): string[] | null => Array.isArray(value) && value.every(item => typeof item === "string")
-  ? (value as string[]).slice(0, limit).map(item => item.slice(0, 120)) : null;
+  ? (value as string[]).slice(0, limit).map(item => safeSlice(item, 120)) : null;
 
 const SKILL_LIMIT = 10;
 const SKILL_ID_LIMIT = 200;
