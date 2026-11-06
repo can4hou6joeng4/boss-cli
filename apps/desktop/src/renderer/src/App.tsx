@@ -440,13 +440,20 @@ export function App(): JSX.Element {
       return false;
     }
   }, []);
-  /** 重命名会话：写入内核标题并持久化；失败保留弹窗与输入，原因由外层提示。 */
-  const handleRenameSession = useCallback(async (session: SessionItem, name: string): Promise<boolean> => {
+  /**
+   * 重命名会话：写入内核标题并持久化；失败保留弹窗与输入，原因由外层提示。
+   * 旧别名迁移使用 `silent`：失败时保留本机别名，不打断用户，下次启动再试。
+   */
+  const handleRenameSession = useCallback(async (
+    session: SessionItem,
+    name: string,
+    options?: { silent?: boolean },
+  ): Promise<boolean> => {
     let title: string;
     try {
       title = (await renameThread(session.id, name)).title;
     } catch (cause) {
-      setError(`重命名失败：${harnessErrorText(cause)}。聊天名称保持不变。`);
+      if (!options?.silent) setError(`重命名失败：${harnessErrorText(cause)}。聊天名称保持不变。`);
       return false;
     }
     setFolders(previous => previous.map(folder => ({
