@@ -4,6 +4,9 @@ import type { ApprovalFocusTarget, BadgeCountResult, JsonRpcNotification, Notifi
 import type { HarnessConnectionStatus } from "@boss-harness/app-client";
 
 declare global {
+  /** 构建时由 electron-vite 注入的发布版本号。 */
+  const __APP_VERSION__: string;
+
   interface Window {
     boss: {
       request<T>(method: string, params?: unknown): Promise<T>;
@@ -16,6 +19,8 @@ declare global {
       onApprovalFocus(listener: (target: ApprovalFocusTarget) => void): () => void;
       testNotification(): Promise<NotificationTestResult>;
       setBadgeCount(count: number): Promise<BadgeCountResult>;
+      /** 运行环境版本；浏览器预览没有该字段。 */
+      versions?: { electron?: string; chrome?: string; node?: string; platform?: string };
     };
   }
 }

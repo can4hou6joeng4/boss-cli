@@ -1,6 +1,11 @@
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { defineConfig, externalizeDepsPlugin } from "electron-vite";
 import react from "@vitejs/plugin-react";
+
+/** 关于页展示的版本号来自发布包，构建时注入，避免在渲染层重复维护。 */
+const APP_VERSION = (JSON.parse(readFileSync(resolve(__dirname, "../../package.json"), "utf8")) as { version?: unknown }).version;
+const APP_VERSION_LITERAL = typeof APP_VERSION === "string" && APP_VERSION.trim() ? APP_VERSION.trim() : "0.0.0";
 
 /** workspace 包：入口是 TS 源码，必须打包进产物，不能被外部化为 require()。 */
 const WORKSPACE_PACKAGES = ["@boss-harness/protocol", "@boss-harness/app-client", "@boss-harness/shared"];
@@ -28,6 +33,7 @@ export default defineConfig({
   renderer: {
     root: resolve(__dirname, "src/renderer"),
     plugins: [react()],
+    define: { __APP_VERSION__: JSON.stringify(APP_VERSION_LITERAL) },
     resolve: { alias: aliases },
     build: {
       rollupOptions: {

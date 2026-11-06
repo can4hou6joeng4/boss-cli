@@ -62,6 +62,13 @@ const api = {
     ipcRenderer.on("harness:focus-approval", handler);
     return () => ipcRenderer.removeListener("harness:focus-approval", handler);
   },
+  /** 关于页展示的运行版本；来自 preload 进程，渲染层只读。 */
+  versions: {
+    electron: process.versions.electron ?? "",
+    chrome: process.versions.chrome ?? "",
+    node: process.versions.node ?? "",
+    platform: process.platform,
+  },
 };
 
 export type BossBridge = typeof api;
