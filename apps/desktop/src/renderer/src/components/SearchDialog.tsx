@@ -24,8 +24,8 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
   searchMessages?: boolean;
   /** 内核声明 threadSearchArchived 能力时为真；为假时不发送 includeArchived。 */
   searchArchived?: boolean;
-  /** 打开会话并定位到命中的消息；缺省时退回只打开会话。工具命中传入展开工具块的意图。 */
-  onOpenMessage?: (session: SessionItem, itemId: string, revealToolBlock: boolean) => void;
+  /** 打开会话并定位到命中的消息；缺省时退回只打开会话。工具命中传入展开工具块的意图，查询词用于目标消息内的关键词高亮。 */
+  onOpenMessage?: (session: SessionItem, itemId: string, revealToolBlock: boolean, query: string) => void;
 }) {
   const [query, setQuery] = useState(""), [index, setIndex] = useState(0);
   const [hitBatch, setHitBatch] = useState<ThreadSearchBatch | null>(null);
@@ -73,8 +73,8 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
     if (query.trim().length >= RECENT_SEARCH_MIN_LENGTH) setRecent(rememberRecentSearch(query));
     if (option.kind === "session") { onSelect(option.row.session); onClose(); return; }
     if (onOpenMessage) {
-      const focus = searchHitFocus(option.hit);
-      onOpenMessage(option.row.session, focus.itemId, focus.revealToolBlock);
+      const focus = searchHitFocus(option.hit, query);
+      onOpenMessage(option.row.session, focus.itemId, focus.revealToolBlock, focus.query);
       onClose();
     } else { onSelect(option.row.session); onClose(); }
   };

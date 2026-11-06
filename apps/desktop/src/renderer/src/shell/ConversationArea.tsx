@@ -25,7 +25,7 @@ import { toolQueriedAtLabel } from "../data/toolSource";
 import { findFoldedMatches, findMessageMatches } from "../data/messageSearch";
 import { retryTextForMessage } from "../data/messageRetry";
 import { messageCopyText } from "../data/messageCopy";
-import { collectTextRanges } from "../data/findHighlight";
+import { collectKernelTextRanges, collectTextRanges } from "../data/findHighlight";
 import { compactTitle, stripProjectPrefix } from "../data/sessionTitle";
 
 /** 会话内分支入口与摘要标注；内核未声明分支能力时不传，界面完全不显示。 */
@@ -53,6 +53,10 @@ export interface ConversationAreaProps {
   /** 工具命中：定位后展开目标消息的工具块，让参数、来源编号与结果摘要直接可见。 */
   focusRevealTool?: boolean;
   onFocusMessage?: () => void;
+  /** 跨会话搜索落地时目标消息内的关键词高亮；查询为空或缺失时不显示。 */
+  searchHighlight?: { itemId: string; query: string } | null;
+  /** 离开会话、再次搜索或用户点击后清除搜索高亮。 */
+  onDismissSearchHighlight?: () => void;
   threadId?: string;
   configuredModelLabel?: string; readOnly?: boolean; /** 内核已归档：只读查看历史，恢复后才能继续对话。 */ archived?: boolean;
   continuationCheck?: { threadId: string; sourceTurnId: string; loading: boolean; submitting?: boolean;
@@ -72,6 +76,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   skills = [], skillCatalogState = "unavailable", skillCatalogError, onRefreshSkills, skillProblems = [],
   turnSkillIds = {}, onInspectSkill,
   focusMessageId, focusRevealTool = false, onFocusMessage,
+  searchHighlight, onDismissSearchHighlight,
   threadId, continuationCheck, onContinueInterruptedTurn, modelRetry, onDismissModelRetry, sessionBranches,
 }) => {
   const [messages, setMessages] = useState<MessageItem[]>(initialMessages);
@@ -186,6 +191,31 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
     const timer = window.setTimeout(() => setFocusFlash(null), 1800);
     return () => window.clearTimeout(timer);
   }, [focusFlash]);
+  const dismissSearchHighlight = useRef(onDismissSearchHighlight);
+  dismissSearchHighlight.current = onDismissSearchHighlight;
+  // 跨会话搜索落地后，在目标消息内标出关键词；归一化与内核搜索一致，工具块展开后同样生效。
+  useEffect(() => {
+    type HighlightRegistry = { set(name: string, highlight: unknown): void; delete(name: string): boolean };
+    const registry = typeof CSS !== "undefined"
+      ? (CSS as unknown as { highlights?: HighlightRegistry }).highlights : undefined;
+    const HighlightCtor = (globalThis as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
+    registry?.delete("search-hit");
+    if (!searchHighlight || !registry || !HighlightCtor) return;
+    const root = document.getElementById("message-" + searchHighlight.itemId);
+    if (!root) return;
+    const ranges = collectKernelTextRanges(root, searchHighlight.query);
+    if (ranges.length) registry.set("search-hit", new HighlightCtor(...ranges));
+    return () => {
+      registry.delete("search-hit");
+    };
+  }, [searchHighlight, messages]);
+  // 高亮只用于落地提示：用户点击或打开查找栏后清除，不长期驻留。
+  useEffect(() => {
+    if (!searchHighlight) return;
+    const dismiss = () => dismissSearchHighlight.current?.();
+    window.addEventListener("pointerdown", dismiss, { once: true });
+    return () => window.removeEventListener("pointerdown", dismiss);
+  }, [searchHighlight]);
   useEffect(() => {
     const handle = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || event.keyCode === 229) return;
@@ -193,6 +223,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
       if (!isCommandChord(event, "f")) return;
       event.preventDefault();
       setFindOpen(true);
+      dismissSearchHighlight.current?.();
     };
     window.addEventListener("keydown", handle);
     return () => window.removeEventListener("keydown", handle);

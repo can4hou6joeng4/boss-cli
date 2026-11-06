@@ -40,10 +40,11 @@ export function searchRoleLabel(role: ThreadSearchMatch["role"]): string {
  * 从消息命中生成定位意图。
  * 工具命中的参数、来源编号与结果摘要位于默认收起的工具块内，打开会话后需要先展开，
  * 否则搜索片段与会话里可见的文本对不上；用户 / 助手消息与未知角色保持默认折叠状态。
+ * 查询词随命中一起带回会话，用于在目标消息内标出关键词；去空白后为空时不保留高亮。
  */
-export function searchHitFocus(hit: Pick<ThreadSearchMatch, "itemId" | "role">): {
-  itemId: string;
-  revealToolBlock: boolean;
-} {
-  return { itemId: hit.itemId, revealToolBlock: hit.role === "tool" };
+export function searchHitFocus(
+  hit: Pick<ThreadSearchMatch, "itemId" | "role">,
+  query = "",
+): { itemId: string; revealToolBlock: boolean; query: string } {
+  return { itemId: hit.itemId, revealToolBlock: hit.role === "tool", query: query.trim() };
 }
