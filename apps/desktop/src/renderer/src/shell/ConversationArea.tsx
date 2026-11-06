@@ -27,6 +27,7 @@ import { retryTextForMessage } from "../data/messageRetry";
 import { messageCopyText } from "../data/messageCopy";
 import { collectKernelTextRanges, collectTextRanges } from "../data/findHighlight";
 import { compactTitle, stripProjectPrefix } from "../data/sessionTitle";
+import { feedbackEntryKey, feedbackForThread, readStoredMessageFeedback, saveStoredMessageFeedback, withMessageFeedback, type MessageFeedbackChoice, type MessageFeedbackStore } from "../data/messageFeedback";
 
 /** 会话内分支入口与摘要标注；内核未声明分支能力时不传，界面完全不显示。 */
 export interface SessionBranchesView {
@@ -95,7 +96,13 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const [planEditing, setPlanEditing] = useState<Record<string, boolean>>({});
   const [planDrafts, setPlanDrafts] = useState<Record<string, string>>({});
   const [showScrollBottom, setShowScrollBottom] = useState(false);
-  const [feedback, setFeedback] = useState<Record<string, "up" | "down" | undefined>>({});
+  // 反馈按会话保存在本机偏好：切换会话或重启后仍能区分标记过的回复。
+  const feedbackThreadId = threadId ?? "preview";
+  const [feedback, setFeedback] = useState<MessageFeedbackStore>(() => feedbackForThread(readStoredMessageFeedback(), feedbackThreadId));
+  // 快速连点时下一次点击可能早于重新渲染，用 ref 读取最新标记，避免把「取消」算成「再次标记」。
+  const feedbackRef = useRef(feedback);
+  const [feedbackNote, setFeedbackNote] = useState<{ messageId: string; text: string } | null>(null);
+  const feedbackNoteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const [approvalError, setApprovalError] = useState("");
   const [pendingApproval, setPendingApproval] = useState<string | null>(null);
   const [contextEditItemId, setContextEditItemId] = useState<string | null>(null);
@@ -244,6 +251,27 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
     if (running || taskBlocked) return;
     const text = retryTextForMessage(messages, message.id);
     if (text) onSendMessage(text);
+  };
+  useEffect(() => () => {
+    if (feedbackNoteTimer.current !== undefined) clearTimeout(feedbackNoteTimer.current);
+  }, []);
+  /**
+   * 切换消息反馈：再点同一按钮取消。先读最新存储再写，避免覆盖同一页面里的其他点击；
+   * 写入失败（隐私模式、配额用尽）如实提示仅本次有效，不假装已保存。
+   */
+  const toggleFeedback = (messageId: string, choice: MessageFeedbackChoice) => {
+    const nextChoice = feedbackRef.current[messageId] === choice ? undefined : choice;
+    const next = { ...feedbackRef.current };
+    if (nextChoice === undefined) delete next[messageId]; else next[messageId] = nextChoice;
+    feedbackRef.current = next;
+    setFeedback(next);
+    const key = feedbackEntryKey(feedbackThreadId, messageId);
+    const saved = key !== null && saveStoredMessageFeedback(withMessageFeedback(readStoredMessageFeedback(), key, nextChoice));
+    if (feedbackNoteTimer.current !== undefined) clearTimeout(feedbackNoteTimer.current);
+    setFeedbackNote({ messageId, text: nextChoice === undefined
+      ? "已取消该反馈标记。"
+      : saved ? "已记录反馈，仅保存在本机。" : "已标记本次反馈，但本机存储不可用，重启后会丢失。" });
+    feedbackNoteTimer.current = setTimeout(() => { feedbackNoteTimer.current = undefined; setFeedbackNote(null); }, 2600);
   };
   const recordContextEdit = useCallback((state: ContextEditReadResponse) => {
     setContextEditStates(previous => ({ ...previous, [state.itemId]: { excluded: state.excluded } }));
@@ -797,32 +825,30 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                   </button>
                   <button
                     className={`msg-action-btn ${feedback[item.id] === "up" ? "active" : ""}`}
-                    title="有帮助"
+                    title={feedback[item.id] === "up" ? "取消「有帮助」标记（仅保存在本机）" : "有帮助（仅保存在本机）"}
+                    aria-label={feedback[item.id] === "up" ? "取消「有帮助」标记" : "有帮助"}
+                    aria-pressed={feedback[item.id] === "up"}
                     type="button"
                     style={feedback[item.id] === "up" ? { color: "var(--accent-green)" } : undefined}
-                    onClick={() =>
-                      setFeedback((prev) => ({
-                        ...prev,
-                        [item.id]: prev[item.id] === "up" ? undefined! : "up",
-                      }))
-                    }
+                    onClick={() => toggleFeedback(item.id, "up")}
                   >
                     <IconThumbsUp size={13} />
                   </button>
                   <button
                     className={`msg-action-btn ${feedback[item.id] === "down" ? "active" : ""}`}
-                    title="需要改进"
+                    title={feedback[item.id] === "down" ? "取消「需要改进」标记（仅保存在本机）" : "需要改进（仅保存在本机）"}
+                    aria-label={feedback[item.id] === "down" ? "取消「需要改进」标记" : "需要改进"}
+                    aria-pressed={feedback[item.id] === "down"}
                     type="button"
                     style={feedback[item.id] === "down" ? { color: "var(--accent-error)" } : undefined}
-                    onClick={() =>
-                      setFeedback((prev) => ({
-                        ...prev,
-                        [item.id]: prev[item.id] === "down" ? undefined! : "down",
-                      }))
-                    }
+                    onClick={() => toggleFeedback(item.id, "down")}
                   >
                     <IconThumbsDown size={13} />
                   </button>
+                  {feedbackNote?.messageId === item.id && <span
+                    role="status"
+                    style={{ alignSelf: "center", fontSize: 11, color: "var(--text-muted)" }}
+                  >{feedbackNote.text}</span>}
                 </div>
               </div>
             );
