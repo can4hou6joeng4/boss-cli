@@ -574,6 +574,59 @@
   margin: 20px 0 0;
 }
 
+.settings-about-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle, var(--border-color));
+  border-radius: 10px;
+  background: var(--border-subtle, var(--border-color));
+}
+
+.settings-about-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px 14px;
+  background: var(--panel-bg);
+}
+
+.settings-about-field dt {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.settings-about-field dd {
+  margin: 0;
+  color: var(--text-main);
+  font-family: var(--font-mono);
+  font-size: calc(var(--ui-font-size, 13px) - 1px);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.settings-about-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.settings-about-copy {
+  color: var(--accent-green, var(--text-muted));
+  font-size: calc(var(--ui-font-size, 13px) - 1px);
+}
+
+.settings-about-copy.is-error {
+  color: var(--accent-warning, var(--text-main));
+}
+
 .settings-footer {
   display: flex;
   align-items: center;

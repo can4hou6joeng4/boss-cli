@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import type { AutoCompactionSource } from "@boss-harness/protocol";
+import { PROTOCOL_VERSION, type AutoCompactionSource } from "@boss-harness/protocol";
 import appIcon from "../../../../resources/icon.png";
 import {
   IconCheck,
@@ -18,6 +18,8 @@ import {
 import { UI_STORAGE_PREFIX } from "../data/uiStorage";
 import { primeApprovalChime } from "../data/approvalChime";
 import { readNotificationTestResult } from "../data/notificationTest";
+import { aboutDiagnostics, aboutFields } from "../data/aboutInfo";
+import { useClipboardCopy } from "../data/clipboardCopy";
 import { compactionDraft, compactionFields, compactionSourceLabel, type CompactionSettingDraft } from "../data/compactionSettings";
 import type { ThemePreference } from "../data/themePreference";
 import { harnessErrorText, readConfig, setAutoCompactionSettings } from "../data/harnessBridge";
@@ -148,7 +150,21 @@ export function SettingsDialog({ isOpen, onClose, theme, onThemeChange, onOpenSh
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef(onClose);
   const titleId = useId();
+  const aboutClipboard = useClipboardCopy();
   closeRef.current = onClose;
+
+  // 关于页只展示构建与运行环境的真实值；浏览器预览或旧构建缺失时由 aboutInfo 统一显示「未知」。
+  const aboutEnvironment = {
+    appVersion: typeof __APP_VERSION__ === "string" ? __APP_VERSION__ : null,
+    protocolVersion: PROTOCOL_VERSION,
+    electron: window.boss?.versions?.electron,
+    chrome: window.boss?.versions?.chrome,
+    node: window.boss?.versions?.node,
+    platform: window.boss?.versions?.platform,
+    kernelConnected: harnessUp,
+  };
+  const aboutRows = aboutFields(aboutEnvironment);
+  const aboutCopy = aboutClipboard.feedback?.key === "about-diagnostics" ? aboutClipboard.feedback : null;
 
   useLayoutEffect(() => {
     if (isOpen && initialSection) { setSection(initialSection); setStatus(""); }
@@ -473,8 +489,18 @@ export function SettingsDialog({ isOpen, onClose, theme, onThemeChange, onOpenSh
             {section === "about" && (
               <>
                 <div className="settings-about-brand"><img className="settings-about-logo" src={appIcon} alt="" /><h3>BOSS Harness</h3><p>面向招聘任务的 Agent Harness 工作台</p></div>
-                <SettingRow title="应用界面"><span className="settings-static-value">BOSS Harness 前端</span></SettingRow>
-                <SettingRow title="界面参考"><span className="settings-static-value">ChatGPT.app<br /><span className="settings-secondary-value">26.1013.40934 (20770)</span></span></SettingRow>
+                <dl className="settings-about-fields" aria-label="运行环境">
+                  {aboutRows.map((field) => (
+                    <div key={field.label} className="settings-about-field">
+                      <dt>{field.label}</dt>
+                      <dd>{field.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+                <div className="settings-about-actions">
+                  <button type="button" className="settings-button" onClick={() => { void aboutClipboard.copy(aboutDiagnostics(aboutEnvironment), "about-diagnostics"); }}>复制诊断信息</button>
+                  {aboutCopy && <span className={`settings-about-copy${aboutCopy.ok ? "" : " is-error"}`} role="status">{aboutCopy.ok ? "诊断信息已复制" : `复制失败：${aboutCopy.reason ?? "剪贴板不可用"}`}</span>}
+                </div>
                 <p className="settings-about-description">这是 BOSS Harness 的界面实现，参考本机应用的布局与交互。它不提供 OpenAI 服务，模型与招聘能力由本项目的 Harness 接入。</p>
               </>
             )}
