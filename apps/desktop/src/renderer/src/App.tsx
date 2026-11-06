@@ -15,6 +15,7 @@ import { UsageDialog } from "./components/UsageDialog";
 import { ExportDialog } from "./components/ExportDialog";
 import { useThreadUsage } from "./data/useThreadUsage";
 import { UI_STORAGE_PREFIX } from "./data/uiStorage";
+import { parseThemePreference, resolveDarkTheme, serializeThemePreference, type ThemePreference } from "./data/themePreference";
 import { branchSupport, branchSwitchBlock, useSessionBranches } from "./data/useSessionBranches";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
@@ -40,10 +41,12 @@ function legacyRouteMismatch(session: { provider?: string; model?: string }, def
 }
 
 export function App(): JSX.Element {
-  const [isDark, setIsDark] = useState(() => {
-    try { const saved = localStorage.getItem(UI_STORAGE_PREFIX + "theme"); if (saved) return saved === "dark"; } catch {}
-    return window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? true;
+  const [theme, setTheme] = useState<ThemePreference>(() => {
+    try { return parseThemePreference(localStorage.getItem(UI_STORAGE_PREFIX + "theme")); } catch { return "system"; }
   });
+  const [systemPrefersDark, setSystemPrefersDark] = useState(() =>
+    window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? true);
+  const isDark = resolveDarkTheme(theme, systemPrefersDark);
   const [harnessUp, setHarnessUp] = useState(false);
   const [continuationSupported, setContinuationSupported] = useState(false);
   const [capabilities, setCapabilities] = useState<InitializeResponse["capabilities"]>();
@@ -177,8 +180,20 @@ export function App(): JSX.Element {
   }, [continuationSupported]);
   useEffect(() => {
     document.documentElement.classList.toggle("dark", isDark);
-    try { localStorage.setItem(UI_STORAGE_PREFIX + "theme", isDark ? "dark" : "light"); } catch {}
-  }, [isDark]);
+    try { localStorage.setItem(UI_STORAGE_PREFIX + "theme", serializeThemePreference(theme)); } catch {}
+  }, [isDark, theme]);
+  // 跟随系统时监听外观变化；固定浅色 / 深色时只记录系统值，不改变当前外观。
+  useEffect(() => {
+    const query = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!query) return;
+    const onChange = (event: MediaQueryListEvent): void => setSystemPrefersDark(event.matches);
+    if (typeof query.addEventListener === "function") {
+      query.addEventListener("change", onChange);
+      return () => query.removeEventListener("change", onChange);
+    }
+    query.addListener(onChange);
+    return () => query.removeListener(onChange);
+  }, []);
   useEffect(() => {
     if (!window.boss) return;
     let cancelled = false;
@@ -783,7 +798,7 @@ export function App(): JSX.Element {
   const branchesVisible = Boolean(branchCapability && contextThreadId && !preview
     && (branchState.turnCount > 0 || messages.some(message => message.turnId)));
   return <>
-    <AppShell isDark={isDark} onToggleTheme={() => setIsDark(previous => !previous)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => setIsSidebarOpen(previous => !previous)}
+    <AppShell isDark={isDark} theme={theme} onToggleTheme={() => setTheme(isDark ? "light" : "dark")} onThemeChange={setTheme} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => setIsSidebarOpen(previous => !previous)}
       folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} turnSkillIds={turnSkillIds} currentMode={currentMode} onModeChange={setCurrentMode}
       onSelectSession={handleSelectSession} onNewTask={handleNewTask} onDeleteSession={handleDeleteSession} onArchiveSession={handleArchiveSession} onRenameSession={window.boss ? handleRenameSession : undefined} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueActiveItems={queueMeta.activeItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} onReadQueueItem={handleReadQueueItem} onUpdateQueueItem={capabilities?.queueUpdate === true ? handleUpdateQueueItem : undefined} onRefreshQueue={handleRefreshQueue} autoCompactionConfig={capabilities?.autoCompactionConfig === true} simulateLocal={preview} harnessUp={harnessUp}
       onCreateConnectionSession={createConnectionSession}

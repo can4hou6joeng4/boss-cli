@@ -401,6 +401,11 @@
   color: #444;
 }
 
+.settings-theme-preview.is-system {
+  background: linear-gradient(135deg, #efefef 50%, #252525 50%);
+  color: #8a8a8a;
+}
+
 .settings-theme-preview.is-dark {
   background: #252525;
   color: #dedede;
