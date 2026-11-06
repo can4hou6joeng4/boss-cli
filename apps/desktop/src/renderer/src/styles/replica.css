@@ -339,6 +339,13 @@ button.user-skill-chip:hover { border-color: var(--text-muted); color: var(--tex
 .library-file-preview>span { font-size: 9px; font-family: var(--font-mono); }
 .library-grid strong { display: block; font-size: 12px; font-weight: 500; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .library-grid small { display: block; color: var(--text-faint); font-size: 10px; margin-top: 5px; }
+.library-source-list { list-style: none; display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
+.library-source-list>li { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 9px; color: var(--text-faint); }
+.library-source-list>li>span { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.library-source-list code { font-family: var(--font-mono); font-size: 11px; color: var(--text-main); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.library-source-list small { font-size: 10px; color: var(--text-faint); }
+.library-detail-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+.library-copy-note { font-size: 11px; font-style: normal; color: var(--text-muted); }
 .page-section-title { font-size: 13px; font-weight: 500; margin-bottom: 15px; }
 .page-section-title>span { color: var(--text-faint); font-size: 11px; padding-left: 4px; }
 .skill-grid { margin-bottom: 36px; }
