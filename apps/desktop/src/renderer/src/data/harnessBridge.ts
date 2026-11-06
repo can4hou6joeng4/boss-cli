@@ -345,10 +345,8 @@ export async function deleteThread(threadId: string): Promise<void> {
 
 /** 发起回合。失败不吞掉：调用方要用真实原因提示，同时保留「回执未知」的谨慎处理。 */
 export async function sendTurn(threadId: string, input: string, clientUserMessageId: string, model?: string, skillIds: string[] = [], autoCompaction?: TurnAutoCompactionOverride): Promise<TurnStartResponse> {
-  const api = bridge();
-  if (!api) throw new Error("本地 Harness 未连接");
   // 不发送空对象：省略字段时内核沿用启动时的压缩策略。
-  const response = await api.request<TurnStartResponse>(ClientMethods.turnStart, {
+  const response = await contextRequest<TurnStartResponse>(ClientMethods.turnStart, {
     threadId, input, clientUserMessageId, model, skillIds,
     ...(autoCompaction ? { autoCompaction } : {}),
   });
