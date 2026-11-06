@@ -212,6 +212,14 @@ export const IconMoon: React.FC<IconProps> = ({ size = 16, ...props }) => (
   </svg>
 );
 
+export const IconMonitor: React.FC<IconProps> = ({ size = 16, ...props }) => (
+  <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" {...props}>
+    <rect x="1.75" y="2.75" width="12.5" height="8.5" rx="1.5" />
+    <line x1="8" y1="11.25" x2="8" y2="13.75" />
+    <line x1="5.25" y1="13.75" x2="10.75" y2="13.75" />
+  </svg>
+);
+
 export const IconTerminal: React.FC<IconProps> = ({ size = 16, ...props }) => (
   <svg width={size} height={size} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" {...props}>
     <polyline points="3.5 5 6.5 8 3.5 11" />

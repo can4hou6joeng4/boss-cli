@@ -8,6 +8,7 @@ import {
   IconClose,
   IconFolder,
   IconHelp,
+  IconMonitor,
   IconMoon,
   IconNotification,
   IconSettings,
@@ -18,6 +19,7 @@ import { UI_STORAGE_PREFIX } from "../data/uiStorage";
 import { primeApprovalChime } from "../data/approvalChime";
 import { readNotificationTestResult } from "../data/notificationTest";
 import { compactionDraft, compactionFields, compactionSourceLabel, type CompactionSettingDraft } from "../data/compactionSettings";
+import type { ThemePreference } from "../data/themePreference";
 import { harnessErrorText, readConfig, setAutoCompactionSettings } from "../data/harnessBridge";
 import "../styles/settings.css";
 import { ConnectionSettings } from "./ConnectionSettings";
@@ -25,8 +27,8 @@ import { ConnectionSettings } from "./ConnectionSettings";
 export interface SettingsDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  isDark: boolean;
-  onToggleTheme: () => void;
+  theme: ThemePreference;
+  onThemeChange: (next: ThemePreference) => void;
   onOpenShortcuts: () => void;
   harnessUp: boolean;
   /** 内核声明 autoCompactionConfig 后，才允许在设置页保存默认策略。 */
@@ -132,7 +134,7 @@ function Switch({ checked, onChange, label }: { checked: boolean; onChange: () =
 }
 
 /** Keep mounted with isOpen=false so saved interface preferences apply at startup. */
-export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenShortcuts, harnessUp, autoCompactionConfig = false, initialSection, onLogin }: SettingsDialogProps): JSX.Element | null {
+export function SettingsDialog({ isOpen, onClose, theme, onThemeChange, onOpenShortcuts, harnessUp, autoCompactionConfig = false, initialSection, onLogin }: SettingsDialogProps): JSX.Element | null {
   const [section, setSection] = useState<SettingsSection>("general");
   const [preferences, setPreferences] = useState<UIPreferences>(readPreferences);
   const [status, setStatus] = useState("");
@@ -382,8 +384,9 @@ export function SettingsDialog({ isOpen, onClose, isDark, onToggleTheme, onOpenS
               <>
                 <SettingRow title="主题" description="选择工作台的显示外观" className="settings-row-theme">
                   <div className="settings-theme-picker" role="group" aria-label="主题">
-                    <button type="button" className={`settings-theme-option${!isDark ? " is-selected" : ""}`} aria-pressed={!isDark} onClick={() => { if (isDark) onToggleTheme(); }}><span className="settings-theme-preview is-light"><IconSun size={19} /></span><span>浅色</span>{!isDark && <IconCheck className="settings-theme-check" size={12} />}</button>
-                    <button type="button" className={`settings-theme-option${isDark ? " is-selected" : ""}`} aria-pressed={isDark} onClick={() => { if (!isDark) onToggleTheme(); }}><span className="settings-theme-preview is-dark"><IconMoon size={19} /></span><span>深色</span>{isDark && <IconCheck className="settings-theme-check" size={12} />}</button>
+                    <button type="button" className={`settings-theme-option${theme === "system" ? " is-selected" : ""}`} aria-pressed={theme === "system"} onClick={() => onThemeChange("system")}><span className="settings-theme-preview is-system"><IconMonitor size={19} /></span><span>跟随系统</span>{theme === "system" && <IconCheck className="settings-theme-check" size={12} />}</button>
+                    <button type="button" className={`settings-theme-option${theme === "light" ? " is-selected" : ""}`} aria-pressed={theme === "light"} onClick={() => onThemeChange("light")}><span className="settings-theme-preview is-light"><IconSun size={19} /></span><span>浅色</span>{theme === "light" && <IconCheck className="settings-theme-check" size={12} />}</button>
+                    <button type="button" className={`settings-theme-option${theme === "dark" ? " is-selected" : ""}`} aria-pressed={theme === "dark"} onClick={() => onThemeChange("dark")}><span className="settings-theme-preview is-dark"><IconMoon size={19} /></span><span>深色</span>{theme === "dark" && <IconCheck className="settings-theme-check" size={12} />}</button>
                   </div>
                 </SettingRow>
                 <SettingRow title="字体大小" description="调整会话和界面的文字大小"><select className="settings-select" aria-label="字体大小" value={preferences.fontSize} onChange={(event) => updatePreference("fontSize", Number(event.target.value))}>{FONT_SIZES.map((size) => <option key={size} value={size}>{size} px{size === 13 ? "（默认）" : ""}</option>)}</select></SettingRow>

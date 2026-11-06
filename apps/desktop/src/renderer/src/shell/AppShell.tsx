@@ -33,10 +33,11 @@ import type { SkillProblem } from "@boss-harness/protocol";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import type { ModelRetryStatus } from "../data/modelRetry";
 import type { SessionBranchesView } from "./ConversationArea";
+import type { ThemePreference } from "../data/themePreference";
 import "../styles/login-sidebar.css";
 
 export interface AppShellProps {
-  isDark: boolean; onToggleTheme: () => void; isSidebarOpen: boolean; onToggleSidebar: () => void;
+  isDark: boolean; theme: ThemePreference; onToggleTheme: () => void; onThemeChange: (next: ThemePreference) => void; isSidebarOpen: boolean; onToggleSidebar: () => void;
   folders: ProjectFolder[]; activeSession: SessionItem | null; isHomeView: boolean; messages: MessageItem[];
   /** turnId → 该回合实际注入的技能 id；旧内核不返回时为空。 */
   turnSkillIds?: Record<string, string[]>;
@@ -456,7 +457,7 @@ export function AppShell(props: AppShellProps) {
         </div>
       </div>
     </div>
-    <SettingsDialog isOpen={settings} initialSection={settingsSection} onClose={() => setSettings(false)} isDark={props.isDark} onToggleTheme={props.onToggleTheme} onOpenShortcuts={() => { setSettings(false); props.onOpenShortcuts(); }} harnessUp={props.harnessUp ?? false} autoCompactionConfig={props.autoCompactionConfig === true} onLogin={() => { void loginEntry(true); }} />
+    <SettingsDialog isOpen={settings} initialSection={settingsSection} onClose={() => setSettings(false)} theme={props.theme} onThemeChange={props.onThemeChange} onOpenShortcuts={() => { setSettings(false); props.onOpenShortcuts(); }} harnessUp={props.harnessUp ?? false} autoCompactionConfig={props.autoCompactionConfig === true} onLogin={() => { void loginEntry(true); }} />
     {search && <SearchDialog folders={allFolders} onSelect={select} onOpenMessage={openMessage} onClose={() => setSearch(false)} searchMessages={props.threadSearchable === true} searchArchived={props.threadSearchArchived === true} />}
     {notifications && <NotificationsDialog folders={allFolders} preview={props.simulateLocal === true} refreshToken={approvalPulse} onSelect={select} onOpenMessage={openMessage} onLoaded={(approvals, truncated) => { setPendingApprovals(approvals.length); setPendingApprovalsTruncated(truncated); setApprovalCounts(countPendingApprovalsByThread(approvals)); }} onClose={() => setNotifications(false)} />}
     {newProject && <ModalSurface title="新建项目" onClose={() => setNewProject(false)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!projectName.trim()) return; const id = "group-" + crypto.randomUUID(); setGroups(prev => [...prev, { id, name: projectName.trim(), sessions: [] }]); setDraftProjectId(id); resetDraft(); openRoute({ page: "home" }); setProjectName(""); setNewProject(false); }}><label>项目名称<input autoFocus maxLength={60} value={projectName} onChange={event => setProjectName(event.target.value)} placeholder="例如：核心产研团队招聘" /></label><p>创建一个保存在此设备上的项目分组。</p><button className="solid-button" disabled={!projectName.trim()}>创建项目</button></form></ModalSurface>}
