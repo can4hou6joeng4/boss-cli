@@ -501,6 +501,7 @@ button.user-skill-chip:hover { border-color: var(--text-muted); color: var(--tex
 .tool-result-controls button { border: 1px solid var(--border-color); border-radius: 6px; padding: 4px 8px; color: var(--text-primary); background: var(--bg-tertiary); cursor: pointer; }
 .tool-result-controls button:disabled { opacity: .45; cursor: default; }
 .tool-result-segments [role="alert"] { color: var(--accent-error); }
+.tool-result-note { color: var(--text-muted); margin: 4px 0; }
 
 .model-retry-notice { display: flex; align-items: flex-start; gap: 8px; margin: 4px 0 2px; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--accent-warning) 35%, var(--border-color)); border-radius: 10px; background: color-mix(in srgb, var(--accent-warning) 6%, transparent); color: var(--text-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
 .model-retry-notice.recovered { border-color: color-mix(in srgb, var(--accent-green) 35%, var(--border-color)); background: color-mix(in srgb, var(--accent-green) 6%, transparent); }
