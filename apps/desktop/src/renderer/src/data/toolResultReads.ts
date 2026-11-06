@@ -40,19 +40,31 @@ export interface WholeResultReadOptions {
   maxChars?: number;
   /** 每读完一段回调一次；`loaded` 为已读取的 Unicode 码点数，`total` 为引用声明的总码点数。 */
   onProgress?: (loaded: number, total: number) => void;
+  /**
+   * 取消信号：发起前、每段请求前与每段返回后检查。取消时抛出明确错误，
+   * 绝不返回部分文本，也不会再发起后续分段。
+   */
+  signal?: AbortSignal;
+}
+
+/** 取消检查：在段与段之间统一使用，保证不会因为已经取回的旧分段而继续读取。 */
+function throwIfCancelled(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new Error("已取消整体读取");
 }
 
 /**
  * 按游标连续读取并拼接完整工具结果，供「复制完整结果」使用。
  * 每段都经 {@link readToolResultChunk} 校验引用、偏移与游标；任一段失败、偏移不连续、
  * 分段数量异常或总长度与 `resultRef.characterLength` 不符时整体失败，不返回部分文本。
- * 超过上限时在发起请求前拒绝，因此不会产生任何 RPC。
+ * 超过上限时在发起请求前拒绝，因此不会产生任何 RPC；传入 `signal` 后可在段间取消，
+ * 取消同样整体失败且不再发起后续请求。
  */
 export async function readWholeToolResult(
   ref: ToolResultReference,
   options: WholeResultReadOptions = {},
 ): Promise<string> {
-  const { requester, maxChars = MAX_WHOLE_RESULT_CHARS, onProgress } = options;
+  const { requester, maxChars = MAX_WHOLE_RESULT_CHARS, onProgress, signal } = options;
+  throwIfCancelled(signal);
   if (!Number.isSafeInteger(ref.characterLength) || ref.characterLength < 1) throw new Error("结果引用无效");
   if (!Number.isSafeInteger(maxChars) || maxChars < 1) throw new Error("整体复制上限无效");
   if (ref.characterLength > maxChars) {
@@ -63,7 +75,10 @@ export async function readWholeToolResult(
   let offset = 0;
   let cursor: string | undefined;
   while (offset < ref.characterLength) {
+    throwIfCancelled(signal);
     const chunk = await readToolResultChunk(ref, cursor, requester);
+    // 取消可能发生在请求途中：丢弃刚返回的分段，既不更新进度也不继续读取。
+    throwIfCancelled(signal);
     if (chunk.offset !== offset) throw new Error("结果分段偏移不连续，请分段查看");
     const length = Array.from(chunk.text).length;
     parts.push(chunk.text);
