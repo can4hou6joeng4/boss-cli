@@ -20,6 +20,15 @@ import { primeApprovalChime } from "../data/approvalChime";
 import { readNotificationTestResult } from "../data/notificationTest";
 import { aboutDiagnostics, aboutFields } from "../data/aboutInfo";
 import { useClipboardCopy } from "../data/clipboardCopy";
+import {
+  PREFERENCE_FILE_MAX_BYTES,
+  PREFERENCE_FONT_SIZES,
+  buildPreferencesFile,
+  parsePreferencesFile,
+  type Density,
+  type Motion,
+  type PreferencesFileValues,
+} from "../data/preferencesFile";
 import { compactionDraft, compactionFields, compactionSourceLabel, type CompactionSettingDraft } from "../data/compactionSettings";
 import type { ThemePreference } from "../data/themePreference";
 import { harnessErrorText, readConfig, setAutoCompactionSettings } from "../data/harnessBridge";
@@ -40,8 +49,6 @@ export interface SettingsDialogProps {
 }
 
 export type SettingsSection = "general" | "appearance" | "context" | "notifications" | "connections" | "data" | "keyboard" | "about";
-type Density = "compact" | "comfortable";
-type Motion = "reduced" | "full";
 
 interface UIPreferences {
   fontSize: number;
@@ -51,7 +58,6 @@ interface UIPreferences {
 }
 
 const STORAGE_PREFIX = UI_STORAGE_PREFIX;
-const FONT_SIZES = [12, 13, 14, 15, 16] as const;
 const FOCUSABLE = "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
 
 function KeyboardIcon(): JSX.Element {
@@ -95,7 +101,7 @@ function readPreferences(): UIPreferences {
   try {
     const fontSize = Number(localStorage.getItem(`${STORAGE_PREFIX}fontSize`));
     return {
-      fontSize: FONT_SIZES.some((size) => size === fontSize) ? fontSize : defaults.fontSize,
+      fontSize: PREFERENCE_FONT_SIZES.some((size) => size === fontSize) ? fontSize : defaults.fontSize,
       density: localStorage.getItem(`${STORAGE_PREFIX}density`) === "compact" ? "compact" : "comfortable",
       motion: localStorage.getItem(`${STORAGE_PREFIX}motion`) === "reduced"
         ? "reduced"
@@ -151,6 +157,7 @@ export function SettingsDialog({ isOpen, onClose, theme, onThemeChange, onOpenSh
   const closeRef = useRef(onClose);
   const titleId = useId();
   const aboutClipboard = useClipboardCopy();
+  const preferencesFileRef = useRef<HTMLInputElement>(null);
   closeRef.current = onClose;
 
   // 关于页只展示构建与运行环境的真实值；浏览器预览或旧构建缺失时由 aboutInfo 统一显示「未知」。
@@ -333,17 +340,49 @@ export function SettingsDialog({ isOpen, onClose, theme, onThemeChange, onOpenSh
     }
   };
 
+  const applyImportedPreferences = (values: PreferencesFileValues, fields: number): void => {
+    setPreferences((previous) => ({
+      fontSize: values.fontSize ?? previous.fontSize,
+      density: values.density ?? previous.density,
+      motion: values.motion ?? previous.motion,
+      approvalSound: values.approvalSound ?? previous.approvalSound,
+    }));
+    if (values.theme) onThemeChange(values.theme);
+    const writes: Array<[string, string]> = [];
+    if (values.fontSize !== undefined) writes.push([`${STORAGE_PREFIX}fontSize`, String(values.fontSize)]);
+    if (values.density !== undefined) writes.push([`${STORAGE_PREFIX}density`, values.density]);
+    if (values.motion !== undefined) writes.push([`${STORAGE_PREFIX}motion`, values.motion]);
+    if (values.approvalSound !== undefined) writes.push([`${STORAGE_PREFIX}approvalSound`, String(values.approvalSound)]);
+    if (values.theme !== undefined) writes.push([`${STORAGE_PREFIX}theme`, values.theme]);
+    let stored = true;
+    for (const [key, value] of writes) {
+      try {
+        localStorage.setItem(key, value);
+      } catch {
+        stored = false;
+      }
+    }
+    setStatus(stored ? `已导入 ${fields} 项界面偏好` : `已应用到当前窗口，但此环境无法保存偏好（${fields} 项）`);
+  };
+
+  const importPreferences = async (file: File): Promise<void> => {
+    if (file.size > PREFERENCE_FILE_MAX_BYTES) { setStatus("导入失败：文件超过 64 KiB，未改动现有偏好。"); return; }
+    if (typeof file.text !== "function") { setStatus("导入失败：当前环境无法读取文件内容，未改动现有偏好。"); return; }
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      setStatus("导入失败：无法读取所选文件，未改动现有偏好。");
+      return;
+    }
+    const parsed = parsePreferencesFile(text);
+    if (!parsed.ok) { setStatus(`导入失败：${parsed.reason}。未改动现有偏好。`); return; }
+    applyImportedPreferences(parsed.values, parsed.fields);
+  };
+
   const exportPreferences = (): void => {
     try {
-      const exported: Record<string, string> = {
-        [`${STORAGE_PREFIX}fontSize`]: String(preferences.fontSize),
-        [`${STORAGE_PREFIX}density`]: preferences.density,
-        [`${STORAGE_PREFIX}motion`]: preferences.motion,
-        [`${STORAGE_PREFIX}approvalSound`]: String(preferences.approvalSound),
-      };
-      // Workspace aliases and project names can contain private text, even if
-      // other components store them under the UI prefix. Export this allowlist only.
-      const data = JSON.stringify({ version: 1, scope: "boss-harness.ui", preferences: exported }, null, 2);
+      const data = buildPreferencesFile(preferences, theme);
       const url = URL.createObjectURL(new Blob([data], { type: "application/json" }));
       const link = document.createElement("a");
       link.href = url;
@@ -405,7 +444,7 @@ export function SettingsDialog({ isOpen, onClose, theme, onThemeChange, onOpenSh
                     <button type="button" className={`settings-theme-option${theme === "dark" ? " is-selected" : ""}`} aria-pressed={theme === "dark"} onClick={() => onThemeChange("dark")}><span className="settings-theme-preview is-dark"><IconMoon size={19} /></span><span>深色</span>{theme === "dark" && <IconCheck className="settings-theme-check" size={12} />}</button>
                   </div>
                 </SettingRow>
-                <SettingRow title="字体大小" description="调整会话和界面的文字大小"><select className="settings-select" aria-label="字体大小" value={preferences.fontSize} onChange={(event) => updatePreference("fontSize", Number(event.target.value))}>{FONT_SIZES.map((size) => <option key={size} value={size}>{size} px{size === 13 ? "（默认）" : ""}</option>)}</select></SettingRow>
+                <SettingRow title="字体大小" description="调整会话和界面的文字大小"><select className="settings-select" aria-label="字体大小" value={preferences.fontSize} onChange={(event) => updatePreference("fontSize", Number(event.target.value))}>{PREFERENCE_FONT_SIZES.map((size) => <option key={size} value={size}>{size} px{size === 13 ? "（默认）" : ""}</option>)}</select></SettingRow>
                 <SettingRow title="紧凑会话" description="缩小消息与侧栏条目的间距"><Switch label="紧凑会话" checked={preferences.density === "compact"} onChange={() => updatePreference("density", preferences.density === "compact" ? "comfortable" : "compact")} /></SettingRow>
                 <SettingRow title="减少动态效果" description="减少过渡动画与平滑滚动"><Switch label="减少动态效果" checked={preferences.motion === "reduced"} onChange={() => updatePreference("motion", preferences.motion === "reduced" ? "full" : "reduced")} /></SettingRow>
                 <div className="settings-preview"><span className="settings-preview-label">文字预览</span><p>让每一次招聘任务，都有清晰的下一步。</p><span>基于事实、保留判断依据，在你的参与下推进。</span></div>
@@ -473,8 +512,16 @@ export function SettingsDialog({ isOpen, onClose, theme, onThemeChange, onOpenSh
             {section === "data" && (
               <>
                 <p className="settings-intro">管理这台设备上保存的界面偏好。</p>
+                <SettingRow title="导入界面偏好" description="从本应用导出的 JSON 文件恢复字体大小、紧凑会话、动态效果、审批提示音与主题">
+                  <input ref={preferencesFileRef} type="file" accept="application/json,.json" hidden onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (file) void importPreferences(file);
+                  }} />
+                  <button type="button" className="settings-button" onClick={() => preferencesFileRef.current?.click()}>选择 JSON 文件</button>
+                </SettingRow>
                 <SettingRow title="导出界面偏好" description="将当前设备的显示偏好下载为 JSON 文件"><button type="button" className="settings-button" onClick={exportPreferences}>导出 JSON</button></SettingRow>
-                <div className="settings-note"><IconFolder size={17} /><div><h3>导出范围</h3><p>仅包含 <code>boss-harness.ui.*</code> 界面偏好，不包含聊天内容、候选人资料或模型凭据。</p><p>会话与真实业务数据由 Harness 管理。</p></div></div>
+                <div className="settings-note"><IconFolder size={17} /><div><h3>导出与导入范围</h3><p>仅包含 <code>boss-harness.ui.*</code> 界面偏好，不包含聊天内容、候选人资料或模型凭据。</p><p>导入只接受本应用导出的版本与白名单键，非法值整体拒绝、未知键忽略，文件上限 64 KiB；导入前不会改动现有偏好。</p><p>会话与真实业务数据由 Harness 管理。</p></div></div>
               </>
             )}
 
