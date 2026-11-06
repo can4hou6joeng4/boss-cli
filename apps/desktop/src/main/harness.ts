@@ -13,6 +13,7 @@ import { sessionExportWriteError } from "./exportErrors";
 import { approvalNotificationContent, rememberApproval } from "./approvalNotification";
 import { readTurnEvent, recordTurnStart, turnNotificationContent } from "./turnNotification";
 import { normalizeBadgeCount } from "./notificationBadge";
+import { NotificationRegistry } from "./notificationRegistry";
 
 function findRepoRoot(start: string): string {
   let current = resolve(start);
@@ -56,15 +57,32 @@ function send(window: BrowserWindow, notification: JsonRpcNotification): void {
 }
 
 const notifiedApprovals = new Set<string>();
+const notifications = new NotificationRegistry();
 
-/** 点击系统通知后回到工作台：恢复最小化窗口并聚焦，返回被聚焦的窗口。 */
+/** 全部窗口已关闭时（macOS 关闭主窗口），点击通知需要重新创建主窗口；由主进程入口注入。 */
+let windowFactory: (() => BrowserWindow | null) | null = null;
+export function setHarnessWindowFactory(factory: () => BrowserWindow | null): void {
+  windowFactory = factory;
+}
+
+/** 点击系统通知后回到工作台：恢复最小化窗口并聚焦；没有窗口时创建新窗口，返回目标窗口。 */
 function revealWindow(): BrowserWindow | null {
-  const target = [...windows].find((window) => !window.isDestroyed());
-  if (!target) return null;
-  if (target.isMinimized()) target.restore();
-  target.show();
-  target.focus();
-  return target;
+  const existing = [...windows].find((window) => !window.isDestroyed());
+  if (!existing) return windowFactory?.() ?? null;
+  if (existing.isMinimized()) existing.restore();
+  existing.show();
+  existing.focus();
+  return existing;
+}
+
+/** 新窗口加载完成前发送会丢失；等主 frame 加载后再发，preload 会缓存到渲染层挂载时回放。 */
+function sendApprovalFocus(target: BrowserWindow, focus: ApprovalFocusTarget): void {
+  const deliver = (): void => {
+    if (target.isDestroyed() || target.webContents.isDestroyed()) return;
+    try { target.webContents.send("harness:focus-approval", focus); } catch {}
+  };
+  if (target.webContents.isLoadingMainFrame()) target.webContents.once("did-finish-load", deliver);
+  else deliver();
 }
 
 const turnStartedAt = new Map<string, number>();
@@ -88,7 +106,7 @@ function notifyTurn(notification: JsonRpcNotification): void {
   try {
     const native = new Notification({ title: content.title, body: content.body });
     native.on("click", () => { revealWindow(); });
-    native.show();
+    notifications.show(native);
   } catch {}
 }
 
@@ -107,10 +125,9 @@ function notifyApproval(notification: JsonRpcNotification): void {
     native.on("click", () => {
       const target = revealWindow();
       if (!target || !content.threadId || !content.itemId) return;
-      const focus: ApprovalFocusTarget = { threadId: content.threadId, itemId: content.itemId };
-      try { target.webContents.send("harness:focus-approval", focus); } catch {}
+      sendApprovalFocus(target, { threadId: content.threadId, itemId: content.itemId });
     });
-    native.show();
+    notifications.show(native);
   } catch {}
 }
 
@@ -246,7 +263,7 @@ function registerIPC(): void {
     if (!Notification.isSupported()) return { sent: false, supported: false };
     try {
       const native = new Notification({ title: "Boss Harness", body: "系统通知可用：审批请求与较久回合结束会通过这里提醒。" });
-      native.show();
+      notifications.show(native);
       return { sent: true, supported: true };
     } catch {
       return { sent: false, supported: true };
