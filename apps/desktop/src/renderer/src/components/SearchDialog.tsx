@@ -3,7 +3,7 @@ import { ModalSurface } from "./ModalSurface";
 import { IconSearch, IconChat, IconChevronRight, IconClose } from "./Icons";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
 import { sessionRows } from "../data/sessionRows";
-import { buildSearchOptions, searchRoleLabel, type SearchOption } from "../data/searchOptions";
+import { buildSearchOptions, searchHitFocus, searchRoleLabel, type SearchOption } from "../data/searchOptions";
 import { splitKernelHighlight } from "../data/findHighlight";
 import { visibleThreadSearchHits, type ThreadSearchBatch } from "../data/messageSearch";
 import { searchThreadMessages } from "../data/harnessBridge";
@@ -24,8 +24,8 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
   searchMessages?: boolean;
   /** 内核声明 threadSearchArchived 能力时为真；为假时不发送 includeArchived。 */
   searchArchived?: boolean;
-  /** 打开会话并定位到命中的消息；缺省时退回只打开会话。 */
-  onOpenMessage?: (session: SessionItem, itemId: string) => void;
+  /** 打开会话并定位到命中的消息；缺省时退回只打开会话。工具命中传入展开工具块的意图。 */
+  onOpenMessage?: (session: SessionItem, itemId: string, revealToolBlock: boolean) => void;
 }) {
   const [query, setQuery] = useState(""), [index, setIndex] = useState(0);
   const [hitBatch, setHitBatch] = useState<ThreadSearchBatch | null>(null);
@@ -72,7 +72,11 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
     if (!option) return;
     if (query.trim().length >= RECENT_SEARCH_MIN_LENGTH) setRecent(rememberRecentSearch(query));
     if (option.kind === "session") { onSelect(option.row.session); onClose(); return; }
-    if (onOpenMessage) { onOpenMessage(option.row.session, option.hit.itemId); onClose(); } else { onSelect(option.row.session); onClose(); }
+    if (onOpenMessage) {
+      const focus = searchHitFocus(option.hit);
+      onOpenMessage(option.row.session, focus.itemId, focus.revealToolBlock);
+      onClose();
+    } else { onSelect(option.row.session); onClose(); }
   };
   const move = (delta: number) => setIndex(options.length ? (selected + delta + options.length) % options.length : 0);
   const optionProps = (option: SearchOption) => {

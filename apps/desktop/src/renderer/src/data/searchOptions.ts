@@ -35,3 +35,15 @@ export function buildSearchOptions(
 export function searchRoleLabel(role: ThreadSearchMatch["role"]): string {
   return role === "user" ? "你" : role === "tool" ? "工具" : "助手";
 }
+
+/**
+ * 从消息命中生成定位意图。
+ * 工具命中的参数、来源编号与结果摘要位于默认收起的工具块内，打开会话后需要先展开，
+ * 否则搜索片段与会话里可见的文本对不上；用户 / 助手消息与未知角色保持默认折叠状态。
+ */
+export function searchHitFocus(hit: Pick<ThreadSearchMatch, "itemId" | "role">): {
+  itemId: string;
+  revealToolBlock: boolean;
+} {
+  return { itemId: hit.itemId, revealToolBlock: hit.role === "tool" };
+}

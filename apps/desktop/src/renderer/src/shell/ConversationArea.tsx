@@ -50,6 +50,8 @@ export interface ConversationAreaProps {
   onInspectSkill?: (skillId: string) => void;
   /** 从跨会话搜索打开时定位的消息 id；滚动后由 onFocusMessage 清除。 */
   focusMessageId?: string | null;
+  /** 工具命中：定位后展开目标消息的工具块，让参数、来源编号与结果摘要直接可见。 */
+  focusRevealTool?: boolean;
   onFocusMessage?: () => void;
   threadId?: string;
   configuredModelLabel?: string; readOnly?: boolean; /** 内核已归档：只读查看历史，恢复后才能继续对话。 */ archived?: boolean;
@@ -69,7 +71,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   onInterrupt, onApprovalDecision, onReviewDiff, onRevertDiff, onOpenRewind, loginGuide, onLogin,
   skills = [], skillCatalogState = "unavailable", skillCatalogError, onRefreshSkills, skillProblems = [],
   turnSkillIds = {}, onInspectSkill,
-  focusMessageId, onFocusMessage,
+  focusMessageId, focusRevealTool = false, onFocusMessage,
   threadId, continuationCheck, onContinueInterruptedTurn, modelRetry, onDismissModelRetry, sessionBranches,
 }) => {
   const [messages, setMessages] = useState<MessageItem[]>(initialMessages);
@@ -169,10 +171,16 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
       if (messages.length) onFocusMessage?.();
       return;
     }
+    // 工具命中的文字位于默认收起的工具块内；先展开再滚动，避免展开后位置偏移。
+    // 只改本次目标块，已展开的块与用户手动展开的块保持原状。
+    if (focusRevealTool) {
+      const toolBlock = target.querySelector<HTMLDetailsElement>("details.tool-block");
+      if (toolBlock) toolBlock.open = true;
+    }
     target.scrollIntoView({ block: "center", behavior: "smooth" });
     setFocusFlash(focusMessageId);
     onFocusMessage?.();
-  }, [focusMessageId, messages, onFocusMessage]);
+  }, [focusMessageId, focusRevealTool, messages, onFocusMessage]);
   useEffect(() => {
     if (!focusFlash) return;
     const timer = window.setTimeout(() => setFocusFlash(null), 1800);
