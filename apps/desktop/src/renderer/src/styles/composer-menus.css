@@ -17,7 +17,7 @@
 .ui-popover.composer-skills-menu { width: 330px; max-height: min(420px, calc(100vh - 32px)); overflow-y: auto; }
 .composer-skills-trigger { flex: 0 0 auto; }
 .composer-skills-trigger[data-count] { position: relative; }
-.composer-skills-trigger[data-count]::after { content: attr(data-count); display: none; position: absolute; top: 0; right: -2px; min-width: 12px; height: 12px; padding: 0 2px; border-radius: 6px; background: var(--accent-warning); color: var(--surface-main); font-size: 8px; line-height: 12px; text-align: center; }
+.composer-skills-trigger[data-count]::after { content: attr(data-count); display: none; position: absolute; top: 0; right: -2px; min-width: 12px; height: 12px; padding: 0 2px; border-radius: 6px; background: var(--accent-warning); color: var(--bg-window); font-size: 8px; line-height: 12px; text-align: center; }
 .composer-skills-menu .composer-menu-empty { line-height: 1.6; }
 .composer-menu-retry { margin-left: 5px; border: 0; background: transparent; color: var(--text-main); text-decoration: underline; cursor: pointer; }
 @media (max-width:699px) {
