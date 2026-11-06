@@ -7,6 +7,7 @@ import { EditSkillDialog } from "./EditSkillDialog";
 import { IconChevronRight, IconClose, IconSearch, IconSparkles } from "./Icons";
 import { filterSkillProblems, filterSkills } from "../data/skillFilter";
 import { resolveSkillFocus } from "../data/skillFocus";
+import { visibleSkillDetail } from "../data/skillDetail";
 
 export interface WorkspaceSkillsProps {
   skills: SkillDescriptor[];
@@ -55,6 +56,8 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
   const filteredSkills = filterSkills(props.skills, query);
   const filteredProblems = filterSkillProblems(props.problems, query);
   const selected = filteredSkills.find(skill => skill.id === selectedId) ?? null;
+  // 切换选中项后旧的正文快照会保留到 effect 执行；详情区只认属于当前选中技能的正文。
+  const shownDetail = visibleSkillDetail(selected, detail);
   useEffect(() => {
     // 目录刷新后选中项可能消失；正文只属于当前目录中的技能。
     if (selectedId && !props.skills.some(skill => skill.id === selectedId)) {
@@ -130,13 +133,13 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
         {!selected && <p className="page-empty-note">选择技能可查看它会向模型注入的正文。</p>}
         {selected && !props.readable && <><strong>{selected.name}</strong><p className="workspace-skill-description">{selected.description || "无描述"}</p><p className="page-empty-note">当前内核未声明技能正文读取能力，无法在应用内查看内容；仍可在输入区选择该技能。</p></>}
         {selected && props.readable && <>
-          <div className="page-section-head"><strong>{detail?.name ?? selected.name}</strong><span className="workspace-skill-tools"><button type="button" className="subtle-button" onClick={() => setReload(previous => previous + 1)} disabled={detailLoading}>{detailLoading ? "正在读取…" : "重新读取"}</button>{props.writable && detail && !detailLoading && <button type="button" className="subtle-button" onClick={() => { setNotice(""); setEditing(detail); }}>编辑技能…</button>}</span></div>
-          <small className="workspace-skill-meta">{selected.id} · {byteText(detail?.bytes ?? selected.bytes)} · 摘要 {selected.digest.slice(0, 12)}…</small>
+          <div className="page-section-head"><strong>{shownDetail?.name ?? selected.name}</strong><span className="workspace-skill-tools"><button type="button" className="subtle-button" onClick={() => setReload(previous => previous + 1)} disabled={detailLoading}>{detailLoading ? "正在读取…" : "重新读取"}</button>{props.writable && shownDetail && !detailLoading && <button type="button" className="subtle-button" onClick={() => { setNotice(""); setEditing(shownDetail); }}>编辑技能…</button>}</span></div>
+          <small className="workspace-skill-meta">{selected.id} · {byteText(shownDetail?.bytes ?? selected.bytes)} · 摘要 {selected.digest.slice(0, 12)}…</small>
           <div className="workspace-skill-actions"><button type="button" className="solid-button" onClick={() => props.onUseSkill(selected.id)}>在新聊天中使用该技能</button><span className="workspace-skill-hint">只预选到新会话草稿，不会自动发送。</span></div>
           {detailLoading && <p className="page-empty-note">正在读取技能正文…</p>}
           {detailError && <p className="page-empty-note" role="alert">{detailError}</p>}
-          {detail && <pre className="workspace-skill-content">{detail.content}</pre>}
-          <p className="page-empty-note">最多 {(detail?.limitBytes ?? 64 * 1024).toLocaleString("zh-CN")} 字节；仍需在输入区选择后才会作为上下文注入，不改变工具权限。保存修改后下一回合生效。</p>
+          {shownDetail && <pre className="workspace-skill-content">{shownDetail.content}</pre>}
+          <p className="page-empty-note">最多 {(shownDetail?.limitBytes ?? 64 * 1024).toLocaleString("zh-CN")} 字节；仍需在输入区选择后才会作为上下文注入，不改变工具权限。保存修改后下一回合生效。</p>
         </>}
       </div>
     </div>}
