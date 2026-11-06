@@ -66,6 +66,8 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const [queueIntent, setQueueIntent] = useState<QueueIntent>("steering");
   const lastValue = useRef(value), valueVersion = useRef(0);
   if (lastValue.current !== value) { lastValue.current = value; valueVersion.current += 1; }
+  // 记录本组件最后写入的文本；父层或其他入口改写 value 后，已请求打开的快捷指令菜单立即失效。
+  const ownedText = useRef(value);
   const composerDraft = draft && onDraftChange ? draft : { ...localDraft, text: value, textVersion: valueVersion.current };
   const draftRef = useRef(composerDraft); draftRef.current = composerDraft;
   const attachments = composerDraft.attachments;
@@ -90,7 +92,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const dragDepth = useRef(0);
   const slashQuery = value.match(/^\/([^\s]*)$/)?.[1] ?? "";
   // 渲染时以当前 value 为准：建议词、编辑消息、恢复队列消息会绕过 change() 直接改写输入。
-  const slashMenuOpen = slashMenuVisible(slashOpen, value);
+  const slashMenuOpen = slashMenuVisible(slashOpen, value, ownedText.current);
   // 列表与键盘共用同一份结果；活动项索引也按同一规则夹取，供 aria-activedescendant 使用。
   const slashListId = useId();
   const slashOptions = filterSlashCommands(slashQuery);
@@ -117,13 +119,21 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     setMenu(previous => previous === next ? null : next);
     setModelQuery(""); setSkillQuery(""); setSlashOpen(false);
   };
+  const writeText = (text: string) => { ownedText.current = text; onChange(text); };
   const change = (text: string) => {
-    onChange(text); setNotice(""); setSelectedIndex(0);
+    writeText(text); setNotice(""); setSelectedIndex(0);
     setSlashOpen(/^\/[^\s]*$/.test(text));
+  };
+  // 快捷指令按钮：空输入先写入 /；已有草稿时把当前文本收归本组件，选择命令后前缀插入。
+  const openSlashMenu = () => {
+    const text = value.trim() ? value : "/";
+    ownedText.current = text;
+    if (text !== value) onChange(text);
+    setSlashOpen(true); setSelectedIndex(0); setMenu(null); focusInput();
   };
   const selectSlash = (item: SlashCommandItem) => {
     setSlashOpen(false);
-    onChange(/^\/[^\s]*$/.test(value) ? item.command + " " : `${item.command} ${value}`);
+    writeText(/^\/[^\s]*$/.test(value) ? item.command + " " : `${item.command} ${value}`);
     focusInput();
   };
   const addFiles = async (files: File[]) => {
@@ -230,6 +240,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     const pending = draftRef.current.queueSubmission;
     if (!pending?.uncertain) return;
     onChange(pending.text);
+    setSlashOpen(false);
     updateDraft(previous => previous.id === draftRef.current.id
       ? { ...previous, text: pending.text, textVersion: previous.textVersion + 1, attachments: [], skillIds: pending.skillIds ?? [], queueSubmission: pending }
       : previous);
@@ -371,7 +382,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
             <button type="button" disabled={readingAttachments || submitting || attachments.length >= MAX_ATTACHMENTS} onClick={() => { fileRef.current?.click(); setMenu(null); }}><IconFolder /><span>添加文件<small>TXT、Markdown、JSON、CSV</small></span><span className="menu-shortcut">本地</span></button>
             <div className="menu-divider" />
             {onLogin && <button type="button" onClick={() => { setMenu(null); onLogin(); }}><IconLock /><span>连接 BOSS 直聘<small>在当前会话右侧扫码登录</small></span></button>}
-            <button type="button" onClick={() => { if (!value.trim()) onChange("/"); setSlashOpen(true); setSelectedIndex(0); setMenu(null); focusInput(); }}><IconSparkles /><span>快捷指令</span><span className="menu-shortcut">/</span></button>
+            <button type="button" onClick={openSlashMenu}><IconSparkles /><span>快捷指令</span><span className="menu-shortcut">/</span></button>
             <div className="composer-menu-footer">也可拖入文本文件，或粘贴较长文本作为附件。</div>
           </Popover>
         </div>
