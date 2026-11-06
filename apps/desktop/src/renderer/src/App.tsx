@@ -18,7 +18,7 @@ import { UI_STORAGE_PREFIX } from "./data/uiStorage";
 import { branchSupport, branchSwitchBlock, useSessionBranches } from "./data/useSessionBranches";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
-import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, archiveThread, configuredModels, deleteThread, harnessErrorText, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn, unarchiveThread, updateQueuedItem } from "./data/harnessBridge";
+import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, archiveThread, configuredModels, deleteThread, harnessErrorText, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, renameThread, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn, unarchiveThread, updateQueuedItem } from "./data/harnessBridge";
 import { deleteThreadFailure } from "./data/deleteThreadError";
 import { resolveQuickAskRoute } from "./data/quickAsk";
 import { sessionTitleFromPrompt } from "./data/sessionTitle";
@@ -440,6 +440,25 @@ export function App(): JSX.Element {
       return false;
     }
   }, []);
+  /** 重命名会话：写入内核标题并持久化；失败保留弹窗与输入，原因由外层提示。 */
+  const handleRenameSession = useCallback(async (session: SessionItem, name: string): Promise<boolean> => {
+    let title: string;
+    try {
+      title = (await renameThread(session.id, name)).title;
+    } catch (cause) {
+      setError(`重命名失败：${harnessErrorText(cause)}。聊天名称保持不变。`);
+      return false;
+    }
+    setFolders(previous => previous.map(folder => ({
+      ...folder,
+      sessions: folder.sessions.map(item => item.id === session.id ? { ...item, title } : item),
+    })));
+    if (activeRef.current?.id === session.id) {
+      const updated = { ...activeRef.current, title };
+      activeRef.current = updated; setActiveSession(updated);
+    }
+    return true;
+  }, []);
   const createConnectionSession = async (): Promise<SessionItem | null> => {
     if (!window.boss || !harnessUp || startingRef.current) return null;
     startingRef.current = true; setStartingSession(true);
@@ -759,7 +778,7 @@ export function App(): JSX.Element {
   return <>
     <AppShell isDark={isDark} onToggleTheme={() => setIsDark(previous => !previous)} isSidebarOpen={isSidebarOpen} onToggleSidebar={() => setIsSidebarOpen(previous => !previous)}
       folders={folders} activeSession={activeSession} isHomeView={isHomeView} messages={messages} turnSkillIds={turnSkillIds} currentMode={currentMode} onModeChange={setCurrentMode}
-      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onDeleteSession={handleDeleteSession} onArchiveSession={handleArchiveSession} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueActiveItems={queueMeta.activeItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} onReadQueueItem={handleReadQueueItem} onUpdateQueueItem={capabilities?.queueUpdate === true ? handleUpdateQueueItem : undefined} onRefreshQueue={handleRefreshQueue} autoCompactionConfig={capabilities?.autoCompactionConfig === true} simulateLocal={preview} harnessUp={harnessUp}
+      onSelectSession={handleSelectSession} onNewTask={handleNewTask} onDeleteSession={handleDeleteSession} onArchiveSession={handleArchiveSession} onRenameSession={window.boss ? handleRenameSession : undefined} onSendMessage={handleSendMessage} onQueueMessage={handleQueueMessage} onCheckQueueSubmission={handleCheckQueueSubmission} queueItems={queueItems} queueTotalItems={queueMeta.totalItems} queueActiveItems={queueMeta.activeItems} queueTruncated={queueMeta.truncated} onRemoveQueueItem={handleRemoveQueueItem} onRetryQueueItem={handleRetryQueueItem} onReadQueueItem={handleReadQueueItem} onUpdateQueueItem={capabilities?.queueUpdate === true ? handleUpdateQueueItem : undefined} onRefreshQueue={handleRefreshQueue} autoCompactionConfig={capabilities?.autoCompactionConfig === true} simulateLocal={preview} harnessUp={harnessUp}
       onCreateConnectionSession={createConnectionSession}
       sessionReasoning={contextThreadId ? sessionReasoning : undefined}
       running={Boolean(activeSession && runningThreadIds.has(activeSession.id))} taskBlocked={startingSession || branchSummaryRunning}

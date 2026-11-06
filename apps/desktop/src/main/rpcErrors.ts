@@ -18,6 +18,7 @@ const PRESERVED: ReadonlySet<string> = new Set([
   "thread/leaf/set",
   "thread/list",
   "thread/model/set",
+  "thread/name/set",
   "thread/usage/read",
   "turn/continuation/read",
   "turn/continue",
