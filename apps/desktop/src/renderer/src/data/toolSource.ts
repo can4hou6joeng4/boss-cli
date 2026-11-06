@@ -26,3 +26,11 @@ export function toolQueriedAtText(value: unknown): string | null {
   const iso = at.toISOString();
   return iso.endsWith(".000Z") ? `${iso.slice(0, -5)}Z` : iso;
 }
+
+/**
+ * 工具卡展示用的本机时区时间；缺失或不可解析时返回 null。
+ * 会话内查找复用同一入口，保证匹配文本与卡片渲染完全一致。
+ */
+export function toolQueriedAtLabel(value: unknown): string | null {
+  return toolQueriedAt(value)?.toLocaleString() ?? null;
+}

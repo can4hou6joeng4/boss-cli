@@ -4,6 +4,7 @@ import { approvalDecisionText } from "./approvalCopy";
 import { approvalRemainingText } from "./pendingApprovals";
 import { searchText } from "./searchText";
 import { toolOutcomeBadge } from "./toolOutcome";
+import { toolQueriedAtLabel } from "./toolSource";
 
 /** 正文实际渲染的文本：用户消息渲染 `content`，智能体消息渲染 `paragraphs`。 */
 function visibleBodyText(item: MessageItem): string {
@@ -20,6 +21,7 @@ export interface VisibleDetailText {
   toolStatus?: string;
   input?: string;
   source?: string;
+  sourceQueriedAt?: string;
   errorCode?: string;
   recoveryAction?: string;
   result?: string;
@@ -47,6 +49,8 @@ function visibleDetailText(item: MessageItem, now = Date.now()): VisibleDetailTe
     toolStatus: badge?.label ?? "",
     input: item.toolUse?.input ?? "",
     source: item.toolUse?.source?.ref ?? "",
+    // 与工具卡同源：只匹配实际渲染的本地时间；不可解析时卡片不显示时间，也不参与匹配。
+    sourceQueriedAt: toolQueriedAtLabel(item.toolUse?.source?.queriedAt) ?? "",
     errorCode: item.toolUse?.errorCode ?? "",
     recoveryAction: item.toolUse?.recoveryAction ?? "",
     result: item.toolUse?.result ?? "",
@@ -64,9 +68,9 @@ function visibleDetailText(item: MessageItem, now = Date.now()): VisibleDetailTe
  * 返回匹配消息的 id，按消息顺序排列。
  * 查询为空（或只有空白）时不选中任何消息；匹配使用 NFKC 归一化且不区分大小写。
  * 只匹配实际渲染的文本：正文按角色取字段，`includeDetails` 为真时额外匹配思考内容与
- * 工具卡上可见的名称、状态徽标、输入、来源编号、错误码、恢复建议、结果与结构化输出，
- * 以及审批卡的说明、结论与期限。各字段独立匹配，不把记录里存在但界面不渲染的字段计入，
- * 避免计数命中却既无高亮也无折叠块可展开。
+ * 工具卡上可见的名称、状态徽标、输入、来源编号、来源查询时间、错误码、恢复建议、
+ * 结果与结构化输出，以及审批卡的说明、结论与期限。各字段独立匹配，不把记录里存在但
+ * 界面不渲染的字段计入，避免计数命中却既无高亮也无折叠块可展开。
  */
 export function findMessageMatches(
   messages: MessageItem[],
@@ -89,7 +93,7 @@ export interface FoldedMessageMatch {
   id: string;
   /** 思考块正文命中。 */
   thinking: boolean;
-  /** 工具块折叠内容（输入 / 来源 / 错误码 / 恢复建议 / 结果 / 结构化输出）命中；摘要行的工具名与状态徽标不算。 */
+  /** 工具块折叠内容（输入 / 来源编号及查询时间 / 错误码 / 恢复建议 / 结果 / 结构化输出）命中；摘要行的工具名与状态徽标不算。 */
   tool: boolean;
   /** 工具块内直接渲染的结构化输出命中。 */
   output: boolean;
@@ -111,8 +115,8 @@ export function findFoldedMatches(messages: MessageItem[], query: string): Folde
     const detail = visibleDetailText(item);
     const thinking = hit(detail.thinking);
     const tool = Boolean(item.toolUse) && (
-      hit(detail.input) || hit(detail.source) || hit(detail.errorCode)
-      || hit(detail.recoveryAction) || hit(detail.result) || hit(detail.output)
+      hit(detail.input) || hit(detail.source) || hit(detail.sourceQueriedAt)
+      || hit(detail.errorCode) || hit(detail.recoveryAction) || hit(detail.result) || hit(detail.output)
     );
     const output = hit(detail.output);
     if (thinking || tool) matches.push({ id: item.id, thinking, tool, output });
