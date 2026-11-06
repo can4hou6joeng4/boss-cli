@@ -32,6 +32,7 @@ import { queueItemsOf, type QueuePage } from "./data/queueMapping";
 import type { QueueRefreshResult } from "./data/queueRefresh";
 import { reduceModelRetry, settleModelRetryOnTurnEnd, type ModelRetryStatus } from "./data/modelRetry";
 import { toMessage } from "./data/harnessBridge";
+import { deliveredTurnSkills } from "./data/turnSkills";
 import type { InitializeResponse, ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-harness/protocol";
 import type { QueueIntent, QueueSubmissionCheck } from "./data/composerDraft";
 
@@ -78,12 +79,9 @@ export function App(): JSX.Element {
   const applyQueuePage = useCallback((page: QueuePage) => {
     setQueueItems(page.items);
     setQueueMeta({ totalItems: page.totalItems, activeItems: page.activeItems, truncated: page.truncated });
-    // 已投递的后续回合带 turnId 与实际技能；运行中的用户消息据此立即显示标签，
-    // 不必等到回合结束后的恢复。
-    const delivered: Record<string, string[]> = {};
-    for (const item of page.items) {
-      if (item.status === "delivered" && item.turnId && item.skillIds?.length) delivered[item.turnId] = [...item.skillIds];
-    }
+    // 已投递且非去重回执的后续回合带 turnId 与实际技能；运行中的用户消息据此立即显示标签，
+    // 不必等到回合结束后的恢复。去重关联的是已有请求，本次参数未必等于该回合实际注入的技能。
+    const delivered = deliveredTurnSkills(page.items);
     if (Object.keys(delivered).length) setTurnSkillIds(previous => ({ ...previous, ...delivered }));
   }, []);
   const [modelRetries, setModelRetries] = useState<Record<string, ModelRetryStatus>>({});
@@ -403,6 +401,8 @@ export function App(): JSX.Element {
     setConfiguredModelLabel(legacyRouteMismatch(session, defaultModel) ? `需选择线路 · ${model}` : `${provider} · ${model}`);
     setQueueItems([]);
     setQueueMeta({});
+    // 技能映射属于当前会话：回合 id 不保证跨会话唯一，旧映射不能留给新会话命中。
+    setTurnSkillIds({});
     void readContinuationCheck(session);
     if (window.innerWidth < 700) setIsSidebarOpen(false);
     if (session.projectId !== HARNESS_PROJECT_ID) {
@@ -438,7 +438,7 @@ export function App(): JSX.Element {
   const clearActiveConversation = useCallback(() => {
     ++selectionVersion.current; ++continuationReadGeneration.current;
     activeRef.current = null; setActiveSession(null); setMessages([]); setIsHomeView(true); setContinuationCheck(null);
-    setQueueItems([]); setQueueMeta({});
+    setQueueItems([]); setQueueMeta({}); setTurnSkillIds({});
     if (defaultModel) { setActiveModelProvider(defaultModel.provider); setActiveModelId(defaultModel.model); setConfiguredModelLabel(`${defaultModel.provider} · ${defaultModel.model}`); }
   }, [defaultModel]);
   const handleNewTask = useCallback(() => {
