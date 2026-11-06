@@ -71,6 +71,7 @@ import {
 } from "@boss-harness/protocol";
 import { formatRelativeTime, safeSlice, stripIpcErrorWrapper } from "@boss-harness/shared";
 import { isQueueItem, queuePageOf, type QueuePage } from "./queueMapping";
+import { TURN_SKILL_PAGE_LIMIT, turnSkillPageOf } from "./turnSkills";
 import { approvalDeadlineMs, mapPendingApprovals, type PendingApprovalList } from "./pendingApprovals";
 import { readPagedItems } from "./pagedRead";
 import { toolDurationMs } from "./toolTiming";
@@ -204,8 +205,28 @@ export async function readTaskStatus(params: TaskReadParams): Promise<TaskReadRe
   if (!api) throw new Error("本地 Harness 未连接");
   return contextRequest<TaskReadResponse>(ClientMethods.taskRead, params);
 }
-export const listBranchTurns = (threadId: string, cursor?: string | null): Promise<TurnListResponse> =>
-  contextRequest(ClientMethods.threadTurnsList, cursor ? { threadId, view: "branch", cursor, limit: 200 } : { threadId, view: "branch", limit: 200 });
+/** 当前会话的回合列表；内核声明 sessionBranchViews 时传 view=branch，与消息视图保持一致。 */
+export const listBranchTurns = (threadId: string, cursor?: string | null, view: "branch" | "log" = "branch"): Promise<TurnListResponse> =>
+  contextRequest(ClientMethods.threadTurnsList, cursor ? { threadId, view, cursor, limit: 200 } : { threadId, view, limit: 200 });
+
+/**
+ * 读取当前会话全部回合的技能映射。
+ * `thread/resume` 固定 excludeTurns，快照里没有 turns；历史用户消息的技能标签只能从回合列表补齐。
+ * 分页与游标都校验，页数有上限；失败由调用方按「标签不可用」处理，不影响会话内容。
+ */
+export async function readTurnSkillIds(threadId: string, view: "branch" | "log"): Promise<Record<string, string[]>> {
+  const skills: Record<string, string[]> = {};
+  let cursor: string | null = null;
+  for (let pages = 0; pages < TURN_SKILL_PAGE_LIMIT; pages += 1) {
+    const page = turnSkillPageOf(await listBranchTurns(threadId, cursor, view));
+    if (!page) throw new Error("回合列表响应无法识别");
+    for (const [turnId, ids] of Object.entries(page.skills)) skills[turnId] = ids;
+    if (page.nextCursor === null) return skills;
+    if (page.nextCursor === cursor) throw new Error("回合列表分页未前进");
+    cursor = page.nextCursor;
+  }
+  throw new Error("回合列表分页过多");
+}
 
 /** 内核里的会话列表，映射成侧栏用的条目。读取失败时抛出，避免把空列表误当成「没有会话」。 */
 export async function listThreads(archived = false): Promise<SessionItem[]> {
