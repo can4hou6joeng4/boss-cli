@@ -359,7 +359,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
 
   return (
     <div className="thread-workspace">
-      {/* 极简顶栏 (ThreadHeaderBar - 对齐 ChatGPT.app) */}
+      {/* 极简顶栏（ThreadHeaderBar） */}
       <div className="thread-header-bar">
         <div className="thread-header-title" title={firstUserMsg || "会话详情"}>
           <span>{threadTitle}</span>
@@ -614,7 +614,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                   </div>
                 )}
 
-                {/* 智能体文本段落 (ChatGPT.app 级富文本与代码高亮排版) */}
+                {/* 智能体文本段落（富文本与代码高亮排版） */}
                 {item.paragraphs && item.paragraphs.length > 0 && (
                   <RichMarkdown content={item.paragraphs.join("\n\n")} />
                 )}
@@ -779,7 +779,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                   />
                 )}
 
-                {/* 消息底部快捷工具栏 (ChatGPT.app 纯图标紧凑交互) */}
+                {/* 消息底部快捷工具栏（纯图标紧凑交互） */}
                 <div className="msg-action-toolbar">
                   {copyText && <>
                     <button
@@ -862,7 +862,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
         </div>
       </div>
 
-      {/* 悬浮回到底部按钮 (ChatGPT.app 交互规范) */}
+      {/* 悬浮回到底部按钮（交互规范） */}
       {showScrollBottom && (
         <button
           className="scroll-to-bottom-btn"
