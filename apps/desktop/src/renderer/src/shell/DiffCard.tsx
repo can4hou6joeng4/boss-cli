@@ -30,7 +30,7 @@ export const DiffCard: React.FC<DiffCardProps> = ({
       <div className="codex-diff-card__header">
         <div className="codex-diff-card__header-left">
           <div className="codex-diff-card__title-row">
-            <IconDiffFiles size={16} style={{ color: "var(--color-text-secondary)" }} />
+            <IconDiffFiles size={16} style={{ color: "var(--text-muted)" }} />
             <span className="codex-diff-card__title">
               已编辑 {fileCount} 个文件
             </span>
