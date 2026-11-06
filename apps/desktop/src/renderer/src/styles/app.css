@@ -1613,6 +1613,11 @@ html:not(.dark) .chat-blockquote {
   overflow-y: auto;
   padding: 20px;
 }
+.cockpit-panel:focus-visible {
+  outline: 2px solid var(--accent-cyan);
+  outline-offset: 6px;
+  border-radius: 8px;
+}
 .cockpit-toolbar {
   display: flex;
   align-items: center;
