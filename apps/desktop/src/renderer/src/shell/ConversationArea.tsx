@@ -25,7 +25,7 @@ import { toolOutcomeBadge } from "../data/toolOutcome";
 import { toolQueriedAtLabel } from "../data/toolSource";
 import { findFoldedMatches, findMessageMatches } from "../data/messageSearch";
 import { mergeLocalMessageState } from "../data/messageMerge";
-import { retryTextForMessage } from "../data/messageRetry";
+import { retryRequestForMessage } from "../data/messageRetry";
 import { messageCopyText } from "../data/messageCopy";
 import { collectKernelTextRanges, collectTextRanges } from "../data/findHighlight";
 import { compactTitle, stripProjectPrefix } from "../data/sessionTitle";
@@ -252,8 +252,10 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   };
   const handleRetry = (message: MessageItem) => {
     if (running || taskBlocked) return;
-    const text = retryTextForMessage(messages, message.id);
-    if (text) onSendMessage(text);
+    // 目录未就绪时无法确认技能仍可用，退回仅文本重试；过滤规则见 retryRequestForMessage。
+    const request = retryRequestForMessage(messages, message.id, turnSkillIds,
+      skillCatalogState === "ready" ? skills.map(skill => skill.id) : []);
+    if (request) onSendMessage(request.text, request.skillIds.length ? request.skillIds : undefined);
   };
   useEffect(() => () => {
     if (feedbackNoteTimer.current !== undefined) clearTimeout(feedbackNoteTimer.current);
