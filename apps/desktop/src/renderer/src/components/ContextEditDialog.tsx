@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ContextEditReadResponse } from "@boss-harness/protocol";
 import { harnessErrorText, readContextEdit, writeContextEdit } from "../data/harnessBridge";
+import { CONTEXT_EDIT_STALE_NOTICE, contextEditSubmitBlocked } from "../data/contextEditState";
 import { ModalSurface } from "./ModalSurface";
 import "../styles/context-edit.css";
 
@@ -28,6 +29,8 @@ export function ContextEditDialog({ threadId, itemId, title, onClose, onChanged 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [uncertain, setUncertain] = useState(false);
+  // 读取失败后 record 仍是上一次成功的快照；重新读取成功前不得把它当作当前状态。
+  const [stale, setStale] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -37,8 +40,10 @@ export function ContextEditDialog({ threadId, itemId, title, onClose, onChanged 
       setRecord(next);
       setDraft(next.currentText ?? next.originalText);
       setUncertain(false);
+      setStale(false);
       onChanged(next);
     } catch (cause) {
+      setStale(true);
       setError(`读取会话上下文失败：${harnessErrorText(cause)}`);
     } finally {
       setLoading(false);
@@ -48,7 +53,7 @@ export function ContextEditDialog({ threadId, itemId, title, onClose, onChanged 
   useEffect(() => { void refresh(); }, [refresh]);
 
   const apply = async (replacementText: string | null) => {
-    if (!record || saving || !record.canEdit) return;
+    if (!record || saving || stale || !record.canEdit) return;
     setSaving(true);
     setError("");
     setUncertain(false);
@@ -65,6 +70,7 @@ export function ContextEditDialog({ threadId, itemId, title, onClose, onChanged 
       const actual = validate(await readContextEdit(threadId, itemId), threadId, itemId);
       setRecord(actual);
       setDraft(actual.currentText ?? actual.originalText);
+      setStale(false);
       onChanged(actual);
       const expected = replacementText === null ? actual.excluded : !actual.excluded && actual.currentText === replacementText;
       if (expected) {
@@ -77,6 +83,8 @@ export function ContextEditDialog({ threadId, itemId, title, onClose, onChanged 
         setError("会话来源已变化，编辑没有按预期生效。请核对当前内容后重新操作。");
       }
     } catch (cause) {
+      // 回读失败时界面仍保留提交前的 record；标记过期，禁止基于旧快照继续提交。
+      setStale(true);
       setError(writeError
         ? "提交结果和当前状态都无法确认。请先刷新并核对，不要重复提交。"
         : `提交后无法读取最新上下文（${harnessErrorText(cause)}），请稍后核对。`);
@@ -88,6 +96,7 @@ export function ContextEditDialog({ threadId, itemId, title, onClose, onChanged 
 
   const excluded = record?.excluded ?? false;
   const changed = Boolean(record && !excluded && record.currentText !== record.originalText);
+  const blocked = contextEditSubmitBlocked({ loading, saving, stale });
 
   return <ModalSurface title={title} onClose={saving ? () => undefined : onClose} className="context-edit-dialog">
     <div className="context-edit-body">
@@ -98,6 +107,7 @@ export function ContextEditDialog({ threadId, itemId, title, onClose, onChanged 
           <strong>{excluded ? "此消息已从后续模型上下文排除" : changed ? "后续模型请求使用替换文本" : "后续模型请求使用原始文本"}</strong>
           <span>{record.canEdit ? "可追加新的上下文编辑" : record.reason || "此消息当前不可编辑"}</span>
         </section>
+        {record && stale && <p className="context-edit-warning" role="status">{CONTEXT_EDIT_STALE_NOTICE}</p>}
         <section className="context-edit-source">
           <h3>原始会话文本</h3>
           <pre>{record.originalText || "（空文本）"}</pre>
@@ -117,9 +127,9 @@ export function ContextEditDialog({ threadId, itemId, title, onClose, onChanged 
       <div className="context-edit-actions">
         <button className="secondary-button" type="button" onClick={onClose} disabled={saving}>关闭</button>
         {record?.canEdit && <>
-          <button className="secondary-button" type="button" onClick={() => void apply(record.originalText)} disabled={saving || loading || (!excluded && !changed && draft === record.originalText)}>恢复原文</button>
-          <button className="secondary-button" type="button" onClick={() => void apply(null)} disabled={saving || loading || excluded}>排除消息</button>
-          <button className="solid-button" type="button" onClick={() => void apply(draft)} disabled={saving || loading || !draft.trim() || [...draft].length > 32000 || draft === record.currentText}>{saving ? "正在核对…" : "使用替换文本"}</button>
+          <button className="secondary-button" type="button" onClick={() => void apply(record.originalText)} disabled={blocked || (!excluded && !changed && draft === record.originalText)}>恢复原文</button>
+          <button className="secondary-button" type="button" onClick={() => void apply(null)} disabled={blocked || excluded}>排除消息</button>
+          <button className="solid-button" type="button" onClick={() => void apply(draft)} disabled={blocked || !draft.trim() || [...draft].length > 32000 || draft === record.currentText}>{saving ? "正在核对…" : "使用替换文本"}</button>
         </>}
       </div>
     </div>
