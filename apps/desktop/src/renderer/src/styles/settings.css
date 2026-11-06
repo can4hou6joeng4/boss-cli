@@ -141,10 +141,11 @@
 .settings-header h2 {
   margin: 0;
   color: var(--text-main);
+  font-family: var(--font-display);
   font-size: 20px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.4;
-  letter-spacing: -.4px;
+  letter-spacing: -.2px;
 }
 
 .settings-close {
@@ -397,18 +398,18 @@
 }
 
 .settings-theme-preview.is-light {
-  background: #efefef;
-  color: #444;
+  background: #f6f2ec;
+  color: #24261f;
 }
 
 .settings-theme-preview.is-system {
-  background: linear-gradient(135deg, #efefef 50%, #252525 50%);
-  color: #8a8a8a;
+  background: linear-gradient(135deg, #f6f2ec 50%, #141a17 50%);
+  color: #8a8478;
 }
 
 .settings-theme-preview.is-dark {
-  background: #252525;
-  color: #dedede;
+  background: #141a17;
+  color: #ece7df;
 }
 
 .settings-theme-option.is-selected {
@@ -558,9 +559,10 @@
 
 .settings-about-brand h3 {
   margin: 0 0 6px;
+  font-family: var(--font-display);
   font-size: 19px;
   font-weight: 600;
-  letter-spacing: -.3px;
+  letter-spacing: -.1px;
 }
 
 .settings-about-brand p,
