@@ -19,6 +19,7 @@ import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import type { QueueRefreshResult } from "../data/queueRefresh";
 import { appendQuote, createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type CheckQueueSubmission } from "../data/composerDraft";
 import { isCommandChord } from "../data/shortcuts";
+import { currentScrollBehavior } from "../data/scrollMotion";
 import { useClipboardCopy } from "../data/clipboardCopy";
 import { toolOutcomeBadge } from "../data/toolOutcome";
 import { toolQueriedAtLabel } from "../data/toolSource";
@@ -148,7 +149,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   }, [findOpen, findDetails, currentFindId, foldedFindMap]);
   useEffect(() => {
     if (!findOpen || !currentFindId) return;
-    document.getElementById("message-" + currentFindId)?.scrollIntoView({ block: "center", behavior: "smooth" });
+    document.getElementById("message-" + currentFindId)?.scrollIntoView({ block: "center", behavior: currentScrollBehavior() });
   }, [findOpen, currentFindId]);
   useEffect(() => {
     type HighlightRegistry = { set(name: string, highlight: unknown): void; delete(name: string): boolean };
@@ -189,7 +190,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
       const toolBlock = target.querySelector<HTMLDetailsElement>("details.tool-block");
       if (toolBlock) toolBlock.open = true;
     }
-    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    target.scrollIntoView({ block: "center", behavior: currentScrollBehavior() });
     setFocusFlash(focusMessageId);
     onFocusMessage?.();
   }, [focusMessageId, focusRevealTool, messages, onFocusMessage]);
@@ -239,7 +240,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const wasAtBottom = useRef(true);
-  const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: currentScrollBehavior() });
   useEffect(() => { setMessages(initialMessages); }, [initialMessages]);
   useEffect(() => { if (wasAtBottom.current) messagesEndRef.current?.scrollIntoView({ behavior: "auto" }); }, [messages, running, modelRetry?.phase]);
   const handleScroll = (event: React.UIEvent<HTMLDivElement>) => {
