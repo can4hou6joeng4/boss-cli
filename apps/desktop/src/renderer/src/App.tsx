@@ -23,6 +23,7 @@ import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, archiveThread, configuredMode
 import { deleteThreadFailure } from "./data/deleteThreadError";
 import { resolveQuickAskRoute } from "./data/quickAsk";
 import { sessionTitleFromPrompt } from "./data/sessionTitle";
+import { matchesContinuation, resumedSession } from "./data/sessionState";
 import { isCommandChord } from "./data/shortcuts";
 import { reduceHarnessEvent, autoApprovalFallback, type HarnessEvent } from "./data/harnessEvents";
 import { unconfirmedFailure } from "./data/confirmationFailure";
@@ -404,23 +405,29 @@ export function App(): JSX.Element {
     void replicaRef.current?.resume(session.id).then(snapshot => {
       if (selectionVersion.current !== requestVersion || activeRef.current?.id !== session.id) return;
       // 具体原因已随 session/error 送到界面；这里沿用它，只有取不到时才回退到通用文案。
-      if (!snapshot) setError(replicaRef.current?.lastFailure(session.id) ?? "读取会话失败，已保留当前内容。请检查本地内核连接。");
-      else {
-        const provider = snapshot.thread.provider ?? defaultModel?.provider ?? activeModelProvider;
-        const model = snapshot.thread.model ?? (provider === defaultModel?.provider ? defaultModel.model : undefined)
-          ?? modelOptions.find(candidate => candidate.provider === provider)?.id ?? activeModelId;
-        const updated = { ...session, provider: snapshot.thread.provider, model: snapshot.thread.model };
-        activeRef.current = updated; setActiveSession(updated);
-        const needsRoute = legacyRouteMismatch(updated, defaultModel);
-        if (needsRoute) setError(LEGACY_ROUTE_HINT);
-        setActiveModelProvider(provider); setActiveModelId(model); setConfiguredModelLabel(needsRoute ? `需选择线路 · ${model}` : `${provider} · ${model}`);
+      if (!snapshot) {
+        setError(replicaRef.current?.lastFailure(session.id) ?? "读取会话失败，已保留当前内容。请检查本地内核连接。");
+        return;
       }
+      // resume 在途期间列表刷新（改名 / 归档 / 切换线路都会触发 refresh）可能已写入更新的元数据：
+      // 此时 activeRef 不再是发起选中时的对象，旧快照不得覆盖它。
+      const base = resumedSession(activeRef.current, session);
+      if (!base) return;
+      const provider = snapshot.thread.provider ?? defaultModel?.provider ?? activeModelProvider;
+      const model = snapshot.thread.model ?? (provider === defaultModel?.provider ? defaultModel.model : undefined)
+        ?? modelOptions.find(candidate => candidate.provider === provider)?.id ?? activeModelId;
+      const updated = { ...base, provider: snapshot.thread.provider, model: snapshot.thread.model };
+      activeRef.current = updated; setActiveSession(updated);
+      const needsRoute = legacyRouteMismatch(updated, defaultModel);
+      if (needsRoute) setError(LEGACY_ROUTE_HINT);
+      setActiveModelProvider(provider); setActiveModelId(model); setConfiguredModelLabel(needsRoute ? `需选择线路 · ${model}` : `${provider} · ${model}`);
     });
   }, [activeModelId, activeModelProvider, defaultModel, modelOptions, readContinuationCheck]);
   /** 清空当前会话视图；不碰错误提示，供「删除后仍需提示」等调用方复用。 */
   const clearActiveConversation = useCallback(() => {
     ++selectionVersion.current; ++continuationReadGeneration.current;
     activeRef.current = null; setActiveSession(null); setMessages([]); setIsHomeView(true); setContinuationCheck(null);
+    setQueueItems([]); setQueueMeta({});
     if (defaultModel) { setActiveModelProvider(defaultModel.provider); setActiveModelId(defaultModel.model); setConfiguredModelLabel(`${defaultModel.provider} · ${defaultModel.model}`); }
   }, [defaultModel]);
   const handleNewTask = useCallback(() => {
@@ -565,6 +572,8 @@ export function App(): JSX.Element {
         if (selectionVersion.current === requestVersion) {
           ++selectionVersion.current; activeRef.current = started; setActiveSession(started); setIsHomeView(false);
           setMessages(cache.current.get(started.id) ?? []);
+          // 新会话不得沿用上一会话的队列与续接提示；随后到达的快照会按新会话重新写入。
+          setQueueItems([]); setQueueMeta({}); setContinuationCheck(null);
         }
         return started;
       } catch (cause) {
@@ -601,7 +610,8 @@ export function App(): JSX.Element {
         throw new Error("续接回执与请求不一致");
       }
       turnIds.current.set(check.threadId, response.turnId);
-      setContinuationCheck(null);
+      // 只清理本次续接对应的提示；期间切换到其它会话时，新会话的提示必须保留。
+      setContinuationCheck(previous => matchesContinuation(previous, check) ? null : previous);
       markRunning(check.threadId, true);
       void replicaRef.current?.resume(check.threadId);
     } catch (error) {
