@@ -20,6 +20,7 @@ import { countPendingApprovalsByThread, isApprovalCountEvent, readApprovalFocus 
 import { approvalSoundEnabled, playApprovalChime } from "../data/approvalChime";
 import { isCommandChord, isNotificationsShortcut } from "../data/shortcuts";
 import { booleanPreference, projectFolders, stringList, stringRecord } from "../data/preferenceShapes";
+import { planAliasMigrations } from "../data/aliasMigration";
 import { type ModelDescriptor, type SkillDescriptor, type ToolDescriptor } from "@boss-harness/protocol";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
 import type { CheckQueueSubmission, ComposerQueue } from "../data/composerDraft";
@@ -45,7 +46,7 @@ export interface AppShellProps {
   /** 归档或恢复会话；失败原因由外层提示，界面以内核事件刷新为准。 */
   onArchiveSession?: (session: SessionItem, archived: boolean) => Promise<boolean>;
   /** 重命名会话；成功写入内核标题并持久化，返回 false 表示名称未保存（失败原因由外层提示）。 */
-  onRenameSession?: (session: SessionItem, name: string) => Promise<boolean>;
+  onRenameSession?: (session: SessionItem, name: string, options?: { silent?: boolean }) => Promise<boolean>;
   onQueueMessage?: ComposerQueue; onCheckQueueSubmission?: CheckQueueSubmission; queueItems?: QueueItem[]; queueTotalItems?: number; queueActiveItems?: number; queueTruncated?: boolean; onRemoveQueueItem?: (id: string) => Promise<boolean>; onRetryQueueItem?: (item: QueueItem) => Promise<boolean>; onReadQueueItem?: (item: QueueItem) => Promise<QueueItem>; onUpdateQueueItem?: (item: QueueItem, input: string) => Promise<QueueItem>; onRefreshQueue?: () => Promise<QueueRefreshResult>;
   simulateLocal?: boolean; harnessUp?: boolean; running?: boolean; taskBlocked?: boolean;
   /** 内核声明 skills/read 后，「技能与工具」页才能展示技能正文。 */
@@ -202,6 +203,50 @@ export function AppShell(props: AppShellProps) {
   }));
   const currentProject = allFolders.find(folder => folder.sessions.some(session => session.id === props.activeSession?.id));
   const title = page === "home" ? props.isHomeView ? "BOSS Harness" : aliases[props.activeSession?.id ?? ""] || props.activeSession?.title || "新聊天" : { recents: "最近聊天", library: "资料库", skills: "技能与工具" }[page];
+  // 旧版本只写本机别名：连接内核后把遗留名称一次性写回内核，并删除本机别名。
+  // 失败保留别名、不提示，下次启动再试；卸载后不再发起后续写入。
+  const aliasMigrationStarted = useRef(false);
+  const aliasMigrationAlive = useRef(true);
+  const sessionsRef = useRef(sessions); sessionsRef.current = sessions;
+  useEffect(() => {
+    // StrictMode 会在开发环境重跑副作用：重新挂载时恢复存活标记，避免迁移循环被上一次清理中止。
+    aliasMigrationAlive.current = true;
+    return () => { aliasMigrationAlive.current = false; };
+  }, []);
+  useEffect(() => {
+    if (aliasMigrationStarted.current || props.simulateLocal || props.harnessUp !== true || !props.onRenameSession) return;
+    if (!sessions.length) return;
+    aliasMigrationStarted.current = true;
+    const plan = planAliasMigrations(aliases, sessions);
+    if (plan.drop.length > 0) {
+      setAliases(previous => {
+        const next = { ...previous };
+        for (const id of plan.drop) delete next[id];
+        return next;
+      });
+    }
+    if (!plan.rename.length) return;
+    const rename = props.onRenameSession;
+    void (async () => {
+      for (const { session, name } of plan.rename) {
+        if (!aliasMigrationAlive.current) return;
+        // 会话已被其他入口更新（例如手动重命名）时放弃旧别名，避免覆盖较新的标题。
+        const current = sessionsRef.current.find(item => item.id === session.id);
+        if (!current || current.title !== session.title) continue;
+        let renamed = false;
+        try { renamed = await rename(session, name, { silent: true }); }
+        catch { renamed = false; }
+        if (!renamed || !aliasMigrationAlive.current) continue;
+        setAliases(previous => {
+          const stored = previous[session.id];
+          if (typeof stored !== "string" || stored.trim() !== name) return previous;
+          const next = { ...previous };
+          delete next[session.id];
+          return next;
+        });
+      }
+    })();
+  }, [sessions, aliases, props.simulateLocal, props.harnessUp, props.onRenameSession]);
   const pushRoute = (route: Route) => {
     const previous = historyRef.current, current = previous[cursorRef.current];
     if (current?.page === route.page && current.sessionId === route.sessionId) return;
