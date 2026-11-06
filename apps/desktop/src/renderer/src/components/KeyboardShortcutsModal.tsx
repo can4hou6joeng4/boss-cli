@@ -10,6 +10,6 @@ const GROUPS = [
 export function KeyboardShortcutsModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   if (!isOpen) return null;
   return <ModalSurface title="键盘快捷键" onClose={onClose} className="shortcuts-dialog">
-    <div className="shortcuts-content">{GROUPS.map(group => <section key={group.title}><h3>{group.title}</h3>{group.shortcuts.map(([keys, description]) => <div className="shortcut-row" key={keys}><span>{description}</span><kbd>{keys}</kbd></div>)}</section>)}<p className="dialog-note">Windows / Linux 使用 Ctrl。运行中的任务可通过输入框右侧的停止按钮中断。</p></div>
+    <div className="shortcuts-content">{GROUPS.map(group => <section key={group.title}><h3>{group.title}</h3>{group.shortcuts.map(([keys, description]) => <div className="shortcut-row" key={keys}><span>{description}</span><kbd>{keys}</kbd></div>)}</section>)}<p className="dialog-note">macOS 使用 ⌘，Windows / Linux 将 ⌘ 换成 Ctrl；macOS 上的 Ctrl 组合保留给输入框文本编辑。运行中的任务可通过输入框右侧的停止按钮中断。</p></div>
   </ModalSurface>;
 }
