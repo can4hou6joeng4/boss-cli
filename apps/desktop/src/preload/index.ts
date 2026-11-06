@@ -20,6 +20,14 @@ interface HarnessStatus {
  * 渲染层只可请求允许清单里的内核方法，订阅通知、查询连接和显式重连。
  * 不暴露 ipcRenderer 本体，也不暴露 Node 能力。
  */
+/** 窗口重建时主进程在页面加载完成后才发送审批定位；渲染层尚未挂载时先缓存，监听注册后回放。 */
+const approvalFocusListeners = new Set<(target: ApprovalFocusTarget) => void>();
+let pendingApprovalFocus: ApprovalFocusTarget | null = null;
+ipcRenderer.on("harness:focus-approval", (_event: IpcRendererEvent, target: ApprovalFocusTarget) => {
+  if (!approvalFocusListeners.size) { pendingApprovalFocus = target; return; }
+  for (const listener of approvalFocusListeners) listener(target);
+});
+
 const api = {
   request<T>(method: string, params?: unknown): Promise<T> {
     return ipcRenderer.invoke("harness:request", { method, params }) as Promise<T>;
@@ -58,9 +66,13 @@ const api = {
   },
   /** 点击审批系统通知后要定位的会话与条目；载荷由渲染层再次校验后才使用。 */
   onApprovalFocus(listener: (target: ApprovalFocusTarget) => void): () => void {
-    const handler = (_event: IpcRendererEvent, target: ApprovalFocusTarget): void => listener(target);
-    ipcRenderer.on("harness:focus-approval", handler);
-    return () => ipcRenderer.removeListener("harness:focus-approval", handler);
+    approvalFocusListeners.add(listener);
+    const pending = pendingApprovalFocus;
+    if (pending) {
+      pendingApprovalFocus = null;
+      queueMicrotask(() => { if (approvalFocusListeners.has(listener)) listener(pending); });
+    }
+    return () => { approvalFocusListeners.delete(listener); };
   },
   /** 关于页展示的运行版本；来自 preload 进程，渲染层只读。 */
   versions: {
