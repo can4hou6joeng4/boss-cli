@@ -24,6 +24,7 @@ import { booleanPreference, projectFolders, stringList, stringRecord } from "../
 import { planAliasMigrations } from "../data/aliasMigration";
 import { type ModelDescriptor, type SkillDescriptor, type ToolDescriptor } from "@boss-harness/protocol";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
+import { loadComposerDraftStore, restoreComposerDraft, restoreSessionDrafts, saveComposerDrafts } from "../data/composerDraftStorage";
 import type { CheckQueueSubmission, ComposerQueue } from "../data/composerDraft";
 import { exportMarkdown } from "../data/exportMarkdown";
 import type { QueueItem } from "@boss-harness/protocol";
@@ -169,8 +170,23 @@ export function AppShell(props: AppShellProps) {
   const [deleteSession, setDeleteSession] = useState<SessionItem | null>(null), [deleteBusy, setDeleteBusy] = useState(false);
   const [renameProject, setRenameProject] = useState<ProjectFolder | null>(null), [folderName, setFolderName] = useState("");
   const [removeProject, setRemoveProject] = useState<ProjectFolder | null>(null);
-  const [draft, updateHomeDraft] = useState(createComposerDraft);
-  const [sessionDrafts, setSessionDrafts] = useState<Record<string, ComposerDraft>>({});
+  /** 启动时读取一次；之后按输入节奏防抖写回，见下方 effect。 */
+  const [initialDrafts] = useState(() => loadComposerDraftStore());
+  const [draft, updateHomeDraft] = useState(() => restoreComposerDraft(initialDrafts.home));
+  const [sessionDrafts, setSessionDrafts] = useState<Record<string, ComposerDraft>>(() => restoreSessionDrafts(initialDrafts));
+  const draftRef = useRef(draft); draftRef.current = draft;
+  const sessionDraftsRef = useRef(sessionDrafts); sessionDraftsRef.current = sessionDrafts;
+  useEffect(() => {
+    const timer = window.setTimeout(() => saveComposerDrafts(draftRef.current, sessionDraftsRef.current), 300);
+    return () => window.clearTimeout(timer);
+  }, [draft, sessionDrafts]);
+  useEffect(() => {
+    // 防抖窗口内关闭窗口或重载时补写一次，避免最后 300ms 的输入丢失。
+    const flush = () => saveComposerDrafts(draftRef.current, sessionDraftsRef.current);
+    window.addEventListener("pagehide", flush);
+    window.addEventListener("beforeunload", flush);
+    return () => { window.removeEventListener("pagehide", flush); window.removeEventListener("beforeunload", flush); };
+  }, []);
   const setDraft = (text: string) => updateHomeDraft(previous => withDraftText(previous, text));
   const resetDraft = () => updateHomeDraft(createComposerDraft());
   const sessionDraftId = props.activeSession?.id ?? "conversation";
