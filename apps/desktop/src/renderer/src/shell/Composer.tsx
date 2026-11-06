@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, forwardRef } from "react";
+import { useState, useRef, useEffect, useId, forwardRef } from "react";
 import { IconPlus, IconSend, IconStop, IconShield, IconChevronDown, IconCheck, IconClose, IconFolder, IconSparkles, IconSettings, IconSearch, IconBranch, IconChat, IconLock } from "../components/Icons";
 import { Popover } from "../components/Popover";
 import { SlashCommandList, filterSlashCommands, slashMenuVisible, type SlashCommandItem } from "../components/SlashCommandList";
@@ -91,6 +91,11 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
   const slashQuery = value.match(/^\/([^\s]*)$/)?.[1] ?? "";
   // 渲染时以当前 value 为准：建议词、编辑消息、恢复队列消息会绕过 change() 直接改写输入。
   const slashMenuOpen = slashMenuVisible(slashOpen, value);
+  // 列表与键盘共用同一份结果；活动项索引也按同一规则夹取，供 aria-activedescendant 使用。
+  const slashListId = useId();
+  const slashOptions = filterSlashCommands(slashQuery);
+  const slashActiveIndex = slashOptions.length ? Math.min(selectedIndex, slashOptions.length - 1) : -1;
+  const slashListVisible = slashMenuOpen && slashOptions.length > 0;
   const availableModels = preview ? MODEL_OPTIONS : models.filter(model => model.configured && model.available);
   const currentDescriptor = availableModels.find(model => model.id === activeModelId && model.provider === activeModelProvider);
   const modelName = preview
@@ -293,8 +298,11 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     {dragging && <div className="composer-drop-hint" aria-hidden="true"><IconFolder size={25} /><strong>添加文件作为上下文</strong><span>TXT、Markdown、JSON、CSV · 每个最多 200 KB</span></div>}
     {attachments.length > 0 && <div className="attachment-list">{attachments.map(file => <div className="attachment-chip" key={file.id} title={`${file.name} · ${Math.max(1, Math.ceil(file.size / 1000))} KB`}><IconFolder size={15} /><span>{file.name}<small>{Math.max(1, Math.ceil(file.size / 1000))} KB · 文本</small></span><button type="button" aria-label={`移除附件 ${file.name}`} onClick={() => updateDraft(previous => ({ ...previous, attachments: previous.attachments.filter(item => item.id !== file.id) }))}><IconClose size={12} /></button></div>)}</div>}
     {selectedSkillChips.length > 0 && <div className="composer-skill-chips" aria-label="已选运行时技能">{selectedSkillChips.map(chip => <div className={`composer-skill-chip${chip.stale ? " is-stale" : ""}`} key={chip.id} title={chip.stale ? `${chip.id} · 已不在当前技能目录中` : chip.description ?? chip.name}><IconSparkles size={11} /><span>{chip.name}</span><button type="button" aria-label={`移除技能：${chip.name}`} title={submitting ? "正在转交消息，暂不能更改技能" : "移除技能"} disabled={submitting} onClick={() => toggleSkill(chip.id)}><IconClose size={11} /></button></div>)}</div>}
-    <SlashCommandList isOpen={slashMenuOpen} onClose={() => setSlashOpen(false)} onSelect={selectSlash} search={slashQuery} selectedIndex={selectedIndex} />
-    <textarea aria-label="消息输入" ref={element => { inputRef.current = element; if (typeof forwardedRef === "function") forwardedRef(element); else if (forwardedRef) forwardedRef.current = element; }} rows={2}
+    <SlashCommandList isOpen={slashMenuOpen} onClose={() => setSlashOpen(false)} onSelect={selectSlash} search={slashQuery} selectedIndex={selectedIndex} listboxId={slashListId} />
+    <textarea aria-label="消息输入" aria-haspopup="listbox" aria-expanded={slashMenuOpen} aria-autocomplete="list"
+      aria-controls={slashListVisible ? slashListId : undefined}
+      aria-activedescendant={slashListVisible && slashActiveIndex >= 0 ? `${slashListId}-option-${slashActiveIndex}` : undefined}
+      ref={element => { inputRef.current = element; if (typeof forwardedRef === "function") forwardedRef(element); else if (forwardedRef) forwardedRef.current = element; }} rows={2}
       placeholder={archived ? "已归档，恢复后可继续对话" : isRunning ? queueIntent === "steering" ? "补充当前任务要求…" : "安排当前任务结束后的下一步…" : blocked ? "另一个任务正在运行，请等待完成" : "和 BOSS Harness 一起工作"}
       value={value} onChange={event => change(event.target.value)}
       onPaste={event => {
@@ -310,11 +318,10 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
       onKeyDown={event => {
         if (event.nativeEvent.isComposing || composingRef.current || event.keyCode === 229) return;
         if (slashMenuOpen) {
-          const options = filterSlashCommands(slashQuery);
-          if ((event.key === "ArrowDown" || event.key === "ArrowUp") && options.length) { event.preventDefault(); setSelectedIndex(previous => (previous + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length); return; }
+          if ((event.key === "ArrowDown" || event.key === "ArrowUp") && slashOptions.length) { event.preventDefault(); setSelectedIndex(previous => (previous + (event.key === "ArrowDown" ? 1 : -1) + slashOptions.length) % slashOptions.length); return; }
           if (event.key === "Enter" || event.key === "Tab") {
-            // 与列表渲染一致地夹取索引：外部改写后 selectedIndex 可能超出新结果。
-            const option = options[Math.min(selectedIndex, options.length - 1)];
+            // 与列表渲染和 aria-activedescendant 使用同一个夹取后的索引。
+            const option = slashOptions[slashActiveIndex];
             if (option && !event.shiftKey) { event.preventDefault(); selectSlash(option); return; }
             setSlashOpen(false);
           }

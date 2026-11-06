@@ -126,6 +126,8 @@ interface SlashCommandListProps {
   onSelect: (item: SlashCommandItem) => void;
   search?: string;
   selectedIndex?: number;
+  /** 列表容器 id；输入框用 aria-controls / aria-activedescendant 指向它。 */
+  listboxId: string;
 }
 
 export const SlashCommandList: React.FC<SlashCommandListProps> = ({
@@ -134,6 +136,7 @@ export const SlashCommandList: React.FC<SlashCommandListProps> = ({
   onSelect,
   search = "",
   selectedIndex = 0,
+  listboxId,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -165,15 +168,19 @@ export const SlashCommandList: React.FC<SlashCommandListProps> = ({
         <span>快捷指令 · 按 Enter 选取</span>
       </div>
 
-      <div className="popup-command-list">
+      <div className="popup-command-list" id={listboxId} role={filtered.length ? "listbox" : undefined}
+        aria-label={filtered.length ? "快捷指令" : undefined}>
         {filtered.length === 0 ? (
-          <div className="popup-command-empty">未找到匹配的命令</div>
+          <div className="popup-command-empty" role="status">未找到匹配的命令</div>
         ) : (
           filtered.map((item, idx) => {
             const isSelected = idx === Math.min(selectedIndex, filtered.length - 1);
             return (
               <div
                 key={item.id}
+                id={`${listboxId}-option-${idx}`}
+                role="option"
+                aria-selected={isSelected}
                 className={`popup-command-item ${isSelected ? "selected" : ""}`}
                 onClick={() => onSelect(item)}
               >
