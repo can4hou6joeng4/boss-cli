@@ -70,7 +70,7 @@ import {
   type WorkspaceInstructionsWriteResponse,
 } from "@boss-harness/protocol";
 import { formatRelativeTime, safeSlice, stripIpcErrorWrapper } from "@boss-harness/shared";
-import { queuePageOf, type QueuePage } from "./queueMapping";
+import { isQueueItem, queuePageOf, type QueuePage } from "./queueMapping";
 import { approvalDeadlineMs, mapPendingApprovals, type PendingApprovalList } from "./pendingApprovals";
 import { readPagedItems } from "./pagedRead";
 import { toolDurationMs } from "./toolTiming";
@@ -293,11 +293,9 @@ export async function startThread(title: string, model?: string, provider?: stri
   };
 }
 
-/** 单条队列项响应：缺字段时给出可读原因，而不是让调用方读到 undefined。 */
+/** 单条队列项响应：字段类型不符时给出可读原因，而不是让调用方渲染畸形条目。 */
 function requireQueueItem(response: QueueItemResponse | null | undefined): QueueItem {
-  if (!response || !response.queueItem || typeof response.queueItem.id !== "string" || !response.queueItem.id) {
-    throw new Error("队列项响应无法识别");
-  }
+  if (!response || !isQueueItem(response.queueItem)) throw new Error("队列项响应无法识别");
   return response.queueItem;
 }
 

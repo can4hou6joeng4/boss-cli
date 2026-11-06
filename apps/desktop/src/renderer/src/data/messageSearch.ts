@@ -143,10 +143,24 @@ export interface VisibleThreadSearchHits {
   truncated: boolean;
 }
 
+const SEARCH_ROLES: ReadonlySet<string> = new Set(["user", "agent", "tool"]);
+
+/** 命中项逐项校验：弹窗渲染 threadId / role / snippet 并经内核高亮切分，非对象元素必须在进入状态前拒绝。 */
+function isThreadSearchMatch(value: unknown): value is ThreadSearchMatch {
+  if (!value || typeof value !== "object") return false;
+  const match = value as Record<string, unknown>;
+  return typeof match.threadId === "string" && match.threadId.length > 0
+    && typeof match.threadTitle === "string"
+    && typeof match.itemId === "string" && match.itemId.length > 0
+    && typeof match.role === "string" && SEARCH_ROLES.has(match.role)
+    && typeof match.snippet === "string";
+}
+
 /**
  * 只展示与当前查询和归档范围一致的消息命中批次。
  * 查询变化后旧批次仍留在组件状态里，若直接渲染会让旧命中继续可点开；
  * 这里在渲染期判定批次是否对应当前输入，并继续按当前可见会话过滤。
+ * 批次来自内核响应，形状不可信：matches 非数组时按空结果处理，非对象或字段类型不符的命中被丢弃。
  */
 export function visibleThreadSearchHits(
   batch: ThreadSearchBatch | null,
@@ -158,8 +172,9 @@ export function visibleThreadSearchHits(
   if (!batch || !needle || batch.query !== needle || batch.includeArchived !== includeArchived) {
     return { matches: [], truncated: false };
   }
+  if (!Array.isArray(batch.matches)) return { matches: [], truncated: false };
   return {
-    matches: batch.matches.filter(match => availableThreadIds.has(match.threadId)),
-    truncated: batch.truncated,
+    matches: batch.matches.filter(isThreadSearchMatch).filter(match => availableThreadIds.has(match.threadId)),
+    truncated: batch.truncated === true,
   };
 }

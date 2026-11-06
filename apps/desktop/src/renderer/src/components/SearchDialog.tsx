@@ -59,6 +59,8 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
     const timer = window.setTimeout(() => {
       void searchThreadMessages(needle, 20, includeArchived).then(result => {
         if (cancelled) return;
+        // 响应形状不可信：matches 不是数组时按失败处理，不能把畸形值带进渲染期。
+        if (!result || !Array.isArray(result.matches)) { setHitBatch(null); setMessageState("error"); return; }
         setHitBatch({ query: needle, includeArchived, matches: result.matches, truncated: result.truncated === true });
         setMessageState("ready");
       }).catch(() => {

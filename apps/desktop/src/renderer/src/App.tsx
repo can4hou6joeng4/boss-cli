@@ -28,7 +28,7 @@ import { isCommandChord } from "./data/shortcuts";
 import { reduceHarnessEvent, autoApprovalFallback, type HarnessEvent } from "./data/harnessEvents";
 import { unconfirmedFailure } from "./data/confirmationFailure";
 import { HarnessReplica } from "./data/harnessReplica";
-import type { QueuePage } from "./data/queueMapping";
+import { queueItemsOf, type QueuePage } from "./data/queueMapping";
 import type { QueueRefreshResult } from "./data/queueRefresh";
 import { reduceModelRetry, settleModelRetryOnTurnEnd, type ModelRetryStatus } from "./data/modelRetry";
 import { toMessage } from "./data/harnessBridge";
@@ -268,7 +268,8 @@ export function App(): JSX.Element {
       if (cancelled) return;
       const id = snapshot.thread.id;
       if (activeRef.current?.id === id) {
-        setQueueItems(snapshot.queue ?? []);
+        // resume 快照与 queue/list 共用同一份校验：畸形条目不能直接进入渲染状态。
+        setQueueItems(queueItemsOf(snapshot.queue) ?? []);
         setQueueMeta({
           totalItems: typeof snapshot.queueTotalItems === "number" ? snapshot.queueTotalItems : undefined,
           activeItems: typeof snapshot.queueActiveItems === "number" ? snapshot.queueActiveItems : undefined,
