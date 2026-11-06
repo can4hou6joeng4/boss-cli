@@ -35,8 +35,6 @@ kbd { font: 10px var(--font-sans); color: var(--text-faint); }
 .rail-items { display: flex; flex-direction: column; gap: 6px; align-items: center; width: 100%; }
 .rail-button { width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border: 0; border-radius: 11px; color: var(--text-muted); background: transparent; cursor: pointer; transition: color var(--transition-fast), background var(--transition-fast); }
 .rail-button:hover, .rail-button.selected { background: var(--btn-ghost-hover); color: var(--text-main); }
-.rail-button.selected { background: #ffffff12; }
-html:not(.dark) .rail-button.selected { background: #0000000c; }
 .rail-divider { height: 1px; width: 24px; background: var(--border-color); margin: 4px 0; }
 .rail-avatar { width: 25px; height: 25px; background: #159e87; border: 0; border-radius: 50%; color: white; font-size: 9px; font-weight: 500; cursor: pointer; }
 .workspace-surface { display: flex; flex: 1; min-width: 0; overflow: hidden; border-radius: 16px 12px 12px 16px; background: var(--bg-window); border: 1px solid var(--border-color); }
@@ -466,8 +464,8 @@ button.user-skill-chip:hover { border-color: var(--text-muted); color: var(--tex
 .diff-code div>div { display: flex; min-height: 25px; }
 .diff-code div>div>span { width: 36px; flex: none; text-align: right; padding-right: 12px; color: var(--text-faint); user-select: none; }
 .diff-code code { white-space: pre-wrap; overflow-wrap: anywhere; padding-right: 12px; }
-.diff-line-added { background: #05b84c13; color: var(--text-main); }
-.diff-line-deleted { background: #fa423e13; color: var(--text-main); }
+.diff-line-added { background: color-mix(in srgb, var(--accent-green) 12%, transparent); color: var(--text-main); }
+.diff-line-deleted { background: color-mix(in srgb, var(--accent-error) 12%, transparent); color: var(--text-main); }
 .diff-unavailable { height: 200px; display: flex; flex-direction: column; gap: 15px; align-items: center; justify-content: center; color: var(--text-faint); font-size: 12px; }
 .diff-review-footer { display: flex; gap: 10px; justify-content: space-between; align-items: center; padding: 14px 20px; border-top: 1px solid var(--border-color); font-size: 11px; color: var(--text-faint); }
 .diff-review-footer>div { display: flex; gap: 8px; }

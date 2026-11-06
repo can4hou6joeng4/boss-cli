@@ -46,7 +46,7 @@ html, body, #root {
   position: relative;
 }
 
-/* 顶栏 TitleBar (ChatGPT.app 极简沉稳顶栏) */
+/* 顶栏 TitleBar（极简沉稳顶栏） */
 .titlebar {
   height: var(--height-titlebar);
   background: var(--bg-sidebar);
@@ -119,7 +119,7 @@ html, body, #root {
   color: var(--text-main);
 }
 
-/* 顶栏模型下拉切换器 (ChatGPT.app 官方顶部模型胶囊) */
+/* 顶栏模型下拉切换器（顶部模型胶囊） */
 .titlebar-model-wrapper {
   position: relative;
   display: inline-flex;
@@ -226,7 +226,7 @@ html, body, #root {
   position: relative;
 }
 
-/* 左侧栏 (Sidebar - ChatGPT.app 经典黑灰结构) */
+/* 左侧栏 Sidebar（紧凑导航结构） */
 .boss-sidebar {
   width: var(--sidebar-width);
   background: var(--bg-sidebar);
@@ -296,7 +296,7 @@ html, body, #root {
 .nav-action-btn:active {
   transform: scale(0.98);
 }
-/* 新建任务按钮：对齐 ChatGPT.app 的简洁边框次主按钮 */
+/* 新建任务按钮：简洁边框次主按钮 */
 .nav-action-btn.primary {
   background: transparent;
   border: 1px solid var(--border-color);
@@ -322,8 +322,8 @@ html, body, #root {
   font-size: 10px;
   padding: 1px 6px;
   border-radius: var(--radius-full);
-  background: #dc2626;
-  color: #fff;
+  background: var(--accent-error);
+  color: var(--bg-window);
   font-weight: 600;
 }
 .shortcut-kbd {
@@ -501,7 +501,7 @@ html, body, #root {
 }
 
 /* ========================================================
-   HOME 视图 (ChatGPT.app 纯净克制的大居中画布)
+   HOME 视图（纯净克制的大居中画布）
    ======================================================== */
 .home-workspace {
   flex: 1;
@@ -535,7 +535,7 @@ html, body, #root {
   text-align: center;
 }
 
-/* 居中 Composer Card (ChatGPT 经典大圆角卡片) */
+/* 居中 Composer Card（大圆角卡片） */
 .zcode-composer-card {
   width: 100%;
   background: var(--composer-bg);
@@ -636,7 +636,7 @@ html, body, #root {
   transform: scale(0.93);
 }
 
-/* 发送按钮：对齐 ChatGPT.app 经典的黑白极简反差圆钮 */
+/* 发送按钮：黑白极简反差圆钮 */
 .send-arrow-btn {
   width: 32px;
   height: 32px;
@@ -665,7 +665,7 @@ html, body, #root {
   transform: none;
 }
 
-/* 提示词卡片网格 (对齐 ChatGPT.app 沉稳卡片风格) */
+/* 提示词卡片网格（沉稳卡片风格） */
 .home-suggestions-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -704,7 +704,7 @@ html, body, #root {
   line-height: 1.4;
 }
 
-/* 4 大场景快捷 Chips (ChatGPT.app 沉稳卡片风格) */
+/* 4 大场景快捷 Chips（沉稳卡片风格） */
 .home-chips-row {
   display: flex;
   flex-wrap: wrap;
@@ -764,7 +764,7 @@ html, body, #root {
   position: relative;
 }
 
-/* 极简顶栏 (ThreadHeaderBar - 对齐 ChatGPT.app 干净的 thread 标题与分段切换) */
+/* 极简顶栏 ThreadHeaderBar（干净的 thread 标题与分段切换） */
 .thread-header-bar {
   display: flex;
   align-items: center;
@@ -955,7 +955,7 @@ html, body, #root {
   gap: 18px;
 }
 
-/* 用户气泡 (ChatGPT.app 经典圆角右对齐) */
+/* 用户气泡（经典圆角右对齐） */
 .msg-row-user {
   display: flex;
   flex-direction: column;
@@ -1142,7 +1142,7 @@ html, body, #root {
   gap: 8px;
 }
 
-/* 按钮规范对齐 ChatGPT：主按钮反白，次按钮幽灵/边框，支持触感 micro-interaction */
+/* 按钮规范：主按钮反白，次按钮幽灵 / 边框，支持触感 micro-interaction */
 .approval-btn {
   padding: 6px 14px;
   border-radius: var(--radius-md);
@@ -1293,7 +1293,7 @@ html, body, #root {
   border-color: var(--btn-primary-bg);
 }
 
-/* 智能体文本 Markdown 排版 (对齐 ChatGPT.app 文本、代码块与超链接排版规范) */
+/* 智能体文本 Markdown 排版（文本、代码块与超链接排版规范） */
 .agent-markdown {
   font-size: 14px;
   line-height: 1.65;
@@ -1343,49 +1343,37 @@ html:not(.dark) .chat-blockquote {
   min-width: 14px;
 }
 .chat-inline-code {
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: var(--btn-ghost-hover);
+  border: 1px solid var(--border-subtle);
   padding: 2px 5px;
   border-radius: var(--radius-xs);
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-main);
 }
-html:not(.dark) .chat-inline-code {
-  background: rgba(0, 0, 0, 0.06);
-  border-color: rgba(0, 0, 0, 0.06);
-}
 
-/* 超链接 (ChatGPT.app 规范：下划线偏移行内链接) */
+/* 超链接（下划线偏移行内链接） */
 .chat-inline-link {
   color: var(--text-main);
   text-decoration: underline;
   text-underline-offset: 3px;
-  text-decoration-color: rgba(255, 255, 255, 0.35);
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
   transition: color var(--transition-fast), text-decoration-color var(--transition-fast);
   cursor: pointer;
   font-weight: 500;
 }
 .chat-inline-link:hover {
-  color: #ffffff;
-  text-decoration-color: #ffffff;
-}
-html:not(.dark) .chat-inline-link {
-  text-decoration-color: rgba(0, 0, 0, 0.3);
-}
-html:not(.dark) .chat-inline-link:hover {
-  color: #000000;
-  text-decoration-color: #000000;
+  text-decoration-color: currentColor;
 }
 
-/* 来源引文药丸 / Citation Pill (ChatGPT.app 沉稳胶囊引文) */
+/* 来源引文药丸 / Citation Pill（沉稳胶囊引文） */
 .chat-citation-pill {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 1px 7px;
   border-radius: var(--radius-full);
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--btn-ghost-hover);
   border: 1px solid var(--border-color);
   font-size: 11px;
   color: var(--text-muted);
@@ -1397,46 +1385,34 @@ html:not(.dark) .chat-inline-link:hover {
   line-height: 1.5;
 }
 .chat-citation-pill:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--panel-bg-hover);
   color: var(--text-main);
-  border-color: rgba(255, 255, 255, 0.25);
+  border-color: var(--border-active);
   transform: translateY(-1px);
 }
 .chat-citation-pill:active {
   transform: translateY(0);
 }
-html:not(.dark) .chat-citation-pill {
-  background: rgba(0, 0, 0, 0.04);
-}
-html:not(.dark) .chat-citation-pill:hover {
-  background: rgba(0, 0, 0, 0.08);
-}
 
-/* 代码块容器与顶栏复制按钮 (ChatGPT.app 代码块规范) */
+/* 代码块容器与顶栏复制按钮（代码块规范） */
 .code-block-wrapper {
   margin: 10px 0;
   border-radius: var(--radius-md);
   border: 1px solid var(--border-color);
-  background: #141414;
+  background: var(--bg-window);
   overflow: hidden;
-}
-html:not(.dark) .code-block-wrapper {
-  background: #f8f8f8;
 }
 .code-block-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 6px 12px;
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--btn-ghost-hover);
   border-bottom: 1px solid var(--border-subtle);
   font-size: 11px;
   color: var(--text-faint);
   font-family: var(--font-mono);
   user-select: none;
-}
-html:not(.dark) .code-block-header {
-  background: rgba(0, 0, 0, 0.03);
 }
 .code-block-copy-btn {
   display: inline-flex;
@@ -1468,7 +1444,7 @@ html:not(.dark) .code-block-header {
   color: var(--text-main);
 }
 
-/* 回到底部悬浮按钮 (ChatGPT.app 浮动圆钮) */
+/* 回到底部悬浮按钮（浮动圆钮） */
 .scroll-to-bottom-btn {
   position: absolute;
   bottom: 84px;
@@ -1497,7 +1473,7 @@ html:not(.dark) .code-block-header {
   transform: translateY(0) scale(0.94);
 }
 
-/* 消息块底部操作条 (ChatGPT.app 纯图标紧凑微交互) */
+/* 消息块底部操作条（纯图标紧凑微交互） */
 .msg-action-toolbar {
   display: flex;
   align-items: center;
@@ -1560,7 +1536,7 @@ html:not(.dark) .code-block-header {
   max-width: var(--thread-content-max-width);
 }
 
-/* 模态浮层通用结构 (ChatGPT 纯净深灰卡片) */
+/* 模态浮层通用结构（纯净深色卡片） */
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -1779,7 +1755,7 @@ html:not(.dark) .code-block-header {
 }
 
 /* ========================================================
-   Codex Diff Card (ChatGPT / Codex 风格代码变更卡片)
+   Codex Diff Card（代码变更卡片）
    ======================================================== */
 .codex-diff-card {
   background: var(--panel-bg);
