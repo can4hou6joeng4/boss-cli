@@ -2094,11 +2094,16 @@ class SessionStore:
 
     @staticmethod
     def _search_tool_text(item: dict) -> str:
-        """把工具调用压成可检索文本：工具名 + 有界参数 + 结果摘要；无工具名返回空串。"""
+        """把工具调用压成可检索文本：工具名 + 来源编号 + 有界参数 + 结果摘要；无工具名返回空串。"""
         name = item.get("toolName")
         if not isinstance(name, str) or not name.strip():
             return ""
         parts = [name.strip()]
+        # 来源编号是工具卡默认可见的标识；紧随工具名，长参数与摘要不会把它挤出文本上限。
+        source = item.get("source")
+        reference = source.get("ref") if isinstance(source, dict) else None
+        if isinstance(reference, str) and reference.strip():
+            parts.append(reference.strip())
         arguments = item.get("toolArguments")
         if isinstance(arguments, dict):
             try:
