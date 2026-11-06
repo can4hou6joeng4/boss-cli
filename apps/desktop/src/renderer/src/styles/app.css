@@ -1141,6 +1141,11 @@ html, body, #root {
   display: flex;
   gap: 8px;
 }
+.approval-archived-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
 
 /* 按钮规范：主按钮反白，次按钮幽灵 / 边框，支持触感 micro-interaction */
 .approval-btn {

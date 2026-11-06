@@ -822,8 +822,8 @@ export function App(): JSX.Element {
   const branchSummaryRunning = Boolean(contextThreadId && branchState.summaryJob?.status === "running");
   const compacting = branchSummaryRunning || contextPanel.state.lifecycleActive === true
     || (contextPanel.state.job?.status === "running" && contextPanel.state.lifecycleActive !== false);
-  const branchBlock = contextThreadId ? branchSwitchBlock({ connected: harnessUp, running: runningThreadIds.has(contextThreadId),
-    queueItems, compacting, switching: branchState.switching }) : null;
+  const branchBlock = contextThreadId ? branchSwitchBlock({ connected: harnessUp, archived: activeSession?.archived === true,
+    running: runningThreadIds.has(contextThreadId), queueItems, compacting, switching: branchState.switching }) : null;
   const sessionProvider = activeSession?.provider ?? defaultModel?.provider;
   const branchSummaryUnavailable = !harnessUp ? "本地内核未连接。"
     : sessionProvider?.toLowerCase() === "none" ? "当前会话的模型线路为 none（未配置模型），无法生成摘要。" : null;

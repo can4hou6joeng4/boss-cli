@@ -57,8 +57,9 @@ function isBranchJob(value: unknown, threadId: string): value is ContextCompactJ
 }
 
 /** 切换前的界面侧阻断原因；与内核 thread/leaf/set 的 -32004 拒绝条件对应。 */
-export function branchSwitchBlock(options: { connected: boolean; running: boolean; queueItems: QueueItem[]; compacting: boolean; switching: boolean }): string | null {
+export function branchSwitchBlock(options: { connected: boolean; archived: boolean; running: boolean; queueItems: QueueItem[]; compacting: boolean; switching: boolean }): string | null {
   if (!options.connected) return "本地内核未连接，暂不能切换分支。";
+  if (options.archived) return "会话已归档，暂不能切换分支：请先在侧栏「已归档」中恢复会话（内核 -32004：请先恢复会话，再切换分支）。";
   if (options.switching) return "正在切换分支，请稍候。";
   if (options.running) return "回合运行中，暂不能切换分支：请先停止或等待回合结束（内核 -32004：请先中断该会话的运行回合）。";
   if (options.compacting) return "正在生成摘要，暂不能切换分支：请等待完成或先取消摘要（内核 -32004：该会话正在生成摘要）。";

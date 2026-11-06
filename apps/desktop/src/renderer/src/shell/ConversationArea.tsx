@@ -251,7 +251,8 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
     setShowScrollBottom(!wasAtBottom.current);
   };
   const handleRetry = (message: MessageItem) => {
-    if (running || taskBlocked) return;
+    // 归档会话只能查看历史；内核 turn/start 会直接拒绝，界面先行阻断。
+    if (archived || running || taskBlocked) return;
     // 目录未就绪时无法确认技能仍可用，退回仅文本重试；过滤规则见 retryRequestForMessage。
     const request = retryRequestForMessage(messages, message.id, turnSkillIds,
       skillCatalogState === "ready" ? skills.map(skill => skill.id) : []);
@@ -287,7 +288,8 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const handleApproval = async (msgId: string, decision: "approve" | "deny") => {
     const target = messages.find(message => message.id === msgId);
     const approval = target?.approval;
-    if (!approval || pendingApproval) return;
+    // 归档会话中的审批已被内核关闭（APPROVAL_CLOSED），不再提交。
+    if (!approval || pendingApproval || archived) return;
     const remember = !approval.consequential && (rememberChoices[msgId] || false);
     if (approval.approvalId) {
       setPendingApproval(msgId); setApprovalError("");
@@ -480,7 +482,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                       aria-label="编辑后续模型上下文"
                       onClick={() => setContextEditItemId(item.id)}
                     ><IconEdit size={12} /></button>}
-                    {sessionBranches && item.turnId && <button
+                    {!archived && sessionBranches && item.turnId && <button
                       className="user-msg-action-btn"
                       type="button"
                       title="从这里重新开始（会话内分支，原回合保留）"
@@ -688,6 +690,8 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                           </>
                         )}
                       </div>
+                    ) : archived ? (
+                      <p className="approval-archived-note" role="status">此聊天已归档，恢复后才能处理这条审批。</p>
                     ) : (
                       <>
                         <label className="approval-remember-label">
@@ -820,14 +824,14 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                   >
                     <IconQuote size={13} />
                   </button>}
-                  <button
+                  {!archived && <button
                     className="msg-action-btn"
                     title="重试此轮对话"
                     type="button"
                     onClick={() => handleRetry(item)}
                   >
                     <IconRewind size={13} />
-                  </button>
+                  </button>}
                   <button
                     className={`msg-action-btn ${feedback[item.id] === "up" ? "active" : ""}`}
                     title={feedback[item.id] === "up" ? "取消「有帮助」标记（仅保存在本机）" : "有帮助（仅保存在本机）"}
