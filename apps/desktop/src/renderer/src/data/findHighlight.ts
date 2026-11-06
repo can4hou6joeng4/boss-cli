@@ -65,8 +65,15 @@ export function splitKernelHighlight(text: string, query: string, limit = 50): T
   return splitByRanges(text, findKernelTextRanges(text, query, limit));
 }
 
-/** 收集元素内的文本节点并映射到原文偏移量，供 CSS Custom Highlight 使用。 */
-export function collectTextRanges(root: Node, query: string, limit = 200): Range[] {
+/**
+ * 收集元素内的文本节点并映射到原文偏移量，供 CSS Custom Highlight 使用。
+ * `scan` 决定归一化方式：会话内查找用整串 NFKC 小写，跨会话搜索用内核的逐码点 casefold。
+ */
+function collectRanges(
+  root: Node,
+  scan: (text: string, limit: number) => TextRange[],
+  limit: number,
+): Range[] {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
   const parts: string[] = [];
@@ -86,7 +93,7 @@ export function collectTextRanges(root: Node, query: string, limit = 200): Range
   if (!nodes.length) return [];
   const combined = parts.join("");
   const result: Range[] = [];
-  for (const { start, end } of findTextRanges(combined, query, limit)) {
+  for (const { start, end } of scan(combined, limit)) {
     const startNode = nodes[ownerNode[start] ?? -1];
     const startOffset = ownerOffset[start];
     if (!startNode || startOffset === undefined) continue;
@@ -105,4 +112,14 @@ export function collectTextRanges(root: Node, query: string, limit = 200): Range
     result.push(range);
   }
   return result;
+}
+
+/** 会话内查找的命中区间：与消息匹配共用整串 NFKC 小写归一化。 */
+export function collectTextRanges(root: Node, query: string, limit = 200): Range[] {
+  return collectRanges(root, (text, count) => findTextRanges(text, query, count), limit);
+}
+
+/** 跨会话搜索的命中区间：与内核搜索共用逐码点 NFKC + casefold 归一化。 */
+export function collectKernelTextRanges(root: Node, query: string, limit = 200): Range[] {
+  return collectRanges(root, (text, count) => findKernelTextRanges(text, query, count), limit);
 }
