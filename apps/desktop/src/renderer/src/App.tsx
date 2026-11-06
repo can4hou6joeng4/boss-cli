@@ -19,7 +19,7 @@ import { parseThemePreference, resolveDarkTheme, serializeThemePreference, type 
 import { branchSupport, branchSwitchBlock, useSessionBranches } from "./data/useSessionBranches";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
-import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, archiveThread, configuredModels, deleteThread, harnessErrorText, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, readTurnSkillIds, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, renameThread, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn, unarchiveThread, updateQueuedItem } from "./data/harnessBridge";
+import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, archiveThread, configuredModels, deleteThread, harnessErrorText, harnessStatus, isHarnessRpcRejection, forkThread, interruptTurn, listThreads, listQueue, readTurnSkillIds, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, renameThread, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn, unarchiveThread, updateQueuedItem } from "./data/harnessBridge";
 import { deleteThreadFailure } from "./data/deleteThreadError";
 import { resolveQuickAskRoute } from "./data/quickAsk";
 import { sessionTitleFromPrompt } from "./data/sessionTitle";
@@ -27,6 +27,7 @@ import { matchesContinuation, resumedSession } from "./data/sessionState";
 import { isCommandChord } from "./data/shortcuts";
 import { reduceHarnessEvent, autoApprovalFallback, type HarnessEvent } from "./data/harnessEvents";
 import { unconfirmedFailure } from "./data/confirmationFailure";
+import { sendFailureNotice, sendFailureRecheckNotice } from "./data/sendFailure";
 import { HarnessReplica } from "./data/harnessReplica";
 import { queueItemsOf, type QueuePage } from "./data/queueMapping";
 import type { QueueRefreshResult } from "./data/queueRefresh";
@@ -552,6 +553,7 @@ export function App(): JSX.Element {
     updateThread(id, previous => [...previous, { id: clientId, role: "user", content: text }]);
     if (!real) { simulate(id); return true; }
     markRunning(id, true);
+    let rejected = false;
     try {
       // 压缩覆盖只作用于本会话下一条直接发送；入队、转向与续接不携带该覆盖。
       const accepted = await sendTurn(id, text, clientId, model, skillIds, autoCompaction.take(id));
@@ -563,14 +565,17 @@ export function App(): JSX.Element {
       }
     } catch (cause) {
       markRunning(id, false);
-      setError(`提交结果尚未确认：${harnessErrorText(cause)}。正在读取会话状态，请核对记录后再决定下一步。`);
-      // 回执未知时靠重新读取会话收敛；读取本身失败也要说明，否则「正在读取」会一直停在过期状态。
+      rejected = isHarnessRpcRejection(cause);
+      setError(sendFailureNotice(cause));
+      // 明确拒绝说明回合没有启动：撤回乐观插入的消息，调用方据返回的 false 保留草稿。
+      if (rejected) updateThread(id, previous => previous.filter(item => item.id !== clientId));
+      // 两种失败都重新读取会话收敛；明确拒绝也可能已经留下失败回合记录。
       await replicaRef.current?.resume(id).catch(verify => {
-        setError(unconfirmedFailure("提交结果", cause, verify, "请稍后手动刷新核对。"));
+        setError(sendFailureRecheckNotice(cause, verify));
       });
     }
-    // 已交给会话并发起请求；回执未知仍不能作为可自动重发的草稿。
-    return true;
+    // 明确拒绝没有进入会话，交回草稿；其余失败已交给会话，不能作为可自动重发的草稿。
+    return !rejected;
   }, [harnessUp, updateThread, markRunning, simulate, autoCompaction.take]);
   const handleStartSessionWithPrompt = useCallback((prompt: string, _domain: string, provider: string, modelId: string, skillIds: string[] = []) => {
     return (async () => {

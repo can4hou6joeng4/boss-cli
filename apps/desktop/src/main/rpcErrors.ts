@@ -22,6 +22,7 @@ const PRESERVED: ReadonlySet<string> = new Set([
   "thread/usage/read",
   "turn/continuation/read",
   "turn/continue",
+  "turn/start",
   "turn/steer",
 ]);
 
