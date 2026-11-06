@@ -363,7 +363,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
             if (event.key === "Escape") { event.preventDefault(); closeFind(); }
             if (event.key === "Enter") { event.preventDefault(); stepFind(event.shiftKey ? -1 : 1); }
           }} />
-        <label className="thread-find-details" title="同时匹配思考内容与工具调用的名称、状态、输入、来源编号、错误码、恢复建议与结果，以及审批卡的说明、结论与期限">
+        <label className="thread-find-details" title="同时匹配思考内容与工具调用的名称、状态、耗时、输入、来源编号、错误码、恢复建议与结果，以及审批卡的说明、结论与期限">
           <input type="checkbox" checked={findDetails} onChange={event => { setFindDetails(event.target.checked); setFindIndex(0); }} />
           含工具、审批与思考
         </label>
