@@ -84,9 +84,9 @@ export const SLASH_COMMANDS: SlashCommandItem[] = [
   },
 ];
 
-/** 输入被外部替换（建议词、编辑消息、恢复队列消息）后，已请求打开的菜单不能继续覆盖新文本。 */
-export function slashMenuVisible(requested: boolean, text: string): boolean {
-  return requested && /^\/[^\s]*$/.test(text);
+/** 菜单只在输入仍是本组件最后写入的文本时显示；外部替换（建议词、编辑消息、恢复队列消息）后立即隐藏。 */
+export function slashMenuVisible(requested: boolean, text: string, ownedText: string): boolean {
+  return requested && text === ownedText;
 }
 
 /** 菜单渲染与 Composer 键盘选取共用同一过滤结果，避免两处规则漂移。 */
