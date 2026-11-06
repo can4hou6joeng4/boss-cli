@@ -44,6 +44,8 @@ export interface AppShellProps {
   onDeleteSession?: (session: SessionItem) => Promise<boolean>; onSendMessage: ComposerSend;
   /** 归档或恢复会话；失败原因由外层提示，界面以内核事件刷新为准。 */
   onArchiveSession?: (session: SessionItem, archived: boolean) => Promise<boolean>;
+  /** 重命名会话；成功写入内核标题并持久化，返回 false 表示名称未保存（失败原因由外层提示）。 */
+  onRenameSession?: (session: SessionItem, name: string) => Promise<boolean>;
   onQueueMessage?: ComposerQueue; onCheckQueueSubmission?: CheckQueueSubmission; queueItems?: QueueItem[]; queueTotalItems?: number; queueActiveItems?: number; queueTruncated?: boolean; onRemoveQueueItem?: (id: string) => Promise<boolean>; onRetryQueueItem?: (item: QueueItem) => Promise<boolean>; onReadQueueItem?: (item: QueueItem) => Promise<QueueItem>; onUpdateQueueItem?: (item: QueueItem, input: string) => Promise<QueueItem>; onRefreshQueue?: () => Promise<QueueRefreshResult>;
   simulateLocal?: boolean; harnessUp?: boolean; running?: boolean; taskBlocked?: boolean;
   /** 内核声明 skills/read 后，「技能与工具」页才能展示技能正文。 */
@@ -160,7 +162,7 @@ export function AppShell(props: AppShellProps) {
     return { grouping: value.grouping === "list" ? "list" : "project", sort: value.sort === "name" ? "name" : "updated", showRecent: value.showRecent === true, showHidden: value.showHidden === true, showArchived: value.showArchived === true };
   });
   const [newProject, setNewProject] = useState(false), [projectName, setProjectName] = useState("");
-  const [rename, setRename] = useState<SessionItem | null>(null), [name, setName] = useState("");
+  const [rename, setRename] = useState<SessionItem | null>(null), [name, setName] = useState(""), [renameBusy, setRenameBusy] = useState(false);
   const [deleteSession, setDeleteSession] = useState<SessionItem | null>(null), [deleteBusy, setDeleteBusy] = useState(false);
   const [renameProject, setRenameProject] = useState<ProjectFolder | null>(null), [folderName, setFolderName] = useState("");
   const [removeProject, setRemoveProject] = useState<ProjectFolder | null>(null);
@@ -248,6 +250,27 @@ export function AppShell(props: AppShellProps) {
     if (!api?.onApprovalFocus) return;
     return api.onApprovalFocus(value => approvalFocus.current(value));
   }, [props.simulateLocal]);
+  const confirmRenameSession = async () => {
+    const target = rename;
+    const nextName = name.trim();
+    if (!target || renameBusy || !nextName) return;
+    // 无内核桥接（浏览器预览）时保留原本地别名行为；有桥接则必须写入内核，失败不静默回退。
+    if (!props.onRenameSession) {
+      setAliases(previous => ({ ...previous, [target.id]: nextName }));
+      setRename(null);
+      return;
+    }
+    setRenameBusy(true);
+    let renamed = false;
+    try { renamed = await props.onRenameSession(target, nextName); }
+    catch { renamed = false; }
+    finally { setRenameBusy(false); }
+    if (!renamed) return;
+    // 内核已成为标题的唯一真值来源：清掉旧别名，避免本机显示名与持久化标题分叉。
+    const id = target.id;
+    setAliases(previous => { if (!(id in previous)) return previous; const next = { ...previous }; delete next[id]; return next; });
+    setRename(null);
+  };
   const confirmDeleteSession = async () => {
     const target = deleteSession;
     if (!target || deleteBusy || !props.onDeleteSession) return;
@@ -389,7 +412,7 @@ export function AppShell(props: AppShellProps) {
     {search && <SearchDialog folders={allFolders} onSelect={select} onOpenMessage={openMessage} onClose={() => setSearch(false)} searchMessages={props.threadSearchable === true} searchArchived={props.threadSearchArchived === true} />}
     {notifications && <NotificationsDialog folders={allFolders} preview={props.simulateLocal === true} refreshToken={approvalPulse} onSelect={select} onOpenMessage={openMessage} onLoaded={(approvals, truncated) => { setPendingApprovals(approvals.length); setPendingApprovalsTruncated(truncated); setApprovalCounts(countPendingApprovalsByThread(approvals)); }} onClose={() => setNotifications(false)} />}
     {newProject && <ModalSurface title="新建项目" onClose={() => setNewProject(false)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!projectName.trim()) return; const id = "group-" + crypto.randomUUID(); setGroups(prev => [...prev, { id, name: projectName.trim(), sessions: [] }]); setDraftProjectId(id); resetDraft(); openRoute({ page: "home" }); setProjectName(""); setNewProject(false); }}><label>项目名称<input autoFocus maxLength={60} value={projectName} onChange={event => setProjectName(event.target.value)} placeholder="例如：核心产研团队招聘" /></label><p>创建一个保存在此设备上的项目分组。</p><button className="solid-button" disabled={!projectName.trim()}>创建项目</button></form></ModalSurface>}
-    {rename && <ModalSurface title="更改显示名称" onClose={() => setRename(null)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!name.trim()) return; setAliases(prev => ({ ...prev, [rename.id]: name.trim() })); setRename(null); }}><label>聊天名称<input autoFocus value={name} maxLength={100} onChange={event => setName(event.target.value)} /></label><p>只更新此工作区的显示名称。</p><button className="solid-button" disabled={!name.trim()}>保存</button></form></ModalSurface>}
+    {rename && <ModalSurface title="更改显示名称" onClose={() => { if (!renameBusy) setRename(null); }} closeDisabled={renameBusy} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); void confirmRenameSession(); }}><label>聊天名称<input autoFocus value={name} maxLength={100} disabled={renameBusy} onChange={event => setName(event.target.value)} /></label><p>{props.onRenameSession ? "名称会写入本地内核并随会话保存。" : "只更新此工作区的显示名称。"}</p><button className="solid-button" disabled={!name.trim() || renameBusy}>{renameBusy ? "正在保存…" : "保存"}</button></form></ModalSurface>}
     {renameProject && <ModalSurface title="更改项目显示名称" onClose={() => setRenameProject(null)} className="compact-dialog"><form className="dialog-form" onSubmit={event => { event.preventDefault(); if (!folderName.trim()) return; setProjectAliases(prev => ({ ...prev, [renameProject.id]: folderName.trim() })); setRenameProject(null); }}><label>项目名称<input autoFocus maxLength={60} value={folderName} onChange={event => setFolderName(event.target.value)} /></label><p>显示名称保存在此设备上。</p><button className="solid-button" disabled={!folderName.trim()}>保存</button></form></ModalSurface>}
     {removeProject && <ModalSurface title="移除本地分组" onClose={() => setRemoveProject(null)} className="compact-dialog"><div className="dialog-form"><p>移除“{removeProject.name}”后，其中的聊天会回到原项目。</p><div className="dialog-actions"><button className="secondary-button" onClick={() => setRemoveProject(null)}>取消</button><button className="solid-button" onClick={() => { const id = removeProject.id; setGroups(prev => prev.filter(folder => folder.id !== id)); setThreadGroups(prev => Object.fromEntries(Object.entries(prev).filter(([, folderId]) => folderId !== id))); if (draftProjectId === id) setDraftProjectId(""); setRemoveProject(null); }}>移除分组</button></div></div></ModalSurface>}
     {deleteSession && <ModalSurface title="删除聊天" onClose={() => { if (!deleteBusy) setDeleteSession(null); }} className="compact-dialog"><div className="dialog-form">

@@ -15,6 +15,7 @@ import {
   type ThreadSummary,
   type ThreadStartResponse,
   type ThreadModelSetResponse,
+  type ThreadNameSetResponse,
   type ThreadArchiveResponse,
   type ThreadReasoningReadResponse,
   type ThreadReasoningSetResponse,
@@ -304,6 +305,15 @@ export async function setThreadModel(threadId: string, provider: string, model: 
   const response = await contextRequest<ThreadModelSetResponse>(ClientMethods.threadModelSet, { threadId, provider, model });
   if (!response?.thread || typeof response.thread.id !== "string" || !response.thread.id) {
     throw new Error("模型设置响应无法识别");
+  }
+  return response.thread;
+}
+
+/** 重命名会话：写入内核标题并持久化，内核同时发出 `thread/renamed`。失败不吞掉：调用方提示真实原因。 */
+export async function renameThread(threadId: string, name: string): Promise<ThreadSummary> {
+  const response = await contextRequest<ThreadNameSetResponse>(ClientMethods.threadNameSet, { threadId, name });
+  if (!response?.thread || response.thread.id !== threadId || typeof response.thread.title !== "string") {
+    throw new Error("重命名响应无法识别");
   }
   return response.thread;
 }

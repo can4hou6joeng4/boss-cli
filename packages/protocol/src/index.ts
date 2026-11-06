@@ -453,6 +453,12 @@ export interface ThreadModelSetParams {
   model: string;
 }
 export interface ThreadModelSetResponse { thread: ThreadSummary }
+export interface ThreadNameSetParams {
+  threadId: string;
+  name: string;
+}
+/** 重命名返回内核持久化后的线程摘要；`thread.title` 为规范化后的标题。 */
+export interface ThreadNameSetResponse { thread: ThreadSummary }
 /** 归档/恢复都返回内核当前线程摘要，`thread.archived` 即操作后的状态。 */
 export interface ThreadArchiveResponse { thread: ThreadSummary }
 export interface ThreadReasoningReadResponse {
