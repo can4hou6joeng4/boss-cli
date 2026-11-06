@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { migrateLegacyUiStorage } from "./data/uiStorage";
 import "./styles/app.css";
 import "./styles/replica.css";
@@ -18,6 +19,8 @@ if (!container) throw new Error("#root not found");
 
 createRoot(container).render(
   <StrictMode>
-    <App />
+    <ErrorBoundary scope="应用" hint="会话与内核仍在运行；重试会重新加载界面，不会删除本地会话。">
+      <App />
+    </ErrorBoundary>
   </StrictMode>,
 );
