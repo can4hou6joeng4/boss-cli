@@ -17,10 +17,17 @@ function ChunkedResult({ reference }: { reference: ToolResultReference }) {
   const [error, setError] = useState("");
   const [copying, setCopying] = useState(false);
   const [copyProgress, setCopyProgress] = useState<{ loaded: number; total: number } | null>(null);
+  const [copyNote, setCopyNote] = useState("");
   const clipboard = useClipboardCopy();
   const requestId = useRef(0);
   const copyRequestId = useRef(0);
-  useEffect(() => () => { requestId.current += 1; copyRequestId.current += 1; }, []);
+  const copyAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => {
+    requestId.current += 1;
+    copyRequestId.current += 1;
+    // 组件卸载后不再需要结果：中止分段读取，避免离开会话后继续发起请求。
+    copyAbort.current?.abort();
+  }, []);
 
   async function read(index: number, cursor: string | undefined, expectedOffset?: number) {
     const id = ++requestId.current;
@@ -53,25 +60,46 @@ function ChunkedResult({ reference }: { reference: ToolResultReference }) {
 
   async function copyWhole() {
     const id = ++copyRequestId.current;
+    const controller = new AbortController();
+    copyAbort.current = controller;
     setCopying(true);
     setCopyProgress({ loaded: 0, total: reference.characterLength });
+    setCopyNote("");
     setError("");
     try {
       const text = await readWholeToolResult(reference, {
+        signal: controller.signal,
         onProgress: (loaded, total) => {
           if (id === copyRequestId.current) setCopyProgress({ loaded, total });
         },
       });
       if (id !== copyRequestId.current) return;
+      // 读取阶段结束：隐藏取消入口，避免在写入剪贴板期间取消却已复制成功。
+      setCopyProgress(null);
       await clipboard.copy(text, copyKey);
     } catch (problem) {
-      if (id === copyRequestId.current) setError(harnessErrorText(problem));
+      // 主动取消或组件卸载：不显示为读取失败，也不写入任何部分内容。
+      if (id !== copyRequestId.current || controller.signal.aborted) return;
+      setError(harnessErrorText(problem));
     } finally {
+      if (copyAbort.current === controller) copyAbort.current = null;
       if (id === copyRequestId.current) {
         setCopying(false);
         setCopyProgress(null);
       }
     }
+  }
+
+  function cancelCopy() {
+    const controller = copyAbort.current;
+    if (!controller || controller.signal.aborted) return;
+    controller.abort();
+    // 让被取消的循环不再写状态；立即恢复界面，剩余分段不会再被请求。
+    copyRequestId.current += 1;
+    copyAbort.current = null;
+    setCopying(false);
+    setCopyProgress(null);
+    setCopyNote("已取消整体复制，未写入剪贴板。");
   }
 
   return <details className="tool-source-output tool-result-segments">
@@ -82,9 +110,11 @@ function ChunkedResult({ reference }: { reference: ToolResultReference }) {
       <button type="button" disabled={loading || copying || !chunk || position === 0} onClick={() => void read(position - 1, cursors[position - 1])}>上一段</button>
       <button type="button" disabled={loading || copying || !chunk?.nextCursor} onClick={() => chunk?.nextCursor && void read(position + 1, chunk.nextCursor, end)}>下一段</button>
       <button type="button" disabled={loading || copying || copyTooLarge} title={copyTitle} onClick={() => void copyWhole()}>{copying ? "正在读取…" : "复制完整结果"}</button>
+      {copying && copyProgress && <button type="button" onClick={cancelCopy}>取消</button>}
     </div>
     <div role="status">{loading ? "正在读取…" : chunk ? `字符 ${chunk.offset + 1}–${end} / ${reference.characterLength}${chunk.nextCursor ? "" : " · 已到末尾"}` : "点击读取第一段查看内容"}</div>
     {copying && copyProgress && <div role="status">正在读取 {copyProgress.loaded.toLocaleString()} / {copyProgress.total.toLocaleString()} 字符…</div>}
+    {copyNote && <div role="status">{copyNote}</div>}
     {copyFeedback && <div role="status" style={{ fontSize: 11, color: copyFeedback.ok ? "var(--accent-green)" : "var(--text-muted)" }}>{copyFeedback.ok ? `已复制 ${reference.characterLength.toLocaleString()} 字符` : `复制失败：${copyFeedback.reason}`}</div>}
     {copyTooLarge && <p className="tool-result-note">{validLength ? `结果超过整体复制上限（${MAX_WHOLE_RESULT_CHARS.toLocaleString()} 字符），请分段查看。` : "结果引用无效，请分段查看。"}</p>}
     {error && <p role="alert">{error}</p>}
