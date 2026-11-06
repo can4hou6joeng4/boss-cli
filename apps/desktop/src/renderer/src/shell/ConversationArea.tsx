@@ -24,6 +24,7 @@ import { useClipboardCopy } from "../data/clipboardCopy";
 import { toolOutcomeBadge } from "../data/toolOutcome";
 import { toolQueriedAtLabel } from "../data/toolSource";
 import { findFoldedMatches, findMessageMatches } from "../data/messageSearch";
+import { mergeLocalMessageState } from "../data/messageMerge";
 import { retryTextForMessage } from "../data/messageRetry";
 import { messageCopyText } from "../data/messageCopy";
 import { collectKernelTextRanges, collectTextRanges } from "../data/findHighlight";
@@ -241,7 +242,8 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const wasAtBottom = useRef(true);
   const scrollToBottom = () => messagesEndRef.current?.scrollIntoView({ behavior: currentScrollBehavior() });
-  useEffect(() => { setMessages(initialMessages); }, [initialMessages]);
+  // 父级重发消息时合并本地操作标记，不能整体替换：审批提交、问题回答与计划编辑只在本地副本里。
+  useEffect(() => { setMessages(previous => mergeLocalMessageState(initialMessages, previous)); }, [initialMessages]);
   useEffect(() => { if (wasAtBottom.current) messagesEndRef.current?.scrollIntoView({ behavior: "auto" }); }, [messages, running, modelRetry?.phase]);
   const handleScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;
