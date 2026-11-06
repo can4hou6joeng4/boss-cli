@@ -19,7 +19,7 @@ import { parseThemePreference, resolveDarkTheme, serializeThemePreference, type 
 import { branchSupport, branchSwitchBlock, useSessionBranches } from "./data/useSessionBranches";
 import { IconClose } from "./components/Icons";
 import { MOCK_PROJECT_FOLDERS, MOCK_CONVERSATION_THREAD, type ProjectFolder, type SessionItem, type MessageItem, type ConversationMode } from "./data/mockData";
-import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, archiveThread, configuredModels, deleteThread, harnessErrorText, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, renameThread, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn, unarchiveThread, updateQueuedItem } from "./data/harnessBridge";
+import { HARNESS_PROJECT_ID, HARNESS_PROJECT_NAME, archiveThread, configuredModels, deleteThread, harnessErrorText, harnessStatus, forkThread, interruptTurn, listThreads, listQueue, readTurnSkillIds, queueFollowUp, readQueueItem, reconnectHarness, removeQueuedItem, renameThread, respondApproval, sendTurn, setThreadModel, startThread, steerTurn, readTurnContinuation, continueTurn, unarchiveThread, updateQueuedItem } from "./data/harnessBridge";
 import { deleteThreadFailure } from "./data/deleteThreadError";
 import { resolveQuickAskRoute } from "./data/quickAsk";
 import { sessionTitleFromPrompt } from "./data/sessionTitle";
@@ -32,7 +32,6 @@ import { queueItemsOf, type QueuePage } from "./data/queueMapping";
 import type { QueueRefreshResult } from "./data/queueRefresh";
 import { reduceModelRetry, settleModelRetryOnTurnEnd, type ModelRetryStatus } from "./data/modelRetry";
 import { toMessage } from "./data/harnessBridge";
-import { collectTurnSkillIds } from "./data/turnSkills";
 import type { InitializeResponse, ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@boss-harness/protocol";
 import type { QueueIntent, QueueSubmissionCheck } from "./data/composerDraft";
 
@@ -79,6 +78,13 @@ export function App(): JSX.Element {
   const applyQueuePage = useCallback((page: QueuePage) => {
     setQueueItems(page.items);
     setQueueMeta({ totalItems: page.totalItems, activeItems: page.activeItems, truncated: page.truncated });
+    // 已投递的后续回合带 turnId 与实际技能；运行中的用户消息据此立即显示标签，
+    // 不必等到回合结束后的恢复。
+    const delivered: Record<string, string[]> = {};
+    for (const item of page.items) {
+      if (item.status === "delivered" && item.turnId && item.skillIds?.length) delivered[item.turnId] = [...item.skillIds];
+    }
+    if (Object.keys(delivered).length) setTurnSkillIds(previous => ({ ...previous, ...delivered }));
   }, []);
   const [modelRetries, setModelRetries] = useState<Record<string, ModelRetryStatus>>({});
   const retryTimers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -277,7 +283,11 @@ export function App(): JSX.Element {
         });
       }
       const real = snapshot.items.map(toMessage).filter((item): item is MessageItem => item !== null);
-      setTurnSkillIds(collectTurnSkillIds(snapshot.turns));
+      // resume 固定 excludeTurns，快照里没有回合摘要；历史技能标签从回合列表补。
+      // 标签只是辅助信息：读取失败保持现有映射，不打断会话恢复；旧会话的结果不得覆盖新会话。
+      void readTurnSkillIds(id, branchViewsRef.current ? "branch" : "log").then(mapping => {
+        if (activeRef.current?.id === id) setTurnSkillIds(mapping);
+      }).catch(() => { /* 技能标签不可用不影响会话内容。 */ });
       updateThread(id, () => real);
       if (snapshot.activeTurnId) turnIds.current.set(id, snapshot.activeTurnId);
       else clearModelRetry(id, status => status.phase !== "waiting");
@@ -545,6 +555,11 @@ export function App(): JSX.Element {
       // 压缩覆盖只作用于本会话下一条直接发送；入队、转向与续接不携带该覆盖。
       const accepted = await sendTurn(id, text, clientId, model, skillIds, autoCompaction.take(id));
       turnIds.current.set(id, accepted.turnId);
+      // 回合列表要等回合持久化后才包含本次技能；先用发送参数补上，运行中的用户消息即可显示。
+      // 去重回执复用已有回合，本次参数未必等于该回合实际注入的技能，交给回合列表核对。
+      if (!accepted.deduplicated && skillIds.length && activeRef.current?.id === id) {
+        setTurnSkillIds(previous => ({ ...previous, [accepted.turnId]: [...skillIds] }));
+      }
     } catch (cause) {
       markRunning(id, false);
       setError(`提交结果尚未确认：${harnessErrorText(cause)}。正在读取会话状态，请核对记录后再决定下一步。`);
