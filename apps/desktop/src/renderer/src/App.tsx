@@ -282,9 +282,10 @@ export function App(): JSX.Element {
       }
       const real = snapshot.items.map(toMessage).filter((item): item is MessageItem => item !== null);
       // resume 固定 excludeTurns，快照里没有回合摘要；历史技能标签从回合列表补。
+      // 合并而不是整体替换：读取发起后，发送或队列投递可能已写入更新的回合标签。
       // 标签只是辅助信息：读取失败保持现有映射，不打断会话恢复；旧会话的结果不得覆盖新会话。
       void readTurnSkillIds(id, branchViewsRef.current ? "branch" : "log").then(mapping => {
-        if (activeRef.current?.id === id) setTurnSkillIds(mapping);
+        if (activeRef.current?.id === id) setTurnSkillIds(previous => ({ ...previous, ...mapping }));
       }).catch(() => { /* 技能标签不可用不影响会话内容。 */ });
       updateThread(id, () => real);
       if (snapshot.activeTurnId) turnIds.current.set(id, snapshot.activeTurnId);
