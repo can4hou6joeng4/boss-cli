@@ -1,4 +1,4 @@
-/** 仅保存在当前应用内存；附件原文不写入 UI 偏好或浏览器持久存储。 */
+/** 附件原文与提交流程状态只保存在当前应用内存；正文与技能选择由界面层持久化到本地。 */
 import { safeSlice } from "@boss-harness/shared";
 import type { QueueItem } from "@boss-harness/protocol";
 
