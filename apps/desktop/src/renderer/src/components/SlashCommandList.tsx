@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useLayoutEffect, useRef } from "react";
 import {
   IconSearch,
   IconSparkles,
@@ -84,6 +84,20 @@ export const SLASH_COMMANDS: SlashCommandItem[] = [
   },
 ];
 
+/** 输入被外部替换（建议词、编辑消息、恢复队列消息）后，已请求打开的菜单不能继续覆盖新文本。 */
+export function slashMenuVisible(requested: boolean, text: string): boolean {
+  return requested && /^\/[^\s]*$/.test(text);
+}
+
+/** 菜单渲染与 Composer 键盘选取共用同一过滤结果，避免两处规则漂移。 */
+export function filterSlashCommands(search: string): SlashCommandItem[] {
+  const query = (search.startsWith("/") ? search.slice(1) : search).toLowerCase();
+  return SLASH_COMMANDS.filter(item =>
+    item.command.toLowerCase().includes(query)
+    || item.label.toLowerCase().includes(query)
+    || item.description.toLowerCase().includes(query));
+}
+
 function renderSlashIcon(type: SlashCommandItem["iconType"]) {
   switch (type) {
     case "tools":
@@ -135,15 +149,15 @@ export const SlashCommandList: React.FC<SlashCommandListProps> = ({
     return () => document.removeEventListener("mousedown", handleOutsideClick);
   }, [isOpen, onClose]);
 
+  // 列表高度小于全部命令；方向键移动选中项时把它滚入视口，否则高亮会停在不可见区域。
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    containerRef.current?.querySelector<HTMLElement>(".popup-command-item.selected")?.scrollIntoView({ block: "nearest" });
+  }, [isOpen, search, selectedIndex]);
+
   if (!isOpen) return null;
 
-  const query = search.startsWith("/") ? search.slice(1).toLowerCase() : search.toLowerCase();
-  const filtered = SLASH_COMMANDS.filter(
-    (item) =>
-      item.command.toLowerCase().includes(query) ||
-      item.label.toLowerCase().includes(query) ||
-      item.description.toLowerCase().includes(query)
-  );
+  const filtered = filterSlashCommands(search);
 
   return (
     <div ref={containerRef} className="popup-command-menu">
