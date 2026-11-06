@@ -3,8 +3,23 @@ import type { QueueItem, TurnListResponse, TurnSummary } from "@boss-harness/pro
 const SKILL_LIMIT = 10;
 const ID_LIMIT = 200;
 const MAX_CURSOR_LENGTH = 2048;
+/** 与内核 session.py 的 _IDENTIFIER 一致：字母数字开头，最长 128。 */
+const TURN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 /** 回合列表分页上限：技能标签只是辅助信息，异常内核不能让它无限翻页。 */
 export const TURN_SKILL_PAGE_LIMIT = 20;
+
+/**
+ * 映射对象不继承 Object.prototype：回合 id 来自响应，`__proto__` 等键
+ * 在普通对象上会改写原型而不是成为条目。
+ */
+function skillMap(): Record<string, string[]> {
+  return Object.create(null) as Record<string, string[]>;
+}
+
+/** 回合 id 必须符合内核标识符规则；不符的回合不产生映射，也不会成为对象键。 */
+function turnIdOf(value: unknown): string | null {
+  return typeof value === "string" && TURN_ID.test(value) ? value : null;
+}
 
 /** 先校验、后计数：跳过空值、非字符串与超长 id，去重并限 10 项。 */
 function normalizeSkillIds(value: unknown): string[] {
@@ -22,12 +37,13 @@ function normalizeSkillIds(value: unknown): string[] {
  * 旧内核或畸形记录不产生伪技能，也不会挤掉后面的合法 id。
  */
 export function collectTurnSkillIds(turns: TurnSummary[] | null | undefined): Record<string, string[]> {
-  const result: Record<string, string[]> = {};
+  const result = skillMap();
   if (!Array.isArray(turns)) return result;
   for (const turn of turns) {
-    if (!turn || typeof turn.turnId !== "string" || !turn.turnId) continue;
+    const turnId = turnIdOf(turn?.turnId);
+    if (!turnId) continue;
     const ids = normalizeSkillIds(turn.skillIds);
-    if (ids.length) result[turn.turnId] = ids;
+    if (ids.length) result[turnId] = ids;
   }
   return result;
 }
@@ -38,13 +54,14 @@ export function collectTurnSkillIds(turns: TurnSummary[] | null | undefined): Re
  * 未必等于该回合实际注入的技能；与直接发送路径一致，交给回合列表核对，不写入标签。
  */
 export function deliveredTurnSkills(items: readonly QueueItem[] | null | undefined): Record<string, string[]> {
-  const result: Record<string, string[]> = {};
+  const result = skillMap();
   if (!Array.isArray(items)) return result;
   for (const item of items) {
     if (!item || item.status !== "delivered" || item.deduplicated === true) continue;
-    if (typeof item.turnId !== "string" || !item.turnId) continue;
+    const turnId = turnIdOf(item.turnId);
+    if (!turnId) continue;
     const ids = normalizeSkillIds(item.skillIds);
-    if (ids.length) result[item.turnId] = ids;
+    if (ids.length) result[turnId] = ids;
   }
   return result;
 }
