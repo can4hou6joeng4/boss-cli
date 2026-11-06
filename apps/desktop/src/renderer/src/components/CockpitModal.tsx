@@ -5,6 +5,7 @@ import { configuredModels, harnessErrorText, listPendingApprovals, listQueue, li
 import { parseTaskRead, taskCheckErrorText, taskCheckLines, taskLocatorForOwner, type TaskCheckState } from "../data/taskCheck";
 import { approvalRemainingText, approvalUrgency } from "../data/pendingApprovals";
 import { compactionSourceLabel } from "../data/compactionSettings";
+import { cockpitTabId, cockpitTabIndexForKey, cockpitTabPanelId, type CockpitTab } from "../data/cockpitTabs";
 import {
   compactionSummary,
   durationText,
@@ -31,8 +32,6 @@ export interface CockpitModalProps {
   /** 当前会话；首页、预览或无活动会话时为 null。 */
   threadId: string | null;
 }
-
-type CockpitTab = "overview" | "turns" | "approvals" | "catalog";
 
 const TABS: { key: CockpitTab; label: string }[] = [
   { key: "overview", label: "概览" },
@@ -126,6 +125,19 @@ export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose, har
   const [taskChecks, setTaskChecks] = useState<Record<string, TaskCheckState>>({});
   const epoch = useRef(0);
   const checkEpoch = useRef(0);
+  const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+
+  /** WAI-ARIA Tabs：方向键先移动焦点，再切换分区；其余按键保留默认行为。 */
+  const onTabKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.nativeEvent.isComposing) return;
+    const currentIndex = TABS.findIndex(tab => tab.key === activeTab);
+    const targetIndex = cockpitTabIndexForKey(currentIndex, TABS.length, event.key);
+    const target = targetIndex === null ? undefined : TABS[targetIndex];
+    if (targetIndex === null || !target) return;
+    event.preventDefault();
+    setActiveTab(target.key);
+    tabRefs.current[targetIndex]?.focus();
+  };
 
   useEffect(() => { checkEpoch.current += 1; setTaskChecks({}); }, [isOpen, threadId]);
   const runTaskCheck = useCallback(async (owner: RuntimeResourceOwner) => {
@@ -232,10 +244,13 @@ export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose, har
   return (
     <ModalSurface title="运行状态" onClose={onClose} className="cockpit-dialog">
       <div className="cockpit-toolbar">
-        <div className="cockpit-tabs-row" role="tablist" aria-label="运行状态分区">
-          {TABS.map(tab => (
+        <div className="cockpit-tabs-row" role="tablist" aria-label="运行状态分区" onKeyDown={onTabKeyDown}>
+          {TABS.map((tab, index) => (
             <button key={tab.key} className={`cockpit-tab-btn ${activeTab === tab.key ? "active" : ""}`}
-              onClick={() => setActiveTab(tab.key)} type="button" role="tab" aria-selected={activeTab === tab.key}>
+              ref={node => { tabRefs.current[index] = node; }}
+              id={cockpitTabId(tab.key)} aria-controls={cockpitTabPanelId(tab.key)}
+              onClick={() => setActiveTab(tab.key)} type="button"
+              role="tab" aria-selected={activeTab === tab.key} tabIndex={activeTab === tab.key ? 0 : -1}>
               {tab.label}
             </button>
           ))}
@@ -250,6 +265,9 @@ export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose, har
             : "本地内核未连接，无法读取运行状态。重新连接后打开此面板即可刷新。"}
         </p>
         {loading && !loadedOnce ? <p className="cockpit-empty" role="status">正在读取内核状态…</p> : null}
+
+        <div className="cockpit-panel" role="tabpanel" id={cockpitTabPanelId(activeTab)}
+          aria-labelledby={cockpitTabId(activeTab)} tabIndex={0}>
 
         {activeTab === "overview" && (
           <div className="cockpit-grid">
@@ -406,6 +424,7 @@ export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose, har
             ) : models && models.length === 0 ? <p className="cockpit-empty">内核未返回模型条目。</p> : null}
           </div>
         )}
+        </div>
       </div>
     </ModalSurface>
   );
