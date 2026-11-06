@@ -4,6 +4,7 @@ import { IconSearch, IconChat, IconChevronRight, IconClose } from "./Icons";
 import type { ProjectFolder, SessionItem } from "../data/mockData";
 import { sessionRows } from "../data/sessionRows";
 import { buildSearchOptions, searchHitFocus, searchRoleLabel, type SearchOption } from "../data/searchOptions";
+import { searchEmptyCopy, searchStatusText, type MessageSearchState } from "../data/searchStatus";
 import { splitKernelHighlight } from "../data/findHighlight";
 import { visibleThreadSearchHits, type ThreadSearchBatch } from "../data/messageSearch";
 import { searchThreadMessages } from "../data/harnessBridge";
@@ -29,7 +30,7 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
 }) {
   const [query, setQuery] = useState(""), [index, setIndex] = useState(0);
   const [hitBatch, setHitBatch] = useState<ThreadSearchBatch | null>(null);
-  const [messageState, setMessageState] = useState<"idle" | "loading" | "ready" | "error">("idle");
+  const [messageState, setMessageState] = useState<MessageSearchState>("idle");
   const [recent, setRecent] = useState<string[]>(readRecentSearches);
   const [includeArchived, setIncludeArchived] = useState(false);
   const rows = sessionRows(folders, query, { includeArchived });
@@ -42,6 +43,9 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
   const options = buildSearchOptions(rows, hits, rowsById);
   const messageOptions = options.filter((option): option is Extract<SearchOption, { kind: "message" }> => option.kind === "message");
   const sessionOptions = options.filter((option): option is Extract<SearchOption, { kind: "session" }> => option.kind === "session");
+  // 状态行与空态必须与实际完成的搜索范围一致：消息搜索失败或未启用时不能宣称消息没有命中。
+  const empty = searchEmptyCopy(query, messageState, searchMessages);
+  const status = searchStatusText(query, rows.length, messageOptions.length, messageState);
   const inputRef = useRef<HTMLInputElement>(null), resultsRef = useRef<HTMLDivElement>(null);
   const listId = useId(), statusId = useId();
   const selected = Math.min(index, Math.max(0, options.length - 1));
@@ -98,7 +102,7 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
       if (event.key === "Enter" && options[selected]) { event.preventDefault(); event.stopPropagation(); openOption(options[selected]); }
     }} />{query && <button type="button" className="search-clear" aria-label="清除搜索" onClick={() => { setQuery(""); setIndex(0); inputRef.current?.focus(); }}><IconClose size={15} /></button>}</div>
     <div className="search-results" ref={resultsRef}>
-      <p id={statusId} role="status">{query.trim() ? `找到 ${rows.length} 个聊天${messageState === "ready" ? `、${messageOptions.length} 条消息` : ""}` : "最近聊天"}</p>
+      <p id={statusId} role="status">{status}</p>
       {!query.trim() && recent.length > 0 && <div className="search-recent" role="group" aria-label="最近搜索">
         <span className="search-recent-label">最近搜索</span>
         {recent.map(term => <button type="button" key={term} className="search-recent-chip" onClick={() => { setQuery(term); setIndex(0); inputRef.current?.focus(); }}>{term}</button>)}
@@ -122,7 +126,7 @@ export function SearchDialog({ folders, onSelect, onClose, searchMessages = fals
           return <button type="button" key={option.key} {...optionProps(option)}><IconChat size={17} /><span><strong><Highlighted text={row.session.title} query={query} /></strong><small>{row.session.archived === true ? "已归档 · " : ""}{row.project} · {row.session.timeAgo}</small></span><IconChevronRight size={13} /></button>;
         })}
       </div>
-      {!sessionOptions.length && !messageOptions.length && messageState !== "loading" && <div className="search-empty"><IconSearch size={28} /><strong>{query.trim() ? "没有找到相关聊天或消息" : "还没有聊天"}</strong><span>{query.trim() ? "试试其他关键词、项目名称或消息内容" : "创建聊天后，可以在这里快速找到它"}</span></div>}
+      {!sessionOptions.length && !messageOptions.length && messageState !== "loading" && <div className="search-empty"><IconSearch size={28} /><strong>{empty.title}</strong><span>{empty.hint}</span></div>}
     </div><div className="search-footer">{searchArchived && <label className="search-archived-toggle" title="同时搜索已归档会话；归档不会删除消息"><input type="checkbox" checked={includeArchived} onChange={event => { setIncludeArchived(event.target.checked); setIndex(0); }} />含已归档</label>}<span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>↵</kbd> 打开</span><span><kbd>esc</kbd> 关闭</span></div>
   </ModalSurface>;
 }
