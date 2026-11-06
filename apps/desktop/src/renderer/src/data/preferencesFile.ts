@@ -1,4 +1,4 @@
-import { UI_STORAGE_PREFIX } from "./uiStorage";
+import { LEGACY_UI_STORAGE_PREFIX, UI_STORAGE_PREFIX } from "./uiStorage";
 import type { ThemePreference } from "./themePreference";
 
 /**
@@ -6,6 +6,7 @@ import type { ThemePreference } from "./themePreference";
  *
  * 导出文件只包含本应用允许迁移的界面偏好；导入时逐键校验，
  * 任一已知键非法就整体拒绝，避免只恢复半份偏好却不提示。
+ * 改名前的 `boss-cli.ui` 作用域已随 rc.14 发布过，导入时继续接受并按旧前缀读取。
  */
 export type Density = "compact" | "comfortable";
 export type Motion = "reduced" | "full";
@@ -15,6 +16,7 @@ export const PREFERENCE_FILE_MAX_BYTES = 64 * 1024;
 
 const PREFERENCE_FILE_VERSION = 1;
 const PREFERENCE_FILE_SCOPE = "boss-harness.ui";
+const LEGACY_PREFERENCE_FILE_SCOPE = "boss-cli.ui";
 
 export interface PreferencesFileValues {
   fontSize?: number;
@@ -49,14 +51,18 @@ export function parsePreferencesFile(text: string): PreferencesFileResult {
   }
   if (!isRecord(parsed)) return { ok: false, reason: "文件结构无效" };
   if (parsed.version !== PREFERENCE_FILE_VERSION) return { ok: false, reason: "不支持的版本，请使用当前版本导出的文件" };
-  if (parsed.scope !== PREFERENCE_FILE_SCOPE) return { ok: false, reason: "不是本应用的界面偏好文件" };
+  if (parsed.scope !== PREFERENCE_FILE_SCOPE && parsed.scope !== LEGACY_PREFERENCE_FILE_SCOPE) {
+    return { ok: false, reason: "不是本应用的界面偏好文件" };
+  }
   if (!isRecord(parsed.preferences)) return { ok: false, reason: "缺少界面偏好内容" };
 
   const preferences = parsed.preferences;
+  const prefix = parsed.scope === LEGACY_PREFERENCE_FILE_SCOPE ? LEGACY_UI_STORAGE_PREFIX : UI_STORAGE_PREFIX;
+  const readKey = (name: string): string => `${prefix}${name}`;
   const values: PreferencesFileValues = {};
   let fields = 0;
 
-  const fontSizeRaw = preferences[knownKey("fontSize")];
+  const fontSizeRaw = preferences[readKey("fontSize")];
   if (fontSizeRaw !== undefined) {
     const size = typeof fontSizeRaw === "string" ? Number(fontSizeRaw) : Number.NaN;
     if (!PREFERENCE_FONT_SIZES.some((candidate) => candidate === size)) return { ok: false, reason: "字体大小无效" };
@@ -64,28 +70,28 @@ export function parsePreferencesFile(text: string): PreferencesFileResult {
     fields += 1;
   }
 
-  const densityRaw = preferences[knownKey("density")];
+  const densityRaw = preferences[readKey("density")];
   if (densityRaw !== undefined) {
     if (densityRaw !== "compact" && densityRaw !== "comfortable") return { ok: false, reason: "会话密度无效" };
     values.density = densityRaw;
     fields += 1;
   }
 
-  const motionRaw = preferences[knownKey("motion")];
+  const motionRaw = preferences[readKey("motion")];
   if (motionRaw !== undefined) {
     if (motionRaw !== "reduced" && motionRaw !== "full") return { ok: false, reason: "动态效果设置无效" };
     values.motion = motionRaw;
     fields += 1;
   }
 
-  const approvalSoundRaw = preferences[knownKey("approvalSound")];
+  const approvalSoundRaw = preferences[readKey("approvalSound")];
   if (approvalSoundRaw !== undefined) {
     if (approvalSoundRaw !== "true" && approvalSoundRaw !== "false") return { ok: false, reason: "审批提示音设置无效" };
     values.approvalSound = approvalSoundRaw === "true";
     fields += 1;
   }
 
-  const themeRaw = preferences[knownKey("theme")];
+  const themeRaw = preferences[readKey("theme")];
   if (themeRaw !== undefined) {
     if (themeRaw !== "system" && themeRaw !== "light" && themeRaw !== "dark") return { ok: false, reason: "主题设置无效" };
     values.theme = themeRaw;
