@@ -6,6 +6,7 @@ import type { ProjectFolder, ConversationMode } from "../data/mockData";
 import type { ModelDescriptor, SkillDescriptor, SkillProblem } from "@boss-harness/protocol";
 import type { SkillCatalogState } from "../data/harnessBridge";
 import { withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
+import { suggestionFillIntent } from "../data/homeSuggestions";
 interface Props {
   onStartSessionWithPrompt: (prompt: string, domainId: string, provider: string, modelId: string, skillIds?: string[]) => ReturnType<ComposerSend>;
   models?: ModelDescriptor[]; activeModelProvider?: string; activeModelId: string;
@@ -23,10 +24,17 @@ const suggestions = [
 ];
 export function HomeView(props: Props) {
   const value = props.draft.text;
-  const setValue = (text: string) => props.onDraftChange(previous => withDraftText(previous, text));
+  const [pendingSuggestion, setPendingSuggestion] = useState<string | null>(null);
+  const setValue = (text: string) => { setPendingSuggestion(null); props.onDraftChange(previous => withDraftText(previous, text)); };
   const project = props.selectedProjectId;
   const [projectMenu, setProjectMenu] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  // 建议卡会整段改写输入框：已有未发送正文时先显示确认条，避免一次误点丢掉草稿。
+  const applySuggestion = (prompt: string) => {
+    if (suggestionFillIntent(value, prompt) === "confirm") { setPendingSuggestion(prompt); return; }
+    setValue(prompt);
+    ref.current?.focus();
+  };
   useEffect(() => { ref.current?.focus({ preventScroll: true }); }, []);
   return <div className="home-screen" data-screen-label="新聊天">
     <div className="home-content">
@@ -44,8 +52,13 @@ export function HomeView(props: Props) {
       <Composer ref={ref} value={value} onChange={setValue} draft={props.draft} onDraftChange={props.onDraftChange} home readOnly={!props.preview} preview={props.preview} blocked={props.blocked} models={props.models} activeModelProvider={props.activeModelProvider} activeModelId={props.activeModelId} configuredModelLabel={props.configuredModelLabel} onSelectModel={props.onSelectModel} currentMode={props.currentMode} onModeChange={props.onModeChange} onOpenSettings={props.onOpenSettings} skills={props.skills} skillCatalogState={props.skillCatalogState} skillCatalogError={props.skillCatalogError} onRefreshSkills={props.onRefreshSkills} skillProblems={props.skillProblems}
         onSend={(text, skillIds) => props.onStartSessionWithPrompt(project ? `招聘项目：${props.folders.find(folder => folder.id === project)?.name}\n\n${text}` : text, "precision-match", props.activeModelProvider ?? "", props.activeModelId, skillIds)} />
       <div className="starter-prompts">
-        {suggestions.map(item => <button key={item.title} onClick={() => { setValue(item.prompt); ref.current?.focus(); }}><item.icon size={18} /><strong>{item.title}</strong><span>{item.detail}</span></button>)}
+        {suggestions.map(item => <button key={item.title} onClick={() => applySuggestion(item.prompt)}><item.icon size={18} /><strong>{item.title}</strong><span>{item.detail}</span></button>)}
       </div>
+      {pendingSuggestion && <div className="home-suggestion-confirm" role="alert">
+        <span>建议会替换当前未发送的草稿。</span>
+        <button type="button" onClick={() => { setValue(pendingSuggestion); ref.current?.focus(); }}>替换</button>
+        <button type="button" onClick={() => setPendingSuggestion(null)}>取消</button>
+      </div>}
       <div className="home-keyboard-hint"><span><kbd>/</kbd> 快捷指令</span><span><kbd>⇧ Enter</kbd> 换行</span></div>
     </div>
     <div className="workspace-status" role="status"><span className={props.preview || !props.harnessUp ? "status-dot preview" : "status-dot"} />{props.preview ? "界面预览 · 使用示例数据" : props.harnessUp ? "已连接本地招聘 Harness" : "本地招聘 Harness 未连接"}<span className="status-divider">·</span>{props.preview ? "对外操作由你确认" : "新会话默认只读"}</div>
