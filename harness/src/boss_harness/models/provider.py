@@ -14,6 +14,7 @@ import os
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import Literal, Protocol
+from urllib.parse import urlparse
 
 from boss_harness.models.secret import Secret
 from boss_harness.models.types import ModelRequest, StreamEvent
@@ -25,6 +26,30 @@ DEFAULT_MODEL_REQUEST_TIMEOUT_SECONDS = 600
 MAX_MODEL_REQUEST_TIMEOUT_SECONDS = 3600
 
 _FIRST_PARTY_HOST = "api.anthropic.com"
+
+
+def _is_first_party_base_url(base_url: str | None) -> bool:
+    """`base_url` 是否指向 Anthropic 官方主机。
+
+    用主机名精确比较而非子串包含：`api.anthropic.com.evil.example` 与
+    `api.anthropic.com@proxy.example` 都含有同样子串，实际却指向别处；反过来说 DNS
+    主机名不区分大小写，大写的官方域名同样应算官方。`urlparse` 会小写化主机名并剥掉
+    userinfo，未写 scheme 时先按网络位置补全；末尾的根点（`api.anthropic.com.`）是同一
+    主机的完全限定写法，一并归一。
+    """
+    if base_url is None or not base_url.strip():
+        # 没有自定义端点即直连官方默认地址。
+        return True
+    candidate = base_url.strip()
+    if "://" not in candidate:
+        candidate = f"//{candidate}"
+    try:
+        host = (urlparse(candidate).hostname or "").rstrip(".")
+    except ValueError:
+        # 畸形的 IPv6 字面量等解析不出主机名；交给 SDK 在真正建连时报错，
+        # 判定本身不能因此让配置解析崩溃。
+        return False
+    return host == _FIRST_PARTY_HOST
 
 ProviderName = Literal["anthropic", "openai", "none"]
 
@@ -100,7 +125,7 @@ def resolve_config(
     if (env.get("BOSS_HARNESS_THINKING") or "").strip() == "summarized":
         thinking = {"type": "adaptive", "display": "summarized"}
 
-    fallback_default = base_url is None or _FIRST_PARTY_HOST in base_url
+    fallback_default = _is_first_party_base_url(base_url)
     if env.get("BOSS_HARNESS_SERVER_FALLBACK") is not None:
         fallback_default = env["BOSS_HARNESS_SERVER_FALLBACK"] not in ("0", "false", "")
 
