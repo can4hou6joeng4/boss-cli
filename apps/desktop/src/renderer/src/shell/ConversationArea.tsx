@@ -15,6 +15,7 @@ import type { ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@
 import type { ContextBranchSummary, ContextCompactJob, ContextEditReadResponse, SkillDescriptor, SkillProblem } from "@boss-harness/protocol";
 import { type MessageItem, type ConversationMode } from "../data/mockData";
 import type { SkillCatalogState, ApprovalDelivery, ApprovalOutcome } from "../data/harnessBridge";
+import { approvalRejectionNotice } from "../data/approvalFailure";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import type { QueueRefreshResult } from "../data/queueRefresh";
 import { appendQuote, createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type CheckQueueSubmission } from "../data/composerDraft";
@@ -296,11 +297,12 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
       const outcome = await onApprovalDecision?.(approval.approvalId, decision === "approve", approval.toolName, remember);
       setPendingApproval(null);
       const delivery = outcome && typeof outcome === "object" ? outcome.delivery : outcome;
-      const reason = outcome && typeof outcome === "object" && outcome.reason ? `：${outcome.reason}` : "";
+      const detail = outcome && typeof outcome === "object" && outcome.reason ? outcome.reason : "";
+      const code = outcome && typeof outcome === "object" ? outcome.code : undefined;
       if (delivery !== "accepted") {
         setApprovalError(delivery === "unconfirmed"
-          ? `审批请求未送达${reason}，请检查连接后重试；这张审批卡仍可再次提交。`
-          : `审批未被受理${reason || "（可能已过期或状态已刷新）"}；请等待状态刷新后再试。`);
+          ? `审批请求未送达${detail ? `：${detail}` : ""}，请检查连接后重试；这张审批卡仍可再次提交。`
+          : approvalRejectionNotice(code, detail));
         return;
       }
       if (!simulateLocal) {
