@@ -154,6 +154,37 @@ def _encode_session_line(value: dict, *, maximum: int = MAX_SESSION_LINE_BYTES,
     return encoded + b"\n"
 
 
+def _read_exactly_at(descriptor: int, offset: int, length: int) -> bytes:
+    chunks: list[bytes] = []
+    os.lseek(descriptor, offset, os.SEEK_SET)
+    while length:
+        chunk = os.read(descriptor, length)
+        if not chunk:
+            raise OSError("会话日志读取不完整")
+        chunks.append(chunk)
+        length -= len(chunk)
+    return b"".join(chunks)
+
+
+def _truncate_partial_record_tail(descriptor: int, start: int) -> int:
+    """截掉末尾没有换行的不完整记录，返回新的文件长度。
+
+    中断的追加会在文件末尾留下半条记录。若直接在它后面补换行再追加，残片会被
+    固化成一条无法解析的记录，之后每次读取都会失败；因此下次追加前先把它截掉。
+    残片不会超过单行上限，据此向前找到最后一个换行作为记录边界。
+    """
+    window = min(start, MAX_SESSION_LINE_BYTES + 1)
+    offset = start - window
+    boundary = _read_exactly_at(descriptor, offset, window).rfind(b"\n")
+    if boundary < 0:
+        raise ValueError("会话日志末尾缺少完整记录边界")
+    truncated = offset + boundary + 1
+    if truncated != start:
+        os.ftruncate(descriptor, truncated)
+        os.fsync(descriptor)
+    return truncated
+
+
 def _iter_bounded_raw_lines_from_handle(handle, *, maximum: int, label: str = "JSONL",
                                         universal_newlines: bool = False,
                                         byte_limit: int | None = None):
@@ -199,10 +230,11 @@ def _iter_bounded_raw_lines_from_handle(handle, *, maximum: int, label: str = "J
             yield line
         if eof:
             break
-    if pending:
-        if len(pending) > maximum:
-            raise ValueError(f"{label}单行超过大小限制")
-        yield bytes(pending)
+    # 文件末尾没有换行的那一段只可能来自中断的追加：进程在 os.write 与 fsync 之间
+    # 退出或断电，记录只写了一半。记录一律以换行结尾，把残段当记录读出会解码失败，
+    # 进而让整个内核无法启动；这里丢弃，写入端会在下次追加前截掉它。
+    if pending and len(pending) > maximum:
+        raise ValueError(f"{label}单行超过大小限制")
 
 
 def _iter_bounded_raw_lines(path: Path, *, maximum: int, label: str = "JSONL",
@@ -586,15 +618,9 @@ class SessionStore:
                     or (visible.st_dev, visible.st_ino) != identity[:2]):
                 raise ValueError("会话日志不是稳定的私有单链接文件")
             start = original.st_size
-            prefix = b""
             if start:
-                os.lseek(descriptor, start - 1, os.SEEK_SET)
-                last_byte = os.read(descriptor, 1)
-                if len(last_byte) != 1:
-                    raise OSError("会话日志末尾读取不完整")
-                if last_byte != b"\n":
-                    prefix = b"\n"
-            suffix = prefix + encoded
+                start = _truncate_partial_record_tail(descriptor, start)
+            suffix = encoded
             written = 0
             try:
                 os.lseek(descriptor, 0, os.SEEK_END)
