@@ -38,8 +38,8 @@ export interface WorkspaceSkillsProps {
 const byteText = (value: number) => `${value.toLocaleString("zh-CN")} 字节`;
 
 /**
- * 「技能与工具」页的工作区技能列表、正文与新建入口。正文来自 SKILL.md，
- * 选择后才作为上下文注入；这里不提供编辑或执行入口。
+ * 「技能与工具」页的工作区技能列表、正文与新建 / 编辑 / 删除入口。正文来自 SKILL.md，
+ * 选择后才作为上下文注入；这里不提供执行入口。
  */
 export function WorkspaceSkills(props: WorkspaceSkillsProps) {
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -136,7 +136,7 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
         {!selected && <p className="page-empty-note">选择技能可查看它会向模型注入的正文。</p>}
         {selected && !props.readable && <><strong>{selected.name}</strong><p className="workspace-skill-description">{selected.description || "无描述"}</p><p className="page-empty-note">当前内核未声明技能正文读取能力，无法在应用内查看内容；仍可在输入区选择该技能。</p></>}
         {selected && props.readable && <>
-          <div className="page-section-head"><strong>{shownDetail?.name ?? selected.name}</strong><span className="workspace-skill-tools"><button type="button" className="subtle-button" onClick={() => setReload(previous => previous + 1)} disabled={detailLoading}>{detailLoading ? "正在读取…" : "重新读取"}</button>{props.writable && shownDetail && !detailLoading && <button type="button" className="subtle-button" onClick={() => { setNotice(""); setEditing(shownDetail); }}>编辑技能…</button>}</span></div>
+          <div className="page-section-head"><strong>{shownDetail?.name ?? selected.name}</strong><span className="workspace-skill-tools"><button type="button" className="subtle-button" onClick={() => setReload(previous => previous + 1)} disabled={detailLoading}>{detailLoading ? "正在读取…" : "重新读取"}</button>{props.writable && shownDetail && !detailLoading && <button type="button" className="subtle-button" onClick={() => { setNotice(""); setEditing(shownDetail); }}>编辑技能…</button>}{props.deletable && shownDetail && !detailLoading && <button type="button" className="subtle-button danger-button" onClick={() => { setNotice(""); setDeleting(shownDetail); }}>删除技能…</button>}</span></div>
           <small className="workspace-skill-meta">{selected.id} · {byteText(shownDetail?.bytes ?? selected.bytes)} · 摘要 {(shownDetail?.digest ?? selected.digest).slice(0, 12)}…</small>
           <div className="workspace-skill-actions"><button type="button" className="solid-button" onClick={() => props.onUseSkill(selected.id)}>在新聊天中使用该技能</button><span className="workspace-skill-hint">只预选到新会话草稿，不会自动发送。</span></div>
           {detailLoading && <p className="page-empty-note">正在读取技能正文…</p>}

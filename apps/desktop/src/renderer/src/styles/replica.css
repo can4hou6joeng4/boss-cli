@@ -326,6 +326,8 @@ button.user-skill-chip:hover { border-color: var(--text-muted); color: var(--tex
 .subtle-button:hover { background: var(--btn-ghost-hover); }
 .solid-button { background: var(--btn-primary-bg); color: var(--btn-primary-text); font-weight: 500; border: 0; padding: 10px 15px; }
 .solid-button.danger-button { background: var(--accent-error); color: var(--bg-window); }
+.subtle-button.danger-button { color: var(--accent-error); border-color: color-mix(in srgb, var(--accent-error) 35%, var(--border-color)); }
+.subtle-button.danger-button:hover { background: color-mix(in srgb, var(--accent-error) 10%, transparent); }
 .solid-button:disabled { opacity: .4; }
 .page-search { display: flex; align-items: center; gap: 10px; padding: 10px 13px; border: 1px solid var(--border-color); border-radius: 9px; color: var(--text-faint); margin-bottom: 20px; }
 .page-search input { width: 100%; background: transparent; border: none; outline: none; color: var(--text-main); font-size: 12px; }
