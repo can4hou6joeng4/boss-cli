@@ -4,12 +4,12 @@
  * 只保存正文与技能 id：附件原文按既有边界只留在内存，提交流程状态（submitting /
  * queueSubmission）也不落盘。存储键沿用 UI 命名空间，旧 `boss-cli.ui.*` 由启动迁移补齐。
  */
-import { createComposerDraft, type ComposerDraft } from "./composerDraft";
+import { MAX_MESSAGE_TEXT_LENGTH, createComposerDraft, type ComposerDraft } from "./composerDraft";
 import { UI_STORAGE_PREFIX } from "./uiStorage";
 
 export const COMPOSER_DRAFT_STORAGE_KEY = UI_STORAGE_PREFIX + "composerDrafts";
-/** 与内核单条消息上限一致；超限草稿不持久化，避免重启后恢复成被截断的内容。 */
-export const MAX_DRAFT_TEXT_LENGTH = 100_000;
+/** 超过内核单条消息上限的草稿不持久化，避免重启后恢复成无法发送的内容。 */
+export const MAX_DRAFT_TEXT_LENGTH = MAX_MESSAGE_TEXT_LENGTH;
 /** 最多保留的会话草稿数量；超出时丢弃最久未修改的条目。 */
 export const MAX_SESSION_DRAFTS = 20;
 const MAX_SKILL_IDS = 50;

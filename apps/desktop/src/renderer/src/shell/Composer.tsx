@@ -10,7 +10,7 @@ import { filterSkills } from "../data/skillFilter";
 import { skillChips } from "../data/skillChips";
 import { attachmentFailureNotice, readTextAttachments } from "../data/attachmentRead";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
-import { createComposerDraft, clearTransferredDraft, composerSendResult, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerSendOutcome, type ComposerQueue, type QueueIntent, type CheckQueueSubmission } from "../data/composerDraft";
+import { createComposerDraft, clearTransferredDraft, composerSendResult, composedMessageText, MAX_MESSAGE_TEXT_LENGTH, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerSendOutcome, type ComposerQueue, type QueueIntent, type CheckQueueSubmission } from "../data/composerDraft";
 import { queueSkillNotice } from "../data/queueSkillNotice";
 import "../styles/composer-menus.css";
 
@@ -176,7 +176,13 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
       setNotice("所选技能尚未确认可用，请刷新技能目录或清除不可用技能后再发送。");
       return;
     }
-    const text = [submitted.text.trim(), ...submitted.attachments.map(file => `附件：${file.name}\n\n${file.text}`)].filter(Boolean).join("\n\n");
+    const text = composedMessageText(submitted.text, submitted.attachments);
+    // 附件按原文拼进消息，界面允许的 4 × 200 KB 很容易超过内核单条上限；
+    // 在内核之前拦下，避免把必被拒绝的消息送出（首页还会先建会话留下空会话）。
+    if (text.length > MAX_MESSAGE_TEXT_LENGTH) {
+      setNotice(`消息连同附件共 ${text.length} 字符，超过内核单条 ${MAX_MESSAGE_TEXT_LENGTH} 字符上限；请减少附件或精简正文后再发送。`);
+      return;
+    }
     const skillIds = submitted.skillIds ?? [];
     if (priorQueueSubmission?.uncertain) {
       const sameRequest = priorQueueSubmission.text === text && priorQueueSubmission.intent === queueIntent
@@ -274,7 +280,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
       if (result.status === "found") {
         updateDraft(previous => {
           if (previous.id !== draftRef.current.id) return previous;
-          const currentText = [previous.text.trim(), ...previous.attachments.map(file => `附件：${file.name}\n\n${file.text}`)].filter(Boolean).join("\n\n");
+          const currentText = composedMessageText(previous.text, previous.attachments);
           const matchesPending = currentText === pending.text;
           return { ...previous, text: matchesPending ? "" : previous.text,
             textVersion: previous.textVersion + (matchesPending && previous.text ? 1 : 0),
