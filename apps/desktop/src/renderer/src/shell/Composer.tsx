@@ -10,7 +10,7 @@ import { filterSkills } from "../data/skillFilter";
 import { skillChips } from "../data/skillChips";
 import { attachmentFailureNotice, readTextAttachments } from "../data/attachmentRead";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
-import { createComposerDraft, clearTransferredDraft, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type QueueIntent, type CheckQueueSubmission } from "../data/composerDraft";
+import { createComposerDraft, clearTransferredDraft, composerSendResult, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerSendOutcome, type ComposerQueue, type QueueIntent, type CheckQueueSubmission } from "../data/composerDraft";
 import { queueSkillNotice } from "../data/queueSkillNotice";
 import "../styles/composer-menus.css";
 
@@ -194,7 +194,7 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
     updateDraft(previous => previous.id === submitted.id ? { ...previous, submitting: true } : previous);
     let queueRequest: ComposerDraft["queueSubmission"];
     try {
-      let transferred: void | boolean;
+      let transferred: ComposerSendOutcome;
       if (queueing && onQueue) {
         queueRequest = priorQueueSubmission?.text === text && priorQueueSubmission.intent === queueIntent
           && JSON.stringify(priorQueueSubmission.skillIds ?? []) === JSON.stringify(skillIds)
@@ -205,8 +205,15 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
       } else {
         transferred = await onSend(text, skillIds);
       }
-      if (transferred === false) {
-        updateDraft(previous => previous.id === submitted.id ? { ...previous, submitting: false, ...(queueing ? { queueSubmission: undefined } : {}) } : previous);
+      const outcome = composerSendResult(transferred);
+      if (outcome !== "sent") {
+        // 不确定时不清空正文、附件与技能选择：服务端可能没收到，草稿是唯一还能重发的副本。
+        updateDraft(previous => previous.id === submitted.id
+          ? { ...previous, submitting: false, ...(outcome === "rejected" && queueing ? { queueSubmission: undefined } : {}) }
+          : previous);
+        if (outcome === "uncertain" && alive.current && draftRef.current.id === submitted.id) {
+          setNotice("提交结果尚未确认；内容已保留在输入框，请先核对聊天记录再决定是否重发。");
+        }
         return;
       }
       if (!draft || !onDraftChange) {
