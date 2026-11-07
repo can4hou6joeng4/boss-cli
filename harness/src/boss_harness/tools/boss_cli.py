@@ -24,6 +24,8 @@ from boss_harness.toolkit import ToolResult
 
 DEFAULT_TIMEOUT_SECONDS = 120
 MAX_CLI_OUTPUT_BYTES = 16 * 1024 * 1024
+# 直接子进程退出后留给读取线程排空管道的窗口；超过它仍无 EOF 就视为后代持有管道。
+CHILD_EXIT_DRAIN_SECONDS = 0.5
 MAX_ENVELOPE_JSON_DEPTH = 64
 
 
@@ -212,6 +214,7 @@ class BossCliTool:
                     if pipe is not None:
                         pipe.close()
             return failure("CLI_ERROR", "CLI 输入输出未能启动，进程已停止；请先核对已发出的操作。")
+        exited_at: float | None = None
         while True:
             cancelled = self.cancel_event is not None and self.cancel_event.is_set()
             if cancelled or output.overflow.is_set() or output.failed or time.monotonic() >= deadline:
@@ -227,8 +230,27 @@ class BossCliTool:
             # while remaining alive, or descendants can keep its pipes open.
             if output.done.is_set() and proc.poll() is not None:
                 break
+            if proc.poll() is not None:
+                # The CLI itself has exited. Descendants may still hold the
+                # inherited pipes, so waiting for EOF would report a completed
+                # command as a timeout; drain briefly, then retire the group.
+                if exited_at is None:
+                    exited_at = time.monotonic()
+                elif time.monotonic() - exited_at >= CHILD_EXIT_DRAIN_SECONDS:
+                    self._terminate(proc)
+                    output.join()
+                    break
+            else:
+                exited_at = None
             output.overflow.wait(min(0.1, max(0.001, deadline - time.monotonic())))
-        output.join()
+        settled = output.join()
+        if not settled:
+            self._terminate(proc)
+            settled = output.join()
+        if not settled:
+            # A descendant escaped the process group, or it refuses to die.
+            # Never parse a buffer that is still being written.
+            return failure("CLI_ERROR", "CLI 输入输出线程未能在限定时间内收尾，结果不可信；请先核对平台状态，不要直接重试。")
         # A reader can hit the limit between the supervisor's first check and
         # its completion check. Recheck after joining before parsing any bytes.
         if output.overflow.is_set():
@@ -306,7 +328,9 @@ class BossCliTool:
                     os.killpg(proc.pid, sig)
                 elif proc.poll() is None:
                     proc.kill()
-            except ProcessLookupError:
+            except OSError:
+                # The group is already gone, or contains a descendant this
+                # process may not signal. Settlement continues either way.
                 pass
         stop(signal.SIGTERM)
         try:
@@ -316,7 +340,12 @@ class BossCliTool:
         # A child can exit before descendants close inherited pipes. The I/O
         # workers finish after the process group has been retired.
         stop(signal.SIGKILL)
-        proc.wait()
+        try:
+            # SIGKILL can stay pending during an uninterruptible kernel wait;
+            # the tool call must not block on it forever.
+            proc.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            pass
 
     # ---------- 能力发现 ----------
 

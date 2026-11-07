@@ -78,10 +78,20 @@ class BoundedProcessOutput:
             except BrokenPipeError:
                 pass
 
-    def join(self) -> None:
+    def join(self, timeout: float = 1.0) -> bool:
+        """等待 I/O 线程收尾，返回是否全部停止。
+
+        后代进程可能继承并持有管道，读取线程会一直阻塞在 `read1`。这里只做
+        有界等待，由调用方决定「仍未停止」时如何上报，避免把放弃等待当成完成。
+        """
         for thread in self._threads:
             if thread.ident is not None:
-                thread.join(timeout=1)
+                thread.join(timeout)
+        return not self.alive()
+
+    def alive(self) -> bool:
+        """是否仍有已启动且未退出的 I/O 线程。"""
+        return any(thread.ident is not None and thread.is_alive() for thread in self._threads)
 
     def close_unstarted(self) -> None:
         for thread, stream in zip(self._threads, self._pipes):
