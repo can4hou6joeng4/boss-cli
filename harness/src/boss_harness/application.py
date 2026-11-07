@@ -3781,6 +3781,15 @@ class ApplicationService:
                                                       recoveryReason="terminalPersistenceFailure")
                         except Exception:
                             pass
+                    # 失败回合可能把条目留在 running：上报审批或写入结果时抛错，
+                    # 在线路径就不会再走完成修订。approval/list 不列 error 回合的
+                    # 待决审批，压缩又拒绝 running 条目，因此在这里按启动恢复的
+                    # 同一规则收尾，而不是等下一次重启。
+                    if status in {"error", "blocked"}:
+                        try:
+                            self.sessions.settle_abandoned_turn(thread_id, job["turnId"])
+                        except Exception:
+                            pass
                     try:
                         if status != "completed":
                             self.queue.pause(thread_id)
