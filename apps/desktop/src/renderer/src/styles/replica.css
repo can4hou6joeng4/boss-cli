@@ -195,6 +195,10 @@ kbd { font: 10px var(--font-sans); color: var(--text-faint); }
 .starter-prompts svg { color: var(--text-muted); margin-bottom: 14px; }
 .starter-prompts strong { font-size: 12px; font-weight: 500; margin-bottom: 5px; }
 .starter-prompts span { color: var(--text-faint); font-size: 11px; line-height: 1.6; }
+.home-suggestion-confirm { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding: 8px 12px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--btn-secondary-bg); color: var(--text-muted); font-size: 11px; }
+.home-suggestion-confirm button { min-height: 26px; padding: 0 10px; border: 1px solid var(--border-color); border-radius: 7px; background: transparent; color: var(--text-main); font-size: 11px; cursor: pointer; }
+.home-suggestion-confirm button:hover, .home-suggestion-confirm button:focus-visible { background: var(--btn-ghost-hover); }
+.home-suggestion-confirm button:last-child { color: var(--text-faint); border-color: transparent; }
 .home-keyboard-hint { display: flex; gap: 18px; justify-content: center; margin-top: 23px; font-size: 10px; color: var(--text-faint); }
 .home-keyboard-hint kbd { margin-right: 3px; }
 .workspace-status { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 6px; color: var(--text-faint); font-size: 10px; margin-top: 12px; }
