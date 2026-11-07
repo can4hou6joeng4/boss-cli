@@ -38,7 +38,7 @@ export function DeleteSkillDialog(props: Props) {
     }
   };
 
-  return <ModalSurface title={`删除技能 ${props.skill.name}`} onClose={props.onClose} className="compact-dialog">
+  return <ModalSurface title={`删除技能 ${props.skill.name}`} onClose={props.onClose} closeDisabled={deleting} className="compact-dialog">
     <div className="dialog-form">
       <p className="dialog-note">删除后不可恢复。只会删除仅包含一个 <code>SKILL.md</code> 的技能目录；目录里还有脚本、素材或其他文件时会拒绝删除。</p>
       <p className="skill-editor-path">删除：<code>{root}/{props.skill.id}/SKILL.md</code></p>
