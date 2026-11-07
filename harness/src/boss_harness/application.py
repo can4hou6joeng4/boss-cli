@@ -4005,6 +4005,12 @@ class ApplicationService:
                 self.compaction_policy.override(auto_compaction)
                 auto_compaction = dict(auto_compaction)
             identity = resolve_request(self.sessions, thread_id, params.get("clientUserMessageId"), text)
+            # 归档会话没有派发路径（_dispatch_follow_up 直接返回 idle），
+            # 新请求入队只会长期停在 queued。与 turn/start 一致，要求先恢复；
+            # 已存在队列项的重试仍按幂等返回，不被归档状态打断。
+            if (self.sessions.get_thread(thread_id).get("archived")
+                    and identity.queue is None and identity.turn is None):
+                raise RpcError(-32004, "请先恢复归档会话，再添加排队消息")
             for source in (identity.queue, identity.turn):
                 if source is not None and (source.get("skillIds") or []) != skill_ids:
                     raise RpcError(-32004, "clientUserMessageId 已用于不同技能组合",
