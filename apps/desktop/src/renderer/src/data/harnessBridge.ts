@@ -458,8 +458,8 @@ export async function removeQueuedItem(threadId: string, queueId: string): Promi
 
 /** 审批应答的送达结果：accepted 表示内核已受理；rejected 表示内核明确不受理；unconfirmed 表示请求没送到或回报不可读。 */
 export type ApprovalDelivery = "accepted" | "rejected" | "unconfirmed";
-/** 送达结果与未确认时可展示的原因（已剥掉 IPC 前缀、附内核错误码）。 */
-export interface ApprovalOutcome { delivery: ApprovalDelivery; reason?: string }
+/** 送达结果与未确认时可展示的原因（已剥掉 IPC 前缀、附内核错误码）；code 为内核拒绝的原因码。 */
+export interface ApprovalOutcome { delivery: ApprovalDelivery; reason?: string; code?: string }
 
 /** 读取跨会话待审批项（不传 threadId，取内核顺序前 limit 条）及是否还有更早的项未返回。 */
 export async function listPendingApprovals(limit = 100): Promise<PendingApprovalList> {
@@ -481,7 +481,12 @@ export async function respondApproval(approvalId: string, approved: boolean): Pr
     return { delivery: "rejected", reason: response.expired === true ? "审批已过期，工具未执行" : undefined };
   } catch (cause) {
     // contextRequest 解出的内核拒绝是明确不受理；其余断连、IPC 或解析失败才算未送达。
-    if (isHarnessRpcRejection(cause)) return { delivery: "rejected", reason: harnessErrorText(cause) };
+    if (isHarnessRpcRejection(cause)) {
+      const data = (cause as { data?: unknown }).data;
+      const code = data && typeof data === "object" && typeof (data as { code?: unknown }).code === "string"
+        ? (data as { code: string }).code : undefined;
+      return { delivery: "rejected", reason: harnessErrorText(cause), ...(code ? { code } : {}) };
+    }
     return { delivery: "unconfirmed", reason: harnessErrorText(cause) };
   }
 }
