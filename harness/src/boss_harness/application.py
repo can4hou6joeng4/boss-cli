@@ -3753,60 +3753,66 @@ class ApplicationService:
             # one boundary. An accepted cancel wins even after the runner has
             # returned its result; completed output and tool facts stay intact.
             with self.runtimes.lock:
-                if job["cancel"].is_set():
-                    status = "interrupted"
-                terminal_fields: dict[str, Any] = {}
-                failure_code = job.get("lastErrorCode")
-                if status in {"error", "blocked"} and isinstance(failure_code, str):
-                    terminal_fields["failureCode"] = failure_code
                 try:
-                    self.sessions.record_turn(thread_id, job["turnId"], status, **terminal_fields)
-                except (OSError, ValueError):
-                    status = "error"
-                    # The terminal row may be visible in JSONL even when fsync
-                    # fails. Append a correction when storage permits it.
+                    if job["cancel"].is_set():
+                        status = "interrupted"
+                    terminal_fields: dict[str, Any] = {}
+                    failure_code = job.get("lastErrorCode")
+                    if status in {"error", "blocked"} and isinstance(failure_code, str):
+                        terminal_fields["failureCode"] = failure_code
                     try:
-                        self.sessions.record_turn(thread_id, job["turnId"], "error",
-                                                  recoveryReason="terminalPersistenceFailure")
-                    except (OSError, ValueError):
-                        pass
-                try:
-                    if status != "completed":
-                        self.queue.pause(thread_id)
-                    else:
-                        self.queue.pause(thread_id, kind="steering")
-                except (OSError, ValueError):
-                    status = "error"
-                    # A steering-only settlement failure also blocks existing
-                    # follow-ups. Keep that responsibility even if storage is
-                    # still unavailable when attempting the broader pause.
-                    try:
-                        self.queue.pause(thread_id)
-                    except (OSError, ValueError):
-                        pass
-                    try:
-                        self.sessions.record_turn(thread_id, job["turnId"], "error",
-                                                  recoveryReason="queueSettlementFailure")
-                    except (OSError, ValueError):
-                        pass
-                finally:
-                    try:
-                        self._record_turn_phase(job, "finish", status,
-                                                job.get("phaseAttempt", 1))
-                    except (OSError, ValueError):
+                        self.sessions.record_turn(thread_id, job["turnId"], status, **terminal_fields)
+                    except Exception:
                         status = "error"
-                        # Phase settlement failed after a successful runner may
-                        # already have left follow-ups eligible. Register the
-                        # full pause before releasing capacity to any waiter.
+                        # The terminal row may be visible in JSONL even when fsync
+                        # fails. Append a correction when storage permits it.
+                        try:
+                            self.sessions.record_turn(thread_id, job["turnId"], "error",
+                                                      recoveryReason="terminalPersistenceFailure")
+                        except Exception:
+                            pass
+                    try:
+                        if status != "completed":
+                            self.queue.pause(thread_id)
+                        else:
+                            self.queue.pause(thread_id, kind="steering")
+                    except Exception:
+                        status = "error"
+                        # A steering-only settlement failure also blocks existing
+                        # follow-ups. Keep that responsibility even if storage is
+                        # still unavailable when attempting the broader pause.
                         try:
                             self.queue.pause(thread_id)
-                        except (OSError, ValueError):
+                        except Exception:
                             pass
                         try:
                             self.sessions.record_turn(thread_id, job["turnId"], "error",
-                                                      recoveryReason="phasePersistenceFailure")
-                        except (OSError, ValueError):
+                                                      recoveryReason="queueSettlementFailure")
+                        except Exception:
                             pass
+                    finally:
+                        try:
+                            self._record_turn_phase(job, "finish", status,
+                                                    job.get("phaseAttempt", 1))
+                        except Exception:
+                            status = "error"
+                            # Phase settlement failed after a successful runner may
+                            # already have left follow-ups eligible. Register the
+                            # full pause before releasing capacity to any waiter.
+                            try:
+                                self.queue.pause(thread_id)
+                            except Exception:
+                                pass
+                            try:
+                                self.sessions.record_turn(thread_id, job["turnId"], "error",
+                                                          recoveryReason="phasePersistenceFailure")
+                            except Exception:
+                                pass
+                finally:
+                    # Persistence can fail with sqlite3 errors that are neither
+                    # OSError nor ValueError. Releasing the active slot must not
+                    # depend on settlement succeeding: leaving it behind rejects
+                    # every later turn for this thread until the kernel restarts.
                     self.runtimes.release(job)
             for method in ("turn/completed", "thread/updated"):
                 try:
