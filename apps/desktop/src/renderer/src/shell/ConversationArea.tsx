@@ -26,7 +26,7 @@ import { toolOutcomeBadge } from "../data/toolOutcome";
 import { toolQueriedAtLabel } from "../data/toolSource";
 import { findFoldedMatches, findMessageMatches } from "../data/messageSearch";
 import { mergeLocalMessageState } from "../data/messageMerge";
-import { retryRequestForMessage } from "../data/messageRetry";
+import { retryBlockReason, retryRequestForMessage } from "../data/messageRetry";
 import { messageCopyText } from "../data/messageCopy";
 import { collectKernelTextRanges, collectTextRanges } from "../data/findHighlight";
 import { compactTitle, stripProjectPrefix } from "../data/sessionTitle";
@@ -251,9 +251,15 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
     wasAtBottom.current = target.scrollHeight - target.scrollTop - target.clientHeight < 120;
     setShowScrollBottom(!wasAtBottom.current);
   };
+  // 运行中或另一个任务在跑时重试会被内核直接拒绝；按钮据此禁用并说明原因，
+  // 而不是可点击后静默返回。
+  const retryBlocked = retryBlockReason(running, taskBlocked);
+  const retryTitle = retryBlocked === "running"
+    ? "回合进行中，无法重试；请等待完成或先停止"
+    : retryBlocked === "taskBlocked" ? "另一个任务正在运行，请等待完成" : "重试此轮对话";
   const handleRetry = (message: MessageItem) => {
     // 归档会话只能查看历史；内核 turn/start 会直接拒绝，界面先行阻断。
-    if (archived || running || taskBlocked) return;
+    if (archived || retryBlocked !== null) return;
     // 目录未就绪时无法确认技能仍可用，退回仅文本重试；过滤规则见 retryRequestForMessage。
     const request = retryRequestForMessage(messages, message.id, turnSkillIds,
       skillCatalogState === "ready" ? skills.map(skill => skill.id) : []);
@@ -828,8 +834,9 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                   </button>}
                   {!archived && <button
                     className="msg-action-btn"
-                    title="重试此轮对话"
+                    title={retryTitle}
                     type="button"
+                    disabled={retryBlocked !== null}
                     onClick={() => handleRetry(item)}
                   >
                     <IconRewind size={13} />

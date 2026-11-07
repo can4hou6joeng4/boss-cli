@@ -1508,6 +1508,14 @@ html:not(.dark) .chat-blockquote {
   background: var(--btn-ghost-hover);
   color: var(--text-main);
 }
+.msg-action-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.msg-action-btn:disabled:hover {
+  background: transparent;
+  color: var(--text-muted);
+}
 .user-msg-action-btn {
   width: 24px;
   height: 24px;

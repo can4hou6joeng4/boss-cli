@@ -3,6 +3,19 @@ import type { MessageItem } from "./mockData";
 /** 内核单回合最多注入 10 个技能；重试沿用同一上限。 */
 const MAX_RETRY_SKILLS = 10;
 
+/** 「重试此轮对话」当前不可用的原因；`null` 表示可以重试。 */
+export type RetryBlockReason = "running" | "taskBlocked";
+
+/**
+ * 重试按钮何时不可用。渲染（disabled 与说明文案）与处理函数共用这一判定，
+ * 避免按钮可点但处理函数静默返回。
+ */
+export function retryBlockReason(running: boolean, taskBlocked: boolean): RetryBlockReason | null {
+  if (running) return "running";
+  if (taskBlocked) return "taskBlocked";
+  return null;
+}
+
 function retryableText(item: MessageItem): string | null {
   const text = item.content?.trim();
   return text ? text : null;
