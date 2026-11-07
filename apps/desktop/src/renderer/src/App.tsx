@@ -29,7 +29,7 @@ import { reduceHarnessEvent, autoApprovalFallback, type HarnessEvent } from "./d
 import { unconfirmedFailure } from "./data/confirmationFailure";
 import { sendFailureNotice, sendFailureRecheckNotice } from "./data/sendFailure";
 import { HarnessReplica } from "./data/harnessReplica";
-import { queueItemsOf, type QueuePage } from "./data/queueMapping";
+import { queueItemsOf, queueSubmissionLookup, type QueuePage } from "./data/queueMapping";
 import type { QueueRefreshResult } from "./data/queueRefresh";
 import { reduceModelRetry, settleModelRetryOnTurnEnd, type ModelRetryStatus } from "./data/modelRetry";
 import { toMessage } from "./data/harnessBridge";
@@ -687,9 +687,8 @@ export function App(): JSX.Element {
       return { status: "unavailable", reason: harnessErrorText(cause) };
     }
     if (activeRef.current?.id === session.id) applyQueuePage(page);
-    const item = page.items.find(candidate => candidate.clientUserMessageId === clientUserMessageId);
-    if (!item) return { status: "missing" };
-    return item.status === "cancelled" ? { status: "cancelled", item } : { status: "found", item };
+    // 有界投影未命中不能证明消息不在队列；截断时交给界面按「无法确认」处理。
+    return queueSubmissionLookup(page, clientUserMessageId);
   }, [applyQueuePage, harnessUp]);
   const handleRetryQueueItem = useCallback(async (item: QueueItem): Promise<boolean> => {
     const session = activeRef.current;
