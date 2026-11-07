@@ -26,6 +26,7 @@ import { useClipboardCopy } from "../data/clipboardCopy";
 import { toolOutcomeBadge } from "../data/toolOutcome";
 import { toolQueriedAtLabel } from "../data/toolSource";
 import { findFoldedMatches, findMessageMatches } from "../data/messageSearch";
+import { findStatusText } from "../data/findStatus";
 import { mergeLocalMessageState } from "../data/messageMerge";
 import { retryBlockReason, retryRequestForMessage } from "../data/messageRetry";
 import { messageCopyText } from "../data/messageCopy";
@@ -123,6 +124,13 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const findPosition = findMatches.length ? Math.min(findIndex, findMatches.length - 1) : 0;
   const currentFindId = findOpen && findMatches.length ? findMatches[findPosition] : null;
   const findMatchSet = new Set(findMatches);
+  // 正文一无所获时才复算「含详情」的命中数，用来说明下一步该勾哪个开关；正文有命中就不跑第二遍。
+  const findDetailHits = useMemo(
+    () => (!findOpen || findDetails || !findQuery.trim() || findMatches.length)
+      ? undefined
+      : findMessageMatches(messages, findQuery, { includeDetails: true }).length,
+    [findOpen, findDetails, findQuery, findMatches.length, messages],
+  );
   const foldedFindMap = useMemo(() => new Map(
     (findOpen && findDetails ? findFoldedMatches(messages, findQuery) : []).map(match => [match.id, match] as const),
   ), [findOpen, findDetails, messages, findQuery]);
@@ -443,7 +451,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
           <input type="checkbox" checked={findDetails} onChange={event => { setFindDetails(event.target.checked); setFindIndex(0); }} />
           含工具、审批与思考
         </label>
-        <span className="thread-find-count" role="status">{findQuery.trim() ? findMatches.length ? `${findPosition + 1} / ${findMatches.length}` : "无匹配" : "输入关键词"}</span>
+        <span className="thread-find-count" role="status" title="计数按匹配的消息条数统计；同一消息内的多处命中合并为一条">{findStatusText({ query: findQuery, total: findMatches.length, position: findPosition, detailHits: findDetailHits })}</span>
         <button type="button" disabled={!findMatches.length} onClick={() => stepFind(-1)}>上一个</button>
         <button type="button" disabled={!findMatches.length} onClick={() => stepFind(1)}>下一个</button>
         <button type="button" className="thread-find-close" aria-label="关闭查找" title="关闭查找（Esc）" onClick={closeFind}><IconClose size={14} /></button>
