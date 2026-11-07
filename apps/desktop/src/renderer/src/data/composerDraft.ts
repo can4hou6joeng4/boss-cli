@@ -1,13 +1,11 @@
 /** 附件原文与提交流程状态只保存在当前应用内存；正文与技能选择由界面层持久化到本地。 */
 import { safeSlice } from "@boss-harness/shared";
-import type { QueueItem } from "@boss-harness/protocol";
+import type { QueueSubmissionLookup } from "./queueMapping";
 
 export interface DraftAttachment { id: string; name: string; text: string; size: number; }
 export interface QueueSubmission { text: string; intent: QueueIntent; id: string; skillIds: string[]; uncertain: boolean; }
 export type QueueSubmissionCheck =
-  | { status: "found"; item: QueueItem }
-  | { status: "cancelled"; item: QueueItem }
-  | { status: "missing" }
+  | QueueSubmissionLookup
   /** reason 说明读取失败的原因；缺省表示本地内核未连接。 */
   | { status: "unavailable"; reason?: string };
 export interface ComposerDraft {

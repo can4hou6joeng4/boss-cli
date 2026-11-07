@@ -79,3 +79,21 @@ export function queuePageOf(response: QueueListResponse | null | undefined): Que
   if (typeof response.truncated === "boolean") page.truncated = response.truncated;
   return page;
 }
+
+/**
+ * 在队列投影里查找「提交结果未确认」的消息。
+ *
+ * 投影只保留有限条目：`truncated` 为真表示还有未载入的记录，此时未命中不能证明消息不在队列。
+ * 只有投影完整时才允许返回 `missing`，避免界面把「没读到」当成「不存在」并引导重复提交。
+ */
+export type QueueSubmissionLookup =
+  | { status: "found"; item: QueueItem }
+  | { status: "cancelled"; item: QueueItem }
+  | { status: "missing" }
+  | { status: "unknown" };
+
+export function queueSubmissionLookup(page: QueuePage, clientUserMessageId: string): QueueSubmissionLookup {
+  const item = page.items.find(candidate => candidate.clientUserMessageId === clientUserMessageId);
+  if (item) return item.status === "cancelled" ? { status: "cancelled", item } : { status: "found", item };
+  return page.truncated === true ? { status: "unknown" } : { status: "missing" };
+}

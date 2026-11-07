@@ -259,6 +259,11 @@ export const Composer = forwardRef<HTMLTextAreaElement, ComposerProps>(function 
         setNotice(`暂时无法读取内核队列${result.reason ? `（${result.reason}）` : ""}；草稿和请求编号已保留，请稍后或恢复连接后再核对。`);
         return;
       }
+      // 投影被截断时未命中只说明未载入，不能据此宣称队列里没有原消息。
+      if (result.status === "unknown") {
+        setNotice("队列记录过多，本次读取未包含原消息，无法确认是否已入队；草稿和请求编号已保留，请稍后再核对。");
+        return;
+      }
       if (result.status === "found") {
         updateDraft(previous => {
           if (previous.id !== draftRef.current.id) return previous;
