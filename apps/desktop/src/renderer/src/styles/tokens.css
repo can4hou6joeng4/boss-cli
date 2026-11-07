@@ -34,7 +34,8 @@
   --shadow-popup: 0 8px 32px #0005, 0 0 0 1px #ece7df0d;
   --scrollbar-thumb: #ece7df2a; --scrollbar-thumb-hover: #ece7df4a;
   /* 查找高亮：当前命中用强调色做底、窗口底色做前景，亮色主题下前景随令牌反色才能保持可读。 */
-  --highlight-find-match: rgba(255,214,102,.45); --highlight-find-current-bg: var(--accent-cyan); --highlight-find-current-text: var(--bg-window); --highlight-search-hit: rgba(45,212,191,.42);
+  /* 全部匹配叠在暗色画布上时，45% 暖黄与正文只有 4.22:1；降到 40% 约 4.9:1，色相不变。 */
+  --highlight-find-match: rgba(255,214,102,.4); --highlight-find-current-bg: var(--accent-cyan); --highlight-find-current-text: var(--bg-window); --highlight-search-hit: rgba(45,212,191,.42);
 }
 html:not(.dark) {
   color-scheme: light;
