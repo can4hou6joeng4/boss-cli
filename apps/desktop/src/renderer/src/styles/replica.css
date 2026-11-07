@@ -168,6 +168,7 @@ kbd { font: 10px var(--font-sans); color: var(--text-faint); }
 .attachment-chip { display: flex; align-items: center; gap: 7px; max-width: 250px; padding: 7px 9px; border-radius: 9px; background: var(--btn-ghost-hover); font-size: 11px; }
 .attachment-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .attachment-chip button { border: 0; background: transparent; display: flex; color: var(--text-muted); cursor: pointer; }
+.attachment-chip button:disabled { opacity: .45; cursor: default; }
 .composer-skill-chips { display: flex; gap: 6px; flex-wrap: wrap; padding: 0 6px 8px; }
 .composer-skill-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 240px; padding: 4px 7px; border-radius: 8px; background: var(--btn-ghost-hover); color: var(--text-muted); font-size: 11px; }
 .composer-skill-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
