@@ -2795,6 +2795,10 @@ class SessionStore:
             thread_id = thread["id"]
             entries = self.read_entries(thread_id)
             turns = self._turns(entries, thread_id)
+            # The last record written before this process started is the closest
+            # known point to the previous exit. Recovered turns use it as their
+            # completedAt so downtime after a crash is not counted as busy time.
+            last_activity = _valid_timestamp(entries[-1].get("timestamp")) if entries else None
             turns_by_id = {turn["turnId"]: turn for turn in turns}
             latest_phases: dict[str, dict[str, Any]] = {}
             for entry in entries:
@@ -2866,7 +2870,10 @@ class SessionStore:
                     recovered_turns.add(affected_turn)
             for turn in turns:
                 if turn.get("status") == "running" or turn["turnId"] in recovered_turns:
-                    self.record_turn(thread_id, turn["turnId"], "interrupted", recoveryReason="processExit")
+                    fields: dict[str, Any] = {"recoveryReason": "processExit"}
+                    if last_activity is not None:
+                        fields["completedAt"] = last_activity
+                    self.record_turn(thread_id, turn["turnId"], "interrupted", **fields)
 
     def _sync_events(self) -> None:
         with self._lock, self._index.transaction() as connection:
