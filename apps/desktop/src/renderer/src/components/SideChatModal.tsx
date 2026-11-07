@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { harnessErrorText } from "../data/harnessBridge";
+import { quickAskNotice, type SessionStartOutcome } from "../data/sessionStart";
 import { IconClose, IconSend, IconChat } from "./Icons";
 
 export interface SideChatModalProps {
@@ -11,8 +12,8 @@ export interface SideChatModalProps {
   preview: boolean;
   /** 正在创建会话；用于禁止重复提交。 */
   busy?: boolean;
-  /** 提交问题；返回是否已创建会话并发送。 */
-  onAsk?: (question: string) => Promise<boolean>;
+  /** 提交问题；会话是否建立与消息是否送达分开返回，弹窗据此给出准确提示。 */
+  onAsk?: (question: string) => Promise<SessionStartOutcome>;
 }
 
 interface SideMessage {
@@ -67,13 +68,14 @@ export const SideChatModal: React.FC<SideChatModalProps> = ({ isOpen, onClose, c
     setSubmitting(true);
     setNotice("");
     try {
-      const accepted = await onAsk?.(question);
-      if (accepted) {
+      const outcome = await onAsk?.(question);
+      if (outcome?.status === "started") {
         setInputText("");
         onClose();
-      } else {
-        setNotice("未能创建会话；输入已保留，不会自动重试。请按主界面的提示处理后重试。");
+        return;
       }
+      // 会话已建立但问题没送达时，提示必须指向已经存在的会话；只有 failed 才是没建成。
+      setNotice(quickAskNotice(outcome ?? { status: "failed" }) ?? "未能创建会话；输入已保留，不会自动重试。");
     } catch (cause) {
       setNotice(`提问失败：${harnessErrorText(cause)}。输入已保留，不会自动重试。`);
     } finally {

@@ -29,6 +29,7 @@ import { isCommandChord } from "./data/shortcuts";
 import { reduceHarnessEvent, autoApprovalFallback, type HarnessEvent } from "./data/harnessEvents";
 import { unconfirmedFailure } from "./data/confirmationFailure";
 import { sendFailureNotice, sendFailureRecheckNotice } from "./data/sendFailure";
+import { sessionStartNotice, type SessionStartOutcome } from "./data/sessionStart";
 import { HarnessReplica } from "./data/harnessReplica";
 import { queueItemsOf, queueSubmissionLookup, type QueuePage } from "./data/queueMapping";
 import type { QueueRefreshResult } from "./data/queueRefresh";
@@ -579,34 +580,44 @@ export function App(): JSX.Element {
     }
     return true;
   }, [harnessUp, updateThread, markRunning, simulate, autoCompaction.take]);
-  const handleStartSessionWithPrompt = useCallback((prompt: string, _domain: string, provider: string, modelId: string, skillIds: string[] = []) => {
-    return (async () => {
-      if (window.boss && !harnessUp) { setError("本地内核未连接，请检查启动配置并重启应用。"); return null; }
-      if (startingRef.current) { setError("已有任务正在创建或运行，请等待结束或停止后再创建。"); return null; }
+  const handleStartSessionWithPrompt = useCallback((prompt: string, _domain: string, provider: string, modelId: string, skillIds: string[] = []): Promise<SessionStartOutcome> => {
+    return (async (): Promise<SessionStartOutcome> => {
+      if (window.boss && !harnessUp) { setError("本地内核未连接，请检查启动配置并重启应用。"); return { status: "failed" }; }
+      if (startingRef.current) { setError("已有任务正在创建或运行，请等待结束或停止后再创建。"); return { status: "failed" }; }
       const requestVersion = selectionVersion.current;
       startingRef.current = true; setStartingSession(true);
+      let started: SessionItem | null = null;
       try {
         setActiveModelId(modelId);
         setActiveModelProvider(provider);
         const title = sessionTitleFromPrompt(prompt);
-        const started = harnessUp ? await startThread(title, modelId, provider) : { id: "preview-" + Date.now(), title, timeAgo: "刚刚", status: "idle" as const, projectId: MOCK_PROJECT_FOLDERS[0]?.id ?? "preview", provider, model: modelId };
+        started = harnessUp ? await startThread(title, modelId, provider) : { id: "preview-" + Date.now(), title, timeAgo: "刚刚", status: "idle" as const, projectId: MOCK_PROJECT_FOLDERS[0]?.id ?? "preview", provider, model: modelId };
         insertSession(started);
         const transferred = await send(started.id, prompt, started.projectId === HARNESS_PROJECT_ID, started.model ?? modelId, skillIds);
         // 会话已经建立，但首条消息是否送达无法确认：留在首页保留草稿，并指出可核对的位置。
         if (transferred === "uncertain") {
-          setError("会话已创建，但首条消息提交结果尚未确认；请从会话列表打开该会话核对，草稿已保留。");
-          return null;
+          const outcome: SessionStartOutcome = { status: "unconfirmed", session: started };
+          setError(sessionStartNotice(outcome) ?? "");
+          return outcome;
         }
-        if (!transferred) return null;
+        // 明确拒绝说明消息没有进入会话；会话已经存在，不能再让调用方以为创建失败。
+        if (!transferred) return { status: "unsent", session: started };
         if (selectionVersion.current === requestVersion) {
           ++selectionVersion.current; activeRef.current = started; setActiveSession(started); setIsHomeView(false);
           setMessages(cache.current.get(started.id) ?? []);
           // 新会话不得沿用上一会话的队列与续接提示；随后到达的快照会按新会话重新写入。
           setQueueItems([]); setQueueMeta({}); setContinuationCheck(null);
         }
-        return started;
+        return { status: "started", session: started };
       } catch (cause) {
-        setError(`创建会话失败：${harnessErrorText(cause)}`); return null;
+        // 只有 startThread 抛错才代表会话不存在；insertSession 之后出错说明会话已经建立，
+        // 首条消息的提交结果同样无法确认，不能报告「未能创建会话」。
+        if (started) {
+          const outcome: SessionStartOutcome = { status: "unconfirmed", session: started };
+          setError(`首条消息提交失败：${harnessErrorText(cause)}。${sessionStartNotice(outcome)}`);
+          return outcome;
+        }
+        setError(`创建会话失败：${harnessErrorText(cause)}`); return { status: "failed" };
       } finally { startingRef.current = false; setStartingSession(false); }
     })();
   }, [harnessUp, insertSession, send]);
@@ -877,8 +888,8 @@ export function App(): JSX.Element {
       onAsk={async question => {
         // 复用既有会话创建与发送链路；不新增 RPC，也不在本地生成任何回复。
         const resolved = resolveQuickAskRoute(activeSession, defaultModel, modelOptions);
-        if (!resolved.ok) { setError(resolved.reason); return false; }
-        return Boolean(await handleStartSessionWithPrompt(question, "", resolved.route.provider, resolved.route.model));
+        if (!resolved.ok) { setError(resolved.reason); return { status: "failed" as const }; }
+        return handleStartSessionWithPrompt(question, "", resolved.route.provider, resolved.route.model);
       }} />
     <RewindOverlay messages={messages} fork={!preview} isOpen={isRewindOpen} onClose={() => setIsRewindOpen(false)} onConfirmRewind={messageCount => {
       const id = activeRef.current?.id;
