@@ -1,3 +1,5 @@
+import { formatLocalDateTime } from "./timeFormat";
+
 /**
  * 工具来源的查询时间。
  *
@@ -29,8 +31,10 @@ export function toolQueriedAtText(value: unknown): string | null {
 
 /**
  * 工具卡展示用的本机时区时间；缺失或不可解析时返回 null。
+ * 与资料库共用 `YYYY-MM-DD HH:mm`，同一来源时间在两处显示一致；
  * 会话内查找复用同一入口，保证匹配文本与卡片渲染完全一致。
  */
 export function toolQueriedAtLabel(value: unknown): string | null {
-  return toolQueriedAt(value)?.toLocaleString() ?? null;
+  const at = toolQueriedAt(value);
+  return at ? formatLocalDateTime(at) : null;
 }

@@ -3,6 +3,7 @@ import { ModalSurface } from "./ModalSurface";
 import type { MessageItem } from "../data/mockData";
 import { isSettledTurn, type BranchSupport, type SessionBranchState } from "../data/useSessionBranches";
 import { compactTitle } from "../data/sessionTitle";
+import { formatLocalDateTime } from "../data/timeFormat";
 import type { ThreadBranchEndpoint } from "@boss-harness/protocol";
 
 type Target = BranchTarget;
@@ -10,7 +11,7 @@ type Target = BranchTarget;
 function timeOf(value: string | null | undefined): string {
   if (!value) return "";
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
+  return Number.isNaN(date.getTime()) ? "" : formatLocalDateTime(date);
 }
 function clip(text: string | null | undefined, fallback: string): string {
   return compactTitle(text, 80, fallback);
