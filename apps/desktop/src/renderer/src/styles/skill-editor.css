@@ -43,6 +43,17 @@
   color: var(--accent-error);
 }
 
+.skill-editor-form .skill-editor-warning {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--btn-secondary-bg);
+  color: var(--accent-warning);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .skill-editor-form .skill-editor-error {
   font-size: 12px;
   line-height: 1.6;
