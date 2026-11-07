@@ -3,6 +3,16 @@ import { safeSlice } from "@boss-harness/shared";
 import type { QueueSubmissionLookup } from "./queueMapping";
 
 export interface DraftAttachment { id: string; name: string; text: string; size: number; }
+/** 内核 `_text` 对单条 input 的字符上限；`turn/start` 与 `queue/add` 共用。 */
+export const MAX_MESSAGE_TEXT_LENGTH = 100_000;
+/**
+ * 输入区最终发出的完整消息：正文在上、附件逐个附在下面。
+ * 提交、排队与核对队列共用，避免两处拼接分叉。
+ * 按 UTF-16 码元计数，可能比内核的码点计数更严格，但不会放行内核会拒绝的消息。
+ */
+export function composedMessageText(text: string, attachments: readonly DraftAttachment[]): string {
+  return [text.trim(), ...attachments.map(file => `附件：${file.name}\n\n${file.text}`)].filter(Boolean).join("\n\n");
+}
 export interface QueueSubmission { text: string; intent: QueueIntent; id: string; skillIds: string[]; uncertain: boolean; }
 export type QueueSubmissionCheck =
   | QueueSubmissionLookup
