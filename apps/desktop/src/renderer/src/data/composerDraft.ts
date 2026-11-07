@@ -19,8 +19,22 @@ export interface ComposerDraft {
   queueSubmission?: QueueSubmission;
 }
 export type UpdateComposerDraft = (change: (previous: ComposerDraft) => ComposerDraft) => void;
-/** false 仅表示转交前的明确拒绝；其它返回值表示输入已交给会话，不代表执行完成。 */
-export type ComposerSend = (text: string, skillIds?: string[]) => void | boolean | Promise<void | boolean>;
+/**
+ * false 表示内核明确拒绝；"uncertain" 表示结果无法确认，输入可能没有进入会话；
+ * 其它返回值表示输入已交给会话，不代表执行完成。
+ */
+export type ComposerSendOutcome = void | boolean | "uncertain";
+export type ComposerSend = (text: string, skillIds?: string[]) => ComposerSendOutcome | Promise<ComposerSendOutcome>;
+export type ComposerSendResult = "sent" | "rejected" | "uncertain";
+/**
+ * 把发送回调的返回值归一成三种结果。
+ * 只有成功与明确拒绝可以清空草稿：结果不确定时服务端可能没收到，清空会让输入无处可寻。
+ */
+export function composerSendResult(transferred: ComposerSendOutcome): ComposerSendResult {
+  if (transferred === false) return "rejected";
+  if (transferred === "uncertain") return "uncertain";
+  return "sent";
+}
 export type QueueIntent = "steering" | "followUp";
 export type ComposerQueue = (text: string, intent: QueueIntent, clientUserMessageId: string, skillIds?: string[]) => void | boolean | Promise<void | boolean>;
 export type CheckQueueSubmission = (clientUserMessageId: string) => Promise<QueueSubmissionCheck>;

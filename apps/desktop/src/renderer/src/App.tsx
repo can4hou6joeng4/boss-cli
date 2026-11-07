@@ -546,7 +546,7 @@ export function App(): JSX.Element {
     setActiveModelProvider(provider); setActiveModelId(model); setConfiguredModelLabel(`${provider} · ${model}`);
     return true;
   }, [harnessUp, isHomeView, readContinuationCheck, sessionReasoning]);
-  const send = useCallback(async (id: string, text: string, real: boolean, model: string | undefined, skillIds: string[] = []): Promise<boolean> => {
+  const send = useCallback(async (id: string, text: string, real: boolean, model: string | undefined, skillIds: string[] = []): Promise<boolean | "uncertain"> => {
     if (real && !harnessUp) { setError("本地内核未连接，请重启应用后再发起任务。"); return false; }
     if (runningRef.current.has(id)) { setError("该会话仍在运行，请等待结束或停止后再发送。"); return false; }
     const clientId = crypto.randomUUID();
@@ -573,9 +573,10 @@ export function App(): JSX.Element {
       await replicaRef.current?.resume(id).catch(verify => {
         setError(sendFailureRecheckNotice(cause, verify));
       });
+      // 非明确拒绝无法证明消息没有进入会话：快照可能覆盖乐观消息，交回草稿，不能当作已送达。
+      return rejected ? false : "uncertain";
     }
-    // 明确拒绝没有进入会话，交回草稿；其余失败已交给会话，不能作为可自动重发的草稿。
-    return !rejected;
+    return true;
   }, [harnessUp, updateThread, markRunning, simulate, autoCompaction.take]);
   const handleStartSessionWithPrompt = useCallback((prompt: string, _domain: string, provider: string, modelId: string, skillIds: string[] = []) => {
     return (async () => {
@@ -590,6 +591,11 @@ export function App(): JSX.Element {
         const started = harnessUp ? await startThread(title, modelId, provider) : { id: "preview-" + Date.now(), title, timeAgo: "刚刚", status: "idle" as const, projectId: MOCK_PROJECT_FOLDERS[0]?.id ?? "preview", provider, model: modelId };
         insertSession(started);
         const transferred = await send(started.id, prompt, started.projectId === HARNESS_PROJECT_ID, started.model ?? modelId, skillIds);
+        // 会话已经建立，但首条消息是否送达无法确认：留在首页保留草稿，并指出可核对的位置。
+        if (transferred === "uncertain") {
+          setError("会话已创建，但首条消息提交结果尚未确认；请从会话列表打开该会话核对，草稿已保留。");
+          return null;
+        }
         if (!transferred) return null;
         if (selectionVersion.current === requestVersion) {
           ++selectionVersion.current; activeRef.current = started; setActiveSession(started); setIsHomeView(false);
