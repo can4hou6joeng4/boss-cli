@@ -32,6 +32,7 @@ import { sendFailureNotice, sendFailureRecheckNotice } from "./data/sendFailure"
 import { sessionStartNotice, type SessionStartOutcome } from "./data/sessionStart";
 import { HarnessReplica } from "./data/harnessReplica";
 import { queueItemsOf, queueSubmissionLookup, type QueuePage } from "./data/queueMapping";
+import type { QueueActionOutcome } from "./data/queueAction";
 import type { QueueRefreshResult } from "./data/queueRefresh";
 import { reduceModelRetry, settleModelRetryOnTurnEnd, type ModelRetryStatus } from "./data/modelRetry";
 import { toMessage } from "./data/harnessBridge";
@@ -708,14 +709,21 @@ export function App(): JSX.Element {
     // 有界投影未命中不能证明消息不在队列；截断时交给界面按「无法确认」处理。
     return queueSubmissionLookup(page, clientUserMessageId);
   }, [applyQueuePage, harnessUp]);
-  const handleRetryQueueItem = useCallback(async (item: QueueItem): Promise<boolean> => {
+  const handleRetryQueueItem = useCallback(async (item: QueueItem): Promise<QueueActionOutcome> => {
     const session = activeRef.current;
-    if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp) return false;
+    if (!session || session.projectId !== HARNESS_PROJECT_ID) return { status: "skipped", reason: "当前会话不连接本机内核" };
+    if (!harnessUp) return { status: "skipped", reason: "本机内核未连接" };
     // 列表与会话读取会截断长正文，重新排队必须使用持久化的完整输入。
-    const full = await readQueueItem(session.id, item.id);
+    let full: QueueItem;
+    try {
+      full = await readQueueItem(session.id, item.id);
+    } catch (cause) {
+      // 读取发生在入队之前：重新排队没有发出，不能按「结果未确认」提示。
+      return { status: "skipped", reason: `读取完整输入失败（${harnessErrorText(cause)}）` };
+    }
     if (full.status !== "paused" || full.failureCode !== "TURN_START_FAILED" || full.inputPersisted !== false) {
       if (activeRef.current?.id === session.id) setError("队列项状态已变化，请刷新队列后再决定是否重新排队。");
-      return false;
+      return { status: "skipped", reason: "队列项状态已变化，请先刷新队列" };
     }
     const created = await queueFollowUp({ threadId: session.id, input: full.input,
       clientUserMessageId: crypto.randomUUID(), skillIds: full.skillIds ?? [],
@@ -736,27 +744,28 @@ export function App(): JSX.Element {
       if (page) applyQueuePage(page);
       else setQueueItems(previous => [...previous.filter(existing => existing.id !== item.id && existing.id !== created.id), created]);
     }
-    return true;
+    return { status: "done" };
   }, [applyQueuePage, harnessUp]);
-  const handleRemoveQueueItem = useCallback(async (queueId: string): Promise<boolean> => {
+  const handleRemoveQueueItem = useCallback(async (queueId: string): Promise<QueueActionOutcome> => {
     const session = activeRef.current;
-    if (!session || session.projectId !== HARNESS_PROJECT_ID || !harnessUp) return false;
+    if (!session || session.projectId !== HARNESS_PROJECT_ID) return { status: "skipped", reason: "当前会话不连接本机内核" };
+    if (!harnessUp) return { status: "skipped", reason: "本机内核未连接" };
     try {
       const item = await removeQueuedItem(session.id, queueId);
       if (activeRef.current?.id === session.id) setQueueItems(previous => previous.map(existing => existing.id === item.id ? item : existing));
-      return true;
+      return { status: "done" };
     } catch (cause) {
-      if (activeRef.current?.id !== session.id) return false;
+      if (activeRef.current?.id !== session.id) return { status: "uncertain" };
       // 撤回是否生效未知；能读到队列就按内核状态收敛，读不到则说明两条原因并提示面板可能过期。
       let page: QueuePage | null = null;
       let rereadFailure: unknown = null;
       try { page = await listQueue(session.id); } catch (verify) { rereadFailure = verify; }
-      if (activeRef.current?.id !== session.id) return false;
+      if (activeRef.current?.id !== session.id) return { status: "uncertain" };
       if (page) applyQueuePage(page);
       setError(page
         ? `撤回结果尚未确认（${harnessErrorText(cause)}），已重新读取队列；不会自动重复撤回。`
         : unconfirmedFailure("撤回结果", cause, rereadFailure, "请稍后核对，不会自动重复撤回。"));
-      return false;
+      return { status: "uncertain" };
     }
   }, [applyQueuePage, harnessUp]);
   const handleRefreshQueue = useCallback(async (): Promise<QueueRefreshResult> => {

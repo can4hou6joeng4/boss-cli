@@ -6,6 +6,7 @@ import { ModalSurface } from "../components/ModalSurface";
 import { useClipboardCopy } from "../data/clipboardCopy";
 import { harnessErrorText } from "../data/harnessBridge";
 import { queueRefreshErrorText, type QueueRefreshResult } from "../data/queueRefresh";
+import { queueActionNotice, type QueueActionOutcome } from "../data/queueAction";
 import { queueSkillLabels } from "../data/queueSkillLabels";
 import { compactionLabel, compactionTitle } from "./queueCompaction";
 
@@ -36,8 +37,10 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
   onReadFull?: (item: QueueItem) => Promise<QueueItem>;
   /** 改写仍在排队（queued）的队列项正文；正文被截断时必须先经 onReadFull 读取全文。 */
   onUpdateInput?: (item: QueueItem, input: string) => Promise<QueueItem>;
-  onRemove: (id: string) => Promise<boolean>;
-  onRetry?: (item: QueueItem) => Promise<boolean>;
+  /** 撤回队列项；`skipped` 表示请求没有发出，`uncertain` 表示结果无法确认。 */
+  onRemove: (id: string) => Promise<QueueActionOutcome>;
+  /** 重新排队暂停项；结果语义与 onRemove 一致。 */
+  onRetry?: (item: QueueItem) => Promise<QueueActionOutcome>;
 }): JSX.Element | null {
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState("");
@@ -109,10 +112,11 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
   const retry = async (item: QueueItem) => {
     setPending(item.id); setError("");
     try {
-      if (!await onRetry!(item)) setError("重新排队未完成，请稍后重试。");
+      const notice = queueActionNotice("重新排队", await onRetry!(item));
+      if (notice) setError(notice);
     } catch (cause) {
-      // 重新排队会先读取完整输入；读取失败、断连与内核拒绝要给出各自原因，否则只能盲目刷新。
-      setError(`重新排队结果尚未确认：${harnessErrorText(cause)}。请刷新队列状态。`);
+      // 入队或回执异常：请求可能已经发出，无法证明没有生效，按未确认处理。
+      setError(`重新排队结果尚未确认：${harnessErrorText(cause)}。请核对队列状态。`);
     } finally {
       setPending(null);
     }
@@ -178,11 +182,18 @@ export function QueuePanel({ items, totalItems, activeItems, truncated, onRemove
           </p>}
         </div>
         {onUpdateInput && item.status === "queued" && <button type="button" className="turn-queue-edit" title="编辑排队中的正文；不会提前投递" disabled={reading !== null || saving} onClick={() => { void startEditing(item); }}>编辑</button>}
-        {canRetry(item) && <button type="button" className="turn-queue-retry" title="用同一输入与技能重新创建队列消息，并撤回旧项" disabled={pending !== null} onClick={() => { void retry(item); }}>重新排队</button>}
-        {(item.status === "queued" || item.status === "paused") && <button type="button" aria-label={`撤回排队消息：${safeSlice(item.input, 80)}`} title={item.status === "paused" ? "取消暂停的队列消息" : "撤回排队消息"} disabled={pending !== null} onClick={async () => {
+        {canRetry(item) && <button type="button" className="turn-queue-retry" disabled={pending !== null || !connected}
+          title={connected ? "用同一输入与技能重新创建队列消息，并撤回旧项" : "本机内核未连接，恢复连接后再重新排队"}
+          onClick={() => { void retry(item); }}>重新排队</button>}
+        {(item.status === "queued" || item.status === "paused") && <button type="button" aria-label={`撤回排队消息：${safeSlice(item.input, 80)}`}
+          title={!connected ? "本机内核未连接，恢复连接后再撤回" : item.status === "paused" ? "取消暂停的队列消息" : "撤回排队消息"}
+          disabled={pending !== null || !connected} onClick={async () => {
           setPending(item.id); setError("");
-          try { if (!await onRemove(item.id)) setError("撤回结果尚未确认，请刷新队列状态。"); }
-          catch (cause) { setError(`撤回结果尚未确认：${harnessErrorText(cause)}。请刷新队列状态。`); }
+          try {
+            const notice = queueActionNotice("撤回", await onRemove(item.id));
+            if (notice) setError(notice);
+          }
+          catch (cause) { setError(`撤回结果尚未确认：${harnessErrorText(cause)}。请核对队列状态。`); }
           finally { setPending(null); }
         }}><IconClose size={14} /></button>}
       </li>)}
