@@ -27,6 +27,7 @@ import { toolOutcomeBadge } from "../data/toolOutcome";
 import { toolQueriedAtLabel } from "../data/toolSource";
 import { findFoldedMatches, findMessageMatches } from "../data/messageSearch";
 import { findStatusText } from "../data/findStatus";
+import { clampFindCursor, findCursorPosition, findStepTotal, stepFindCursor, type FindCursor } from "../data/findStep";
 import { findSeedFromSelection, isEditableTarget } from "../data/findSeed";
 import { mergeLocalMessageState } from "../data/messageMerge";
 import { retryBlockReason, retryRequestForMessage } from "../data/messageRetry";
@@ -76,6 +77,15 @@ export interface ConversationAreaProps {
   onApprovalDecision?: (approvalId: string, approved: boolean, toolName: string, remember: boolean) => void | ApprovalDelivery | ApprovalOutcome | Promise<void | ApprovalDelivery | ApprovalOutcome>;
   onReviewDiff?: () => void; onRevertDiff?: () => void; onOpenRewind?: () => void; onOpenCockpit?: () => void;
 }
+/** 把命中区间滚到消息区中间；区间不可见（折叠块尚未展开等）时返回 false，由调用方退回消息级定位。 */
+function scrollRangeIntoCenter(range: Range): boolean {
+  const rect = range.getBoundingClientRect();
+  const container = range.startContainer.parentElement?.closest<HTMLElement>(".messages-container");
+  if (!container || (!rect.width && !rect.height)) return false;
+  const box = container.getBoundingClientRect();
+  container.scrollTo({ top: container.scrollTop + (rect.top - box.top) - box.height / 2, behavior: currentScrollBehavior() });
+  return true;
+}
 export const ConversationArea: React.FC<ConversationAreaProps> = ({
   messages: initialMessages, readOnly = false, archived = false, currentMode, onModeChange, onSendMessage, onQueueMessage, onCheckQueueSubmission, queueItems = [], queueTotalItems, queueActiveItems, queueTruncated, onRemoveQueueItem, onRetryQueueItem, onReadQueueItem, onUpdateQueueItem, onRefreshQueue, simulateLocal = true, harnessUp = false,
   running = false, taskBlocked = false, draft, onDraftChange, models, activeModelProvider, activeModelId, configuredModelLabel, onSelectModel, onOpenSettings, sessionReasoning,
@@ -115,15 +125,20 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const [contextEditStates, setContextEditStates] = useState<Record<string, { excluded: boolean }>>({});
   const [findOpen, setFindOpen] = useState(false);
   const [findQuery, setFindQuery] = useState("");
-  const [findIndex, setFindIndex] = useState(0);
+  const [findCursor, setFindCursor] = useState<FindCursor>({ message: 0, offset: 0 });
+  const [findCounts, setFindCounts] = useState<number[]>([]);
   const [findDetails, setFindDetails] = useState(false);
   const [focusFlash, setFocusFlash] = useState<string | null>(null);
   const findMatches = useMemo(
     () => findMessageMatches(messages, findQuery, { includeDetails: findDetails }),
     [messages, findQuery, findDetails],
   );
-  const findPosition = findMatches.length ? Math.min(findIndex, findMatches.length - 1) : 0;
-  const currentFindId = findOpen && findMatches.length ? findMatches[findPosition] : null;
+  // 命中处数来自高亮区间统计；还没算出来或长度对不上时按每条消息一处兜底，位置显示不会跳。
+  const findSteps = findCounts.length === findMatches.length ? findCounts : findMatches.map(() => 1);
+  const cursor = clampFindCursor(findCursor, findSteps);
+  const findPosition = findCursorPosition(cursor, findSteps);
+  const findStepCount = findStepTotal(findSteps);
+  const currentFindId = findOpen && findMatches.length ? findMatches[cursor.message] : null;
   const findMatchSet = new Set(findMatches);
   // 正文一无所获时才复算「含详情」的命中数，用来说明下一步该勾哪个开关；正文有命中就不跑第二遍。
   const findDetailHits = useMemo(
@@ -135,11 +150,12 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const foldedFindMap = useMemo(() => new Map(
     (findOpen && findDetails ? findFoldedMatches(messages, findQuery) : []).map(match => [match.id, match] as const),
   ), [findOpen, findDetails, messages, findQuery]);
-  const stepFind = (delta: number) => {
+  const resetFindCursor = () => setFindCursor({ message: 0, offset: 0 });
+  const stepFind = (delta: 1 | -1) => {
     if (!findMatches.length) return;
-    setFindIndex((findPosition + delta + findMatches.length) % findMatches.length);
+    setFindCursor(stepFindCursor(cursor, findSteps, delta));
   };
-  const closeFind = () => { setFindOpen(false); setFindQuery(""); setFindIndex(0); };
+  const closeFind = () => { setFindOpen(false); setFindQuery(""); resetFindCursor(); };
   // 当前命中位于折叠块时展开它，否则隐藏文本的命中高亮不可见；只收起本次自动展开的块，不动用户手动展开的块。
   useEffect(() => {
     if (!findOpen || !findDetails || !currentFindId) return;
@@ -159,10 +175,9 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
       for (const element of opened) if (element.isConnected) element.open = false;
     };
   }, [findOpen, findDetails, currentFindId, foldedFindMap]);
-  useEffect(() => {
-    if (!findOpen || !currentFindId) return;
-    document.getElementById("message-" + currentFindId)?.scrollIntoView({ block: "center", behavior: currentScrollBehavior() });
-  }, [findOpen, currentFindId]);
+  // 高亮与跳转共用同一批区间：逐处跳转要知道当前消息内第几处，不能只按消息分组。
+  // 只在关键词、目标消息或处位置真正变化时滚动；流式追加消息不会把视图拽走。
+  const findScrollKey = useRef("");
   useEffect(() => {
     type HighlightRegistry = { set(name: string, highlight: unknown): void; delete(name: string): boolean };
     const registry = typeof CSS !== "undefined"
@@ -170,24 +185,35 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
     const HighlightCtor = (globalThis as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
     registry?.delete("find-match");
     registry?.delete("find-current");
-    if (!findOpen || !findQuery.trim() || !registry || !HighlightCtor) return;
+    if (!findOpen || !findQuery.trim()) { findScrollKey.current = ""; setFindCounts(previous => previous.length ? [] : previous); return; }
     const all: Range[] = [];
-    const current: Range[] = [];
+    const counts: number[] = [];
+    let currentRange: Range | null = null;
     for (const id of findMatches) {
       const root = document.getElementById("message-" + id);
-      if (!root) continue;
-      const ranges = collectTextRanges(root, findQuery, 200 - all.length);
+      // 超出高亮上限或界面没有渲染出对应文本时，这条消息仍算一处，退化为消息级定位。
+      const ranges = root && all.length < 200 ? collectTextRanges(root, findQuery, 200 - all.length) : [];
       all.push(...ranges);
-      if (id === currentFindId) current.push(...ranges);
-      if (all.length >= 200) break;
+      counts.push(ranges.length);
+      if (id === currentFindId) currentRange = ranges[cursor.offset] ?? null;
     }
-    if (all.length) registry.set("find-match", new HighlightCtor(...all));
-    if (current.length) registry.set("find-current", new HighlightCtor(...current));
+    setFindCounts(previous => previous.length === counts.length && previous.every((count, index) => count === counts[index]) ? previous : counts);
+    if (registry && HighlightCtor) {
+      if (all.length) registry.set("find-match", new HighlightCtor(...all));
+      if (currentRange) registry.set("find-current", new HighlightCtor(currentRange));
+    }
+    const key = `${findQuery}\u0000${currentFindId ?? ""}\u0000${cursor.offset}`;
+    if (currentFindId && key !== findScrollKey.current) {
+      findScrollKey.current = key;
+      if (!currentRange || !scrollRangeIntoCenter(currentRange)) {
+        document.getElementById("message-" + currentFindId)?.scrollIntoView({ block: "center", behavior: currentScrollBehavior() });
+      }
+    }
     return () => {
-      registry.delete("find-match");
-      registry.delete("find-current");
+      registry?.delete("find-match");
+      registry?.delete("find-current");
     };
-  }, [findOpen, findQuery, findMatches, currentFindId]);
+  }, [findOpen, findQuery, findMatches, currentFindId, cursor.offset]);
   useEffect(() => {
     if (!focusMessageId) return;
     const target = document.getElementById("message-" + focusMessageId);
@@ -244,7 +270,7 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
       event.preventDefault();
       // 和浏览器一致：有可用的选中文本就把它当关键词，省去重敲一遍；不适合沿用时保留原关键词。
       const seed = findSeedFromSelection(window.getSelection()?.toString(), { editable: isEditableTarget(document.activeElement) });
-      if (seed !== null) { setFindQuery(seed); setFindIndex(0); }
+      if (seed !== null) { setFindQuery(seed); resetFindCursor(); }
       setFindOpen(true);
       dismissSearchHighlight.current?.();
     };
@@ -445,17 +471,17 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
       {findOpen && <div className="thread-find-bar" role="search" aria-label="在当前聊天中查找">
         <IconSearch size={15} />
         <input autoFocus aria-label="在当前聊天中查找" placeholder="在当前聊天中查找…" value={findQuery}
-          onChange={event => { setFindQuery(event.target.value); setFindIndex(0); }}
+          onChange={event => { setFindQuery(event.target.value); resetFindCursor(); }}
           onKeyDown={event => {
             if (event.nativeEvent.isComposing || event.keyCode === 229) return;
             if (event.key === "Escape") { event.preventDefault(); closeFind(); }
             if (event.key === "Enter") { event.preventDefault(); stepFind(event.shiftKey ? -1 : 1); }
           }} />
         <label className="thread-find-details" title="同时匹配思考内容与工具调用的名称、状态、耗时、输入、来源编号、错误码、恢复建议与结果，以及审批卡的说明、结论与期限">
-          <input type="checkbox" checked={findDetails} onChange={event => { setFindDetails(event.target.checked); setFindIndex(0); }} />
+          <input type="checkbox" checked={findDetails} onChange={event => { setFindDetails(event.target.checked); resetFindCursor(); }} />
           含工具、审批与思考
         </label>
-        <span className="thread-find-count" role="status" title="计数按匹配的消息条数统计；同一消息内的多处命中合并为一条">{findStatusText({ query: findQuery, total: findMatches.length, position: findPosition, detailHits: findDetailHits })}</span>
+        <span className="thread-find-count" role="status" title="计数按命中处统计；同一消息内的多处命中可逐个跳转">{findStatusText({ query: findQuery, total: findStepCount, position: findPosition, detailHits: findDetailHits })}</span>
         <button type="button" disabled={!findMatches.length} onClick={() => stepFind(-1)}>上一个</button>
         <button type="button" disabled={!findMatches.length} onClick={() => stepFind(1)}>下一个</button>
         <button type="button" className="thread-find-close" aria-label="关闭查找" title="关闭查找（Esc）" onClick={closeFind}><IconClose size={14} /></button>
