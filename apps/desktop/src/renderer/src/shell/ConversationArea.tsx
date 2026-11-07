@@ -27,6 +27,7 @@ import { toolOutcomeBadge } from "../data/toolOutcome";
 import { toolQueriedAtLabel } from "../data/toolSource";
 import { findFoldedMatches, findMessageMatches } from "../data/messageSearch";
 import { findStatusText } from "../data/findStatus";
+import { findSeedFromSelection, isEditableTarget } from "../data/findSeed";
 import { mergeLocalMessageState } from "../data/messageMerge";
 import { retryBlockReason, retryRequestForMessage } from "../data/messageRetry";
 import { messageCopyText } from "../data/messageCopy";
@@ -241,6 +242,9 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
       if (document.querySelector('[aria-modal="true"]')) return;
       if (!isCommandChord(event, "f")) return;
       event.preventDefault();
+      // 和浏览器一致：有可用的选中文本就把它当关键词，省去重敲一遍；不适合沿用时保留原关键词。
+      const seed = findSeedFromSelection(window.getSelection()?.toString(), { editable: isEditableTarget(document.activeElement) });
+      if (seed !== null) { setFindQuery(seed); setFindIndex(0); }
       setFindOpen(true);
       dismissSearchHighlight.current?.();
     };
