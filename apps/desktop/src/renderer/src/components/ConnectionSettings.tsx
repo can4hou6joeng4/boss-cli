@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ConnectionCheck, ConnectionReport, ConnectionTarget, PlatformLoginStatus } from "@boss-harness/protocol";
 import { harnessErrorText, connectionReport } from "../data/harnessBridge";
+import { formatLocalClock } from "../data/timeFormat";
 
 const LABELS: Record<ConnectionCheck["state"], string> = {
   unchecked: "尚未检测", checking: "检测中", ready: "检查通过", failed: "检查失败", blocked: "需要处理", disabled: "离线配置",
@@ -74,7 +75,7 @@ export function ConnectionSettings({ harnessUp, onLogin }: { harnessUp: boolean;
       <div className="settings-row-copy"><div className="settings-row-title">{row.title}</div><p className="settings-row-description">{row.description}</p>
         {row.target === "local" && row.check?.browserSourcePolicy && <p className="settings-row-description">招聘 CLI 浏览器来源：{BROWSER_SOURCE_LABELS[row.check.browserSourcePolicy]}</p>}
         <p className="settings-row-description" role="status">{row.check?.summary ?? "尚未检测"}{row.check?.code ? `（${row.check.code}）` : ""}</p>
-        {row.check?.checkedAt && <p className="connection-check-time">检查于 {new Date(row.check.checkedAt).toLocaleTimeString()}</p>}
+        {row.check?.checkedAt && Number.isFinite(Date.parse(row.check.checkedAt)) && <p className="connection-check-time">检查于 {formatLocalClock(new Date(row.check.checkedAt))}</p>}
         {row.target === "platform" && <>
           <div className="connection-account-notice" role="note"><strong>按你已有的账号身份登录</strong><p>求职者账号可使用职位检索；查看候选人需要招聘者身份。账号验证通过不代表具备招聘权限。</p>
             {login?.identity && login.identity !== "unknown" && <p>官方页面身份：{login.identity === "jobSeeker" ? "求职者" : "招聘者"}；功能权限以实际工具结果为准。</p>}

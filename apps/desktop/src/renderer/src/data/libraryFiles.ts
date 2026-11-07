@@ -1,4 +1,5 @@
 import type { MessageItem } from "./mockData";
+import { formatLocalDateTime } from "./timeFormat";
 
 /**
  * 资料库的纯函数数据层。
@@ -157,16 +158,14 @@ export function filterLibrarySources(sources: LibrarySource[], query: string): L
 
 /**
  * 把来源查询时间格式化为本地 `YYYY-MM-DD HH:mm`；空值或不可解析时原样显示，
- * 不把未知时间伪装成有效时间。
+ * 不把未知时间伪装成有效时间。与工具卡共用同一格式，保证两处一致。
  */
 export function formatSourceQueriedAt(value: string): string {
   const trimmed = typeof value === "string" ? value.trim() : "";
   if (!trimmed) return "查询时间未知";
   const time = Date.parse(trimmed);
   if (!Number.isFinite(time)) return trimmed;
-  const date = new Date(time);
-  const pad = (part: number) => String(part).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return formatLocalDateTime(new Date(time));
 }
 
 /** 截短内部消息 / 回合 id 供界面显示；空值返回空字符串。 */

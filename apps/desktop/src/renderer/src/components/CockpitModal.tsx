@@ -6,6 +6,7 @@ import { parseTaskRead, taskCheckErrorText, taskCheckLines, taskLocatorForOwner,
 import { approvalRemainingText, approvalUrgency } from "../data/pendingApprovals";
 import { compactionSourceLabel } from "../data/compactionSettings";
 import { cockpitTabId, cockpitTabIndexForKey, cockpitTabPanelId, type CockpitTab } from "../data/cockpitTabs";
+import { formatLocalClock } from "../data/timeFormat";
 import {
   compactionSummary,
   durationText,
@@ -239,7 +240,7 @@ export const CockpitModal: React.FC<CockpitModalProps> = ({ isOpen, onClose, har
   const queueKnown = !errors.queue && queue !== undefined;
   const approvalRequiredCount = toolsKnown ? tools.filter(tool => tool.requiresApproval).length : undefined;
   const configuredModelCount = modelsKnown ? models.filter(model => model.configured).length : undefined;
-  const updatedText = updatedAt === null ? "" : new Date(updatedAt).toLocaleTimeString("zh-CN", { hour12: false });
+  const updatedText = updatedAt === null ? "" : formatLocalClock(new Date(updatedAt));
 
   return (
     <ModalSurface title="运行状态" onClose={onClose} className="cockpit-dialog">

@@ -4,6 +4,9 @@ import { MAX_WHOLE_RESULT_CHARS, readToolResultChunk, readWholeToolResult } from
 import { useClipboardCopy } from "../data/clipboardCopy";
 import { harnessErrorText } from "../data/harnessBridge";
 
+/** 字符数按简体中文区域分组，不随系统区域变成其他分组方式。 */
+const number = (value: number) => value.toLocaleString("zh-CN");
+
 export function ToolResultDetails({ output, resultRef }: { output?: string; resultRef?: ToolResultReference }) {
   if (resultRef) return <ChunkedResult key={`${resultRef.threadId}:${resultRef.itemId}:${resultRef.sha256}`} reference={resultRef} />;
   return output ? <details className="tool-source-output"><summary>查看结构化结果</summary><pre>{output}</pre></details> : null;
@@ -55,7 +58,7 @@ function ChunkedResult({ reference }: { reference: ToolResultReference }) {
   const copyTitle = !validLength
     ? "结果引用无效，无法整体复制"
     : copyTooLarge
-      ? `结果共 ${reference.characterLength.toLocaleString()} 字符，超过整体复制上限 ${MAX_WHOLE_RESULT_CHARS.toLocaleString()} 字符`
+      ? `结果共 ${number(reference.characterLength)} 字符，超过整体复制上限 ${number(MAX_WHOLE_RESULT_CHARS)} 字符`
       : "读取并复制完整结构化结果";
 
   async function copyWhole() {
@@ -104,7 +107,7 @@ function ChunkedResult({ reference }: { reference: ToolResultReference }) {
 
   return <details className="tool-source-output tool-result-segments">
     <summary>查看完整结构化结果（分段）</summary>
-    <p>共 {reference.characterLength.toLocaleString()} 字符，按需读取。每次最多显示 16,384 字符。</p>
+    <p>共 {number(reference.characterLength)} 字符，按需读取。每次最多显示 16,384 字符。</p>
     <div className="tool-result-controls">
       <button type="button" disabled={loading || copying} onClick={() => void read(0, undefined, 0)}>读取第一段</button>
       <button type="button" disabled={loading || copying || !chunk || position === 0} onClick={() => void read(position - 1, cursors[position - 1])}>上一段</button>
@@ -113,10 +116,10 @@ function ChunkedResult({ reference }: { reference: ToolResultReference }) {
       {copying && copyProgress && <button type="button" onClick={cancelCopy}>取消</button>}
     </div>
     <div role="status">{loading ? "正在读取…" : chunk ? `字符 ${chunk.offset + 1}–${end} / ${reference.characterLength}${chunk.nextCursor ? "" : " · 已到末尾"}` : "点击读取第一段查看内容"}</div>
-    {copying && copyProgress && <div role="status">正在读取 {copyProgress.loaded.toLocaleString()} / {copyProgress.total.toLocaleString()} 字符…</div>}
+    {copying && copyProgress && <div role="status">正在读取 {number(copyProgress.loaded)} / {number(copyProgress.total)} 字符…</div>}
     {copyNote && <div role="status">{copyNote}</div>}
-    {copyFeedback && <div role="status" style={{ fontSize: 11, color: copyFeedback.ok ? "var(--accent-green)" : "var(--text-muted)" }}>{copyFeedback.ok ? `已复制 ${reference.characterLength.toLocaleString()} 字符` : `复制失败：${copyFeedback.reason}`}</div>}
-    {copyTooLarge && <p className="tool-result-note">{validLength ? `结果超过整体复制上限（${MAX_WHOLE_RESULT_CHARS.toLocaleString()} 字符），请分段查看。` : "结果引用无效，请分段查看。"}</p>}
+    {copyFeedback && <div role="status" style={{ fontSize: 11, color: copyFeedback.ok ? "var(--accent-green)" : "var(--text-muted)" }}>{copyFeedback.ok ? `已复制 ${number(reference.characterLength)} 字符` : `复制失败：${copyFeedback.reason}`}</div>}
+    {copyTooLarge && <p className="tool-result-note">{validLength ? `结果超过整体复制上限（${number(MAX_WHOLE_RESULT_CHARS)} 字符），请分段查看。` : "结果引用无效，请分段查看。"}</p>}
     {error && <p role="alert">{error}</p>}
     {chunk && <pre>{chunk.text}</pre>}
   </details>;
