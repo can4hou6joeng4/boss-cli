@@ -24,6 +24,7 @@ import { booleanPreference, projectFolders, stringList, stringRecord } from "../
 import { planAliasMigrations } from "../data/aliasMigration";
 import { type ModelDescriptor, type SkillDescriptor, type ToolDescriptor } from "@boss-harness/protocol";
 import { createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend } from "../data/composerDraft";
+import { createdSession, sessionStartSendOutcome, type SessionStartOutcome } from "../data/sessionStart";
 import { loadComposerDraftStore, restoreComposerDraft, restoreSessionDrafts, saveComposerDrafts } from "../data/composerDraftStorage";
 import type { CheckQueueSubmission, ComposerQueue } from "../data/composerDraft";
 import { exportMarkdown } from "../data/exportMarkdown";
@@ -73,7 +74,7 @@ export interface AppShellProps {
   sessionBranches?: SessionBranchesView;
   onInterrupt?: () => void;
   onApprovalDecision?: (approvalId: string, approved: boolean, toolName: string, remember: boolean) => void | ApprovalDelivery | ApprovalOutcome | Promise<void | ApprovalDelivery | ApprovalOutcome>;
-  onStartSessionWithPrompt: (prompt: string, domainId: string, provider: string, modelId: string, skillIds?: string[]) => Promise<SessionItem | null>;
+  onStartSessionWithPrompt: (prompt: string, domainId: string, provider: string, modelId: string, skillIds?: string[]) => Promise<SessionStartOutcome>;
   models?: ModelDescriptor[]; activeModelProvider?: string; activeModelId?: string;
   onSelectModel?: (provider: string, modelId: string) => void | boolean | Promise<void | boolean>;
   configuredModelLabel?: string;
@@ -291,9 +292,11 @@ export function AppShell(props: AppShellProps) {
   const openSettings = (section: SettingsSection = "general") => { setSettingsSection(section); setSettings(true); };
   const startInProject = async (prompt: string, domainId: string, provider: string, modelId: string, skillIds: string[] = []) => {
     const projectId = draftProjectId;
-    const session = await props.onStartSessionWithPrompt(prompt, domainId, provider, modelId, skillIds);
+    const outcome = await props.onStartSessionWithPrompt(prompt, domainId, provider, modelId, skillIds);
+    // 会话可能已经建立而首条消息没送达：分组仍要记在真实会话上，结果按状态归一给输入区。
+    const session = createdSession(outcome);
     if (session && projectId) setThreadGroups(prev => ({ ...prev, [session.id]: projectId }));
-    return Boolean(session);
+    return sessionStartSendOutcome(outcome);
   };
   const select = (session: SessionItem) => { setSearchHighlight(null); openRoute({ page: "home", sessionId: session.id }); };
   const openMessage = (session: SessionItem, itemId: string, revealToolBlock = false, query = "") => {
