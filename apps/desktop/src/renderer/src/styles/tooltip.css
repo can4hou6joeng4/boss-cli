@@ -1,0 +1,35 @@
+/* 提示浮层：脱离文档流固定在视口坐标，避免撑开触发元素所在的行内布局。 */
+.ui-tooltip {
+  position: fixed;
+  z-index: 1700;
+  max-width: min(280px, calc(100vw - 16px));
+  margin: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--panel-glass);
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 400;
+  line-height: 1.45;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  box-shadow: var(--shadow-popup);
+  /* 提示本身不能接收指针：否则会挡住触发元素，导致鼠标反复进出。 */
+  pointer-events: none;
+  animation: tooltip-enter 90ms ease-out;
+}
+
+@keyframes tooltip-enter {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-tooltip { animation: none; }
+}
+
+html[data-motion="reduced"] .ui-tooltip { animation: none; }
