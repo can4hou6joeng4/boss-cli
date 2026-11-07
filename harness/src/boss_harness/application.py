@@ -1648,10 +1648,14 @@ class ApplicationService:
                     self.snapshots.invalidate_branch(thread_id, leaf_entry_id)
                 if prepared is not None and leaf_entry_id is not None:
                     job = self._register_branch_summary(thread_id, leaf_entry_id, *prepared)
-        if result.get("changed"):
-            self.events.emit("thread/leafChanged", {"threadId": thread_id, "leafTurnId": result["leafTurnId"]})
-        if job is not None:
-            result["summaryJob"] = self._launch_branch_summary(job)
+        try:
+            if result.get("changed"):
+                self.events.emit("thread/leafChanged", {"threadId": thread_id, "leafTurnId": result["leafTurnId"]})
+        finally:
+            # 摘要任务在锁内登记时已占用该会话：通知落盘失败也必须启动或结算它，
+            # 否则 _compaction_by_thread 永不释放，取消摘要也无法解除占用。
+            if job is not None:
+                result["summaryJob"] = self._launch_branch_summary(job)
         return result
 
     def _prepare_branch_summary(self, thread_id: str, turn_id: str | None) -> tuple:
