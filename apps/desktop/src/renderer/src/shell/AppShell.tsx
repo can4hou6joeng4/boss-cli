@@ -35,6 +35,7 @@ import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import type { ModelRetryStatus } from "../data/modelRetry";
 import type { SessionBranchesView } from "./ConversationArea";
 import type { ThemePreference } from "../data/themePreference";
+import { dropSessionHistory, nextReachableIndex } from "../data/routeHistory";
 import "../styles/login-sidebar.css";
 
 export interface AppShellProps {
@@ -271,7 +272,11 @@ export function AppShell(props: AppShellProps) {
     const next = [...previous.slice(0, cursorRef.current + 1), route];
     historyRef.current = next; cursorRef.current = next.length - 1; setHistory(next); setCursor(next.length - 1);
   };
+  const routeReachable = (route: Route): boolean =>
+    route.page !== "home" || !route.sessionId || sessions.some(session => session.id === route.sessionId);
   const openRoute = (route: Route, record = true) => {
+    // 历史栈里可能残留已删除会话的路由：保持当前视图，不记录、也不拿它去开新任务。
+    if (!routeReachable(route)) return;
     if (record) pushRoute(route);
     setSkillFocus(null);
     setPage(route.page);
@@ -349,6 +354,9 @@ export function AppShell(props: AppShellProps) {
     setHidden(previous => previous.filter(item => item !== id));
     setAliases(previous => { if (!(id in previous)) return previous; const next = { ...previous }; delete next[id]; return next; });
     setThreadGroups(previous => { if (!(id in previous)) return previous; const next = { ...previous }; delete next[id]; return next; });
+    // 历史栈里的旧路由同样失效：移除并修正光标，前进/后退按钮状态随之更新。
+    const pruned = dropSessionHistory(historyRef.current, cursorRef.current, id);
+    if (pruned) { historyRef.current = pruned.routes; cursorRef.current = pruned.cursor; setHistory(pruned.routes); setCursor(pruned.cursor); }
     setDeleteSession(null);
   };
   const loginEntry = async (direct = false) => {
@@ -365,7 +373,12 @@ export function AppShell(props: AppShellProps) {
       if (direct) void login.open(target.id); else login.show(target.id);
     } finally { loginEntryFlight.current = false; }
   };
-  const go = (delta: number) => { const next = cursorRef.current + delta; if (historyRef.current[next]) { cursorRef.current = next; setCursor(next); openRoute(historyRef.current[next]!, false); } };
+  const go = (delta: number) => {
+    // 跳过已删除会话留下的失效路由，落到最近一个仍可打开的位置。
+    const next = nextReachableIndex(historyRef.current, cursorRef.current, delta, routeReachable);
+    if (next < 0) return;
+    cursorRef.current = next; setCursor(next); openRoute(historyRef.current[next]!, false);
+  };
   useEffect(() => {
     const media = window.matchMedia("(min-width: 1200px)");
     const update = () => setSummaryAvailable(media.matches);
@@ -452,7 +465,7 @@ export function AppShell(props: AppShellProps) {
   };
   return <>
     <div className={`app-container ${window.boss ? "native-window" : "browser-window"} ${browserOpen ? `with-browser${login.expanded ? " browser-expanded" : ""}` : summaryOpen && hasConversation ? "with-summary" : ""}`}>
-      <TitleBar summaryAvailable={summaryAvailable && !browserOpen} hasConversation={hasConversation} title={title} isSidebarOpen={props.isSidebarOpen} isSummaryOpen={summaryOpen && !browserOpen} canGoBack={cursor > 0} canGoForward={cursor < history.length - 1} onBack={() => go(-1)} onForward={() => go(1)} onToggleSidebar={props.onToggleSidebar} onToggleSummary={() => setSummaryOpen(!summaryOpen)} onNewTask={newTask} onOpenSettings={() => openSettings()} onOpenRewind={props.onOpenRewind} onOpenContext={props.onOpenContext} onOpenUsage={props.onOpenUsage} onOpenExport={props.onOpenExport} onOpenBranches={props.sessionBranches ? () => props.sessionBranches?.onOpen() : undefined} onRename={() => { if (props.activeSession) { setRename(props.activeSession); setName(title); } }} onPin={() => { const id = props.activeSession?.id; if (id) setPinned(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]); }} isPinned={pinned.includes(props.activeSession?.id ?? "")} onDelete={() => { if (props.activeSession) setDeleteSession(props.activeSession); }} onExport={exportChat} browserOpen={browserOpen} onOpenBrowser={window.boss ? () => { if (browserOpen) login.closePanel(); else void loginEntry(); } : undefined} />
+      <TitleBar summaryAvailable={summaryAvailable && !browserOpen} hasConversation={hasConversation} title={title} isSidebarOpen={props.isSidebarOpen} isSummaryOpen={summaryOpen && !browserOpen} canGoBack={nextReachableIndex(history, cursor, -1, routeReachable) >= 0} canGoForward={nextReachableIndex(history, cursor, 1, routeReachable) >= 0} onBack={() => go(-1)} onForward={() => go(1)} onToggleSidebar={props.onToggleSidebar} onToggleSummary={() => setSummaryOpen(!summaryOpen)} onNewTask={newTask} onOpenSettings={() => openSettings()} onOpenRewind={props.onOpenRewind} onOpenContext={props.onOpenContext} onOpenUsage={props.onOpenUsage} onOpenExport={props.onOpenExport} onOpenBranches={props.sessionBranches ? () => props.sessionBranches?.onOpen() : undefined} onRename={() => { if (props.activeSession) { setRename(props.activeSession); setName(title); } }} onPin={() => { const id = props.activeSession?.id; if (id) setPinned(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]); }} isPinned={pinned.includes(props.activeSession?.id ?? "")} onDelete={() => { if (props.activeSession) setDeleteSession(props.activeSession); }} onExport={exportChat} browserOpen={browserOpen} onOpenBrowser={window.boss ? () => { if (browserOpen) login.closePanel(); else void loginEntry(); } : undefined} />
       <div className="workspace-layout">
         <NavigationRail page={page} isDark={props.isDark} harnessUp={props.harnessUp ?? false} onToggleTheme={props.onToggleTheme} onOpenShortcuts={props.onOpenShortcuts} onNavigate={next => next === "home" ? newTask() : openRoute({ page: next })} onOpenSettings={openSettings} onOpenCockpit={props.onOpenCockpit} onOpenSideChat={props.onOpenSideChat} />
         <div className="workspace-surface">
