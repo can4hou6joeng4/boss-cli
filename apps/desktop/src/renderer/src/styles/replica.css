@@ -176,6 +176,11 @@ kbd { font: 10px var(--font-sans); color: var(--text-faint); }
 .composer-skill-chip button:focus-visible { outline: 2px solid var(--accent-cyan); outline-offset: 2px; }
 .composer-skill-chip.is-stale { color: var(--accent-warning); }
 .composer-notice { margin: 7px 5px 0; color: var(--accent-warning); font-size: 11px; }
+.composer-notice-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin: 7px 5px 0; color: var(--accent-warning); font-size: 11px; }
+.composer-notice-actions button { padding: 0; border: 0; background: transparent; color: var(--text-main); font: inherit; text-decoration: underline; cursor: pointer; }
+.composer-notice-actions button:hover { color: var(--accent-cyan); }
+.composer-notice-actions button:disabled { color: var(--text-faint); text-decoration: none; cursor: default; }
+.composer-notice-actions button:focus-visible { outline: 2px solid var(--accent-cyan); outline-offset: 2px; }
 .turn-continuation-notice { flex: none; display: grid; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--border-color); background: color-mix(in srgb, var(--accent-warning) 6%, transparent); color: var(--text-muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .turn-continuation-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; color: var(--text-main); }
 .turn-continuation-heading strong { font-size: 12px; font-weight: 600; }
