@@ -2139,7 +2139,10 @@ class ApplicationService:
             try:
                 self.events.emit(method, payload)
             except Exception as exc:
-                if method == "context/compactionCompleted":
+                # 终态通知只是观察者信号：持久化失败不能覆盖已提交的压缩结果，
+                # 也不能跳过随后的队列唤醒、容量释放与资源回收。已完成任务降级为
+                # 「已提交但刷新失败」，失败 / 取消任务保持原状态继续收尾。
+                if job.get("status") == "completed":
                     self._compaction_committed_warning(job, exc)
 
     def _finish_compaction(self, job: dict) -> None:
@@ -2203,7 +2206,10 @@ class ApplicationService:
 
     @staticmethod
     def _compaction_safe_error(job: dict, error: Exception | str) -> str:
-        secret = job["config"].api_key.get() if job["config"].api_key else ""
+        # 终态通知在 _finish_compaction 中于 retire 之后发射，此时 config 已回收；
+        # 刷新失败告警仍要能生成描述，不能因缺少 config 再次抛出 KeyError。
+        config = job.get("config")
+        secret = config.api_key.get() if config is not None and config.api_key else ""
         message = redact_secrets(str(error), extra=(secret,))
         if len(message) > MAX_COMPACTION_ERROR_CHARACTERS:
             message = message[:MAX_COMPACTION_ERROR_CHARACTERS - 1] + "…"
