@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { ThreadReasoningReadResponse } from "@boss-harness/protocol";
 import { harnessErrorText, readThreadReasoning, setThreadReasoning } from "./harnessBridge";
+import { reasoningTarget } from "./reasoningControl";
 
 export interface SessionReasoningControl {
   data: ThreadReasoningReadResponse | null;
@@ -30,9 +31,11 @@ export function useSessionReasoning(threadId: string | null, connected: boolean)
   }, []);
   const refresh = useCallback(async () => {
     const { threadId: id, connected: available } = current.current;
-    if (!id || !available) return;
+    // 断连时不能静默返回：用户点了「重新加载」，必须知道为什么没有变化。
+    const target = reasoningTarget("读取", id, available);
+    if (!target.ok) { setError(target.notice); return; }
     const version = epoch.current;
-    try { await read(id, version); if (epoch.current === version) setError(""); }
+    try { await read(target.threadId, version); if (epoch.current === version) setError(""); }
     catch (cause) {
       // 读不到档位时保留真实原因：内核错误码或断连原因都影响用户下一步该做什么。
       if (epoch.current === version) setError(`无法读取会话推理设置：${harnessErrorText(cause)}。请重新连接或重新加载会话后再试。`);
@@ -60,16 +63,19 @@ export function useSessionReasoning(threadId: string | null, connected: boolean)
 
   const select = useCallback(async (effort: string | null) => {
     const { threadId: id, connected: available } = current.current;
-    if (!id || !available || saving.current) return;
+    // 档位按钮在 Composer 里没有按连接状态禁用，断连时点击必须给出可见原因。
+    const target = reasoningTarget("保存", id, available);
+    if (!target.ok) { setError(target.notice); return; }
+    if (saving.current) return;
     const version = epoch.current;
     saving.current = true; setPending(true); setError(""); ++reads.current;
     try {
-      await setThreadReasoning(id, effort);
-      if (epoch.current === version) await read(id, version);
+      await setThreadReasoning(target.threadId, effort);
+      if (epoch.current === version) await read(target.threadId, version);
     } catch (cause) {
       if (epoch.current !== version) return;
       try {
-        const actual = await read(id, version);
+        const actual = await read(target.threadId, version);
         if (epoch.current === version && actual.effort !== effort) setError(`设置未确认：${harnessErrorText(cause)}。请核对当前档位后再选择；没有自动重试。`);
       } catch (verifyError) {
         if (epoch.current === version) setError(`设置结果待核对：${harnessErrorText(cause)}；读取当前档位也失败（${harnessErrorText(verifyError)}）。重新连接后请核对；没有自动重试。`);
