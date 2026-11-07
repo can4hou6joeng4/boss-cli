@@ -400,11 +400,16 @@ export function AppShell(props: AppShellProps) {
   }, [props.harnessUp]);
   useEffect(() => {
     let current = true;
-    setSkills([]);
-    setSkillRoot(null);
-    setSkillProblems([]);
     setSkillCatalogError("");
-    if (!props.harnessUp || !window.boss) { setSkillCatalogState("unavailable"); return () => { current = false; }; }
+    if (!props.harnessUp || !window.boss) {
+      // 断开或预览时旧目录已不可用，立即清空，避免继续展示可能过期的技能。
+      setSkills([]);
+      setSkillRoot(null);
+      setSkillProblems([]);
+      setSkillCatalogState("unavailable");
+      return () => { current = false; };
+    }
+    // 刷新期间保留上一次成功读取的目录与选中项；读取失败的分支仍会清空。
     setSkillCatalogState("loading");
     void listSkills().then(result => {
       if (!current) return;
@@ -418,6 +423,7 @@ export function AppShell(props: AppShellProps) {
       if (!current) return;
       setSkills([]);
       setSkillRoot(null);
+      setSkillProblems([]);
       setSkillCatalogError(harnessErrorText(cause));
       setSkillCatalogState("error");
     });

@@ -14,3 +14,17 @@ export function visibleSkillDetail(
 ): SkillReadResponse | null {
   return selected && detail && detail.id === selected.id ? detail : null;
 }
+
+/**
+ * 目录刷新期间是否保留当前选中技能。
+ *
+ * 加载新目录时 `skills` 可能是空数组（连接切换或未来的实现差异），此时不能
+ * 据此判断技能已被删除；只有读取进入终态后，才按目录内容决定是否保留选中项。
+ */
+export function skillSelectionSurvives(
+  loading: boolean,
+  skills: readonly SkillDescriptor[],
+  selectedId: string | null,
+): boolean {
+  return !selectedId || loading || skills.some(skill => skill.id === selectedId);
+}
