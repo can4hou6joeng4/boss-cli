@@ -7,7 +7,7 @@ import { EditSkillDialog } from "./EditSkillDialog";
 import { IconChevronRight, IconClose, IconSearch, IconSparkles } from "./Icons";
 import { filterSkillProblems, filterSkills } from "../data/skillFilter";
 import { resolveSkillFocus } from "../data/skillFocus";
-import { visibleSkillDetail } from "../data/skillDetail";
+import { skillSelectionSurvives, visibleSkillDetail } from "../data/skillDetail";
 
 export interface WorkspaceSkillsProps {
   skills: SkillDescriptor[];
@@ -56,14 +56,16 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
   const filteredSkills = filterSkills(props.skills, query);
   const filteredProblems = filterSkillProblems(props.problems, query);
   const selected = filteredSkills.find(skill => skill.id === selectedId) ?? null;
+  // 目录里该技能的摘要；变化说明文件已被外部修改，已读正文需要重取。
+  const selectedDigest = props.skills.find(skill => skill.id === selectedId)?.digest ?? "";
   // 切换选中项后旧的正文快照会保留到 effect 执行；详情区只认属于当前选中技能的正文。
   const shownDetail = visibleSkillDetail(selected, detail);
   useEffect(() => {
-    // 目录刷新后选中项可能消失；正文只属于当前目录中的技能。
-    if (selectedId && !props.skills.some(skill => skill.id === selectedId)) {
+    // 刷新期间目录仍是上一次结果，不能据此清空选中项；等读取进入终态再判断。
+    if (selectedId && !skillSelectionSurvives(props.state === "loading", props.skills, selectedId)) {
       setSelectedId(null); setDetail(null); setDetailError("");
     }
-  }, [props.skills, selectedId]);
+  }, [props.skills, props.state, selectedId]);
   const appliedFocus = useRef<string | null>(null);
   useEffect(() => {
     if (!props.focusSkillId) { appliedFocus.current = null; return; }
@@ -86,7 +88,8 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
     readSkill(selectedId).then(value => {
       if (!active) return;
       // 内核返回的正文是展示的唯一依据；形状不符时明确失败，不静默显示半截内容。
-      if (!value || typeof value.content !== "string" || typeof value.id !== "string" || typeof value.bytes !== "number") {
+      if (!value || typeof value.content !== "string" || typeof value.id !== "string" || typeof value.bytes !== "number"
+        || typeof value.digest !== "string") {
         setDetailError("内核返回的技能正文无法识别。");
         return;
       }
@@ -94,10 +97,10 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
     }).catch(cause => { if (active) setDetailError(`读取技能正文失败：${harnessErrorText(cause)}`); })
       .finally(() => { if (active) setDetailLoading(false); });
     return () => { active = false; };
-  }, [selectedId, props.readable, reload]);
+  }, [selectedId, props.readable, reload, selectedDigest]);
   return <section aria-labelledby="workspace-skills-heading">
     <div className="page-section-head">
-      <h2 className="page-section-title" id="workspace-skills-heading">工作区技能 <span>{props.state === "ready" || props.state === "empty" ? props.skills.length : "—"}</span></h2>
+      <h2 className="page-section-title" id="workspace-skills-heading">工作区技能 <span>{props.skills.length || (props.state === "ready" || props.state === "empty" ? 0 : "—")}</span></h2>
       <span className="workspace-skill-tools">
         {props.creatable && <button type="button" className="subtle-button" onClick={() => { setNotice(""); setCreating(true); }} disabled={props.state === "unavailable"}>新建技能…</button>}
         <button type="button" className="subtle-button" onClick={props.onRefresh} disabled={props.state === "loading" || props.state === "unavailable"}>{props.state === "loading" ? "正在读取…" : "刷新技能目录"}</button>
@@ -107,7 +110,7 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
     {creating && <CreateSkillDialog root={props.root} onClose={() => setCreating(false)} onCreated={skill => { setCreating(false); setNotice(`已创建技能 ${skill.id}；目录刷新后可在列表中查看。`); props.onRefresh(); }} />}
     {editing && <EditSkillDialog skill={editing} root={props.root} onClose={() => setEditing(null)} onSaved={skill => { setEditing(null); setNotice(`已保存技能 ${skill.id}；正文已刷新，下一回合生效。`); setReload(previous => previous + 1); }} />}
     {deleting && <DeleteSkillDialog skill={deleting} root={props.root} onClose={() => setDeleting(null)} onDeleted={id => { setDeleting(null); setSelectedId(null); setDetail(null); setNotice(`已删除技能 ${id}；目录刷新后将从列表移除。`); props.onRefresh(); }} />}
-    {props.state === "loading" && <div className="page-tool-empty">正在读取工作区技能…</div>}
+    {props.state === "loading" && props.skills.length === 0 && <div className="page-tool-empty">正在读取工作区技能…</div>}
     {props.state === "error" && <div className="page-tool-empty">技能目录读取失败{props.error ? `：${props.error}` : ""}。这只表示读取没有完成，不代表工作区没有技能。</div>}
     {props.state === "unavailable" && <div className="page-tool-empty">{props.preview ? "浏览器预览未连接技能目录。启动桌面端后显示工作区技能。" : "连接本地 Harness 后可读取工作区技能。"}</div>}
     {props.state === "empty" && props.problems.length === 0 && <div className="page-tool-empty">当前工作区没有技能。可在 <code>.boss-harness/skills/&lt;id&gt;/SKILL.md</code> 添加。</div>}
@@ -134,7 +137,7 @@ export function WorkspaceSkills(props: WorkspaceSkillsProps) {
         {selected && !props.readable && <><strong>{selected.name}</strong><p className="workspace-skill-description">{selected.description || "无描述"}</p><p className="page-empty-note">当前内核未声明技能正文读取能力，无法在应用内查看内容；仍可在输入区选择该技能。</p></>}
         {selected && props.readable && <>
           <div className="page-section-head"><strong>{shownDetail?.name ?? selected.name}</strong><span className="workspace-skill-tools"><button type="button" className="subtle-button" onClick={() => setReload(previous => previous + 1)} disabled={detailLoading}>{detailLoading ? "正在读取…" : "重新读取"}</button>{props.writable && shownDetail && !detailLoading && <button type="button" className="subtle-button" onClick={() => { setNotice(""); setEditing(shownDetail); }}>编辑技能…</button>}</span></div>
-          <small className="workspace-skill-meta">{selected.id} · {byteText(shownDetail?.bytes ?? selected.bytes)} · 摘要 {selected.digest.slice(0, 12)}…</small>
+          <small className="workspace-skill-meta">{selected.id} · {byteText(shownDetail?.bytes ?? selected.bytes)} · 摘要 {(shownDetail?.digest ?? selected.digest).slice(0, 12)}…</small>
           <div className="workspace-skill-actions"><button type="button" className="solid-button" onClick={() => props.onUseSkill(selected.id)}>在新聊天中使用该技能</button><span className="workspace-skill-hint">只预选到新会话草稿，不会自动发送。</span></div>
           {detailLoading && <p className="page-empty-note">正在读取技能正文…</p>}
           {detailError && <p className="page-empty-note" role="alert">{detailError}</p>}
