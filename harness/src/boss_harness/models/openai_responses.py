@@ -50,6 +50,7 @@ from boss_harness.models.stream_pump import (
 from boss_harness.models.types import (
     AssistantMessage,
     ChatMessage,
+    ModelErrorInfo,
     ModelRequest,
     StreamEvent,
     TextBlock,
@@ -78,7 +79,8 @@ _THINKING_DELTA_EVENTS = ("response.reasoning_summary_text.delta", "response.rea
 #: 可重试的 HTTP 状态：请求超时/冲突/限流/服务端错误。
 _RETRYABLE_STATUS = frozenset({408, 409, 429, 500, 502, 503, 504})
 
-#: 网关把失败写在流里时用的标记。这是对当前网关的启发式识别，不是协议保证。
+#: 网关把失败写在流里时用的标记。这是对当前网关的启发式识别，不是协议保证；
+#: 只在 `errors.py` 没有给出结构化结论时兜底，见 `_stream_error_retryable`。
 _TRANSIENT_ERROR_MARKERS = ("service_unavailable", "server_error", "overloaded", "temporarily")
 
 
@@ -89,6 +91,20 @@ def _reject_json_constant(value: str) -> None:
 def _looks_transient(code: str, detail: str) -> bool:
     haystack = f"{code} {detail}".lower()
     return any(marker in haystack for marker in _TRANSIENT_ERROR_MARKERS)
+
+
+def _stream_error_retryable(error_info: ModelErrorInfo | None, code: str, detail: str) -> bool:
+    """流内错误是否值得自动重试。
+
+    结构化结论优先：`errors.py` 已把限流与服务端错误标成瞬时，必须与 HTTP 429、
+    Anthropic 适配器保持一致；只有它没有结论时才回退到网关文本标记。
+    """
+    if error_info is not None:
+        if error_info.code == "CONTEXT_OVERFLOW":
+            return False
+        if error_info.retryable is not None:
+            return error_info.retryable is True
+    return _looks_transient(code, detail)
 
 
 def to_input_items(messages: Sequence[ChatMessage]) -> list[dict[str, Any]]:
@@ -274,8 +290,9 @@ class OpenAIResponsesProvider:
         重试必须同时满足两条：
         1. **还没有向调用方产出过任何内容**。一旦文本或工具参数增量已经发出，调用方就看到了
            半截结果，重发只会造成重复；此时失败一律照实上报。
-        2. 失败是可重试的：连接/超时、HTTP 408/409/429/5xx、以及网关在流里回的
-           `service_unavailable_error` 一类过载标记。参数错、鉴权错等不重试。
+        2. 失败是可重试的：连接/超时、HTTP 408/409/429/5xx、流内错误按 `errors.py`
+           的结构化结论（限流与服务端错误为瞬时），无结构化结论时回退网关过载标记。
+           参数错、鉴权错等不重试。
 
         `start` 只发一次；每次退避前产出不含内容的 `retry_start`，结束时补 `retry_end`
         （见 `with_retry_outcome`），调用方可忽略二者。
@@ -723,11 +740,9 @@ class OpenAIResponsesProvider:
                         error_type = str(getattr(error, "type", "") or "")
                         message = str(getattr(error, "message", "") or "") or "响应失败"
                         error_info = openai_error_info(error, source="stream_error", status_code=200)
-                        self._last_error_retryable = not (
-                            error_info is not None and (
-                                error_info.code == "CONTEXT_OVERFLOW" or error_info.retryable is False
-                            )
-                        ) and _looks_transient(code, f"{error_type} {message}")
+                        self._last_error_retryable = _stream_error_retryable(
+                            error_info, code, f"{error_type} {message}"
+                        )
                         yield StreamEvent(
                             type="error", reason="error", error=self._redact(f"接口错误 {code}：{message}"),
                             error_info=error_info,
@@ -738,11 +753,7 @@ class OpenAIResponsesProvider:
                         code = str(getattr(event, "code", "") or "unknown")
                         message = str(getattr(event, "message", "") or "")
                         error_info = openai_error_info(event, source="stream_error", status_code=200)
-                        self._last_error_retryable = not (
-                            error_info is not None and (
-                                error_info.code == "CONTEXT_OVERFLOW" or error_info.retryable is False
-                            )
-                        ) and _looks_transient(code, message)
+                        self._last_error_retryable = _stream_error_retryable(error_info, code, message)
                         yield StreamEvent(
                             type="error", reason="error", error=self._redact(f"接口错误 {code}：{message}"),
                             error_info=error_info,
