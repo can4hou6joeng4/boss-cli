@@ -2876,22 +2876,20 @@ class SessionStore:
                 pending_approval = isinstance(approval, dict) and not approval.get("decision")
                 if item.get("status") != "running" and not pending_approval:
                     continue
-                if (pending_approval and self._valid_approval_item(item, pending_only=True)
+                affected_turn = item.get("turnId") or turn_by_item.get(item["id"])
+                owner_status = turns_by_id.get(affected_turn, {}).get("status") if affected_turn else None
+                # 只有仍可恢复的回合才保留待决审批：approval/list 也只对 running /
+                # interrupted 回合开放。所属回合已终态却留下待决审批，说明收尾中途
+                # 失败，再等 deadline 只会让它继续不可见。
+                if (pending_approval and owner_status in {"running", "interrupted"}
+                        and self._valid_approval_item(item, pending_only=True)
                         and approval["deadline"] > time.time()):
                     continue
-                payload = {key: value for key, value in item.items() if key not in {"id", "threadId"}}
-                payload.update(status="failed", revises=item["id"])
-                if pending_approval:
-                    payload["approval"] = {**approval, "decision": "expired", "decidedAt": _now()}
-                if item.get("kind") == "toolCall":
-                    payload.update(errorCode="SESSION_INTERRUPTED", resultSummary="上次进程在操作收尾前退出，结果不确定；先核对平台状态，不要直接重试。")
-                    phase = item.get("executionState")
-                    payload["executionState"] = "not_executed" if phase in {
-                        "queued", "pending_approval", "approved", "not_approved"} else "outcome_unknown"
-                    if payload["executionState"] == "not_executed":
-                        payload["resultSummary"] = "上次进程在工具执行前退出，该操作未执行；旧审批已经失效。"
+                payload = self._abandoned_item_payload(
+                    item, error_code="SESSION_INTERRUPTED",
+                    unknown_summary="上次进程在操作收尾前退出，结果不确定；先核对平台状态，不要直接重试。",
+                    not_executed_summary="上次进程在工具执行前退出，该操作未执行；旧审批已经失效。")
                 self.append(thread_id, Entry(type="item", parent_id=self.last_entry_id(thread_id), payload=payload))
-                affected_turn = item.get("turnId") or turn_by_item.get(item["id"])
                 if affected_turn:
                     recovered_turns.add(affected_turn)
             for turn in turns:
@@ -2900,6 +2898,53 @@ class SessionStore:
                     if last_activity is not None:
                         fields["completedAt"] = last_activity
                     self.record_turn(thread_id, turn["turnId"], "interrupted", **fields)
+
+    @staticmethod
+    def _abandoned_item_payload(item: dict, *, error_code: str, unknown_summary: str,
+                                not_executed_summary: str) -> dict:
+        """构造被遗弃条目的终态修订；启动恢复与在线回合结算共用同一规则。"""
+        payload = {key: value for key, value in item.items() if key not in {"id", "threadId"}}
+        payload.update(status="failed", revises=item["id"])
+        approval = item.get("approval")
+        if isinstance(approval, dict) and not approval.get("decision"):
+            payload["approval"] = {**approval, "decision": "expired", "decidedAt": _now()}
+        if item.get("kind") == "toolCall":
+            payload.update(errorCode=error_code, resultSummary=unknown_summary)
+            phase = item.get("executionState")
+            payload["executionState"] = "not_executed" if phase in {
+                "queued", "pending_approval", "approved", "not_approved"} else "outcome_unknown"
+            if payload["executionState"] == "not_executed":
+                payload["resultSummary"] = not_executed_summary
+        return payload
+
+    def settle_abandoned_turn(self, thread_id: str, turn_id: str) -> int:
+        """结算刚结束的回合遗留的 running 条目与待决审批，返回条目数。
+
+        回合可能在上报审批或写入完成修订时失败，条目已落库为 running 却没有
+        终态。进程不重启就不会有人再收尾它：approval/list 只列 running /
+        interrupted 回合的待决审批，压缩又拒绝任何 running 条目，于是审批
+        不可见、线程也无法压缩或分支。这里按启动恢复的同一规则补终态记录。
+        """
+        with self._lock:
+            self.require_thread(thread_id)
+            entries = self.read_entries(thread_id)
+            owners = self._item_owners(entries)
+            settled = 0
+            for item in self._project_items(thread_id, entries):
+                approval = item.get("approval")
+                pending_approval = isinstance(approval, dict) and not approval.get("decision")
+                if item.get("status") != "running" and not pending_approval:
+                    continue
+                if (item.get("turnId") or owners.get(item["id"])) != turn_id:
+                    continue
+                payload = self._abandoned_item_payload(
+                    item, error_code="TURN_FAILED",
+                    unknown_summary="回合在工具收尾前失败，结果不确定；先核对平台状态，不要直接重试。",
+                    not_executed_summary="回合在工具执行前失败，该操作未执行；旧审批已经失效。")
+                self.append(thread_id, Entry(type="item", parent_id=self.last_entry_id(thread_id),
+                                             payload=payload))
+                settled += 1
+            return settled
 
     def _sync_events(self) -> None:
         with self._lock, self._index.transaction() as connection:
