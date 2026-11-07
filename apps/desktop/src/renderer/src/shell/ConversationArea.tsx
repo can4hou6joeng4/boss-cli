@@ -15,7 +15,7 @@ import type { ModelDescriptor, QueueItem, TurnContinuationReadResponse } from "@
 import type { ContextBranchSummary, ContextCompactJob, ContextEditReadResponse, SkillDescriptor, SkillProblem } from "@boss-harness/protocol";
 import { type MessageItem, type ConversationMode } from "../data/mockData";
 import type { SkillCatalogState, ApprovalDelivery, ApprovalOutcome } from "../data/harnessBridge";
-import { approvalRejectionNotice } from "../data/approvalFailure";
+import { approvalBlockReason, approvalRejectionNotice } from "../data/approvalFailure";
 import type { SessionReasoningControl } from "../data/useSessionReasoning";
 import type { QueueRefreshResult } from "../data/queueRefresh";
 import { appendQuote, createComposerDraft, withDraftText, type ComposerDraft, type UpdateComposerDraft, type ComposerSend, type ComposerQueue, type CheckQueueSubmission } from "../data/composerDraft";
@@ -295,8 +295,9 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
   const handleApproval = async (msgId: string, decision: "approve" | "deny") => {
     const target = messages.find(message => message.id === msgId);
     const approval = target?.approval;
-    // 归档会话中的审批已被内核关闭（APPROVAL_CLOSED），不再提交。
-    if (!approval || pendingApproval || archived) return;
+    // 归档会话中的审批已被内核关闭（APPROVAL_CLOSED）；其余不可提交状态与按钮的
+    // disabled 共用同一判定，避免按钮可点却在这里静默返回。
+    if (!approval || approvalBlockReason(msgId, Boolean(approval.submitted), pendingApproval, archived) !== null) return;
     const remember = !approval.consequential && (rememberChoices[msgId] || false);
     if (approval.approvalId) {
       setPendingApproval(msgId); setApprovalError("");
@@ -456,6 +457,13 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
             const sourceQueriedAt = item.toolUse?.source ? toolQueriedAtLabel(item.toolUse.source.queriedAt) : null;
             const findMatch = findOpen && findMatchSet.has(item.id);
             const copyText = messageCopyText(item);
+            // 并发审批时只有一张能提交；其余卡片禁用并说明原因，而不是可点后静默失效。
+            const approvalReason = item.approval
+              ? approvalBlockReason(item.id, Boolean(item.approval.submitted), pendingApproval, archived)
+              : null;
+            const approvalTitle = approvalReason === "archived"
+              ? "此聊天已归档，审批已关闭"
+              : approvalReason === "otherPending" ? "另一张审批正在提交，请等待完成" : undefined;
             if (item.role === "user") {
               return (
                 <div className={"msg-row-user" + (findMatch ? " is-find-match" : "") + (currentFindId === item.id ? " is-find-current" : "") + (focusFlash === item.id ? " is-focus-target" : "")} id={"message-" + item.id}>
@@ -750,10 +758,11 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                             <>
                               <button
                                 className="approval-btn approve"
-                                disabled={pendingApproval === item.id || item.approval.submitted}
+                                disabled={approvalReason !== null}
+                                title={approvalTitle}
                                 onClick={() => void handleApproval(item.id, "approve")}
                               >
-                                {item.approval.submitted ? "已提交，等待确认" : "批准"}
+                                {item.approval.submitted ? "已提交，等待确认" : approvalReason === "selfPending" ? "正在提交…" : "批准"}
                               </button>
                               <button
                                 className="approval-btn secondary"
@@ -770,10 +779,11 @@ export const ConversationArea: React.FC<ConversationAreaProps> = ({
                               </button>
                               <button
                                 className="approval-btn deny"
-                                disabled={pendingApproval === item.id || item.approval.submitted}
+                                disabled={approvalReason !== null}
+                                title={approvalTitle}
                                 onClick={() => handleApproval(item.id, "deny")}
                               >
-                                拒绝
+                                {approvalReason === "selfPending" ? "正在提交…" : "拒绝"}
                               </button>
                             </>
                           )}
